@@ -30,7 +30,11 @@ from build123d import (
     import_step,
     revolve,
 )
+from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
+from OCP.GeomAbs import GeomAbs_SurfaceType
 from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
 
 from aicad.errors import GeometryError, ScriptError
@@ -74,6 +78,7 @@ class TriangleMesh:
     normals: np.ndarray
     triangles: np.ndarray
     edges: list[np.ndarray]
+    colors: np.ndarray | None = None
 
 
 def make_from_script(code: str) -> Shape:
@@ -346,6 +351,84 @@ def tessellate(shape: Shape) -> TriangleMesh:
         if len(samples) >= 2:
             edges.append(np.array([(p.X, p.Y, p.Z) for p in samples], dtype=np.float64))
     return TriangleMesh(vertices=points, normals=norms, triangles=faces, edges=edges)
+
+
+def describe_faces(shape: Shape) -> list[dict]:
+    """Describe each face so a load or a support can name it without a click.
+
+    Planes carry an outward normal. Cylinders carry a radius and an axis. The
+    axis is flipped so its largest component is positive, which makes a vertical
+    hole point +Z.
+    """
+    catalog = []
+    for index, face in enumerate(shape.impl.faces()):
+        center = face.center()
+        kind = "other"
+        normal = None
+        radius = None
+        axis_origin = None
+        axis_direction = None
+        adaptor = BRepAdaptor_Surface(face.wrapped)
+        surface_type = adaptor.GetType()
+        if surface_type == GeomAbs_SurfaceType.GeomAbs_Plane:
+            kind = "plane"
+            normal = _outward_normal(face, center)
+        elif surface_type == GeomAbs_SurfaceType.GeomAbs_Cylinder:
+            kind = "cylinder"
+            cylinder = adaptor.Cylinder()
+            radius = float(cylinder.Radius())
+            axis = cylinder.Axis()
+            origin = axis.Location()
+            direction = axis.Direction()
+            axis_origin = [float(origin.X()), float(origin.Y()), float(origin.Z())]
+            axis_direction = _flip_axis(_unit3(direction.X(), direction.Y(), direction.Z()))
+            normal = _outward_normal(face, center)
+        catalog.append(
+            {
+                "index": index,
+                "kind": kind,
+                "area_mm2": round_mm(float(face.area)),
+                "center_mm": [round_mm(center.X), round_mm(center.Y), round_mm(center.Z)],
+                "normal": normal,
+                "radius_mm": None if radius is None else round_mm(radius),
+                "axis_origin_mm": None if axis_origin is None else [round_mm(v) for v in axis_origin],
+                "axis_direction": None if axis_direction is None else [round_mm(v, 6) for v in axis_direction],
+            }
+        )
+    return catalog
+
+
+def distance_point_to_face(shape: Shape, face_index: int, point: tuple[float, float, float]) -> float:
+    """Shortest distance from a point to a face, in millimeters."""
+    faces = list(shape.impl.faces())
+    if face_index < 0 or face_index >= len(faces):
+        raise GeometryError(f"Face index {face_index} is outside this part.")
+    vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(float(point[0]), float(point[1]), float(point[2]))).Shape()
+    extrema = BRepExtrema_DistShapeShape(faces[face_index].wrapped, vertex)
+    extrema.Perform()
+    return float(extrema.Value())
+
+
+def _outward_normal(face, center) -> list[float] | None:
+    try:
+        normal = face.normal_at(center)
+    except Exception:
+        return None
+    return _unit3(normal.X, normal.Y, normal.Z)
+
+
+def _unit3(x: float, y: float, z: float) -> list[float]:
+    length = math.sqrt(x * x + y * y + z * z)
+    if length < 1e-12:
+        return [0.0, 0.0, 0.0]
+    return [x / length, y / length, z / length]
+
+
+def _flip_axis(direction: list[float]) -> list[float]:
+    dominant = max(range(3), key=lambda index: abs(direction[index]))
+    if direction[dominant] < 0:
+        return [-component for component in direction]
+    return direction
 
 
 def _require_solid(obj: object):

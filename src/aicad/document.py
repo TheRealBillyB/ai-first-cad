@@ -15,11 +15,12 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from aicad import kernel, library
+from aicad import fea, kernel, library
 from aicad.errors import DocumentError, GeometryError, PartNotFound
 from aicad.models import (
     ClearanceReport,
     FeatureReport,
+    FeaReport,
     InspectReport,
     Measurement,
     PartInfo,
@@ -417,6 +418,38 @@ class Document:
     def list_sketches(self) -> list[str]:
         with self._lock:
             return list(self._sketches)
+
+    def list_materials(self) -> dict[str, object]:
+        """Handbook materials the linear solver can use."""
+        return fea.list_materials()
+
+    def describe_faces(self, name: str) -> dict[str, object]:
+        """Faces an assistant can name in a support or a load.
+
+        Booleans do not keep feature names on faces, so a selector is geometric:
+        a plane normal, a cylinder radius, a location, or a face index.
+        """
+        with self._lock:
+            shape = self._get(name).shape
+            faces = kernel.describe_faces(shape)
+        return {
+            "part": name,
+            "units": "mm",
+            "faces": faces,
+            "note": (
+                "Pick a face by kind. A plane uses its outward normal, and at chooses "
+                "the closest match. A cylinder uses radius (default tolerance 0.05 mm) "
+                "and an optional axis; omit at to take every match, such as four frame holes. "
+                "nearest uses at and returns the face whose center is closest."
+            ),
+        }
+
+    def solve_mechanics(self, name: str, setup: dict) -> FeaReport:
+        """Mesh the part and run a linear static solve. Pictures land next to the other renders."""
+        with self._lock:
+            part = self._get(name)
+            out_dir = self.workspace / "renders" / name
+            return fea.solve_part(part.shape, setup, out_dir=out_dir, stem="fea", part_name=name)
 
     def search_parts(self, query: str = "") -> dict[str, object]:
         return library.search(query)

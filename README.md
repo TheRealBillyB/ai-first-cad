@@ -24,8 +24,9 @@ This is a small first version. It does not invent a geometry kernel. [build123d]
 - Search a small catalog of real screws, nuts, washers, and ball bearings, insert one, and check clearance against your part.
 - Estimate minimum wall thickness from rays and from cross-sections, and compare it with a threshold. The report says which method produced the number.
 - Check interference or clearance between two parts.
+- Run a linear static check. Pick a material (PLA, PETG, ABS, nylon, aluminum 6061, or mild steel), hold faces and apply forces, pressures, or bolt loads by describing the face, and read the peak von Mises stress, the peak displacement, the minimum safety factor, and a pass/fail against a target. Stress and displacement pictures come back from several angles.
 
-Units are millimeters.
+Units are millimeters. Forces are newtons, so a stress from the solver is in megapascals.
 
 ## Install
 
@@ -39,6 +40,14 @@ pytest
 ```
 
 The sketch solver is [python-solvespace](https://github.com/KmolYuan/solvespace), a wrapper around the SolveSpace geometric constraint solver. That solver is GPL-3.0-or-later. aicad itself is AGPL-3.0-or-later; installing aicad also installs the GPL solver. If pip has no wheel for your Python, it compiles the solver and needs a C++ compiler plus Python headers (`python3-dev` and `g++` on Debian or Ubuntu).
+
+The mechanics solver is [CalculiX](https://www.calculix.de/) (`ccx`), which is GPL. Meshing uses [Gmsh](https://gmsh.info/), also GPL, through the `gmsh` Python module that pip installs with aicad. Install the CalculiX binary separately:
+
+```bash
+sudo apt-get install -y calculix-ccx
+```
+
+`aicad fea` reports a clear error when `ccx` is missing. The tests skip in that case.
 
 ## Try the motor mount
 
@@ -78,6 +87,22 @@ aicad dimension plate base_length 90 --workspace ./aicad_workspace
 aicad sketch plate --workspace ./aicad_workspace
 ```
 
+The same bracket, under a motor load, compared with the buried-rib version:
+
+```bash
+python examples/mechanics_compare.py
+aicad run examples/motor_mount.py --name motor_mount --workspace ./aicad_workspace
+aicad faces motor_mount --workspace ./aicad_workspace
+aicad fea motor_mount --file examples/motor_load.json --workspace ./aicad_workspace
+aicad materials --workspace ./aicad_workspace
+```
+
+`examples/motor_load.json` holds the four frame holes, 100 N in +X on the bore, and 30 N down on the boss top. The comparison writes `examples/mechanics_report.json`.
+
+![Gusseted bracket, von Mises stress. The title is the scale](examples/renders/fea_gussets_stress_contact.png)
+
+![Buried ribs, von Mises stress, same load, its own scale](examples/renders/fea_ribs_stress_contact.png)
+
 `aicad sketch plate` prints the solved coordinates and writes a PNG with the dimensions labeled. `base_length` is the name from the constraint, not a variable in the solid.
 
 On the build that produced the pictures in this repo, inspect reported:
@@ -94,8 +119,41 @@ On the build that produced the pictures in this repo, inspect reported:
 | Gap to the 15.6 mm shaft | 0.2 mm, no interference |
 | Gussets | not flagged; 24% to 35% of each gusset was already inside the boss |
 | Old ribs | flagged; 55% of each rib was already inside the boss |
+| Motor load, PLA, safety factor 2 | both pass. Gussets: 5.43 MPa, safety factor 9.21, 0.0186 mm. Buried ribs: 5.57 MPa, safety factor 8.98, 0.0168 mm |
+| Where the peak is | a frame-hole edge on both parts, around (28.4, ±19.3, 0) |
 
-The wall number is a sample, not a proof. See [Limitations](#limitations).
+The wall number is a sample, not a proof. The stress numbers are one linear mesh of this load, not a certified allowable. See [Limitations](#limitations).
+
+## Mechanics
+
+`solve_mechanics` (CLI: `aicad fea`) meshes the solid with Gmsh and solves linear static elasticity with CalculiX. You name a material and you name faces. A boolean does not keep the feature name from the script, so a face is a plane normal, a cylinder radius, a point, or an index from `describe_faces`.
+
+```json
+{
+  "material": "pla",
+  "mesh_size_mm": 1.5,
+  "target_safety_factor": 2,
+  "fixes": [
+    {"name": "frame_bolts", "select": {"kind": "cylinder", "radius": 1.7, "axis": [0, 0, 1]}}
+  ],
+  "loads": [
+    {"name": "shaft_side", "type": "force", "vector": [100, 0, 0],
+     "select": {"kind": "cylinder", "radius": 8, "axis": [0, 0, 1]}},
+    {"name": "motor_axial", "type": "force", "vector": [0, 0, -30],
+     "select": {"kind": "plane", "normal": [0, 0, 1], "at": [0, 0, 12]}}
+  ]
+}
+```
+
+`force` is a total in newtons, shared equally by the nodes on the selected faces. `pressure` is in MPa and a positive value pushes into the face. `bolt` is `axial` newtons along the hole axis (positive follows the axis, upward for a vertical hole). `each: true` applies a force or a bolt load once per face. Omit `at` on a cylinder to take every hole of that radius. The default radius tolerance is 0.05 mm, so 1.7 and 1.6 stay distinct holes.
+
+The report returns the peak nodal von Mises stress, the peak displacement, and the minimum safety factor (strength divided by that peak) with the node where it occurs. Metals are compared with yield. Plastics are compared with the tensile number. Pictures are front, right, top, isometric, and a contact sheet, for stress and for displacement. Blue is low and red is high. Each picture is scaled to itself, and the title carries the maximum, so two brackets are compared by the numbers in the title.
+
+`review.status` is `pass`, `fail`, or `inconclusive`. Pass means the safety factor meets the target on a mesh that is not flagged as coarse. A coarse mesh, or a fallback from quadratic tetrahedra to linear ones, keeps a high safety factor at `inconclusive`. A safety factor under the target is `fail` even on a coarse mesh, and the warning says the mesh is a hint. Overstressed regions are candidates for added material. Regions whose stress is a small fraction of the peak are candidates for removed material.
+
+Every report states the material, the loads, the supports, the mesh size, and that the model is linear and isotropic. A printed material uses an in-plane strength and the report says a printed part is weaker across layers, often about half. The same sentence is present for a metal, with no layer reduction applied. Warnings cover a part with nothing fixed, a load that matches no face, a load that shares nodes with the support, and a mesh that is very coarse or larger than a selected hole.
+
+On the example load both brackets pass with a safety factor near 9. The gusseted peak is 5.43 MPa and the buried-rib peak is 5.57 MPa, both at a frame-hole edge. The ribs and the gussets are not what sets the safety factor for this load. Most of the volume is far below the peak, so the design review marks quiet regions as candidates for removed material, or as a sign that this load is smaller than the part was sized for. A load about four times larger would bring the safety factor down near the target of 2, because the model is linear.
 
 ## Connect an assistant
 
@@ -154,6 +212,9 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `check_clearance` | Overlap volume, or the gap between two parts. |
 | `export_part` | Write STEP or STL. |
 | `list_parts` / `get_part_source` / `delete_part` | Document housekeeping. |
+| `list_materials` | PLA, PETG, ABS, nylon, aluminum 6061, and mild steel, with the modulus and strength the solver will use. |
+| `describe_faces` | Every face: kind, center, area, and a normal or a radius and axis. |
+| `solve_mechanics` | Linear static solve. Returns the safety factor, the design review, the assumptions, and stress and displacement pictures. |
 
 `render_part` and `inspect_part` return PNG image blocks plus a JSON report. The assistant should look at the contact sheet, not only the numbers.
 
@@ -254,7 +315,7 @@ pytest
 python examples/motor_mount.py   # refresh examples/renders and the report
 ```
 
-`src/aicad/kernel.py` imports build123d and OpenCascade. `src/aicad/library.py` imports bd_warehouse. `src/aicad/sketch.py` imports the SolveSpace solver. The rest of aicad talks to plain records.
+`src/aicad/kernel.py` imports build123d and OpenCascade. `src/aicad/library.py` imports bd_warehouse. `src/aicad/sketch.py` imports the SolveSpace solver. `src/aicad/fea.py` imports Gmsh and runs the `ccx` binary. The rest of aicad talks to plain records.
 
 ## Limitations
 
@@ -267,11 +328,15 @@ python examples/motor_mount.py   # refresh examples/renders and the report
 - The catalog is screws, nuts, washers, and one family of ball bearings. It is not a McMaster mirror. An arbitrary bought part is a STEP import.
 - Renders are shaded orthographic pictures from a software rasterizer, not a dimensioned drawing. Sections are filled profiles with a scale bar, not a hatched drawing. There is no click-to-measure.
 - Sketches are on the XY plane and extrude along +Z. A revolve uses the X or Y axis of that same plane. The initial `at` guess has to be near a shape that satisfies the constraints, or the solver reports that it did not converge. Circle-to-line tangency is built from a point and a perpendicular radius, because the solver's tangent constraint does not take a full circle.
-- The SolveSpace solver linked through python-solvespace is GPL-3.0-or-later. aicad is AGPL-3.0-or-later. The two travel together when you install this package.
+- The SolveSpace solver linked through python-solvespace is GPL-3.0-or-later. Gmsh and CalculiX are GPL as well. aicad is AGPL-3.0-or-later. Those solvers travel with the package or, for `ccx`, with the system install.
+- Mechanics is linear static elasticity. Plasticity, contact, buckling, and fatigue are outside this solve. A safety factor below 1 means the pictured stress has left the elastic range. A force is shared equally by the nodes on the face. Pressure on a curved face uses that face's normal at its center. A bolt load is an axial force along the hole.
+- Face selectors are geometric. A boolean drops the name you gave a feature, so "the gusset face" has to be a normal, a radius, or a location. A mesh coarser than a hole, or coarser than about half the smallest dimension of the part, is called out, and a pass on that mesh is inconclusive.
+- The printed-layer note is a warning, not a second material model. The strength in the library is one number. Across-layer strength is not solved.
 - The session file is for one writer. Two servers on the same workspace will overwrite each other.
 
 ## Next steps
 
+- A second mechanics pass: mesh refinement at the hot spot, contact at a bolt, and a check that is not limited to linear elasticity.
 - Driving dimensions on 3D features (extrude height, gusset length), not only on the sketch.
 - More catalog parts (NEMA motors, extrusions) and a way to drop a screw into a hole by naming the hole.
 - Driving dimensions on the 3D pictures, the way the sketch view already labels them.

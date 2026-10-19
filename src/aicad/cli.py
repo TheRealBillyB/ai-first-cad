@@ -134,6 +134,19 @@ def main(argv: list[str] | None = None) -> int:
     sketch_part.add_argument("sketch")
     sketch_part.add_argument("--steps", type=Path, required=True)
 
+    commands.add_parser("materials", parents=[common], help="List handbook materials for a linear static solve.")
+
+    faces = commands.add_parser(
+        "faces", parents=[common], help="Describe faces so a support or a load can name them."
+    )
+    faces.add_argument("name")
+
+    mechanics = commands.add_parser(
+        "fea", parents=[common], help="Run a linear static solve from a JSON setup."
+    )
+    mechanics.add_argument("name")
+    mechanics.add_argument("--file", type=Path, required=True, help="JSON with material, fixes, and loads.")
+
     args = parser.parse_args(argv)
     try:
         return _dispatch(args)
@@ -228,6 +241,13 @@ def _dispatch(args: argparse.Namespace) -> int:
         steps = json.loads(args.steps.read_text(encoding="utf-8"))
         info = _create_or_update_sketch_part(document, args.name, args.sketch, steps)
         return _emit(info.to_dict())
+    if args.command == "materials":
+        return _emit(document.list_materials())
+    if args.command == "faces":
+        return _emit(document.describe_faces(args.name))
+    if args.command == "fea":
+        setup = json.loads(args.file.read_text(encoding="utf-8"))
+        return _emit(document.solve_mechanics(args.name, setup).to_dict())
     raise AICADError(f"Unknown command {args.command!r}.")
 
 

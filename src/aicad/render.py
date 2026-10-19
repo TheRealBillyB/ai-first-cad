@@ -163,8 +163,18 @@ def _rasterize(
             _shade(normals[i1], light_key, light_fill),
             _shade(normals[i2], light_key, light_fill),
         )
-        _paint_triangle(image, depth, p0, p1, p2, shades)
+        if mesh.colors is None:
+            _paint_triangle(image, depth, p0, p1, p2, shades)
+        else:
+            colored = (
+                mesh.colors[i0] * shades[0],
+                mesh.colors[i1] * shades[1],
+                mesh.colors[i2] * shades[2],
+            )
+            _paint_triangle_color(image, depth, p0, p1, p2, colored)
 
+    if mesh.colors is not None:
+        return image, depth
     bias = 0.35
     for polyline in mesh.edges:
         projected = _project(polyline, x_cam, y_cam, z_cam, scale, width, height, center)
@@ -243,6 +253,40 @@ def _paint_triangle(
     rgb = np.clip(_METAL * shade[..., None], 0, 255).astype(np.uint8)
     pixels = image[min_y : max_y + 1, min_x : max_x + 1]
     pixels[update] = rgb[update]
+
+
+def _paint_triangle_color(
+    image: np.ndarray,
+    depth: np.ndarray,
+    p0: np.ndarray,
+    p1: np.ndarray,
+    p2: np.ndarray,
+    colors: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> None:
+    height, width = depth.shape
+    min_x = max(int(math.floor(min(p0[0], p1[0], p2[0]))), 0)
+    max_x = min(int(math.ceil(max(p0[0], p1[0], p2[0]))), width - 1)
+    min_y = max(int(math.floor(min(p0[1], p1[1], p2[1]))), 0)
+    max_y = min(int(math.ceil(max(p0[1], p1[1], p2[1]))), height - 1)
+    if min_x > max_x or min_y > max_y:
+        return
+    denom = (p1[1] - p2[1]) * (p0[0] - p2[0]) + (p2[0] - p1[0]) * (p0[1] - p2[1])
+    if abs(denom) < 1e-8:
+        return
+    ys, xs = np.mgrid[min_y : max_y + 1, min_x : max_x + 1]
+    w0 = ((p1[1] - p2[1]) * (xs - p2[0]) + (p2[0] - p1[0]) * (ys - p2[1])) / denom
+    w1 = ((p2[1] - p0[1]) * (xs - p2[0]) + (p0[0] - p2[0]) * (ys - p2[1])) / denom
+    w2 = 1.0 - w0 - w1
+    inside = (w0 >= 0.0) & (w1 >= 0.0) & (w2 >= 0.0)
+    z = w0 * p0[2] + w1 * p1[2] + w2 * p2[2]
+    region = depth[min_y : max_y + 1, min_x : max_x + 1]
+    update = inside & (z > region)
+    if not np.any(update):
+        return
+    region[update] = z[update]
+    rgb = w0[..., None] * colors[0] + w1[..., None] * colors[1] + w2[..., None] * colors[2]
+    pixels = image[min_y : max_y + 1, min_x : max_x + 1]
+    pixels[update] = np.clip(rgb[update], 0, 255).astype(np.uint8)
 
 
 def _draw_visible_segment(
@@ -687,6 +731,122 @@ def _draw_label(draw: ImageDraw.ImageDraw, text: str, x: float, y: float, font: 
     pad = 2
     draw.rectangle((box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad), fill=_PAPER)
     draw.text((x, y), text, fill=_DIM, font=font)
+
+
+_SCALAR_VIEWS = ("front", "right", "top", "iso")
+
+
+def render_scalar_views(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    scalars: np.ndarray,
+    out_dir: Path,
+    stem: str,
+    prefix: str,
+    title: str,
+    unit: str,
+    legend: str,
+) -> list[RenderedView]:
+    """Color a surface mesh by a scalar and write front, right, top, iso, and a contact sheet.
+
+    Blue is the low end of the scale and red is the high end. Each picture is
+    scaled to this mesh, and the title carries the maximum so two pictures are
+    not compared by color alone.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    normals = _vertex_normals(vertices, triangles)
+    low = float(np.min(scalars)) if len(scalars) else 0.0
+    high = float(np.max(scalars)) if len(scalars) else 1.0
+    if high - low < 1e-12:
+        high = low + 1.0
+    colors = _scalar_colors(scalars, low, high)
+    mesh = TriangleMesh(vertices=vertices, normals=normals, triangles=triangles, edges=[], colors=colors)
+    bases = {name: _camera_basis(eye, up) for name, eye, up, _label in _VIEWS if name in _SCALAR_VIEWS}
+    scale, _span = _shared_scale(vertices, bases)
+    panels: dict[str, Image.Image] = {}
+    records: list[RenderedView] = []
+    footer = f"{legend}    {low:.4g} to {high:.4g} {unit}"
+    for name in _SCALAR_VIEWS:
+        _key, _eye, _up, label = next(item for item in _VIEWS if item[0] == name)
+        image = _compose_view(mesh, bases[name], scale, title=f"{title}  ·  {label}", footer=footer)
+        _draw_scalar_legend(image, low, high, unit)
+        path = out_dir / f"{stem}_{prefix}_{name}.png"
+        image.save(path, format="PNG", optimize=True)
+        panels[name] = image
+        records.append(
+            RenderedView(name=f"{prefix}_{name}", path=str(path.resolve()), width=image.width, height=image.height)
+        )
+    contact = _scalar_contact(panels)
+    contact_path = out_dir / f"{stem}_{prefix}_contact.png"
+    contact.save(contact_path, format="PNG", optimize=True)
+    records.append(
+        RenderedView(
+            name=f"{prefix}_contact",
+            path=str(contact_path.resolve()),
+            width=contact.width,
+            height=contact.height,
+        )
+    )
+    return records
+
+
+def _vertex_normals(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    normals = np.zeros_like(vertices)
+    for tri in triangles:
+        a, b, c = vertices[int(tri[0])], vertices[int(tri[1])], vertices[int(tri[2])]
+        normals[int(tri[0])] += np.cross(b - a, c - a)
+        normals[int(tri[1])] += np.cross(b - a, c - a)
+        normals[int(tri[2])] += np.cross(b - a, c - a)
+    return normals
+
+
+def _scalar_colors(scalars: np.ndarray, low: float, high: float) -> np.ndarray:
+    span = high - low
+    colors = np.empty((len(scalars), 3), dtype=np.float64)
+    for index, value in enumerate(scalars):
+        colors[index] = _colormap((float(value) - low) / span)
+    return colors
+
+
+def _colormap(t: float) -> np.ndarray:
+    t = min(1.0, max(0.0, t))
+    stops = (
+        (0.0, (38, 55, 130)),
+        (0.25, (32, 120, 190)),
+        (0.5, (40, 170, 120)),
+        (0.75, (230, 190, 50)),
+        (1.0, (175, 40, 35)),
+    )
+    for (left, a), (right, b) in zip(stops, stops[1:]):
+        if t <= right:
+            mix = 0.0 if right == left else (t - left) / (right - left)
+            return np.array([a[i] + (b[i] - a[i]) * mix for i in range(3)], dtype=np.float64)
+    return np.array(stops[-1][1], dtype=np.float64)
+
+
+def _draw_scalar_legend(image: Image.Image, low: float, high: float, unit: str) -> None:
+    draw = ImageDraw.Draw(image)
+    small = _font(12)
+    width = 120
+    height = 8
+    x0 = image.width - width - 16
+    y0 = 22
+    for step in range(width):
+        color = tuple(int(channel) for channel in _colormap(step / max(width - 1, 1)))
+        draw.line((x0 + step, y0, x0 + step, y0 + height), fill=color)
+    draw.text((x0, 6), f"{low:.3g} {unit}", fill=_INK, font=small)
+    label = f"{high:.3g}"
+    draw.text((x0 + width - 36, 6), label, fill=_INK, font=small)
+
+
+def _scalar_contact(panels: dict[str, Image.Image]) -> Image.Image:
+    sample = next(iter(panels.values()))
+    cell_w, cell_h = sample.size
+    sheet = Image.new("RGB", (cell_w * 2, cell_h * 2), _PAPER)
+    for index, name in enumerate(_SCALAR_VIEWS):
+        col, row = index % 2, index // 2
+        sheet.paste(panels[name], (col * cell_w, row * cell_h))
+    return sheet
 
 
 def _font(size: int) -> ImageFont.ImageFont:

@@ -1,0 +1,25 @@
+{
+  "material": "pla",
+  "mesh_size_mm": 1.5,
+  "target_safety_factor": 2.0,
+  "fixes": [
+    {
+      "name": "frame_bolts",
+      "select": {"kind": "cylinder", "radius": 1.7, "axis": [0, 0, 1], "tolerance": 0.05}
+    }
+  ],
+  "loads": [
+    {
+      "name": "shaft_side",
+      "type": "force",
+      "vector": [100, 0, 0],
+      "select": {"kind": "cylinder", "radius": 8, "axis": [0, 0, 1]}
+    },
+    {
+      "name": "motor_axial",
+      "type": "force",
+      "vector": [0, 0, -30],
+      "select": {"kind": "plane", "normal": [0, 0, 1], "at": [0, 0, 12]}
+    }
+  ]
+}

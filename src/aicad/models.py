@@ -325,6 +325,57 @@ class SketchReport:
 
 
 @dataclass(frozen=True)
+class FeaReport:
+    """Linear static result an assistant can act on."""
+
+    part: str | None
+    status: str
+    solver: str
+    material: dict[str, object]
+    mesh: dict[str, object]
+    fixes: list[dict[str, object]]
+    loads: list[dict[str, object]]
+    max_von_mises_mpa: float | None
+    max_von_mises_at_mm: Vec3 | None
+    max_displacement_mm: float | None
+    max_displacement_vector_mm: Vec3 | None
+    max_displacement_at_mm: Vec3 | None
+    min_safety_factor: float | None
+    min_safety_factor_at_mm: Vec3 | None
+    warnings: list[str]
+    assumptions: list[str]
+    review: dict[str, object] | None
+    views: list[RenderedView]
+    note: str
+
+    def to_dict(self) -> dict[str, object]:
+        def _point(value: Vec3 | None) -> dict[str, float] | None:
+            return None if value is None else value.to_dict()
+
+        return {
+            "part": self.part,
+            "status": self.status,
+            "solver": self.solver,
+            "material": self.material,
+            "mesh": self.mesh,
+            "fixes": self.fixes,
+            "loads": self.loads,
+            "max_von_mises_mpa": self.max_von_mises_mpa,
+            "max_von_mises_at_mm": _point(self.max_von_mises_at_mm),
+            "max_displacement_mm": self.max_displacement_mm,
+            "max_displacement_vector_mm": _point(self.max_displacement_vector_mm),
+            "max_displacement_at_mm": _point(self.max_displacement_at_mm),
+            "min_safety_factor": self.min_safety_factor,
+            "min_safety_factor_at_mm": _point(self.min_safety_factor_at_mm),
+            "warnings": self.warnings,
+            "assumptions": self.assumptions,
+            "review": self.review,
+            "views": [view.to_dict() for view in self.views],
+            "note": self.note,
+        }
+
+
+@dataclass(frozen=True)
 class InspectReport:
     part: PartInfo
     measurement: Measurement

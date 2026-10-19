@@ -3,11 +3,13 @@
 from aicad.document import Document
 from aicad.errors import AICADError, DocumentError, GeometryError, PartNotFound, ScriptError
 from aicad.kernel import FeatureLog, solid_from_sketch
+from aicad.fea import fea_available, list_materials, lookup_material, select_faces, solve_part
 from aicad.models import (
     BoundingBox,
     ClearanceReport,
     FeatureReport,
     FeatureStep,
+    FeaReport,
     InspectReport,
     Measurement,
     PartInfo,
@@ -19,7 +21,7 @@ from aicad.models import (
 )
 from aicad.sketch import Sketch, set_spec_dimension, solve_sketch
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "AICADError",
@@ -30,6 +32,7 @@ __all__ = [
     "FeatureLog",
     "FeatureReport",
     "FeatureStep",
+    "FeaReport",
     "GeometryError",
     "InspectReport",
     "Measurement",
@@ -43,7 +46,12 @@ __all__ = [
     "Vec3",
     "WallReport",
     "__version__",
+    "fea_available",
+    "list_materials",
+    "lookup_material",
+    "select_faces",
     "set_spec_dimension",
     "solid_from_sketch",
+    "solve_part",
     "solve_sketch",
 ]

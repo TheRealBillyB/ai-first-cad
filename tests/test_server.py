@@ -69,7 +69,15 @@ async def _mcp_example(tmp_path: Path) -> None:
                 "feature_report",
                 "search_parts",
                 "insert_standard_part",
+                "list_materials",
+                "describe_faces",
+                "solve_mechanics",
             } <= names
+
+            materials = await session.call_tool("list_materials", {})
+            assert materials.is_error is False, _text(materials)
+            material_ids = {item["id"] for item in json.loads(_text(materials))["materials"]}
+            assert {"pla", "petg", "abs", "nylon", "aluminum_6061", "steel"} <= material_ids
 
             created = await session.call_tool(
                 "create_part_from_script",
@@ -79,6 +87,16 @@ async def _mcp_example(tmp_path: Path) -> None:
             created_payload = json.loads(_text(created))
             assert created_payload["part"]["watertight"] is True
             assert created_payload["part"]["bounding_box"]["size"]["x"] == 72
+
+            faces = await session.call_tool("describe_faces", {"name": "motor_mount"})
+            assert faces.is_error is False, _text(faces)
+            face_rows = json.loads(_text(faces))["faces"]
+            frame_holes = [
+                face
+                for face in face_rows
+                if face["kind"] == "cylinder" and abs(face["radius_mm"] - 1.7) < 0.05
+            ]
+            assert len(frame_holes) == 4
 
             inspected = await session.call_tool(
                 "inspect_part",

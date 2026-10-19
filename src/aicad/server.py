@@ -48,6 +48,12 @@ entities plus geometric and dimensional constraints. `create_sketch` solves it
 and says whether it is fully constrained, still free, or conflicting.
 `set_dimension` changes a named dimension and rebuilds parts made from that
 sketch. Read the sketch image; the dimensions are labeled on it.
+
+To see whether a part survives a load, call `describe_faces`, pick a material
+from `list_materials`, and call `solve_mechanics`. Read the safety factor, the
+warnings, and the stress picture before you add or remove material. The report
+lists its assumptions. A 3D-printed material is weaker across layers than the
+in-plane strength used here.
 """.strip()
 
 _GUIDE = """
@@ -154,6 +160,59 @@ Boxes are axis-aligned. Cylinders take an optional `axis` (default `[0, 0, 1]`).
 `center` defaults to the origin. The first operation must be `add`. Optional
 `name` is used in the feature report. Operations are always tracked.
 
+## Mechanics
+
+`list_materials` is a small handbook library: PLA, PETG, ABS, nylon, aluminum
+6061, and mild steel. The numbers are typical, not a certified allowable.
+
+`describe_faces` lists every face. A boolean does not keep the name you used
+in the script, so you select a face by geometry:
+
+- `{"kind": "plane", "normal": [0, 0, -1]}` is every downward face. Add
+  `"at": [0, 0, 0]` for the one closest to that point.
+- `{"kind": "cylinder", "radius": 1.7, "axis": [0, 0, 1]}` is every vertical
+  hole of that radius. The default tolerance is 0.05 mm, so 1.7 does not also
+  match 1.6. Omit `at` to take all of them (the four frame holes).
+- `{"kind": "nearest", "at": [0, 0, 12]}` is the face whose center is closest.
+- `{"kind": "index", "index": 3}` is one face from the list.
+
+`solve_mechanics` runs a linear static solve. Gmsh builds the tetrahedra and
+CalculiX solves them. A setup looks like this:
+
+```json
+{
+  "material": "pla",
+  "mesh_size_mm": 1.5,
+  "target_safety_factor": 2,
+  "fixes": [
+    {"name": "frame_bolts", "select": {"kind": "cylinder", "radius": 1.7, "axis": [0, 0, 1]}}
+  ],
+  "loads": [
+    {"name": "shaft_side", "type": "force", "vector": [100, 0, 0],
+     "select": {"kind": "cylinder", "radius": 8, "axis": [0, 0, 1]}},
+    {"name": "motor_weight", "type": "force", "vector": [0, 0, -30],
+     "select": {"kind": "plane", "normal": [0, 0, 1], "at": [0, 0, 12]}}
+  ]
+}
+```
+
+`type` is `force` (a total force in newtons, shared by the nodes), `pressure`
+(MPa, positive pushes into the face), or `bolt` (`axial` newtons along the
+hole, positive in the axis direction). `each: true` applies that force or bolt
+load once per selected face.
+
+The result has the peak von Mises stress, the peak displacement, the minimum
+safety factor and where it occurs, and colored pictures from the front, the
+right, the top, and isometric. Each picture is scaled to its own maximum; the
+title carries that maximum. `review.status` is `pass`, `fail`, or
+`inconclusive`. Overstressed regions are candidates for added material.
+Regions carrying almost none of the peak are candidates for removed material.
+
+Read `assumptions` and `warnings` every time. The solve is linear, isotropic,
+and small-displacement. Printed materials are weaker across layers. A part
+with nothing fixed, a load that hits no face, or a very coarse mesh is reported
+and, when the setup cannot be solved, `status` is `not_solved`.
+
 ## What to check
 
 - `valid` and `watertight` should both be true for a printable solid.
@@ -163,6 +222,7 @@ Boxes are axis-aligned. Cylinders take an optional `axis` (default `[0, 0, 1]`).
 - `section_part` shows internal geometry that the outside views hide.
 - `check_clearance` on two parts reports interference, or the gap if they are apart.
 - `inspect_part` renders front, back, left, right, top, bottom, and isometric views.
+- `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
 """.strip()
 
 
@@ -176,7 +236,7 @@ def build_server(workspace: str | Path) -> MCPServer:
     mcp = MCPServer(
         "aicad",
         instructions=_INSTRUCTIONS,
-        version="0.3.0",
+        version="0.4.0",
     )
 
     def guard(fn):
@@ -516,6 +576,52 @@ def build_server(workspace: str | Path) -> MCPServer:
         )
 
     @mcp.tool()
+    def list_materials() -> dict:
+        """List the small material library used by solve_mechanics.
+
+        PLA, PETG, ABS, nylon, aluminum 6061, and mild steel, with modulus,
+        Poisson's ratio, and a strength. Plastics use a tensile strength.
+        Metals use a yield strength. These are handbook ballparks, not a
+        certified allowable. Printed materials are weaker across layers than
+        the in-plane number used here.
+        """
+        return guard(document.list_materials)
+
+    @mcp.tool()
+    def describe_faces(name: str) -> dict:
+        """List a part's faces so a support or a load can name them.
+
+        Each face has a kind (plane, cylinder, or other), a center, an area,
+        and, when it applies, an outward normal or a radius and axis. Feature
+        names do not survive a boolean, so select by geometry in solve_mechanics:
+        plane plus normal, cylinder plus radius, nearest plus at, or an index.
+        """
+        return guard(lambda: document.describe_faces(name))
+
+    @mcp.tool()
+    def solve_mechanics(name: str, setup: dict[str, Any]) -> list[str | Image]:
+        """Run a linear static solve and return stress and displacement pictures.
+
+        setup needs material (a name from list_materials), fixes, and loads.
+        Optional mesh_size_mm and target_safety_factor (default 2). A fix is
+        {"name", "select"}. A load adds "type" of force, pressure, or bolt:
+        force has vector [x, y, z] in newtons, pressure has magnitude in MPa
+        (positive pushes into the face), bolt has axial newtons along the hole.
+        select is the same geometry selector describe_faces is for.
+
+        Read status, min_safety_factor, review, assumptions, and warnings.
+        The stress contact sheet is the first image. Each picture is scaled to
+        its own maximum, and the title carries that maximum. review.status is
+        pass, fail, or inconclusive. Overstressed regions are candidates for
+        added material; nearly unloaded regions are candidates for removed material.
+        """
+        def _solve() -> list[str | Image]:
+            report = document.solve_mechanics(name, setup)
+            return _with_images(report.to_dict(), report.views)
+
+        return guard(_solve)
+
+    @mcp.tool()
     def import_step(name: str, path: str) -> dict:
         """Copy a STEP file into the document as a named part.
 
@@ -548,9 +654,19 @@ def _with_images(payload: dict, views) -> list[str | Image]:
 
 _VIEW_RANK = {
     "contact": 0,
+    "stress_contact": 0,
+    "displacement_contact": 1,
+    "stress_iso": 2,
+    "displacement_iso": 3,
     "sketch": 1,
     "section": 1,
     "iso": 2,
+    "stress_front": 4,
+    "stress_right": 5,
+    "stress_top": 6,
+    "displacement_front": 7,
+    "displacement_right": 8,
+    "displacement_top": 9,
     "front": 3,
     "right": 4,
     "top": 5,
