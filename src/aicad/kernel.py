@@ -29,7 +29,17 @@ from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
 from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
 
 from aicad.errors import GeometryError, ScriptError
-from aicad.models import BoundingBox, Measurement, Vec3, round_mm
+from aicad.models import (
+    BoundingBox,
+    FeatureReport,
+    FeatureStep,
+    Measurement,
+    SectionLoop,
+    Vec3,
+    WallEstimate,
+    round_mm,
+    untracked_features,
+)
 
 UNITS = "mm"
 _INTERFERENCE_VOLUME = 1e-4
@@ -41,10 +51,14 @@ class Shape:
     """An opaque solid (or a compound of solids) owned by the kernel."""
 
     _impl: object
+    features: FeatureReport | None = None
 
     @property
     def impl(self):
         return self._impl
+
+    def feature_report(self) -> FeatureReport:
+        return self.features if self.features is not None else untracked_features()
 
 
 @dataclass
@@ -64,9 +78,11 @@ def make_from_script(code: str) -> Shape:
     if len(code) > 200_000:
         raise ScriptError("The script is longer than 200000 characters.")
 
+    log = FeatureLog()
     namespace: dict[str, object] = {
         "__builtins__": __builtins__,
         "__name__": "aicad_script",
+        "feature": log,
     }
     try:
         # Discard prints. A script that writes to stdout would break an MCP stdio session.
@@ -84,9 +100,30 @@ def make_from_script(code: str) -> Shape:
             "The script did not assign `part`. Build a solid and end with `part = ...`."
         )
     try:
-        return Shape(_require_solid(namespace[_NAME_IN_SCRIPT]))
+        solid = _require_solid(namespace[_NAME_IN_SCRIPT])
     except GeometryError as exc:
         raise ScriptError(str(exc)) from exc
+    # A script may replace `feature` with its own FeatureLog (the examples do this
+    # so they can also run outside the document). Prefer that log when it has steps.
+    active = namespace.get("feature", log)
+    if isinstance(active, FeatureLog):
+        log = active
+    report = log.report()
+    if report.tracked and log.current is not None:
+        logged = float(log.current.volume)
+        final = float(solid.volume)
+        if abs(logged - final) > max(1e-2, 0.02 * max(final, 1.0)):
+            report = FeatureReport(
+                tracked=True,
+                steps=report.steps,
+                redundant_features=report.redundant_features,
+                warning=(
+                    "`part` does not match the feature log result, so the contribution "
+                    "describes the feature steps rather than the solid that was stored."
+                ),
+                note=report.note,
+            )
+    return Shape(solid, features=report)
 
 
 def make_from_ops(ops: list[dict]) -> Shape:
@@ -96,7 +133,7 @@ def make_from_ops(ops: list[dict]) -> Shape:
     if len(ops) > 500:
         raise GeometryError("A part may have at most 500 operations.")
 
-    solid = None
+    log = FeatureLog()
     for index, op in enumerate(ops):
         if not isinstance(op, dict):
             raise GeometryError(f"Operation {index} must be an object.")
@@ -106,17 +143,20 @@ def make_from_ops(ops: list[dict]) -> Shape:
                 f"Operation {index} has op {kind!r}. Use 'add' or 'cut'."
             )
         tool = _primitive(op, index)
+        name = op.get("name") or f"{kind}_{index + 1}"
+        if not isinstance(name, str) or not name.strip():
+            raise GeometryError(f"Operation {index} name must be a non-empty string.")
         if kind == "add":
-            solid = tool if solid is None else solid + tool
+            log.add(name, tool)
         else:
-            if solid is None:
+            if log.current is None:
                 raise GeometryError(
                     f"Operation {index} is a cut, but the part has no solid yet. Add one first."
                 )
-            solid = solid - tool
-            if _volume(solid) <= 0 or len(solid.solids()) == 0:
+            log.cut(name, tool)
+            if _volume(log.current) <= 0 or len(log.current.solids()) == 0:
                 raise GeometryError(f"Operation {index} (cut) removed the entire part.")
-    return Shape(_require_solid(solid))
+    return Shape(_require_solid(log.current), features=log.report())
 
 
 def measure(shape: Shape) -> Measurement:
@@ -145,16 +185,56 @@ def measure(shape: Shape) -> Measurement:
     )
 
 
-def estimate_wall_thickness(
-    shape: Shape, samples_per_edge: int = 4
-) -> tuple[float | None, int, int, Vec3 | None]:
-    """Return ``(minimum_mm, sample_count, samples_per_edge, thinnest_point)``.
+def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEstimate:
+    """Estimate minimum wall thickness from rays and from planar sections.
 
-    Rays start just inside each face and travel through the material. A hit
-    counts only when the opposite face is roughly parallel, which is the local
-    wall thickness. The minimum over the samples is an estimate: a thin spot
-    between samples is invisible to this check.
+    The reported minimum is the smaller of the two. ``method`` says which one
+    produced it, or ``ray+section`` when they agree within 0.05 mm.
     """
+    ray_mm, accepted, used, point = _ray_wall_thickness(shape, samples_per_edge)
+    section_mm, section_count = _section_wall_thickness(shape)
+    candidates = [value for value in (ray_mm, section_mm) if value is not None]
+    minimum = min(candidates) if candidates else None
+    if ray_mm is None and section_mm is None:
+        method = "none"
+    elif ray_mm is None:
+        method = "section"
+    elif section_mm is None:
+        method = "ray"
+    elif abs(ray_mm - section_mm) <= 0.05:
+        method = "ray+section"
+    elif section_mm < ray_mm:
+        method = "section"
+    else:
+        method = "ray"
+    if method == "section":
+        point = None
+    note = (
+        f"Minimum came from {method}. "
+        f"Ray samples: {_mm(ray_mm)} mm. "
+        f"Planar sections ({section_count} slices): {_mm(section_mm)} mm. "
+        "Rays shoot inward from a grid on each face and keep hits on a roughly "
+        "parallel face. Sections slice the part at 25%, 50%, and 75% of its "
+        "extent along X, Y, and Z and measure the width between roughly parallel "
+        "edges in that plane. The smaller number is the estimate. Either method "
+        "can miss a thin spot it does not cross."
+    )
+    return WallEstimate(
+        minimum_mm=None if minimum is None else round_mm(minimum),
+        ray_mm=None if ray_mm is None else round_mm(ray_mm),
+        section_mm=None if section_mm is None else round_mm(section_mm),
+        method=method,
+        sample_count=accepted,
+        samples_per_edge=used,
+        section_count=section_count,
+        thinnest_point_mm=point,
+        note=note,
+    )
+
+
+def _ray_wall_thickness(
+    shape: Shape, samples_per_edge: int
+) -> tuple[float | None, int, int, Vec3 | None]:
     impl = shape.impl
     face_count = len(impl.faces())
     n = samples_per_edge
@@ -190,10 +270,7 @@ def estimate_wall_thickness(
                 if thinnest is None or thickness < thinnest:
                     thinnest = thickness
                     thinnest_point = _vec(point)
-
-    if thinnest is None:
-        return None, 0, n, None
-    return round_mm(thinnest), accepted, n, thinnest_point
+    return thinnest, accepted, n, thinnest_point
 
 
 def clearance_between(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Vec3 | None]:
@@ -410,4 +487,327 @@ def _first_parallel_hit(impl, origin, direction) -> float | None:
                 best = parameter
         intersector.Next()
     return best
+
+
+_BURIED_FLAG = 0.5
+_VOLUME_NOISE = 1e-4
+_SECTION_FRACTIONS = (0.25, 0.5, 0.75)
+
+
+class FeatureLog:
+    """Opt-in boolean history for a script.
+
+    ``feature.add(name, solid)`` and ``feature.cut(name, tool)`` fuse or cut
+    and remember how much material the step actually added or removed. Scripts
+    that never call them are unchanged.
+    """
+
+    def __init__(self) -> None:
+        self.steps: list[FeatureStep] = []
+        self.current = None
+        self.tracked = False
+
+    def add(self, name: str, tool):
+        return self._apply("add", name, tool)
+
+    def cut(self, name: str, tool):
+        return self._apply("cut", name, tool)
+
+    @property
+    def result(self):
+        if self.current is None:
+            raise GeometryError("feature has no solids yet. Call feature.add first.")
+        return self.current
+
+    def report(self) -> FeatureReport:
+        if not self.tracked:
+            return untracked_features()
+        return FeatureReport(
+            tracked=True,
+            steps=list(self.steps),
+            redundant_features=[step.name for step in self.steps if step.redundant],
+            warning=None,
+            note=(
+                "An added feature is flagged when at least half of its volume was already "
+                "inside the part. A cut is flagged when it removes nothing. A through hole "
+                "whose cutter sticks out of the part is not flagged; read removed_fraction."
+            ),
+        )
+
+    def _apply(self, op: str, name: str, tool):
+        if not isinstance(name, str) or not name.strip():
+            raise GeometryError("A feature name must be a non-empty string.")
+        tool = _require_solid(tool)
+        tool_volume = float(tool.volume)
+        if tool_volume <= _VOLUME_NOISE:
+            raise GeometryError(f"Feature {name!r} has no volume.")
+        before = self.current
+        before_volume = 0.0 if before is None else float(before.volume)
+        if op == "add":
+            after = tool if before is None else before + tool
+            after_volume = float(after.volume)
+            new_material = max(0.0, after_volume - before_volume)
+            if new_material > tool_volume:
+                new_material = tool_volume
+            buried = max(0.0, tool_volume - new_material)
+            fraction = buried / tool_volume
+            redundant = fraction + 1e-9 >= _BURIED_FLAG
+            if redundant:
+                note = (
+                    f"{fraction:.0%} of '{name}' was already inside the part "
+                    f"({buried:.1f} of {tool_volume:.1f} mm^3). It adds little new material. "
+                    "A rib or gusset buried in a boss does not stiffen the joint."
+                )
+            else:
+                note = (
+                    f"{1 - fraction:.0%} of '{name}' became new material "
+                    f"({new_material:.1f} of {tool_volume:.1f} mm^3)."
+                )
+            step = FeatureStep(
+                name=name,
+                op="add",
+                tool_volume_mm3=round_mm(tool_volume),
+                result_volume_mm3=round_mm(after_volume),
+                new_material_mm3=round_mm(new_material),
+                buried_mm3=round_mm(buried),
+                buried_fraction=round_mm(fraction, 4),
+                removed_mm3=None,
+                removed_fraction=None,
+                redundant=redundant,
+                note=note,
+            )
+        else:
+            if before is None:
+                raise GeometryError(
+                    f"feature.cut({name!r}) has nothing to cut. Call feature.add first."
+                )
+            after = before - tool
+            after_volume = float(after.volume)
+            if after_volume <= _VOLUME_NOISE or len(after.solids()) == 0:
+                raise GeometryError(f"feature.cut({name!r}) removed the entire part.")
+            removed = max(0.0, before_volume - after_volume)
+            fraction = removed / tool_volume
+            redundant = removed <= 1e-3
+            if redundant:
+                note = f"'{name}' removed no material. The cutter missed the part."
+            else:
+                note = (
+                    f"'{name}' removed {removed:.1f} mm^3 ({fraction:.0%} of the cutter). "
+                    "A through hole is often a small fraction of a long cutter; that is expected."
+                )
+            step = FeatureStep(
+                name=name,
+                op="cut",
+                tool_volume_mm3=round_mm(tool_volume),
+                result_volume_mm3=round_mm(after_volume),
+                new_material_mm3=None,
+                buried_mm3=None,
+                buried_fraction=None,
+                removed_mm3=round_mm(removed),
+                removed_fraction=round_mm(fraction, 4),
+                redundant=redundant,
+                note=note,
+            )
+        self.current = after
+        self.steps.append(step)
+        self.tracked = True
+        return after
+
+
+def adopt(impl) -> Shape:
+    """Wrap a solid built by the parts library."""
+    return Shape(_require_solid(impl), features=untracked_features())
+
+
+def place(shape: Shape, position: tuple[float, float, float], rotation_deg: tuple[float, float, float]) -> Shape:
+    """Move a solid. Rotation is degrees about X, then Y, then Z, then the translation."""
+    from build123d import Pos, Rot
+
+    px, py, pz = position
+    rx, ry, rz = rotation_deg
+    if all(abs(value) < 1e-12 for value in (px, py, pz, rx, ry, rz)):
+        return shape
+    moved = Pos(px, py, pz) * Rot(rx, ry, rz) * shape.impl
+    return Shape(_require_solid(moved), features=shape.feature_report())
+
+
+def section_geometry(
+    shape: Shape, origin: tuple[float, float, float], normal: tuple[float, float, float]
+):
+    """Cut the solid with a plane and describe the section in that plane."""
+    from aicad.models import SectionReport
+
+    sketch, plane = _sketch_at(shape.impl, origin, normal)
+    faces = list(sketch.faces())
+    loops: list[SectionLoop] = []
+    points: list[tuple[float, float]] = []
+    for face in faces:
+        outer = _loop_points(face.outer_wire(), plane)
+        if len(outer) >= 3:
+            loops.append(SectionLoop("outer", outer))
+            points.extend(outer)
+        for wire in face.inner_wires():
+            hole = _loop_points(wire, plane)
+            if len(hole) >= 3:
+                loops.append(SectionLoop("hole", hole))
+                points.extend(hole)
+    if points:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        width = max(xs) - min(xs)
+        height = max(ys) - min(ys)
+    else:
+        width = 0.0
+        height = 0.0
+    thickness = _sketch_thickness(sketch) if faces else None
+    area = float(sketch.area) if faces else 0.0
+    if not faces:
+        note = "The plane misses the part. Area is 0."
+    else:
+        note = (
+            "Area is the material cut by this plane. min_thickness_mm is the narrowest "
+            "width between roughly parallel edges in the section, or null if no parallel "
+            "pair was measured. Loop coordinates are millimeters in the plane: x along "
+            "plane_x_mm and y along plane_y_mm."
+        )
+    return SectionReport(
+        area_mm2=round_mm(area),
+        face_count=len(faces),
+        plane_origin_mm=_vec(plane.origin),
+        plane_normal=_vec(plane.z_dir),
+        plane_x_mm=_vec(plane.x_dir),
+        plane_y_mm=_vec(plane.y_dir),
+        width_mm=round_mm(width),
+        height_mm=round_mm(height),
+        min_thickness_mm=None if thickness is None else round_mm(thickness),
+        loops=loops,
+        view=None,
+        note=note,
+    )
+
+
+def _section_wall_thickness(shape: Shape) -> tuple[float | None, int]:
+    impl = shape.impl
+    bbox = impl.bounding_box()
+    axes = (
+        ((1.0, 0.0, 0.0), float(bbox.min.X), float(bbox.max.X)),
+        ((0.0, 1.0, 0.0), float(bbox.min.Y), float(bbox.max.Y)),
+        ((0.0, 0.0, 1.0), float(bbox.min.Z), float(bbox.max.Z)),
+    )
+    best: float | None = None
+    count = 0
+    for normal, low, high in axes:
+        span = high - low
+        if span < 1e-6:
+            continue
+        for fraction in _SECTION_FRACTIONS:
+            offset = low + fraction * span
+            origin = (normal[0] * offset, normal[1] * offset, normal[2] * offset)
+            try:
+                sketch, _plane = _sketch_at(impl, origin, normal)
+            except Exception:
+                continue
+            count += 1
+            if not sketch.faces():
+                continue
+            thickness = _sketch_thickness(sketch)
+            if thickness is not None and (best is None or thickness < best):
+                best = thickness
+    return best, count
+
+
+def _sketch_at(impl, origin, normal):
+    from build123d import Plane, Vector
+    from build123d import section as bd_section
+
+    direction = Vector(*normal)
+    if direction.length < 1e-9:
+        raise GeometryError("Section normal must be non-zero.")
+    plane = Plane(origin=Vector(*origin), z_dir=direction)
+    return bd_section(impl, section_by=plane, height=0.0), plane
+
+
+def _loop_points(wire, plane, limit: int = 160) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    for edge in wire.edges():
+        try:
+            samples = edge.positions(deflection=0.4)
+        except Exception:
+            samples = [edge.position_at(0.0), edge.position_at(1.0)]
+        for sample in samples:
+            local = plane.to_local_coords(sample)
+            point = (round(float(local.X), 4), round(float(local.Y), 4))
+            if not points or point != points[-1]:
+                points.append(point)
+    if len(points) > limit:
+        stride = max(1, len(points) // limit)
+        points = points[::stride]
+    return points
+
+
+def _sketch_thickness(sketch, samples: int = 3) -> float | None:
+    """Minimum width between roughly parallel edges of a planar section."""
+    from build123d import Axis, Vector
+
+    best: float | None = None
+    epsilon = 0.05
+    for face in sketch.faces():
+        try:
+            face_normal = face.normal_at().normalized()
+        except Exception:
+            continue
+        edges = list(face.edges())
+        for edge in edges:
+            if edge.length < 0.3:
+                continue
+            for index in range(samples):
+                parameter = (index + 0.5) / samples
+                try:
+                    point = edge.position_at(parameter)
+                    tangent = edge.tangent_at(parameter)
+                except Exception:
+                    continue
+                if tangent.length < 1e-9:
+                    continue
+                tangent = tangent.normalized()
+                side = face_normal.cross(tangent)
+                if side.length < 1e-9:
+                    continue
+                side = side.normalized()
+                inward = None
+                if face.is_inside(point + side * epsilon) and not face.is_inside(point - side * epsilon):
+                    inward = side
+                elif face.is_inside(point - side * epsilon) and not face.is_inside(point + side * epsilon):
+                    inward = -side
+                if inward is None:
+                    continue
+                origin = point + inward * epsilon
+                axis = Axis(origin, inward)
+                nearest: float | None = None
+                for other in edges:
+                    try:
+                        other_tangent = other.tangent_at(0.5)
+                    except Exception:
+                        continue
+                    if other_tangent.length < 1e-9:
+                        continue
+                    if abs(other_tangent.normalized().dot(tangent)) < 0.7:
+                        continue
+                    hits = other.intersect(axis)
+                    if not hits:
+                        continue
+                    for hit in hits:
+                        distance = (Vector(hit) - origin).dot(inward)
+                        if distance > 0.02 and (nearest is None or distance < nearest):
+                            nearest = distance
+                if nearest is None:
+                    continue
+                thickness = nearest + epsilon
+                if best is None or thickness < best:
+                    best = thickness
+    return best
+
+
+def _mm(value: float | None) -> str:
+    return "none" if value is None else f"{value:.4f}"
 

@@ -394,6 +394,66 @@ def _unit(vector: np.ndarray) -> np.ndarray:
     return vector / np.linalg.norm(vector)
 
 
+def render_section(
+    outers: list[list[tuple[float, float]]],
+    holes: list[list[tuple[float, float]]],
+    out_path: Path,
+    title: str,
+    subtitle: str,
+    x_label: str,
+    y_label: str,
+) -> RenderedView:
+    """Draw a planar cross-section. Coordinates are millimeters in the cutting plane."""
+    canvas = Image.new("RGB", (_VIEW_W, _VIEW_H + _HEADER + _FOOTER), _PAPER)
+    draw = ImageDraw.Draw(canvas)
+    font = _font(16)
+    small = _font(13)
+    draw.rectangle((0, 0, _VIEW_W, _HEADER), fill=(232, 228, 218))
+    draw.text((16, 12), title, fill=_INK, font=font)
+    draw.text((16, 34), subtitle, fill=_MUTED, font=small)
+
+    points = [point for loop in outers + holes for point in loop]
+    if points:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        span_x = max(max_x - min_x, 1e-6)
+        span_y = max(max_y - min_y, 1e-6)
+        margin = 36
+        usable_w = _VIEW_W - 2 * margin
+        usable_h = _VIEW_H - 2 * margin
+        scale = min(usable_w / span_x, usable_h / span_y)
+        origin_x = margin + (usable_w - span_x * scale) / 2
+        origin_y = _HEADER + margin + (usable_h - span_y * scale) / 2
+
+        def to_px(point: tuple[float, float]) -> tuple[float, float]:
+            return (
+                origin_x + (point[0] - min_x) * scale,
+                origin_y + (max_y - point[1]) * scale,
+            )
+
+        fill = (176, 148, 112)
+        outline = (42, 38, 32)
+        for loop in outers:
+            draw.polygon([to_px(point) for point in loop], fill=fill, outline=outline)
+        for loop in holes:
+            draw.polygon([to_px(point) for point in loop], fill=_PAPER, outline=outline)
+        for loop in outers + holes:
+            pixels = [to_px(point) for point in loop]
+            if len(pixels) >= 2:
+                draw.line(pixels + [pixels[0]], fill=outline, width=2)
+        _draw_scale_bar(draw, scale * _SSAA, small)
+    else:
+        draw.text((24, _HEADER + 24), "The plane misses the part.", fill=_INK, font=font)
+
+    draw.text((16, _HEADER + _VIEW_H + 8), f"plane x  {x_label}", fill=_MUTED, font=small)
+    draw.text((220, _HEADER + _VIEW_H + 8), f"plane y  {y_label}", fill=_MUTED, font=small)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path, format="PNG")
+    return RenderedView(name="section", path=str(out_path), width=canvas.width, height=canvas.height)
+
+
 def _font(size: int) -> ImageFont.ImageFont:
     for path in (
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",

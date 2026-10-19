@@ -2,18 +2,22 @@
 
 from aicad.document import Document
 from aicad.errors import AICADError, DocumentError, GeometryError, PartNotFound, ScriptError
+from aicad.kernel import FeatureLog
 from aicad.models import (
     BoundingBox,
     ClearanceReport,
+    FeatureReport,
+    FeatureStep,
     InspectReport,
     Measurement,
     PartInfo,
     RenderedView,
+    SectionReport,
     Vec3,
     WallReport,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AICADError",
@@ -21,6 +25,9 @@ __all__ = [
     "ClearanceReport",
     "Document",
     "DocumentError",
+    "FeatureLog",
+    "FeatureReport",
+    "FeatureStep",
     "GeometryError",
     "InspectReport",
     "Measurement",
@@ -28,6 +35,7 @@ __all__ = [
     "PartNotFound",
     "RenderedView",
     "ScriptError",
+    "SectionReport",
     "Vec3",
     "WallReport",
     "__version__",

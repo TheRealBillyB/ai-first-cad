@@ -3,7 +3,7 @@
     "name": "motor_mount",
     "source": "script",
     "units": "mm",
-    "volume_mm3": 20617.09007,
+    "volume_mm3": 20426.094423,
     "valid": true,
     "watertight": true,
     "bounding_box": {
@@ -29,15 +29,15 @@
     "valid": true,
     "watertight": true,
     "solid_count": 1,
-    "face_count": 35,
-    "edge_count": 93,
-    "vertex_count": 61,
-    "volume_mm3": 20617.09007,
-    "area_mm2": 10257.170353,
+    "face_count": 38,
+    "edge_count": 105,
+    "vertex_count": 70,
+    "volume_mm3": 20426.094423,
+    "area_mm2": 10343.660954,
     "center_of_mass_mm": {
       "x": -0.0,
-      "y": -0.186253,
-      "z": 3.972809
+      "y": -0.282366,
+      "z": 3.940448
     },
     "bounding_box": {
       "min": {
@@ -61,15 +61,221 @@
     "estimated_min_mm": 2.4,
     "threshold_mm": 1.2,
     "passed": true,
-    "sample_count": 512,
+    "sample_count": 564,
     "samples_per_edge": 4,
     "thinnest_point_mm": {
       "x": 5.656854,
       "y": -5.656854,
       "z": 1.5
     },
-    "method": "inward rays from a grid on each face",
-    "note": "Estimated by shooting rays inward from a grid on each face and measuring the distance to the next roughly parallel face. A thin spot between samples is not seen, so a passing result is evidence, not proof. Features thinner than about 0.15 mm are below the sample step and may be missed."
+    "method": "ray",
+    "ray_estimate_mm": 2.4,
+    "section_estimate_mm": 2.6,
+    "section_count": 9,
+    "note": "Minimum came from ray. Ray samples: 2.4000 mm. Planar sections (9 slices): 2.6000 mm. Rays shoot inward from a grid on each face and keep hits on a roughly parallel face. Sections slice the part at 25%, 50%, and 75% of its extent along X, Y, and Z and measure the width between roughly parallel edges in that plane. The smaller number is the estimate. Either method can miss a thin spot it does not cross."
+  },
+  "features": {
+    "tracked": true,
+    "steps": [
+      {
+        "name": "base",
+        "op": "add",
+        "tool_volume_mm3": 14976.0,
+        "result_volume_mm3": 14976.0,
+        "new_material_mm3": 14976.0,
+        "buried_mm3": 0.0,
+        "buried_fraction": 0.0,
+        "removed_mm3": null,
+        "removed_fraction": null,
+        "redundant": false,
+        "note": "100% of 'base' became new material (14976.0 of 14976.0 mm^3)."
+      },
+      {
+        "name": "boss",
+        "op": "add",
+        "tool_volume_mm3": 8143.008158,
+        "result_volume_mm3": 23119.008158,
+        "new_material_mm3": 8143.008158,
+        "buried_mm3": 0.0,
+        "buried_fraction": 0.0,
+        "removed_mm3": null,
+        "removed_fraction": null,
+        "redundant": false,
+        "note": "100% of 'boss' became new material (8143.0 of 8143.0 mm^3)."
+      },
+      {
+        "name": "gusset_0",
+        "op": "add",
+        "tool_volume_mm3": 208.924444,
+        "result_volume_mm3": 23278.338339,
+        "new_material_mm3": 159.330181,
+        "buried_mm3": 49.594263,
+        "buried_fraction": 0.2374,
+        "removed_mm3": null,
+        "removed_fraction": null,
+        "redundant": false,
+        "note": "76% of 'gusset_0' became new material (159.3 of 208.9 mm^3)."
+      },
+      {
+        "name": "gusset_180",
+        "op": "add",
+        "tool_volume_mm3": 208.924444,
+        "result_volume_mm3": 23437.66852,
+        "new_material_mm3": 159.330181,
+        "buried_mm3": 49.594263,
+        "buried_fraction": 0.2374,
+        "removed_mm3": null,
+        "removed_fraction": null,
+        "redundant": false,
+        "note": "76% of 'gusset_180' became new material (159.3 of 208.9 mm^3)."
+      },
+      {
+        "name": "gusset_270",
+        "op": "add",
+        "tool_volume_mm3": 142.069474,
+        "result_volume_mm3": 23530.143731,
+        "new_material_mm3": 92.47521,
+        "buried_mm3": 49.594263,
+        "buried_fraction": 0.3491,
+        "removed_mm3": null,
+        "removed_fraction": null,
+        "redundant": false,
+        "note": "65% of 'gusset_270' became new material (92.5 of 142.1 mm^3)."
+      },
+      {
+        "name": "bore",
+        "op": "cut",
+        "tool_volume_mm3": 2814.867018,
+        "result_volume_mm3": 21117.400573,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 2412.743158,
+        "removed_fraction": 0.8571,
+        "redundant": false,
+        "note": "'bore' removed 2412.7 mm^3 (86% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      },
+      {
+        "name": "motor_bolt_0",
+        "op": "cut",
+        "tool_volume_mm3": 112.594681,
+        "result_volume_mm3": 21020.890846,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 96.509726,
+        "removed_fraction": 0.8571,
+        "redundant": false,
+        "note": "'motor_bolt_0' removed 96.5 mm^3 (86% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      },
+      {
+        "name": "motor_bolt_1",
+        "op": "cut",
+        "tool_volume_mm3": 112.594681,
+        "result_volume_mm3": 20924.38112,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 96.509726,
+        "removed_fraction": 0.8571,
+        "redundant": false,
+        "note": "'motor_bolt_1' removed 96.5 mm^3 (86% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      },
+      {
+        "name": "motor_bolt_2",
+        "op": "cut",
+        "tool_volume_mm3": 112.594681,
+        "result_volume_mm3": 20827.871394,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 96.509726,
+        "removed_fraction": 0.8571,
+        "redundant": false,
+        "note": "'motor_bolt_2' removed 96.5 mm^3 (86% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      },
+      {
+        "name": "motor_bolt_3",
+        "op": "cut",
+        "tool_volume_mm3": 112.594681,
+        "result_volume_mm3": 20731.361667,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 96.509726,
+        "removed_fraction": 0.8571,
+        "redundant": false,
+        "note": "'motor_bolt_3' removed 96.5 mm^3 (86% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      },
+      {
+        "name": "frame_hole_0",
+        "op": "cut",
+        "tool_volume_mm3": 54.475217,
+        "result_volume_mm3": 20695.044856,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 36.316811,
+        "removed_fraction": 0.6667,
+        "redundant": false,
+        "note": "'frame_hole_0' removed 36.3 mm^3 (67% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      },
+      {
+        "name": "frame_hole_1",
+        "op": "cut",
+        "tool_volume_mm3": 54.475217,
+        "result_volume_mm3": 20658.728045,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 36.316811,
+        "removed_fraction": 0.6667,
+        "redundant": false,
+        "note": "'frame_hole_1' removed 36.3 mm^3 (67% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      },
+      {
+        "name": "frame_hole_2",
+        "op": "cut",
+        "tool_volume_mm3": 54.475217,
+        "result_volume_mm3": 20622.411234,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 36.316811,
+        "removed_fraction": 0.6667,
+        "redundant": false,
+        "note": "'frame_hole_2' removed 36.3 mm^3 (67% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      },
+      {
+        "name": "frame_hole_3",
+        "op": "cut",
+        "tool_volume_mm3": 54.475217,
+        "result_volume_mm3": 20586.094423,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 36.316811,
+        "removed_fraction": 0.6667,
+        "redundant": false,
+        "note": "'frame_hole_3' removed 36.3 mm^3 (67% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      },
+      {
+        "name": "cable_slot",
+        "op": "cut",
+        "tool_volume_mm3": 480.0,
+        "result_volume_mm3": 20426.094423,
+        "new_material_mm3": null,
+        "buried_mm3": null,
+        "buried_fraction": null,
+        "removed_mm3": 160.0,
+        "removed_fraction": 0.3333,
+        "redundant": false,
+        "note": "'cable_slot' removed 160.0 mm^3 (33% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+      }
+    ],
+    "redundant_features": [],
+    "warning": null,
+    "note": "An added feature is flagged when at least half of its volume was already inside the part. A cut is flagged when it removes nothing. A through hole whose cutter sticks out of the part is not flagged; read removed_fraction."
   },
   "views": [
     {
@@ -130,15 +336,31 @@
     "closest_point_a_mm": {
       "x": 8.0,
       "y": -0.0,
-      "z": 12.0
+      "z": 0.0
     },
     "closest_point_b_mm": {
       "x": 7.8,
       "y": -0.0,
-      "z": 12.0
+      "z": 0.0
     },
     "threshold_mm": 0.1,
     "passed": true,
     "note": "Interference is the volume of the boolean intersection, in mm^3. When the solids do not intersect, min_distance_mm is the gap between their surfaces. Penetration depth is not computed."
+  },
+  "section_y0": {
+    "area_mm2": 506.311111,
+    "min_thickness_mm": 4.0,
+    "width_mm": 12.0,
+    "height_mm": 72.0,
+    "path": "examples/renders/motor_mount_section_y0.png",
+    "note": "Area is the material cut by this plane. min_thickness_mm is the narrowest width between roughly parallel edges in the section, or null if no parallel pair was measured. Loop coordinates are millimeters in the plane: x along plane_x_mm and y along plane_y_mm."
+  },
+  "feature_comparison": {
+    "path": "examples/feature_report.json",
+    "before_redundant": [
+      "rib_neg_x",
+      "rib_pos_x"
+    ],
+    "after_redundant": []
   }
 }

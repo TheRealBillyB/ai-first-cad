@@ -11,30 +11,27 @@ import json
 import re
 import shutil
 import threading
+from dataclasses import replace
 from pathlib import Path
 
-from aicad import kernel
+from aicad import kernel, library
 from aicad.errors import DocumentError, GeometryError, PartNotFound
 from aicad.models import (
     ClearanceReport,
+    FeatureReport,
     InspectReport,
     Measurement,
     PartInfo,
     RenderedView,
+    SectionReport,
+    Vec3,
     WallReport,
 )
-from aicad.render import render_views
+from aicad.render import render_section, render_views
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _INTERFERENCE_VOLUME = 1e-4
 
-_WALL_METHOD = "inward rays from a grid on each face"
-_WALL_NOTE = (
-    "Estimated by shooting rays inward from a grid on each face and measuring "
-    "the distance to the next roughly parallel face. A thin spot between samples "
-    "is not seen, so a passing result is evidence, not proof. Features thinner "
-    "than about 0.15 mm are below the sample step and may be missed."
-)
 _CLEARANCE_NOTE = (
     "Interference is the volume of the boolean intersection, in mm^3. "
     "When the solids do not intersect, min_distance_mm is the gap between their "
@@ -51,13 +48,19 @@ class _Part:
         script: str | None = None,
         ops: list[dict] | None = None,
         step_file: str | None = None,
+        base: kernel.Shape | None = None,
+        placement: dict | None = None,
+        library_spec: dict | None = None,
     ):
         self.name = name
         self.source = source
         self.shape = shape
+        self.base = base if base is not None else shape
         self.script = script
         self.ops = ops
         self.step_file = step_file
+        self.placement = placement or _identity_placement()
+        self.library_spec = library_spec
 
 
 class Document:
@@ -96,7 +99,7 @@ class Document:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
             note = f"# Imported STEP, copied to {relative}\n"
-            self._parts[name] = _Part(name, "step", shape, script=note, step_file=relative)
+            self._parts[name] = _Part(name, "step", shape, script=note, step_file=relative, base=shape)
             self._save()
             return self._info(self._parts[name])
 
@@ -106,10 +109,13 @@ class Document:
             part = self._get(name)
             shape = kernel.make_from_script(script)
             part.shape = shape
+            part.base = shape
             part.source = "script"
             part.script = script
             part.ops = None
             part.step_file = None
+            part.library_spec = None
+            part.placement = _identity_placement()
             self._save()
             return self._info(part)
 
@@ -118,10 +124,13 @@ class Document:
             part = self._get(name)
             shape = kernel.make_from_ops(ops)
             part.shape = shape
+            part.base = shape
             part.source = "ops"
             part.ops = list(ops)
             part.script = None
             part.step_file = None
+            part.library_spec = None
+            part.placement = _identity_placement()
             self._save()
             return self._info(part)
 
@@ -150,6 +159,8 @@ class Document:
                 "script": part.script,
                 "ops": part.ops,
                 "step_file": part.step_file,
+                "library": part.library_spec,
+                "placement": part.placement,
             }
 
     def measure(self, name: str) -> Measurement:
@@ -166,21 +177,22 @@ class Document:
             samples = _validate_samples(samples)
             if min_wall_mm is not None and min_wall_mm < 0:
                 raise GeometryError("min_wall_mm cannot be negative.")
-            minimum, count, used, point = kernel.estimate_wall_thickness(
-                self._get(name).shape, samples
-            )
+            estimate = kernel.estimate_wall_thickness(self._get(name).shape, samples)
             passed = None
             if min_wall_mm is not None:
-                passed = minimum is not None and minimum + 1e-9 >= min_wall_mm
+                passed = estimate.minimum_mm is not None and estimate.minimum_mm + 1e-9 >= min_wall_mm
             return WallReport(
-                estimated_min_mm=minimum,
+                estimated_min_mm=estimate.minimum_mm,
                 threshold_mm=min_wall_mm,
                 passed=passed,
-                sample_count=count,
-                samples_per_edge=used,
-                thinnest_point_mm=point,
-                method=_WALL_METHOD,
-                note=_WALL_NOTE,
+                sample_count=estimate.sample_count,
+                samples_per_edge=estimate.samples_per_edge,
+                thinnest_point_mm=estimate.thinnest_point_mm,
+                method=estimate.method,
+                note=estimate.note,
+                ray_estimate_mm=estimate.ray_mm,
+                section_estimate_mm=estimate.section_mm,
+                section_count=estimate.section_count,
             )
 
     def check_clearance(
@@ -262,8 +274,89 @@ class Document:
                 part=self._info(part),
                 measurement=measurement,
                 wall=wall,
+                features=part.shape.feature_report(),
                 views=views,
             )
+
+    def feature_report(self, name: str) -> FeatureReport:
+        with self._lock:
+            return self._get(name).shape.feature_report()
+
+    def section(self, name: str, plane: dict) -> SectionReport:
+        """Cut the part with a plane and render the cross-section.
+
+        ``plane`` is ``{"axis": "x"|"y"|"z", "offset": mm}`` or
+        ``{"origin": [x, y, z], "normal": [x, y, z]}``.
+        """
+        with self._lock:
+            part = self._get(name)
+            origin, normal = _parse_plane(plane)
+            report = kernel.section_geometry(part.shape, origin, normal)
+            path = self.workspace / "renders" / name / f"{name}_section_{_plane_slug(plane)}.png"
+            thickness = "n/a" if report.min_thickness_mm is None else f"{report.min_thickness_mm:g} mm"
+            view = render_section(
+                [loop.points_mm for loop in report.loops if loop.kind == "outer"],
+                [loop.points_mm for loop in report.loops if loop.kind == "hole"],
+                path,
+                f"{name}  section",
+                f"area {report.area_mm2:g} mm^2    section thickness {thickness}",
+                _axis_label(report.plane_x_mm),
+                _axis_label(report.plane_y_mm),
+            )
+            return replace(report, view=view)
+
+    def search_parts(self, query: str = "") -> dict[str, object]:
+        return library.search(query)
+
+    def insert_standard_part(
+        self,
+        name: str,
+        kind: str,
+        size: str,
+        length: float | None = None,
+        position: list | tuple | None = None,
+        rotation_deg: list | tuple | None = None,
+        fastener_type: str | None = None,
+    ) -> PartInfo:
+        """Insert a catalog fastener, nut, washer, or bearing, then place it."""
+        with self._lock:
+            self._require_new_name(name)
+            placed_at = _vec3(position or [0, 0, 0], "position")
+            rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
+            base = kernel.adopt(library.build(kind, size, length, fastener_type))
+            shape = kernel.place(base, placed_at, rotation)
+            spec = {
+                "kind": kind,
+                "size": size,
+                "length": length,
+                "fastener_type": fastener_type,
+            }
+            self._parts[name] = _Part(
+                name,
+                "library",
+                shape,
+                base=base,
+                placement={"position": list(placed_at), "rotation_deg": list(rotation)},
+                library_spec=spec,
+            )
+            self._save()
+            return self._info(self._parts[name])
+
+    def place_part(
+        self,
+        name: str,
+        position: list | tuple,
+        rotation_deg: list | tuple | None = None,
+    ) -> PartInfo:
+        """Move a part. The move replaces any previous placement; it does not stack."""
+        with self._lock:
+            part = self._get(name)
+            placed_at = _vec3(position, "position")
+            rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
+            part.placement = {"position": list(placed_at), "rotation_deg": list(rotation)}
+            part.shape = kernel.place(part.base, placed_at, rotation)
+            self._save()
+            return self._info(part)
 
     def _info(self, part: _Part) -> PartInfo:
         measured = kernel.measure(part.shape)
@@ -305,6 +398,8 @@ class Document:
                     "script": part.script,
                     "ops": part.ops,
                     "step_file": part.step_file,
+                    "library": part.library_spec,
+                    "placement": part.placement,
                 }
                 for part in self._parts.values()
             ],
@@ -325,13 +420,29 @@ class Document:
         for record in payload.get("parts", []):
             name = record["name"]
             source = record.get("source", "script")
+            placement = record.get("placement") or _identity_placement()
             try:
                 if source == "ops":
-                    shape = kernel.make_from_ops(record["ops"])
+                    base = kernel.make_from_ops(record["ops"])
                 elif source == "step":
-                    shape = kernel.import_step_file(self.workspace / record["step_file"])
+                    base = kernel.import_step_file(self.workspace / record["step_file"])
+                elif source == "library":
+                    spec = record["library"]
+                    base = kernel.adopt(
+                        library.build(
+                            spec["kind"],
+                            spec["size"],
+                            spec.get("length"),
+                            spec.get("fastener_type"),
+                        )
+                    )
                 else:
-                    shape = kernel.make_from_script(record.get("script") or "")
+                    base = kernel.make_from_script(record.get("script") or "")
+                shape = kernel.place(
+                    base,
+                    tuple(placement["position"]),
+                    tuple(placement["rotation_deg"]),
+                )
             except Exception as exc:
                 raise DocumentError(
                     f"Could not rebuild part {name!r} from {path}: {exc}"
@@ -343,6 +454,9 @@ class Document:
                 script=record.get("script"),
                 ops=record.get("ops"),
                 step_file=record.get("step_file"),
+                base=base,
+                placement=placement,
+                library_spec=record.get("library"),
             )
 
 
@@ -352,6 +466,61 @@ def _validate_name(name: str) -> None:
             "Part names must start with a letter or underscore and contain only "
             "letters, numbers, underscores, and hyphens (64 characters max)."
         )
+
+
+def _identity_placement() -> dict[str, list[float]]:
+    return {"position": [0.0, 0.0, 0.0], "rotation_deg": [0.0, 0.0, 0.0]}
+
+
+def _vec3(value, label: str) -> tuple[float, float, float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise GeometryError(f"{label} must be a list of three numbers.")
+    try:
+        return (float(value[0]), float(value[1]), float(value[2]))
+    except (TypeError, ValueError) as exc:
+        raise GeometryError(f"{label} must be a list of three numbers.") from exc
+
+
+def _parse_plane(plane: dict) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    if not isinstance(plane, dict):
+        raise GeometryError(
+            "plane must be {axis, offset} or {origin, normal}."
+        )
+    if "axis" in plane:
+        axis = str(plane["axis"]).lower()
+        if axis not in ("x", "y", "z"):
+            raise GeometryError("plane axis must be 'x', 'y', or 'z'.")
+        try:
+            offset = float(plane.get("offset", 0.0))
+        except (TypeError, ValueError) as exc:
+            raise GeometryError("plane offset must be a number.") from exc
+        index = {"x": 0, "y": 1, "z": 2}[axis]
+        origin = [0.0, 0.0, 0.0]
+        normal = [0.0, 0.0, 0.0]
+        origin[index] = offset
+        normal[index] = 1.0
+        return (origin[0], origin[1], origin[2]), (normal[0], normal[1], normal[2])
+    if "origin" not in plane or "normal" not in plane:
+        raise GeometryError("plane needs axis and offset, or origin and normal.")
+    return _vec3(plane["origin"], "plane origin"), _vec3(plane["normal"], "plane normal")
+
+
+def _plane_slug(plane: dict) -> str:
+    if isinstance(plane, dict) and "axis" in plane:
+        offset = plane.get("offset", 0)
+        text = f"{plane['axis']}_{offset:g}"
+    else:
+        text = "custom"
+    return text.replace("-", "m").replace(".", "p")
+
+
+def _axis_label(vector: Vec3) -> str:
+    parts = []
+    for name, value in (("X", vector.x), ("Y", vector.y), ("Z", vector.z)):
+        if abs(value) >= 0.05:
+            sign = "+" if value > 0 else "-"
+            parts.append(f"{sign}{name}" if abs(abs(value) - 1) < 0.05 else f"{value:g} {name}")
+    return " ".join(parts) if parts else "0"
 
 
 def _validate_samples(samples: int) -> int:

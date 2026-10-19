@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aicad"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-first CAD for hard-body parts. Model a solid, then see and check it."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -12,6 +12,7 @@ requires-python = ">=3.11"
 authors = [{ name = "TheRealBillyB" }]
 keywords = ["cad", "build123d", "mcp", "3d-printing", "mechanical"]
 dependencies = [
+    "bd_warehouse>=0.4",
     "build123d>=0.13",
     "mcp>=1.2",
     "numpy>=1.26",

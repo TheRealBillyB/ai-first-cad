@@ -72,6 +72,21 @@ class Measurement:
 
 
 @dataclass(frozen=True)
+class WallEstimate:
+    """Kernel result before a threshold is applied."""
+
+    minimum_mm: float | None
+    ray_mm: float | None
+    section_mm: float | None
+    method: str
+    sample_count: int
+    samples_per_edge: int
+    section_count: int
+    thinnest_point_mm: Vec3 | None
+    note: str
+
+
+@dataclass(frozen=True)
 class WallReport:
     estimated_min_mm: float | None
     threshold_mm: float | None
@@ -81,6 +96,9 @@ class WallReport:
     thinnest_point_mm: Vec3 | None
     method: str
     note: str
+    ray_estimate_mm: float | None = None
+    section_estimate_mm: float | None = None
+    section_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -93,6 +111,9 @@ class WallReport:
             if self.thinnest_point_mm is None
             else self.thinnest_point_mm.to_dict(),
             "method": self.method,
+            "ray_estimate_mm": self.ray_estimate_mm,
+            "section_estimate_mm": self.section_estimate_mm,
+            "section_count": self.section_count,
             "note": self.note,
         }
 
@@ -163,10 +184,121 @@ class PartInfo:
 
 
 @dataclass(frozen=True)
+class FeatureStep:
+    """How one boolean step changed the solid."""
+
+    name: str
+    op: str
+    tool_volume_mm3: float
+    result_volume_mm3: float
+    new_material_mm3: float | None
+    buried_mm3: float | None
+    buried_fraction: float | None
+    removed_mm3: float | None
+    removed_fraction: float | None
+    redundant: bool
+    note: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "op": self.op,
+            "tool_volume_mm3": self.tool_volume_mm3,
+            "result_volume_mm3": self.result_volume_mm3,
+            "new_material_mm3": self.new_material_mm3,
+            "buried_mm3": self.buried_mm3,
+            "buried_fraction": self.buried_fraction,
+            "removed_mm3": self.removed_mm3,
+            "removed_fraction": self.removed_fraction,
+            "redundant": self.redundant,
+            "note": self.note,
+        }
+
+
+@dataclass(frozen=True)
+class FeatureReport:
+    tracked: bool
+    steps: list[FeatureStep]
+    redundant_features: list[str]
+    warning: str | None
+    note: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "tracked": self.tracked,
+            "steps": [step.to_dict() for step in self.steps],
+            "redundant_features": list(self.redundant_features),
+            "warning": self.warning,
+            "note": self.note,
+        }
+
+
+def untracked_features() -> FeatureReport:
+    return FeatureReport(
+        tracked=False,
+        steps=[],
+        redundant_features=[],
+        warning=None,
+        note=(
+            "This part was not built with feature.add or feature.cut, so contribution "
+            "was not tracked. Plain build123d scripts still work. Call feature.add(name, solid) "
+            "and feature.cut(name, tool) to record each boolean step."
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class SectionLoop:
+    """One closed curve of a cross-section, in the cutting plane's 2D coordinates."""
+
+    kind: str
+    points_mm: list[tuple[float, float]]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "points_mm": [{"x": x, "y": y} for x, y in self.points_mm],
+        }
+
+
+@dataclass(frozen=True)
+class SectionReport:
+    area_mm2: float
+    face_count: int
+    plane_origin_mm: Vec3
+    plane_normal: Vec3
+    plane_x_mm: Vec3
+    plane_y_mm: Vec3
+    width_mm: float
+    height_mm: float
+    min_thickness_mm: float | None
+    loops: list[SectionLoop]
+    view: RenderedView | None
+    note: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "area_mm2": self.area_mm2,
+            "face_count": self.face_count,
+            "plane_origin_mm": self.plane_origin_mm.to_dict(),
+            "plane_normal": self.plane_normal.to_dict(),
+            "plane_x_mm": self.plane_x_mm.to_dict(),
+            "plane_y_mm": self.plane_y_mm.to_dict(),
+            "width_mm": self.width_mm,
+            "height_mm": self.height_mm,
+            "min_thickness_mm": self.min_thickness_mm,
+            "loops": [loop.to_dict() for loop in self.loops],
+            "view": None if self.view is None else self.view.to_dict(),
+            "note": self.note,
+        }
+
+
+@dataclass(frozen=True)
 class InspectReport:
     part: PartInfo
     measurement: Measurement
     wall: WallReport
+    features: FeatureReport
     views: list[RenderedView]
 
     def to_dict(self) -> dict[str, object]:
@@ -174,5 +306,6 @@ class InspectReport:
             "part": self.part.to_dict(),
             "measurement": self.measurement.to_dict(),
             "wall": self.wall.to_dict(),
+            "features": self.features.to_dict(),
             "views": [view.to_dict() for view in self.views],
         }

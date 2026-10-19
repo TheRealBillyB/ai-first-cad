@@ -31,11 +31,17 @@ at the contact sheet before changing the part again. A script that returns
 without an error can still be the wrong shape.
 
 Scripts are build123d Python. The finished solid must be assigned to `part`.
-build123d is already imported. Structured operations are a list of add/cut
-boxes and cylinders when a script is more than the part needs.
+build123d is already imported. `feature.add(name, solid)` and
+`feature.cut(name, tool)` are optional: they record how much of each step
+actually added or removed material. Plain scripts that ignore `feature` still work.
 
-Wall thickness is a sampled estimate. Clearance between two parts reports
-either an interference volume or the gap between surfaces.
+Structured operations are a list of add/cut boxes and cylinders when a script
+is more than the part needs. Each operation can include a `name`.
+
+Wall thickness is the smaller of a ray estimate and a section estimate, and
+the result says which one was used. `section_part` shows a cross-section.
+`search_parts` and `insert_standard_part` bring in real fasteners and bearings.
+Clearance between two parts reports interference volume or the gap.
 """.strip()
 
 _GUIDE = """
@@ -58,6 +64,36 @@ part -= Pos(0, 0, 6) * Cylinder(4, 20)
 `part = a + b` fuses solids. `part -= tool` cuts. A sketch or a curve is not a
 part. If an edit fails, the previous solid is kept.
 
+## Feature steps
+
+`feature` is already defined. Use it when you want a contribution report.
+An added feature is flagged when at least half of it was already inside the part.
+
+```python
+bracket = feature.add("base", Pos(0, 0, 2) * Box(60, 40, 4))
+bracket = feature.add("boss", Pos(0, 0, 6) * Cylinder(12, 8))
+bracket = feature.cut("bore", Pos(0, 0, 6) * Cylinder(4, 20))
+part = bracket
+```
+
+`part = feature.result` is the same solid. A script that never calls `feature`
+is not tracked, and that is fine.
+
+## Sections
+
+`section_part` cuts on an axis at an offset, or on an arbitrary plane. The
+image is the cut, and `area_mm2` is the material in that plane. Use it to see
+a rib that is buried inside a boss.
+
+## Standard parts
+
+`search_parts` finds socket-head screws, hex nuts, plain washers, and
+deep-groove ball bearings (including the 608 bearing as size `M8-22-7`).
+`insert_standard_part` places one. A screw's shank points down: the underside
+of the head is on local z=0. Nuts, washers, and bearings sit on z=0.
+`import_step` plus `place_part` brings in an arbitrary STEP file, such as a
+McMaster-Carr download. Then `check_clearance` against your part.
+
 ## Operations
 
 ```json
@@ -69,13 +105,16 @@ part. If an edit fails, the previous solid is kept.
 ```
 
 Boxes are axis-aligned. Cylinders take an optional `axis` (default `[0, 0, 1]`).
-`center` defaults to the origin. The first operation must be `add`.
+`center` defaults to the origin. The first operation must be `add`. Optional
+`name` is used in the feature report. Operations are always tracked.
 
 ## What to check
 
 - `valid` and `watertight` should both be true for a printable solid.
 - `volume_mm3` and `bounding_box` catch a part that exploded or collapsed.
-- `check_wall_thickness` compares a sampled minimum to a print rule such as 1.2 mm.
+- `features` on `inspect_part` flags an add that was mostly already inside the part.
+- `check_wall_thickness` reports a ray estimate and a section estimate, and which one won.
+- `section_part` shows internal geometry that the outside views hide.
 - `check_clearance` on two parts reports interference, or the gap if they are apart.
 - `inspect_part` renders front, back, left, right, top, bottom, and isometric views.
 """.strip()
@@ -91,7 +130,7 @@ def build_server(workspace: str | Path) -> MCPServer:
     mcp = MCPServer(
         "aicad",
         instructions=_INSTRUCTIONS,
-        version="0.1.0",
+        version="0.2.0",
     )
 
     def guard(fn):
@@ -241,6 +280,103 @@ def build_server(workspace: str | Path) -> MCPServer:
         return guard(_export)
 
     @mcp.tool()
+    def feature_report(name: str) -> dict:
+        """How much of each boolean step became new material, or was already inside the part.
+
+        An added feature is flagged when at least half of its volume was buried.
+        A cut is flagged when it removes nothing. Parts built without feature.add
+        or feature.cut return tracked=false. Operation lists are always tracked.
+        """
+        return guard(lambda: document.feature_report(name).to_dict())
+
+    @mcp.tool()
+    def section_part(
+        name: str,
+        axis: str | None = None,
+        offset: float = 0.0,
+        origin: list[float] | None = None,
+        normal: list[float] | None = None,
+    ) -> list[str | Image]:
+        """Render a planar cross-section and return its area and outline.
+
+        Pass axis ('x', 'y', or 'z') and offset in millimeters, or origin and
+        normal as [x, y, z]. The image is the cut. area_mm2 is the material in
+        that plane. Use this to see whether a rib is buried inside a boss.
+        """
+        def _section() -> list[str | Image]:
+            if origin is not None or normal is not None:
+                if origin is None or normal is None:
+                    raise ToolError("An arbitrary section needs both origin and normal.")
+                plane = {"origin": origin, "normal": normal}
+            elif axis is not None:
+                plane = {"axis": axis, "offset": offset}
+            else:
+                raise ToolError("Pass axis and offset, or origin and normal.")
+            report = document.section(name, plane)
+            view = report.view
+            payload = report.to_dict()
+            if view is None:
+                return [json.dumps(payload, indent=2)]
+            return [json.dumps(payload, indent=2), Image(path=view.path)]
+
+        return guard(_section)
+
+    @mcp.tool()
+    def search_parts(query: str = "") -> dict:
+        """Search standard screws, nuts, washers, and ball bearings.
+
+        An empty query lists the kinds. Try 'M3', 'screw', 'nut', 'washer',
+        'bearing', or '608'. Screws need a length when inserted. A screw's shank
+        points down, with the underside of the head on local z=0.
+        """
+        return guard(lambda: document.search_parts(query))
+
+    @mcp.tool()
+    def insert_standard_part(
+        name: str,
+        kind: str,
+        size: str,
+        length: float | None = None,
+        position: list[float] | None = None,
+        rotation_deg: list[float] | None = None,
+        fastener_type: str | None = None,
+    ) -> dict:
+        """Insert a catalog part and place it.
+
+        kind is socket_head_cap_screw, hex_nut, plain_washer, or ball_bearing.
+        size is a designation such as M3-0.5, M3, or M8-22-7 (608 is accepted).
+        length is required for screws and is the shank length under the head, in mm.
+        position and rotation_deg are [x, y, z]. Rotation is degrees about X, Y, Z
+        and is applied before the translation. Then check_clearance against your part.
+        """
+        return guard(
+            lambda: {
+                "part": document.insert_standard_part(
+                    name, kind, size, length, position, rotation_deg, fastener_type
+                ).to_dict(),
+                "next": "Call check_clearance against the mating part, and inspect_part to see it.",
+            }
+        )
+
+    @mcp.tool()
+    def place_part(
+        name: str,
+        position: list[float],
+        rotation_deg: list[float] | None = None,
+    ) -> dict:
+        """Move a part, including an imported STEP solid. Replaces any previous placement.
+
+        position is [x, y, z] in millimeters. rotation_deg is degrees about X, Y, and Z,
+        applied before the translation.
+        """
+        return guard(
+            lambda: {
+                "part": document.place_part(name, position, rotation_deg).to_dict(),
+                "next": "Call check_clearance if this part should fit another part.",
+            }
+        )
+
+    @mcp.tool()
     def import_step(name: str, path: str) -> dict:
         """Copy a STEP file into the document as a named part.
 
@@ -273,11 +409,12 @@ def _with_images(payload: dict, views) -> list[str | Image]:
 
 _VIEW_RANK = {
     "contact": 0,
-    "iso": 1,
-    "front": 2,
-    "right": 3,
-    "top": 4,
-    "back": 5,
-    "left": 6,
-    "bottom": 7,
+    "section": 1,
+    "iso": 2,
+    "front": 3,
+    "right": 4,
+    "top": 5,
+    "back": 6,
+    "left": 7,
+    "bottom": 8,
 }

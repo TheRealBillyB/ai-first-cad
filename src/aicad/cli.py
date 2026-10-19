@@ -80,6 +80,38 @@ def main(argv: list[str] | None = None) -> int:
     imported.add_argument("name")
     imported.add_argument("file", type=Path)
 
+    features = commands.add_parser(
+        "features", parents=[common], help="Report how much each boolean step contributed."
+    )
+    features.add_argument("name")
+
+    section = commands.add_parser("section", parents=[common], help="Render a planar cross-section.")
+    section.add_argument("name")
+    section.add_argument("--axis", choices=("x", "y", "z"))
+    section.add_argument("--offset", type=float, default=0.0)
+    section.add_argument("--origin", help="x,y,z of a point on an arbitrary plane")
+    section.add_argument("--normal", help="x,y,z normal of an arbitrary plane")
+
+    catalog = commands.add_parser(
+        "catalog", parents=[common], help="Search standard fasteners, nuts, washers, and bearings."
+    )
+    catalog.add_argument("query", nargs="?", default="")
+
+    insert = commands.add_parser("insert", parents=[common], help="Insert a catalog part and place it.")
+    insert.add_argument("name")
+    insert.add_argument("--kind", required=True)
+    insert.add_argument("--size", required=True)
+    insert.add_argument("--length", type=float)
+    insert.add_argument("--at", default="0,0,0", help="x,y,z position in mm")
+    insert.add_argument("--rot", default="0,0,0", help="rotation degrees about X,Y,Z")
+
+    place = commands.add_parser(
+        "place", parents=[common], help="Move a part. Replaces any previous placement."
+    )
+    place.add_argument("name")
+    place.add_argument("--at", required=True, help="x,y,z position in mm")
+    place.add_argument("--rot", default="0,0,0", help="rotation degrees about X,Y,Z")
+
     args = parser.parse_args(argv)
     try:
         return _dispatch(args)
@@ -131,6 +163,26 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "import-step":
         info = document.import_step(args.name, args.file)
         return _emit(info.to_dict())
+    if args.command == "features":
+        return _emit(document.feature_report(args.name).to_dict())
+    if args.command == "section":
+        report = document.section(args.name, _plane_from_args(args))
+        return _emit(report.to_dict())
+    if args.command == "catalog":
+        return _emit(document.search_parts(args.query))
+    if args.command == "insert":
+        info = document.insert_standard_part(
+            args.name,
+            args.kind,
+            args.size,
+            length=args.length,
+            position=_triple(args.at, "--at"),
+            rotation_deg=_triple(args.rot, "--rot"),
+        )
+        return _emit(info.to_dict())
+    if args.command == "place":
+        info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
+        return _emit(info.to_dict())
     raise AICADError(f"Unknown command {args.command!r}.")
 
 
@@ -146,6 +198,26 @@ def _create_or_update_ops(document, name: str, ops: list[dict]):
     if name in names:
         return document.update_part_ops(name, ops)
     return document.create_part_from_ops(name, ops)
+
+
+def _triple(text: str, label: str) -> list[float]:
+    parts = text.split(",")
+    if len(parts) != 3:
+        raise AICADError(f"{label} must be three comma-separated numbers, such as 0,0,4.")
+    try:
+        return [float(part) for part in parts]
+    except ValueError as exc:
+        raise AICADError(f"{label} must be three comma-separated numbers.") from exc
+
+
+def _plane_from_args(args) -> dict:
+    if args.origin or args.normal:
+        if not args.origin or not args.normal:
+            raise AICADError("An arbitrary section needs both --origin and --normal.")
+        return {"origin": _triple(args.origin, "--origin"), "normal": _triple(args.normal, "--normal")}
+    if not args.axis:
+        raise AICADError("A section needs --axis (and optional --offset), or --origin and --normal.")
+    return {"axis": args.axis, "offset": args.offset}
 
 
 def _emit(payload: dict) -> int:

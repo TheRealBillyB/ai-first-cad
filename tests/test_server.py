@@ -65,6 +65,10 @@ async def _mcp_example(tmp_path: Path) -> None:
                 "check_clearance",
                 "export_part",
                 "check_wall_thickness",
+                "section_part",
+                "feature_report",
+                "search_parts",
+                "insert_standard_part",
             } <= names
 
             created = await session.call_tool(
@@ -89,6 +93,23 @@ async def _mcp_example(tmp_path: Path) -> None:
             assert report["measurement"]["watertight"] is True
             assert report["wall"]["passed"] is True
             assert report["wall"]["estimated_min_mm"] > 1.2
+            assert report["wall"]["method"] in {"ray", "section", "ray+section"}
+            assert report["features"]["tracked"] is True
+            assert report["features"]["redundant_features"] == []
+
+            section = await session.call_tool(
+                "section_part",
+                {"name": "motor_mount", "axis": "y", "offset": 0},
+            )
+            assert section.is_error is False, _text(section)
+            section_report = json.loads(_text(section))
+            assert section_report["area_mm2"] > 100
+            assert any(block.type == "image" for block in section.content)
+
+            catalog = await session.call_tool("search_parts", {"query": "608"})
+            assert catalog.is_error is False, _text(catalog)
+            matches = json.loads(_text(catalog))["matches"]
+            assert any(item["size"] == "M8-22-7" for item in matches)
             image_blocks = [block for block in inspected.content if block.type == "image"]
             assert len(image_blocks) >= 8
             assert image_blocks[0].mime_type == "image/png"
