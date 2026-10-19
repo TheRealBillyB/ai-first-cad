@@ -1,12 +1,13 @@
 """A document is the session an assistant works in.
 
 Parts live in memory and are rebuilt from their source (a script, a list of
-operations, or a copied STEP file) when the workspace is opened again.
-Geometry is millimeters.
+operations, a solved sketch, or a copied STEP file) when the workspace is
+opened again. Geometry is millimeters.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import shutil
@@ -24,13 +25,17 @@ from aicad.models import (
     PartInfo,
     RenderedView,
     SectionReport,
+    SketchReport,
     Vec3,
     WallReport,
 )
-from aicad.render import render_section, render_views
+from aicad.render import render_section, render_sketch, render_views
+from aicad.sketch import Sketch, set_spec_dimension, solve_sketch
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _INTERFERENCE_VOLUME = 1e-4
+
+_UNBUILDABLE = {"over_constrained", "didnt_converge", "too_many_unknowns"}
 
 _CLEARANCE_NOTE = (
     "Interference is the volume of the boolean intersection, in mm^3. "
@@ -51,6 +56,8 @@ class _Part:
         base: kernel.Shape | None = None,
         placement: dict | None = None,
         library_spec: dict | None = None,
+        sketch_name: str | None = None,
+        sketch_steps: list[dict] | None = None,
     ):
         self.name = name
         self.source = source
@@ -61,6 +68,14 @@ class _Part:
         self.step_file = step_file
         self.placement = placement or _identity_placement()
         self.library_spec = library_spec
+        self.sketch_name = sketch_name
+        self.sketch_steps = sketch_steps
+
+
+class _Sketch:
+    def __init__(self, name: str, spec: dict):
+        self.name = name
+        self.spec = spec
 
 
 class Document:
@@ -70,6 +85,7 @@ class Document:
         self.workspace = Path(workspace).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
         self._parts: dict[str, _Part] = {}
+        self._sketches: dict[str, _Sketch] = {}
         self._lock = threading.RLock()
         self._load()
 
@@ -115,6 +131,8 @@ class Document:
             part.ops = None
             part.step_file = None
             part.library_spec = None
+            part.sketch_name = None
+            part.sketch_steps = None
             part.placement = _identity_placement()
             self._save()
             return self._info(part)
@@ -130,6 +148,8 @@ class Document:
             part.script = None
             part.step_file = None
             part.library_spec = None
+            part.sketch_name = None
+            part.sketch_steps = None
             part.placement = _identity_placement()
             self._save()
             return self._info(part)
@@ -161,6 +181,8 @@ class Document:
                 "step_file": part.step_file,
                 "library": part.library_spec,
                 "placement": part.placement,
+                "sketch": part.sketch_name,
+                "steps": part.sketch_steps,
             }
 
     def measure(self, name: str) -> Measurement:
@@ -276,6 +298,7 @@ class Document:
                 wall=wall,
                 features=part.shape.feature_report(),
                 views=views,
+                sketch=self._sketch_summary(part),
             )
 
     def feature_report(self, name: str) -> FeatureReport:
@@ -304,6 +327,96 @@ class Document:
                 _axis_label(report.plane_y_mm),
             )
             return replace(report, view=view)
+
+    def create_sketch(self, name: str, spec: Sketch | dict) -> SketchReport:
+        """Store a sketch spec and solve it. A conflict is reported, not rejected."""
+        with self._lock:
+            self._require_new_sketch(name)
+            stored = _copy_spec(spec)
+            report = self._solve_and_render(name, stored)
+            self._sketches[name] = _Sketch(name, stored)
+            self._save()
+            return report
+
+    def update_sketch(self, name: str, spec: Sketch | dict) -> SketchReport:
+        """Replace a sketch. Dependent parts rebuild, or the previous spec stays."""
+        with self._lock:
+            sketch = self._get_sketch(name)
+            stored = _copy_spec(spec)
+            report = solve_sketch(stored, name)
+            self._commit_sketch(sketch, stored, report)
+            return self._solve_and_render(name, stored)
+
+    def get_sketch(self, name: str) -> SketchReport:
+        with self._lock:
+            sketch = self._get_sketch(name)
+            return self._solve_and_render(name, sketch.spec)
+
+    def set_dimension(self, name: str, dimension: str, value: float) -> SketchReport:
+        """Change one named driving dimension, re-solve, and rebuild dependent parts.
+
+        A value that conflicts, or a rebuild that fails, leaves the previous
+        dimension and the previous solids in place.
+        """
+        with self._lock:
+            sketch = self._get_sketch(name)
+            stored = set_spec_dimension(sketch.spec, dimension, value)
+            report = solve_sketch(stored, name)
+            if report.status in _UNBUILDABLE:
+                raise GeometryError(report.note)
+            self._commit_sketch(sketch, stored, report)
+            return self._solve_and_render(name, stored)
+
+    def create_part_from_sketch(self, name: str, sketch_name: str, steps: list[dict]) -> PartInfo:
+        """Build a solid from a solved sketch. Over-constrained sketches are refused."""
+        with self._lock:
+            self._require_new_name(name)
+            sketch = self._get_sketch(sketch_name)
+            report = solve_sketch(sketch.spec, sketch.name)
+            if report.status in _UNBUILDABLE:
+                raise GeometryError(report.note)
+            if not isinstance(steps, list) or not steps:
+                raise GeometryError("steps must be a non-empty list of extrude, cut, revolve, cut_box, or gusset.")
+            stored_steps = copy.deepcopy(steps)
+            shape = kernel.solid_from_sketch(report.geometry, stored_steps)
+            self._parts[name] = _Part(
+                name,
+                "sketch",
+                shape,
+                sketch_name=sketch_name,
+                sketch_steps=stored_steps,
+            )
+            self._save()
+            return self._info(self._parts[name])
+
+    def update_part_from_sketch(self, name: str, sketch_name: str, steps: list[dict]) -> PartInfo:
+        """Replace a part with a solid built from a sketch. A failed build keeps the old solid."""
+        with self._lock:
+            part = self._get(name)
+            sketch = self._get_sketch(sketch_name)
+            report = solve_sketch(sketch.spec, sketch.name)
+            if report.status in _UNBUILDABLE:
+                raise GeometryError(report.note)
+            if not isinstance(steps, list) or not steps:
+                raise GeometryError("steps must be a non-empty list of extrude, cut, revolve, cut_box, or gusset.")
+            stored_steps = copy.deepcopy(steps)
+            shape = kernel.solid_from_sketch(report.geometry, stored_steps)
+            part.shape = shape
+            part.base = shape
+            part.source = "sketch"
+            part.script = None
+            part.ops = None
+            part.step_file = None
+            part.library_spec = None
+            part.sketch_name = sketch_name
+            part.sketch_steps = stored_steps
+            part.placement = _identity_placement()
+            self._save()
+            return self._info(part)
+
+    def list_sketches(self) -> list[str]:
+        with self._lock:
+            return list(self._sketches)
 
     def search_parts(self, query: str = "") -> dict[str, object]:
         return library.search(query)
@@ -385,12 +498,87 @@ class Document:
                 f"Part {name!r} already exists. Update it, or delete it before creating it again."
             )
 
+    def _commit_sketch(self, sketch: _Sketch, stored: dict, report: SketchReport) -> None:
+        """Store a solved spec and rebuild parts that use it. Failure keeps the old spec."""
+        dependents = [part for part in self._parts.values() if part.sketch_name == sketch.name]
+        if report.status in _UNBUILDABLE:
+            if dependents:
+                raise GeometryError(report.note)
+            sketch.spec = stored
+            self._save()
+            return
+        rebuilt: list[tuple[_Part, kernel.Shape, kernel.Shape]] = []
+        for part in dependents:
+            base = kernel.solid_from_sketch(report.geometry, part.sketch_steps or [])
+            placed = kernel.place(
+                base,
+                tuple(part.placement["position"]),
+                tuple(part.placement["rotation_deg"]),
+            )
+            rebuilt.append((part, base, placed))
+        sketch.spec = stored
+        for part, base, placed in rebuilt:
+            part.base = base
+            part.shape = placed
+        self._save()
+
+    def _solve_and_render(self, name: str, spec: dict) -> SketchReport:
+        report = solve_sketch(spec, name)
+        path = self.workspace / "renders" / "sketches" / f"{name}.png"
+        view = render_sketch(report, path)
+        return replace(report, view=view)
+
+    def _sketch_summary(self, part: _Part) -> dict[str, object] | None:
+        if part.source != "sketch" or not part.sketch_name:
+            return None
+        sketch = self._sketches.get(part.sketch_name)
+        if sketch is None:
+            return {
+                "name": part.sketch_name,
+                "status": "missing",
+                "note": f"Sketch {part.sketch_name!r} is not in this document.",
+            }
+        report = solve_sketch(sketch.spec, sketch.name)
+        summary: dict[str, object] = {
+            "name": sketch.name,
+            "status": report.status,
+            "dof": report.dof,
+            "free": report.free,
+            "conflicts": report.conflicts,
+            "dimensions": report.dimensions,
+            "note": report.note,
+        }
+        if report.status == "under_constrained":
+            summary["warning"] = (
+                "This solid was built from an under-constrained sketch. "
+                "Free entities can still move. The shape is the current solution, not a locked one."
+            )
+        return summary
+
+    def _get_sketch(self, name: str) -> _Sketch:
+        _validate_name(name)
+        sketch = self._sketches.get(name)
+        if sketch is None:
+            known = ", ".join(self._sketches) or "(none)"
+            raise GeometryError(f"No sketch named {name!r}. Sketches in this document: {known}.")
+        return sketch
+
+    def _require_new_sketch(self, name: str) -> None:
+        _validate_name(name)
+        if name in self._sketches:
+            raise GeometryError(
+                f"Sketch {name!r} already exists. Update it, or use set_dimension to change a named dimension."
+            )
+
     def _session_path(self) -> Path:
         return self.workspace / "session.json"
 
     def _save(self) -> None:
         payload = {
             "units": "mm",
+            "sketches": [
+                {"name": sketch.name, "spec": sketch.spec} for sketch in self._sketches.values()
+            ],
             "parts": [
                 {
                     "name": part.name,
@@ -400,6 +588,8 @@ class Document:
                     "step_file": part.step_file,
                     "library": part.library_spec,
                     "placement": part.placement,
+                    "sketch": part.sketch_name,
+                    "steps": part.sketch_steps,
                 }
                 for part in self._parts.values()
             ],
@@ -417,6 +607,8 @@ class Document:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise DocumentError(f"Could not read {path}: {exc}") from exc
+        for record in payload.get("sketches", []):
+            self._sketches[record["name"]] = _Sketch(record["name"], record["spec"])
         for record in payload.get("parts", []):
             name = record["name"]
             source = record.get("source", "script")
@@ -436,6 +628,17 @@ class Document:
                             spec.get("fastener_type"),
                         )
                     )
+                elif source == "sketch":
+                    sketch_name = record.get("sketch")
+                    sketch = self._sketches.get(sketch_name)
+                    if sketch is None:
+                        raise DocumentError(
+                            f"Part {name!r} needs sketch {sketch_name!r}, which is not in {path}."
+                        )
+                    solved = solve_sketch(sketch.spec, sketch.name)
+                    if solved.status in _UNBUILDABLE:
+                        raise DocumentError(f"Could not rebuild part {name!r}: {solved.note}")
+                    base = kernel.solid_from_sketch(solved.geometry, record.get("steps") or [])
                 else:
                     base = kernel.make_from_script(record.get("script") or "")
                 shape = kernel.place(
@@ -457,6 +660,8 @@ class Document:
                 base=base,
                 placement=placement,
                 library_spec=record.get("library"),
+                sketch_name=record.get("sketch") if source == "sketch" else None,
+                sketch_steps=record.get("steps") if source == "sketch" else None,
             )
 
 
@@ -466,6 +671,14 @@ def _validate_name(name: str) -> None:
             "Part names must start with a letter or underscore and contain only "
             "letters, numbers, underscores, and hyphens (64 characters max)."
         )
+
+
+def _copy_spec(spec: Sketch | dict) -> dict:
+    if isinstance(spec, Sketch):
+        spec = spec.to_spec()
+    if not isinstance(spec, dict):
+        raise GeometryError("A sketch spec is an object with entities and constraints.")
+    return copy.deepcopy(spec)
 
 
 def _identity_placement() -> dict[str, list[float]]:

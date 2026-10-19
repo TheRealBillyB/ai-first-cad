@@ -1,25 +1,21 @@
-"""A motor-mount bracket braced by radial gussets.
+"""A motor-mount bracket whose base and bolt pattern are a constrained sketch.
 
-This file is a build123d script: `aicad run` executes it and stores `part`.
-Running it directly also renders the standard views and a section, and writes
-the before/after feature report.
+The plate outline, the bore, the boss, four motor screws on a bolt circle, and
+four frame holes are SolveSpace constraints, not coordinates typed by hand.
+Gussets and the cable slot stay 3D recipes. Changing a named dimension and
+re-solving rebuilds a part made from this sketch.
+
+This file is still a build123d script: `aicad run` executes it and stores `part`.
+Running it directly also renders the views, the section, and the solved sketch.
 
     python examples/motor_mount.py
 
-The plate is 72 x 52 x 4 mm with a boss, a 16 mm bore, four motor screws, four
-frame holes, and a cable slot on the +Y edge. Three gussets brace the boss to
-the plate, along +X, -X, and -Y, clear of the bolt circle and of the cable
-slot. They replace the earlier ribs, which were mostly buried inside the boss
-(see `motor_mount_buried_ribs.py`).
-
-`feature.add` and `feature.cut` are optional. A script that never calls them
-still works; this one uses them so the contribution of each step is recorded.
 Dimensions are millimeters.
 """
 
-import math
-
-from build123d import Box, Cylinder, Plane, Polygon, Pos, Rot, extrude
+from aicad.errors import GeometryError
+from aicad.kernel import solid_from_sketch
+from aicad.sketch import Sketch, solve_sketch
 
 try:
     feature
@@ -28,65 +24,123 @@ except NameError:
 
     feature = FeatureLog()
 
-base_l, base_w, base_t = 72.0, 52.0, 4.0
-boss_d, boss_h = 36.0, 8.0
-bore_d = 16.0
-bolt_circle = 24.0
-motor_bolt_d = 3.2
-frame_hole_d = 3.4
-frame_inset = 6.0
 
+def bracket_sketch() -> Sketch:
+    """72 x 52 plate, Ø16 bore, Ø36 boss, four M3-ish holes on a Ø24 circle.
 
-def radial_gusset(angle_deg: float, outer_r: float):
-    """A radial fin from the boss out onto the plate, with a blunt toe.
-
-    A pure triangle that dies inside the cylindrical boss leaves a non-manifold
-    seam, and a knife-edge toe is not a wall. The gusset is a short block that
-    bites through the boss wall, fused to a trapezoid that stays outside the
-    cylinder and ends 2.4 mm tall. The +Y side is left open for the cable slot.
+    The rectangle is drawn counterclockwise, so an inset is a negative
+    point-to-line distance (positive would be outside the edge). The bolt
+    holes are a pattern: evenly spaced on a circle, starting at 45 degrees.
     """
-    thick = 2.6
-    bite = Pos(17.2, 0, base_t + boss_h / 2) * Box(3.2, thick, boss_h)
-    fin = extrude(
-        Plane.XZ
-        * Polygon(
-            (17.4, base_t),
-            (17.4, base_t + boss_h),
-            (outer_r, base_t + 2.4),
-            (outer_r, base_t),
-        ),
-        amount=thick / 2,
-        both=True,
+    return (
+        Sketch()
+        .point("origin", 0, 0)
+        .fix("origin")
+        .point("sw", -36, -26)
+        .point("se", 36, -26)
+        .point("ne", 36, 26)
+        .point("nw", -36, 26)
+        .line("bottom", "sw", "se")
+        .line("right", "se", "ne")
+        .line("top", "ne", "nw")
+        .line("left", "nw", "sw")
+        .line("diag", "sw", "ne", construction=True)
+        .horizontal("bottom")
+        .horizontal("top")
+        .vertical("left")
+        .vertical("right")
+        .distance("sw", "se", 72, name="base_length")
+        .distance("sw", "nw", 52, name="base_width")
+        .midpoint("origin", "diag")
+        .circle("bore", "origin", 8)
+        .diameter("bore", 16, name="bore_diameter", tolerance=0.05)
+        .circle("boss", "origin", 18)
+        .diameter("boss", 36, name="boss_diameter")
+        .point("b0", 8, 8)
+        .point("b1", -8, 8)
+        .point("b2", -8, -8)
+        .point("b3", 8, -8)
+        .pattern_on_circle("origin", ["b0", "b1", "b2", "b3"], 24, start_angle=45, name="bolt_circle")
+        .circle("c0", "b0", 1.6)
+        .circle("c1", "b1", 1.6)
+        .circle("c2", "b2", 1.6)
+        .circle("c3", "b3", 1.6)
+        .diameter("c0", 3.2, name="bolt_hole")
+        .equal("c0", "c1")
+        .equal("c0", "c2")
+        .equal("c0", "c3")
+        .point("hsw", -30, -20)
+        .point("hse", 30, -20)
+        .point("hne", 30, 20)
+        .point("hnw", -30, 20)
+        .distance("hsw", "left", -6, name="frame_inset")
+        .distance("hsw", "bottom", -6, name="frame_inset")
+        .distance("hse", "right", -6, name="frame_inset")
+        .distance("hse", "bottom", -6, name="frame_inset")
+        .distance("hne", "right", -6, name="frame_inset")
+        .distance("hne", "top", -6, name="frame_inset")
+        .distance("hnw", "left", -6, name="frame_inset")
+        .distance("hnw", "top", -6, name="frame_inset")
+        .circle("f0", "hsw", 1.7)
+        .circle("f1", "hse", 1.7)
+        .circle("f2", "hne", 1.7)
+        .circle("f3", "hnw", 1.7)
+        .diameter("f0", 3.4, name="frame_hole")
+        .equal("f0", "f1")
+        .equal("f0", "f2")
+        .equal("f0", "f3")
     )
-    return Rot(0, 0, angle_deg) * (bite + fin)
 
 
-bracket = feature.add("base", Pos(0, 0, base_t / 2) * Box(base_l, base_w, base_t))
-bracket = feature.add("boss", Pos(0, 0, base_t + boss_h / 2) * Cylinder(boss_d / 2, boss_h))
-# No gusset on +Y: that is where the cable slot leaves the plate.
-for angle, outer_r in ((0, 30.0), (180, 30.0), (270, 25.0)):
-    bracket = feature.add(f"gusset_{angle}", radial_gusset(angle, outer_r))
+def bracket_steps() -> list[dict]:
+    """Extrude the solved profile. Gussets and the cable slot are 3D recipes."""
+    plate_t = 4.0
+    boss_h = 8.0
+    through = plate_t + boss_h + 2.0
+    return [
+        {"op": "extrude", "points": ["sw", "se", "ne", "nw"], "height": plate_t, "name": "base"},
+        {"op": "extrude", "circle": "boss", "height": boss_h, "z": plate_t, "name": "boss"},
+        {
+            "op": "gusset",
+            "angle": 0,
+            "outer": 30,
+            "plate_thickness": plate_t,
+            "boss_height": boss_h,
+            "name": "gusset_0",
+        },
+        {
+            "op": "gusset",
+            "angle": 180,
+            "outer": 30,
+            "plate_thickness": plate_t,
+            "boss_height": boss_h,
+            "name": "gusset_180",
+        },
+        {
+            "op": "gusset",
+            "angle": 270,
+            "outer": 25,
+            "plate_thickness": plate_t,
+            "boss_height": boss_h,
+            "name": "gusset_270",
+        },
+        {"op": "cut", "circle": "bore", "height": through, "name": "bore"},
+        {"op": "cut", "circle": "c0", "height": through, "name": "motor_bolt_0"},
+        {"op": "cut", "circle": "c1", "height": through, "name": "motor_bolt_1"},
+        {"op": "cut", "circle": "c2", "height": through, "name": "motor_bolt_2"},
+        {"op": "cut", "circle": "c3", "height": through, "name": "motor_bolt_3"},
+        {"op": "cut", "circle": "f0", "height": plate_t + 2, "z": -1, "name": "frame_hole_0"},
+        {"op": "cut", "circle": "f1", "height": plate_t + 2, "z": -1, "name": "frame_hole_1"},
+        {"op": "cut", "circle": "f2", "height": plate_t + 2, "z": -1, "name": "frame_hole_2"},
+        {"op": "cut", "circle": "f3", "height": plate_t + 2, "z": -1, "name": "frame_hole_3"},
+        {"op": "cut_box", "center": [0, 26, plate_t / 2], "size": [10, 8, plate_t + 2], "name": "cable_slot"},
+    ]
 
-span = base_t + boss_h + 2
-bracket = feature.cut("bore", Pos(0, 0, span / 2) * Cylinder(bore_d / 2, span))
 
-for i in range(4):
-    angle = math.radians(45 + 90 * i)
-    x = (bolt_circle / 2) * math.cos(angle)
-    y = (bolt_circle / 2) * math.sin(angle)
-    bracket = feature.cut(
-        f"motor_bolt_{i}", Pos(x, y, span / 2) * Cylinder(motor_bolt_d / 2, span)
-    )
-
-for index, (sx, sy) in enumerate(((-1, -1), (-1, 1), (1, -1), (1, 1))):
-    x = sx * (base_l / 2 - frame_inset)
-    y = sy * (base_w / 2 - frame_inset)
-    bracket = feature.cut(
-        f"frame_hole_{index}", Pos(x, y, base_t / 2) * Cylinder(frame_hole_d / 2, base_t + 2)
-    )
-
-bracket = feature.cut("cable_slot", Pos(0, base_w / 2, base_t / 2) * Box(10, 8, base_t + 2))
-part = bracket
+sketch_report = solve_sketch(bracket_sketch(), name="bracket_base")
+if sketch_report.status != "fully_constrained":
+    raise GeometryError(sketch_report.note)
+part = solid_from_sketch(sketch_report.geometry, bracket_steps(), feature=feature).impl
 
 
 if __name__ == "__main__":
@@ -96,18 +150,27 @@ if __name__ == "__main__":
     from pathlib import Path
 
     from aicad import Document
+    from aicad.render import render_sketch
 
     root = Path(__file__).resolve().parent
     renders = root / "renders"
     renders.mkdir(parents=True, exist_ok=True)
     shaft = (root / "shaft.py").read_text(encoding="utf-8")
     buried = (root / "motor_mount_buried_ribs.py").read_text(encoding="utf-8")
+    sketch_view = render_sketch(sketch_report, renders / "motor_mount_sketch.png")
 
     with tempfile.TemporaryDirectory() as workspace:
         document = Document(workspace)
         document.create_part_from_script("motor_mount", Path(__file__).read_text(encoding="utf-8"))
         document.create_part_from_script("buried_ribs", buried)
         document.create_part_from_script("shaft", shaft)
+        document.create_sketch("bracket_base", bracket_sketch())
+        document.create_part_from_sketch("parametric", "bracket_base", bracket_steps())
+        length_72 = document.measure("parametric").volume_mm3
+        document.set_dimension("bracket_base", "base_length", 90)
+        length_90 = document.measure("parametric").volume_mm3
+        document.set_dimension("bracket_base", "bolt_circle", 28)
+        moved = document.get_sketch("bracket_base")
         report = document.inspect("motor_mount", min_wall_mm=1.2)
         clearance = document.check_clearance("motor_mount", "shaft", min_clearance_mm=0.1)
         section = document.section("motor_mount", {"axis": "y", "offset": 0})
@@ -128,6 +191,22 @@ if __name__ == "__main__":
     payload["views"] = [
         {**view, "path": _view(renders / Path(view["path"]).name)} for view in payload["views"]
     ]
+    payload["sketch"] = {
+        "status": sketch_report.status,
+        "dof": sketch_report.dof,
+        "dimensions": sketch_report.dimensions,
+        "path": _view(renders / "motor_mount_sketch.png"),
+        "note": sketch_report.note,
+    }
+    payload["parametric"] = {
+        "volume_at_base_length_72": length_72,
+        "volume_at_base_length_90": length_90,
+        "bolt_circle_28_points": {
+            name: point
+            for name, point in moved.geometry["points"].items()
+            if name.startswith("b")
+        },
+    }
     payload["clearance_to_shaft"] = clearance.to_dict()
     payload["section_y0"] = {
         "area_mm2": section.area_mm2,
@@ -145,13 +224,15 @@ if __name__ == "__main__":
             "old_ribs_through_boss_y0": _view(renders / "buried_ribs_section_y0.png"),
             "old_ribs_at_the_exposed_end_y13": _view(renders / "buried_ribs_section_y13.png"),
         },
+        "sketch": _view(renders / "motor_mount_sketch.png"),
         "reading": (
             "rib_neg_x and rib_pos_x are flagged: more than half of each rib was already "
             "inside the boss. The gussets are not flagged: most of each gusset is new "
             "material bracing the boss to the plate. The y=0 section of the old ribs cuts "
             "through the boss and does not show a rib, because the rib is buried there. "
             "The y=13 section shows the rib end sticking out. The new y=0 section shows "
-            "the gussets along X."
+            "the gussets along X. The plate, bore, boss, and bolt pattern come from a "
+            "fully constrained sketch."
         ),
     }
     (root / "feature_report.json").write_text(
@@ -186,5 +267,10 @@ if __name__ == "__main__":
             if step["name"].startswith("rib")
         },
         "section_area_mm2": section.area_mm2,
+        "sketch_status": sketch_report.status,
+        "sketch_dof": sketch_report.dof,
+        "volume_length_72": length_72,
+        "volume_length_90": length_90,
+        "sketch_png": str(sketch_view.path),
     }
     print(json.dumps(summary, indent=2))

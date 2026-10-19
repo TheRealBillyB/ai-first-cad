@@ -58,7 +58,7 @@
     }
   },
   "wall": {
-    "estimated_min_mm": 2.4,
+    "estimated_min_mm": 2.399999,
     "threshold_mm": 1.2,
     "passed": true,
     "sample_count": 564,
@@ -69,7 +69,7 @@
       "z": 1.5
     },
     "method": "ray",
-    "ray_estimate_mm": 2.4,
+    "ray_estimate_mm": 2.399999,
     "section_estimate_mm": 2.6,
     "section_count": 9,
     "note": "Minimum came from ray. Ray samples: 2.4000 mm. Planar sections (9 slices): 2.6000 mm. Rays shoot inward from a grid on each face and keep hits on a roughly parallel face. Sections slice the part at 25%, 50%, and 75% of its extent along X, Y, and Z and measure the width between roughly parallel edges in that plane. The smaller number is the estimate. Either method can miss a thin spot it does not cross."
@@ -327,6 +327,109 @@
       "height": 1028
     }
   ],
+  "sketch": {
+    "status": "fully_constrained",
+    "dof": 0,
+    "dimensions": [
+      {
+        "name": "base_length",
+        "kind": "distance",
+        "value": 72.0,
+        "tolerance": null,
+        "text": "72",
+        "entity": "sw",
+        "a": "sw",
+        "b": "se"
+      },
+      {
+        "name": "base_width",
+        "kind": "distance",
+        "value": 52.0,
+        "tolerance": null,
+        "text": "52",
+        "entity": "sw",
+        "a": "sw",
+        "b": "nw"
+      },
+      {
+        "name": "bore_diameter",
+        "kind": "diameter",
+        "value": 16.0,
+        "tolerance": {
+          "plus": 0.05,
+          "minus": 0.05
+        },
+        "text": "\u00d816 \u00b10.05",
+        "entity": "bore"
+      },
+      {
+        "name": "boss_diameter",
+        "kind": "diameter",
+        "value": 36.0,
+        "tolerance": null,
+        "text": "\u00d836",
+        "entity": "boss"
+      },
+      {
+        "name": "bolt_circle",
+        "kind": "pattern_on_circle",
+        "value": 24.0,
+        "tolerance": null,
+        "text": "\u00d824",
+        "entity": "__bolt_circle_circle"
+      },
+      {
+        "name": "bolt_hole",
+        "kind": "diameter",
+        "value": 3.2,
+        "tolerance": null,
+        "text": "\u00d83.2",
+        "entity": "c0"
+      },
+      {
+        "name": "frame_inset",
+        "kind": "distance",
+        "value": -6.0,
+        "tolerance": null,
+        "text": "-6",
+        "entity": "hsw",
+        "a": "hsw",
+        "b": "left"
+      },
+      {
+        "name": "frame_hole",
+        "kind": "diameter",
+        "value": 3.4,
+        "tolerance": null,
+        "text": "\u00d83.4",
+        "entity": "f0"
+      }
+    ],
+    "path": "examples/renders/motor_mount_sketch.png",
+    "note": "Fully constrained. Every driving dimension is locked and no point can still move."
+  },
+  "parametric": {
+    "volume_at_base_length_72": 20426.094423,
+    "volume_at_base_length_90": 24170.094423,
+    "bolt_circle_28_points": {
+      "b0": {
+        "x": 9.899495,
+        "y": 9.899495
+      },
+      "b1": {
+        "x": -9.899495,
+        "y": 9.899495
+      },
+      "b2": {
+        "x": -9.899495,
+        "y": -9.899495
+      },
+      "b3": {
+        "x": 9.899495,
+        "y": -9.899495
+      }
+    }
+  },
   "clearance_to_shaft": {
     "part_a": "motor_mount",
     "part_b": "shaft",

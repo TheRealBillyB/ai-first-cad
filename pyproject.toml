@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aicad"
-version = "0.2.0"
+version = "0.3.0"
 description = "AI-first CAD for hard-body parts. Model a solid, then see and check it."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -17,6 +17,7 @@ dependencies = [
     "mcp>=1.2",
     "numpy>=1.26",
     "pillow>=10",
+    "python-solvespace>=3.0",
 ]
 
 [project.optional-dependencies]

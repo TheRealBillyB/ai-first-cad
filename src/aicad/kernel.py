@@ -1,8 +1,8 @@
 """Geometry kernel adapter.
 
-This is the only module that imports build123d or OpenCascade. The rest of
-aicad talks to plain records and to :class:`Shape`, so a different kernel
-could replace this file later.
+build123d and OpenCascade are imported here. ``aicad.library`` imports
+bd_warehouse, and ``aicad.sketch`` imports the SolveSpace solver. The rest of
+aicad talks to plain records and to :class:`Shape`.
 """
 
 from __future__ import annotations
@@ -15,15 +15,20 @@ from pathlib import Path
 
 import numpy as np
 from build123d import (
+    Axis,
     Box,
     Cylinder,
     Face,
     Plane,
+    Polygon,
     Pos,
+    Rot,
     Vector,
     export_step,
     export_stl,
+    extrude,
     import_step,
+    revolve,
 )
 from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
 from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
@@ -629,6 +634,194 @@ def place(shape: Shape, position: tuple[float, float, float], rotation_deg: tupl
         return shape
     moved = Pos(px, py, pz) * Rot(rx, ry, rz) * shape.impl
     return Shape(_require_solid(moved), features=shape.feature_report())
+
+
+def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | None = None) -> Shape:
+    """Extrude, revolve, or cut a solved sketch into a solid.
+
+    ``geometry`` is the ``geometry`` dict from a sketch report. ``steps`` is a
+    list of operations. Each one is recorded on ``feature`` when that log is
+    passed in (scripts already have one); otherwise a new log is used.
+
+    An extrude or a cut reads coordinates from the sketch, so solving again
+    with a new driving dimension and calling this again rebuilds the solid.
+    ``cut_box`` and ``gusset`` are ordinary 3D recipes: their numbers are not
+    sketch dimensions.
+
+    Operations:
+
+    - ``{"op": "extrude", "points": ["a", "b", "c"], "height": 4, "z": 0, "name": "base"}``
+    - ``{"op": "extrude", "circle": "boss", "height": 8, "z": 4, "name": "boss"}``
+    - ``{"op": "cut", "circle": "bore", "height": 14, "name": "bore"}`` (or ``points``)
+    - ``{"op": "revolve", "points": ["a", "b", "c"], "axis": "y", "angle": 360, "name": "knob"}``
+    - ``{"op": "cut_box", "center": [0, 26, 2], "size": [10, 8, 6], "name": "slot"}``
+    - ``{"op": "gusset", "angle": 0, "outer": 30, "plate_thickness": 4, "boss_height": 8, "name": "gusset_0"}``
+
+    ``z`` is the bottom of an extrusion or a cutter. A revolve spins the XY
+    profile about the sketch X or Y axis. The profile must stay on one side of
+    that axis.
+    """
+    if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
+        raise GeometryError(
+            "solid_from_sketch needs solved sketch geometry, with points, lines, circles, and arcs."
+        )
+    if not isinstance(steps, list) or not steps:
+        raise GeometryError(
+            "solid_from_sketch needs steps: extrude, cut, revolve, cut_box, or gusset."
+        )
+    if len(steps) > 500:
+        raise GeometryError("A part may have at most 500 sketch steps.")
+    log = feature if isinstance(feature, FeatureLog) else FeatureLog()
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            raise GeometryError(f"Sketch step {index} must be an object.")
+        op = step.get("op")
+        name = step.get("name") or f"{op}_{index + 1}"
+        if not isinstance(name, str) or not name.strip():
+            raise GeometryError(f"Sketch step {index} name must be a non-empty string.")
+        if op in ("extrude", "revolve", "gusset"):
+            tool = _sketch_tool(step, geometry, index, name)
+            log.add(name, tool)
+        elif op in ("cut", "cut_box"):
+            if log.current is None:
+                raise GeometryError(
+                    f"Sketch step {index} ({name}) is a cut, but nothing has been added yet."
+                )
+            tool = _sketch_tool(step, geometry, index, name)
+            log.cut(name, tool)
+        else:
+            raise GeometryError(
+                f"Sketch step {index} has op {op!r}. "
+                "Use extrude, cut, revolve, cut_box, or gusset."
+            )
+    return Shape(_require_solid(log.current), features=log.report())
+
+
+def _sketch_tool(step: dict, geometry: dict, index: int, name: str):
+    op = step["op"]
+    if op == "cut_box":
+        center = _vec3_field(step.get("center", [0, 0, 0]), f"{name} center")
+        size = _vec3_field(step.get("size"), f"{name} size")
+        if any(component <= 0 for component in size):
+            raise GeometryError(f"{name}: box size must be positive.")
+        return Pos(*center) * Box(*size)
+    if op == "gusset":
+        return _radial_gusset(step, name)
+    if op == "revolve":
+        return _revolve_profile(step, geometry, name)
+    if "circle" in step:
+        return _circle_prism(step, geometry, name)
+    if "points" in step:
+        return _polygon_prism(step, geometry, name)
+    raise GeometryError(
+        f"{name}: an {op} needs `circle` or `points` from the solved sketch."
+    )
+
+
+def _circle_prism(step: dict, geometry: dict, name: str):
+    circle_id = step.get("circle")
+    circles = geometry.get("circles") or {}
+    if not isinstance(circle_id, str) or circle_id not in circles:
+        known = ", ".join(sorted(circles)) or "(none)"
+        raise GeometryError(f"{name}: no circle {circle_id!r}. Circles: {known}.")
+    circle = circles[circle_id]
+    radius = float(circle["radius"])
+    if radius <= 0:
+        raise GeometryError(f"{name}: circle {circle_id!r} has no radius.")
+    height = _positive(step.get("height"), f"{name} height")
+    z = _optional_number(step.get("z", 0.0), f"{name} z")
+    center = circle["center"]
+    return Pos(float(center["x"]), float(center["y"]), z + height / 2) * Cylinder(radius, height)
+
+
+def _polygon_prism(step: dict, geometry: dict, name: str):
+    coords = _profile_points(step, geometry, name)
+    height = _positive(step.get("height"), f"{name} height")
+    z = _optional_number(step.get("z", 0.0), f"{name} z")
+    try:
+        face = Plane.XY * Polygon(*coords)
+        solid = Pos(0, 0, z) * extrude(face, amount=height)
+    except GeometryError:
+        raise
+    except Exception as exc:
+        raise GeometryError(
+            f"{name}: could not extrude that profile. The points may be colinear "
+            f"or self-intersecting. {exc}"
+        ) from exc
+    return solid
+
+
+def _revolve_profile(step: dict, geometry: dict, name: str):
+    coords = _profile_points(step, geometry, name)
+    axis_name = str(step.get("axis", "y")).lower()
+    if axis_name not in ("x", "y"):
+        raise GeometryError(f"{name}: revolve axis must be 'x' or 'y'.")
+    angle = _positive(step.get("angle", 360.0), f"{name} angle")
+    if angle > 360:
+        raise GeometryError(f"{name}: revolve angle must be from 0 to 360 degrees.")
+    radial = 0 if axis_name == "y" else 1
+    signs = [coord[radial] for coord in coords]
+    if min(signs) < -1e-9 and max(signs) > 1e-9:
+        raise GeometryError(
+            f"{name}: the profile crosses the {axis_name.upper()} axis. "
+            "Keep every point on one side of the axis it revolves around."
+        )
+    axis = Axis.Y if axis_name == "y" else Axis.X
+    try:
+        solid = revolve(Plane.XY * Polygon(*coords), axis=axis, revolution_arc=angle)
+    except Exception as exc:
+        raise GeometryError(f"{name}: revolve failed. {exc}") from exc
+    return solid
+
+
+def _profile_points(step: dict, geometry: dict, name: str) -> list[tuple[float, float]]:
+    ids = step.get("points")
+    points = geometry.get("points") or {}
+    if not isinstance(ids, list) or len(ids) < 3:
+        raise GeometryError(f"{name}: points must be three or more sketch point ids, in order.")
+    coords = []
+    for point_id in ids:
+        if not isinstance(point_id, str) or point_id not in points:
+            known = ", ".join(sorted(points)) or "(none)"
+            raise GeometryError(f"{name}: no point {point_id!r}. Points: {known}.")
+        point = points[point_id]
+        coords.append((float(point["x"]), float(point["y"])))
+    return coords
+
+
+def _radial_gusset(step: dict, name: str):
+    """The same blunt radial gusset the motor-mount example uses.
+
+    A triangle that dies inside the cylindrical boss is non-manifold, and a
+    knife edge is not a wall. This is a block that bites the boss wall, fused
+    to a trapezoid that stays outside the cylinder.
+    """
+    angle = _optional_number(step.get("angle"), f"{name} angle")
+    outer = _positive(step.get("outer"), f"{name} outer")
+    plate_t = _positive(step.get("plate_thickness"), f"{name} plate_thickness")
+    boss_h = _positive(step.get("boss_height"), f"{name} boss_height")
+    thick = _positive(step.get("thick", 2.6), f"{name} thick")
+    toe = _positive(step.get("toe", 2.4), f"{name} toe")
+    bite = Pos(17.2, 0, plate_t + boss_h / 2) * Box(3.2, thick, boss_h)
+    fin = extrude(
+        Plane.XZ
+        * Polygon(
+            (17.4, plate_t),
+            (17.4, plate_t + boss_h),
+            (outer, plate_t + toe),
+            (outer, plate_t),
+        ),
+        amount=thick / 2,
+        both=True,
+    )
+    return Rot(0, 0, angle) * (bite + fin)
+
+
+def _optional_number(value, label: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise GeometryError(f"{label} must be a number.") from exc
 
 
 def section_geometry(

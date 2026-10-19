@@ -142,3 +142,71 @@ async def _mcp_example(tmp_path: Path) -> None:
             resources = await session.list_resources()
             uris = {str(resource.uri) for resource in resources.resources}
             assert "aicad://guide" in uris
+
+
+def test_mcp_sketch_dimension_rebuilds_the_part(tmp_path):
+    asyncio.run(_mcp_sketch(tmp_path))
+
+
+async def _mcp_sketch(tmp_path: Path) -> None:
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "aicad", "serve", "--workspace", str(tmp_path / "ws")],
+        cwd=str(tmp_path),
+    )
+    spec = _rectangle_spec()
+    steps = [{"op": "extrude", "points": ["sw", "se", "ne", "nw"], "height": 4, "name": "base"}]
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            names = {tool.name for tool in (await session.list_tools()).tools}
+            assert {"create_sketch", "get_sketch", "set_dimension", "create_part_from_sketch"} <= names
+
+            created = await session.call_tool("create_sketch", {"name": "plate", "spec": spec})
+            assert created.is_error is False, _text(created)
+            assert json.loads(_text(created))["status"] == "fully_constrained"
+            assert any(block.type == "image" for block in created.content)
+
+            built = await session.call_tool(
+                "create_part_from_sketch",
+                {"name": "pad", "sketch": "plate", "steps": steps},
+            )
+            assert built.is_error is False, _text(built)
+            assert json.loads(_text(built))["part"]["volume_mm3"] == 72 * 52 * 4
+
+            changed = await session.call_tool(
+                "set_dimension",
+                {"sketch": "plate", "dimension": "base_length", "value": 80},
+            )
+            assert changed.is_error is False, _text(changed)
+            payload = json.loads(_text(changed))
+            assert payload["status"] == "fully_constrained"
+            assert payload["rebuilt_parts"][0]["volume_mm3"] == 80 * 52 * 4
+
+
+def _rectangle_spec() -> dict:
+    return {
+        "plane": "xy",
+        "entities": [
+            {"id": "origin", "type": "point", "at": [0, 0]},
+            {"id": "sw", "type": "point", "at": [-36, -26]},
+            {"id": "se", "type": "point", "at": [36, -26]},
+            {"id": "ne", "type": "point", "at": [36, 26]},
+            {"id": "nw", "type": "point", "at": [-36, 26]},
+            {"id": "bottom", "type": "line", "start": "sw", "end": "se"},
+            {"id": "right", "type": "line", "start": "se", "end": "ne"},
+            {"id": "top", "type": "line", "start": "ne", "end": "nw"},
+            {"id": "left", "type": "line", "start": "nw", "end": "sw"},
+            {"id": "diag", "type": "line", "start": "sw", "end": "ne", "construction": True},
+        ],
+        "constraints": [
+            {"type": "fix", "entity": "origin"},
+            {"type": "horizontal", "entity": "bottom"},
+            {"type": "horizontal", "entity": "top"},
+            {"type": "vertical", "entity": "left"},
+            {"type": "vertical", "entity": "right"},
+            {"type": "distance", "a": "sw", "b": "se", "value": 72, "name": "base_length"},
+            {"type": "distance", "a": "sw", "b": "nw", "value": 52, "name": "base_width"},
+            {"type": "midpoint", "point": "origin", "line": "diag"},
+        ],
+    }

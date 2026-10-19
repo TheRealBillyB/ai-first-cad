@@ -42,6 +42,12 @@ Wall thickness is the smaller of a ray estimate and a section estimate, and
 the result says which one was used. `section_part` shows a cross-section.
 `search_parts` and `insert_standard_part` bring in real fasteners and bearings.
 Clearance between two parts reports interference volume or the gap.
+
+For a shape that should stay consistent when a size changes, use a sketch:
+entities plus geometric and dimensional constraints. `create_sketch` solves it
+and says whether it is fully constrained, still free, or conflicting.
+`set_dimension` changes a named dimension and rebuilds parts made from that
+sketch. Read the sketch image; the dimensions are labeled on it.
 """.strip()
 
 _GUIDE = """
@@ -94,6 +100,46 @@ of the head is on local z=0. Nuts, washers, and bearings sit on z=0.
 `import_step` plus `place_part` brings in an arbitrary STEP file, such as a
 McMaster-Carr download. Then `check_clearance` against your part.
 
+## Sketches
+
+A sketch is points, lines, arcs, and circles, plus constraints. Initial `at`
+coordinates are guesses. `fix` locks a point at its guess. The solver is
+SolveSpace. The report's `status` is `fully_constrained`, `under_constrained`
+(with `free` naming the entities that can still move), or `over_constrained`
+(with `conflicts` naming the constraints that disagree).
+
+A point-to-line distance is signed. Positive is to the right as you walk from
+the line's start to its end. On a counterclockwise rectangle the interior is
+the negative side, so an inset of 6 mm is distance −6.
+
+```python
+sketch = {
+  "plane": "xy",
+  "entities": [
+    {"id": "origin", "type": "point", "at": [0, 0]},
+    {"id": "b0", "type": "point", "at": [8, 8]},
+    {"id": "b1", "type": "point", "at": [-8, 8]},
+    {"id": "bore", "type": "circle", "center": "origin", "radius": 8}
+  ],
+  "constraints": [
+    {"type": "fix", "entity": "origin"},
+    {"type": "diameter", "entity": "bore", "value": 16, "name": "bore_diameter",
+     "tolerance": 0.05},
+    {"type": "pattern_on_circle", "center": "origin", "points": ["b0", "b1"],
+     "diameter": 24, "start_angle": 45, "name": "bolt_circle"}
+  ]
+}
+```
+
+`pattern_on_circle` needs at least two points. `create_part_from_sketch` turns
+the solved geometry into a solid with extrude, cut, revolve, cut_box, and
+gusset steps. An over-constrained sketch is not built. An under-constrained
+sketch is built from the current solution, and the report says what is still
+free. `set_dimension` on `bore_diameter` or `bolt_circle` rebuilds the solid.
+
+A tolerance such as `0.05` or `{"plus": 0.05, "minus": 0.02}` is stored on the
+dimension and shown in the report. It does not change the solved geometry.
+
 ## Operations
 
 ```json
@@ -130,7 +176,7 @@ def build_server(workspace: str | Path) -> MCPServer:
     mcp = MCPServer(
         "aicad",
         instructions=_INSTRUCTIONS,
-        version="0.2.0",
+        version="0.3.0",
     )
 
     def guard(fn):
@@ -322,6 +368,99 @@ def build_server(workspace: str | Path) -> MCPServer:
         return guard(_section)
 
     @mcp.tool()
+    def create_sketch(name: str, spec: dict[str, Any]) -> list[str | Image]:
+        """Solve and store a 2D sketch of entities and constraints.
+
+        spec has `entities` (point, line, circle, arc) and `constraints`
+        (fix, coincident, parallel, perpendicular, tangent, equal, horizontal,
+        vertical, symmetric, midpoint, distance, angle, radius, diameter,
+        pattern_on_circle). Initial `at` coordinates are guesses. `fix` locks
+        a point. Name a distance, diameter, radius, angle, or pattern so
+        set_dimension can change it later. A tolerance is a number or
+        {plus, minus}; it is stored and does not move the geometry.
+
+        The result says fully_constrained, under_constrained (which entities
+        are still free), or over_constrained (which constraints conflict).
+        The image shows the solved sketch with dimensions labeled.
+        """
+        def _create() -> list[str | Image]:
+            report = document.create_sketch(name, spec)
+            return _with_images(report.to_dict(), [report.view] if report.view else [])
+
+        return guard(_create)
+
+    @mcp.tool()
+    def get_sketch(name: str) -> list[str | Image]:
+        """Solve a stored sketch again and return the report plus a labeled image.
+
+        Read status, dof, free, and conflicts before building a solid from it.
+        """
+        def _get() -> list[str | Image]:
+            report = document.get_sketch(name)
+            return _with_images(report.to_dict(), [report.view] if report.view else [])
+
+        return guard(_get)
+
+    @mcp.tool()
+    def set_dimension(sketch: str, dimension: str, value: float) -> list[str | Image]:
+        """Change a named sketch dimension, re-solve, and rebuild parts made from it.
+
+        value is millimeters, or degrees for an angle. A pattern_on_circle
+        dimension is the circle's diameter. A conflicting value is rejected
+        and the previous solid stays. rebuilt_parts lists the solids that changed.
+        """
+        def _set() -> list[str | Image]:
+            report = document.set_dimension(sketch, dimension, value)
+            rebuilt = []
+            for part in document.list_parts():
+                source = document.get_source(part.name)
+                if source.get("sketch") == sketch:
+                    rebuilt.append(part.to_dict())
+            payload = report.to_dict()
+            payload["rebuilt_parts"] = rebuilt
+            return _with_images(payload, [report.view] if report.view else [])
+
+        return guard(_set)
+
+    @mcp.tool()
+    def create_part_from_sketch(name: str, sketch: str, steps: list[dict[str, Any]]) -> list[str | Image]:
+        """Extrude, revolve, or cut a solved sketch into a solid.
+
+        steps is a list. An extrude or cut uses `points` (ids, in order) or
+        `circle` (a circle id), plus `height` and optional `z` (the bottom).
+        revolve uses `points`, `axis` (`x` or `y`), and optional `angle`.
+        cut_box uses `center` and `size`. gusset uses `angle`, `outer`,
+        `plate_thickness`, and `boss_height`. Each step can have a `name`.
+
+        Over-constrained and non-converged sketches are refused. An
+        under-constrained sketch builds the current solution and the report
+        names what is still free. Then call inspect_part.
+        """
+        def _build() -> list[str | Image]:
+            info = document.create_part_from_sketch(name, sketch, steps)
+            report = document.get_sketch(sketch)
+            payload = {
+                "part": info.to_dict(),
+                "sketch": {
+                    "name": report.name,
+                    "status": report.status,
+                    "dof": report.dof,
+                    "free": report.free,
+                    "conflicts": report.conflicts,
+                    "dimensions": report.dimensions,
+                    "note": report.note,
+                },
+                "next": "Call inspect_part and look at the contact sheet before the next edit.",
+            }
+            if report.status == "under_constrained":
+                payload["sketch"]["warning"] = (
+                    "Built from an under-constrained sketch. Free entities can still move."
+                )
+            return _with_images(payload, [report.view] if report.view else [])
+
+        return guard(_build)
+
+    @mcp.tool()
     def search_parts(query: str = "") -> dict:
         """Search standard screws, nuts, washers, and ball bearings.
 
@@ -409,6 +548,7 @@ def _with_images(payload: dict, views) -> list[str | Image]:
 
 _VIEW_RANK = {
     "contact": 0,
+    "sketch": 1,
     "section": 1,
     "iso": 2,
     "front": 3,

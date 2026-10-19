@@ -400,5 +400,6 @@
     "old_ribs_through_boss_y0": "examples/renders/buried_ribs_section_y0.png",
     "old_ribs_at_the_exposed_end_y13": "examples/renders/buried_ribs_section_y13.png"
   },
-  "reading": "rib_neg_x and rib_pos_x are flagged: more than half of each rib was already inside the boss. The gussets are not flagged: most of each gusset is new material bracing the boss to the plate. The y=0 section of the old ribs cuts through the boss and does not show a rib, because the rib is buried there. The y=13 section shows the rib end sticking out. The new y=0 section shows the gussets along X."
+  "sketch": "examples/renders/motor_mount_sketch.png",
+  "reading": "rib_neg_x and rib_pos_x are flagged: more than half of each rib was already inside the boss. The gussets are not flagged: most of each gusset is new material bracing the boss to the plate. The y=0 section of the old ribs cuts through the boss and does not show a rib, because the rib is buried there. The y=13 section shows the rib end sticking out. The new y=0 section shows the gussets along X. The plate, bore, boss, and bolt pattern come from a fully constrained sketch."
 }

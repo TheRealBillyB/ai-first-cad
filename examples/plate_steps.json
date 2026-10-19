@@ -1,0 +1,13 @@
+[
+  {
+    "op": "extrude",
+    "points": [
+      "sw",
+      "se",
+      "ne",
+      "nw"
+    ],
+    "height": 4,
+    "name": "base"
+  }
+]

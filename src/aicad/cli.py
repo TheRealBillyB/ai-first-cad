@@ -112,6 +112,28 @@ def main(argv: list[str] | None = None) -> int:
     place.add_argument("--at", required=True, help="x,y,z position in mm")
     place.add_argument("--rot", default="0,0,0", help="rotation degrees about X,Y,Z")
 
+    sketch = commands.add_parser(
+        "sketch", parents=[common], help="Solve a sketch, or create one from a JSON spec."
+    )
+    sketch.add_argument("name")
+    sketch.add_argument("--file", type=Path, help="JSON spec. Creates the sketch, or replaces it.")
+
+    dimension = commands.add_parser(
+        "dimension", parents=[common], help="Change a named sketch dimension and rebuild parts."
+    )
+    dimension.add_argument("sketch")
+    dimension.add_argument("dimension")
+    dimension.add_argument("value", type=float)
+
+    sketch_part = commands.add_parser(
+        "sketch-part",
+        parents=[common],
+        help="Create or replace a solid from a solved sketch and a JSON step list.",
+    )
+    sketch_part.add_argument("name")
+    sketch_part.add_argument("sketch")
+    sketch_part.add_argument("--steps", type=Path, required=True)
+
     args = parser.parse_args(argv)
     try:
         return _dispatch(args)
@@ -183,6 +205,29 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "place":
         info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
         return _emit(info.to_dict())
+    if args.command == "sketch":
+        if args.file is not None:
+            spec = json.loads(args.file.read_text(encoding="utf-8"))
+            if args.name in document.list_sketches():
+                report = document.update_sketch(args.name, spec)
+            else:
+                report = document.create_sketch(args.name, spec)
+        else:
+            report = document.get_sketch(args.name)
+        return _emit(report.to_dict())
+    if args.command == "dimension":
+        report = document.set_dimension(args.sketch, args.dimension, args.value)
+        payload = report.to_dict()
+        payload["rebuilt_parts"] = [
+            part.to_dict()
+            for part in document.list_parts()
+            if document.get_source(part.name).get("sketch") == args.sketch
+        ]
+        return _emit(payload)
+    if args.command == "sketch-part":
+        steps = json.loads(args.steps.read_text(encoding="utf-8"))
+        info = _create_or_update_sketch_part(document, args.name, args.sketch, steps)
+        return _emit(info.to_dict())
     raise AICADError(f"Unknown command {args.command!r}.")
 
 
@@ -191,6 +236,13 @@ def _create_or_update_script(document, name: str, script: str):
     if name in names:
         return document.update_part_script(name, script)
     return document.create_part_from_script(name, script)
+
+
+def _create_or_update_sketch_part(document, name: str, sketch: str, steps: list[dict]):
+    names = {part.name for part in document.list_parts()}
+    if name in names:
+        return document.update_part_from_sketch(name, sketch, steps)
+    return document.create_part_from_sketch(name, sketch, steps)
 
 
 def _create_or_update_ops(document, name: str, ops: list[dict]):

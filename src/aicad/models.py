@@ -294,18 +294,53 @@ class SectionReport:
 
 
 @dataclass(frozen=True)
+class SketchReport:
+    """What an assistant should read after solving a sketch."""
+
+    name: str | None
+    status: str
+    dof: int
+    solver: str
+    free: list[dict[str, object]]
+    conflicts: list[str]
+    dimensions: list[dict[str, object]]
+    geometry: dict[str, object]
+    note: str
+    view: RenderedView | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        payload = {
+            "name": self.name,
+            "status": self.status,
+            "dof": self.dof,
+            "solver": self.solver,
+            "free": self.free,
+            "conflicts": self.conflicts,
+            "dimensions": self.dimensions,
+            "geometry": self.geometry,
+            "note": self.note,
+            "view": None if self.view is None else self.view.to_dict(),
+        }
+        return payload
+
+
+@dataclass(frozen=True)
 class InspectReport:
     part: PartInfo
     measurement: Measurement
     wall: WallReport
     features: FeatureReport
     views: list[RenderedView]
+    sketch: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "part": self.part.to_dict(),
             "measurement": self.measurement.to_dict(),
             "wall": self.wall.to_dict(),
             "features": self.features.to_dict(),
             "views": [view.to_dict() for view in self.views],
         }
+        if self.sketch is not None:
+            payload["sketch"] = self.sketch
+        return payload

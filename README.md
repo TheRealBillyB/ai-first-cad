@@ -10,11 +10,14 @@ This is a small first version. It does not invent a geometry kernel. [build123d]
 
 ![Section on y = 0, through the bore and the gussets](examples/renders/motor_mount_section_y0.png)
 
+![Solved bracket sketch. The bolt circle, bore, and insets are constraints](examples/renders/motor_mount_sketch.png)
+
 ## What you can do
 
+- Describe a 2D profile the way a sketcher does: points, lines, arcs, and circles, plus geometric and dimensional constraints. SolveSpace solves it and reports whether it is fully constrained, still free, or conflicting. Extrude, revolve, or cut the solved profile into a solid. Change a named dimension and the solid rebuilds.
 - Create or replace a part by running a build123d script, or with a short list of `add` / `cut` boxes and cylinders.
 - Optionally record each boolean step with `feature.add` / `feature.cut`, and see how much of an added solid was already buried inside the part.
-- Keep a document of named parts on disk. The script (or the operation list, a catalog part, or a copied STEP file) is the source. Opening the workspace rebuilds the solids.
+- Keep a document of named parts and sketches on disk. The script, the operation list, the sketch plus its build steps, a catalog part, or a copied STEP file is the source. Opening the workspace rebuilds the solids.
 - Measure a part: bounding box, volume, surface area, center of mass, face and edge counts, and whether the solid is valid and watertight.
 - Render it headless, with no GPU and no display: front, back, left, right, top, bottom, isometric, one contact sheet, and a planar section. The MCP tools return those pictures so the assistant can see them.
 - Export STEP and STL. Import a STEP file and place it.
@@ -35,9 +38,11 @@ pip install -e ".[dev]"
 pytest
 ```
 
+The sketch solver is [python-solvespace](https://github.com/KmolYuan/solvespace), a wrapper around the SolveSpace geometric constraint solver. That solver is GPL-3.0-or-later. aicad itself is AGPL-3.0-or-later; installing aicad also installs the GPL solver. If pip has no wheel for your Python, it compiles the solver and needs a C++ compiler plus Python headers (`python3-dev` and `g++` on Debian or Ubuntu).
+
 ## Try the motor mount
 
-The worked example is a 72 × 52 × 4 mm plate with a boss, a 16 mm bore, four motor screws, four frame holes, a cable slot on the +Y edge, and three gussets that brace the boss to the plate. `examples/shaft.py` is a 15.6 mm shaft meant to pass through that bore.
+The worked example is a 72 × 52 × 4 mm plate with a boss, a 16 mm bore, four motor screws, four frame holes, a cable slot on the +Y edge, and three gussets that brace the boss to the plate. The plate outline, the bore, the boss, and both hole patterns are a constrained sketch: the four motor screws are "evenly spaced on a 24 mm circle, starting at 45°", and each frame hole is 6 mm inside the edges. `examples/shaft.py` is a 15.6 mm shaft meant to pass through that bore.
 
 An earlier version used two ribs centered at x = ±16 mm. Those ribs span x = 14..18 mm while the boss radius is 18 mm, so most of each rib was already inside the boss. Nothing in a bounding box would say that. `examples/motor_mount_buried_ribs.py` is that design, kept so the feature report can flag it. `examples/feature_report.json` is the before/after: the ribs are redundant, the gussets are not. A cut through the old boss at y = 0 does not show a rib. The cut at y = 13 shows the little end that sticks out.
 
@@ -64,6 +69,17 @@ aicad export motor_mount --format step --out motor_mount.step --workspace ./aica
 aicad export motor_mount --format stl --out motor_mount.stl --workspace ./aicad_workspace
 ```
 
+The same plate as a sketch, then a longer plate by changing one dimension:
+
+```bash
+aicad sketch plate --file examples/plate_sketch.json --workspace ./aicad_workspace
+aicad sketch-part pad plate --steps examples/plate_steps.json --workspace ./aicad_workspace
+aicad dimension plate base_length 90 --workspace ./aicad_workspace
+aicad sketch plate --workspace ./aicad_workspace
+```
+
+`aicad sketch plate` prints the solved coordinates and writes a PNG with the dimensions labeled. `base_length` is the name from the constraint, not a variable in the solid.
+
 On the build that produced the pictures in this repo, inspect reported:
 
 | Check | Result |
@@ -71,6 +87,8 @@ On the build that produced the pictures in this repo, inspect reported:
 | Bounding box | 72 × 52 × 12 mm |
 | Volume | 20426 mm³ |
 | Valid and watertight | yes, one solid |
+| Sketch | fully constrained, 0 degrees of freedom. Bore is Ø16 ±0.05 |
+| `base_length` 72 → 90 | the same part rebuilds at 24170 mm³ |
 | Estimated minimum wall | 2.4 mm, from ray samples (sections estimated 2.6 mm) |
 | Against a 1.2 mm print rule | pass |
 | Gap to the 15.6 mm shaft | 0.2 mm, no interference |
@@ -117,6 +135,9 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 
 | Tool | What it does |
 | --- | --- |
+| `create_sketch` / `get_sketch` | Solve a sketch. The report says fully constrained, under-constrained (which entities can still move), or over-constrained (which constraints conflict). The image has the dimensions labeled. |
+| `set_dimension` | Change one named dimension, re-solve, and rebuild every part made from that sketch. |
+| `create_part_from_sketch` | Extrude, revolve, or cut a solved sketch. Also `cut_box` and `gusset`. |
 | `create_part_from_script` | Run a build123d script. The solid must be assigned to `part`. |
 | `create_part_from_ops` | Build from a list of add/cut boxes and cylinders. |
 | `update_part_script` / `update_part_ops` | Replace a part. A failed rebuild keeps the previous solid. |
@@ -171,6 +192,47 @@ The same plate as operations, which is enough for a stack of boxes and holes. Op
 
 Boxes are axis-aligned. A cylinder takes `radius`, `height`, an optional `center`, and an optional `axis` (default `[0, 0, 1]`). The first operation has to be `add`.
 
+## Sketches
+
+A sketch is how you say "four holes on a 24 mm circle" without computing the coordinates. You name points, lines, arcs, and circles, then add constraints. Initial `at` values are a guess the solver may move. `fix` locks a point where you put it.
+
+```python
+from aicad import Document, Sketch
+
+sketch = (
+    Sketch()
+    .point("origin", 0, 0).fix("origin")
+    .point("b0", 8, 8).point("b1", -8, 8).point("b2", -8, -8).point("b3", 8, -8)
+    .pattern_on_circle("origin", ["b0", "b1", "b2", "b3"], diameter=24, start_angle=45, name="bolt_circle")
+    .circle("bore", "origin", 8)
+    .diameter("bore", 16, name="bore_diameter", tolerance=0.05)
+)
+document = Document("./aicad_workspace")
+report = document.create_sketch("holes", sketch)
+```
+
+`report.status` is `fully_constrained`, `under_constrained`, or `over_constrained`. `report.dof` is how much is still free. `report.free` names the entities that can still move, and `report.conflicts` names the constraints that disagree. A conflicting sketch is stored so you can read that report; it is not extruded.
+
+Constraints: `fix`, `coincident`, `parallel`, `perpendicular`, `tangent`, `equal`, `horizontal`, `vertical`, `symmetric`, `midpoint`, `distance`, `angle`, `radius`, `diameter`, `pattern_on_circle`. A distance, diameter, radius, angle, or pattern can carry a `name` and a `tolerance` (`0.05`, or `{"plus": 0.05, "minus": 0.02}`). The tolerance is stored and printed (`Ø16 ±0.05`). It does not move the geometry. That is the hook for a drawing later.
+
+A point-to-line distance is signed. Positive is to the right as you walk from the line's start to its end. A rectangle drawn counterclockwise has its interior on the negative side, so "6 mm in from the edge" is the distance −6.
+
+`pattern_on_circle` puts the points on a construction circle of the given diameter, spaces them evenly, and, when you pass `start_angle`, locks the first point relative to the +X direction. List the points in order around the circle, and put each guess near where it should land.
+
+Turn the solved sketch into a solid with steps. A part made this way rebuilds when you change a named dimension:
+
+```python
+document.create_part_from_sketch("pad", "plate", [
+    {"op": "extrude", "points": ["sw", "se", "ne", "nw"], "height": 4, "name": "base"},
+    {"op": "cut", "circle": "bore", "height": 8, "name": "bore"},
+])
+document.set_dimension("plate", "base_length", 90)
+```
+
+`extrude` and `cut` take `points` (ids, in order) or `circle`, plus `height` and an optional `z` for the bottom of the prism. `revolve` spins an XY profile about the sketch `x` or `y` axis; the profile has to stay on one side of that axis. `cut_box` and `gusset` are ordinary 3D numbers, not sketch dimensions, so editing them means replacing the step list. The motor-mount gussets and cable slot are those recipes. The plate, boss, bore, and holes are the sketch, so they follow `base_length`, `bolt_circle`, and the rest.
+
+An under-constrained sketch still builds, from the solution the solver returned, and the inspect report carries a warning plus the free entities. An over-constrained or non-converged sketch does not build, and a dimension change that conflicts leaves the previous solid in place.
+
 Views use Z up. The label on each picture says which way the camera is looking (`front` looks toward +Y). A small X/Y/Z triad is drawn on the view, and the footer carries the bounding box and a scale bar.
 
 ## How the checks work
@@ -192,25 +254,27 @@ pytest
 python examples/motor_mount.py   # refresh examples/renders and the report
 ```
 
-`src/aicad/kernel.py` and `src/aicad/library.py` are the kernel boundary. They are the modules that import build123d, OpenCascade, or bd_warehouse.
+`src/aicad/kernel.py` imports build123d and OpenCascade. `src/aicad/library.py` imports bd_warehouse. `src/aicad/sketch.py` imports the SolveSpace solver. The rest of aicad talks to plain records.
 
 ## Limitations
 
 - Scripts are trusted Python, not a sandbox. The server runs code the assistant sends. Point it at a workspace you are willing to let it write.
-- There is no parametric feature tree. `feature.add` records contribution, not a dimension you can edit later. Changing a part still means replacing the script or the operation list. A failed replacement does not destroy the previous solid.
+- Sketch dimensions are the parametric hook. Changing `bolt_circle` rebuilds parts made from that sketch. There is still no 3D feature tree: a fillet, a gusset length, or an extrude height is a number in the step list or the script, not a feature you edit in place. A failed dimension change or a failed script replacement leaves the previous solid.
 - Structured operations are only axis-aligned boxes and cylinders. Fillets, chamfers, and rotated boxes belong in a script.
 - Wall thickness can still miss a thin spot that no ray and no slice crosses. A passing check is evidence, not a guarantee. Anything thinner than about 0.15 mm is below the ray step. A knife-edge gusset reads as a very thin wall, which is why the example gussets end in a 2.4 mm toe.
 - A section only shows the plane you asked for. Buried geometry between planes is still invisible until you cut there.
 - Clearance does not report how deep an interference goes, only its volume. Catalog screws omit threads, so a fit check is against the simple shank, not the major diameter.
 - The catalog is screws, nuts, washers, and one family of ball bearings. It is not a McMaster mirror. An arbitrary bought part is a STEP import.
 - Renders are shaded orthographic pictures from a software rasterizer, not a dimensioned drawing. Sections are filled profiles with a scale bar, not a hatched drawing. There is no click-to-measure.
+- Sketches are on the XY plane and extrude along +Z. A revolve uses the X or Y axis of that same plane. The initial `at` guess has to be near a shape that satisfies the constraints, or the solver reports that it did not converge. Circle-to-line tangency is built from a point and a perpendicular radius, because the solver's tangent constraint does not take a full circle.
+- The SolveSpace solver linked through python-solvespace is GPL-3.0-or-later. aicad is AGPL-3.0-or-later. The two travel together when you install this package.
 - The session file is for one writer. Two servers on the same workspace will overwrite each other.
 
 ## Next steps
 
-- A real feature history, so an assistant can change one dimension without rewriting the whole script.
+- Driving dimensions on 3D features (extrude height, gusset length), not only on the sketch.
 - More catalog parts (NEMA motors, extrusions) and a way to drop a screw into a hole by naming the hole.
-- Driving dimensions on the pictures.
+- Driving dimensions on the 3D pictures, the way the sketch view already labels them.
 - A tighter wall-thickness check, for example an offset of the solid, used beside the rays and the sections.
 - Assemblies and joints, so a bracket and a motor can be constrained, not only placed and checked for a gap.
 - A small viewer a person can orbit while the assistant works.

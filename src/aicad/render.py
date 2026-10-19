@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from aicad.kernel import TriangleMesh
-from aicad.models import Measurement, RenderedView, WallReport
+from aicad.models import Measurement, RenderedView, SketchReport, WallReport
 
 # Viewport of the 3D picture, before the title strip. SSAA renders larger and
 # downsamples, which takes the stair-steps off silhouettes.
@@ -452,6 +452,241 @@ def render_section(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path, format="PNG")
     return RenderedView(name="section", path=str(out_path), width=canvas.width, height=canvas.height)
+
+
+def render_sketch(report: SketchReport, out_path: Path) -> RenderedView:
+    """Draw a solved sketch with its driving dimensions labeled.
+
+    Constrained geometry is ink. Entities that can still move are blue.
+    An over-constrained sketch is drawn in red, and the conflicting constraint
+    names are listed under the title. Construction geometry is dashed.
+    """
+    canvas = Image.new("RGB", (_VIEW_W, _VIEW_H + _HEADER + _FOOTER), _PAPER)
+    draw = ImageDraw.Draw(canvas)
+    font = _font(16)
+    small = _font(13)
+    draw.rectangle((0, 0, _VIEW_W, _HEADER), fill=(232, 228, 218))
+    title = report.name or "sketch"
+    draw.text((16, 10), title, fill=_INK, font=font)
+
+    geometry = report.geometry if isinstance(report.geometry, dict) else {}
+    points = geometry.get("points") or {}
+    lines = geometry.get("lines") or {}
+    circles = geometry.get("circles") or {}
+    arcs = geometry.get("arcs") or {}
+    free_ids = {item.get("entity") for item in report.free}
+    conflict = report.status in ("over_constrained", "didnt_converge")
+    labels = _sketch_labels(report, points, circles)
+
+    coords = [(point["x"], point["y"]) for point in points.values()]
+    for circle in circles.values():
+        center, radius = circle["center"], float(circle["radius"])
+        coords.append((center["x"] - radius, center["y"] - radius))
+        coords.append((center["x"] + radius, center["y"] + radius))
+    coords.extend(anchor for _text, anchor in labels)
+
+    if coords:
+        xs = [coord[0] for coord in coords]
+        ys = [coord[1] for coord in coords]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        span_x = max(max_x - min_x, 1.0)
+        span_y = max(max_y - min_y, 1.0)
+        margin = 48
+        usable_w = _VIEW_W - 2 * margin
+        usable_h = _VIEW_H - 2 * margin
+        scale = min(usable_w / span_x, usable_h / span_y)
+        origin_x = margin + (usable_w - span_x * scale) / 2
+        origin_y = _HEADER + margin + (usable_h - span_y * scale) / 2
+
+        def to_px(x: float, y: float) -> tuple[float, float]:
+            return (origin_x + (x - min_x) * scale, origin_y + (max_y - y) * scale)
+
+        for circle_id, circle in circles.items():
+            center = circle["center"]
+            radius = float(circle["radius"])
+            color = _sketch_color(circle_id, circle.get("construction"), free_ids, conflict)
+            _draw_circle(
+                draw,
+                to_px(center["x"], center["y"]),
+                radius * scale,
+                color,
+                dashed=bool(circle.get("construction")),
+            )
+        for arc_id, arc in arcs.items():
+            color = _sketch_color(arc_id, arc.get("construction"), free_ids, conflict)
+            polyline = _arc_polyline(arc)
+            pixels = [to_px(x, y) for x, y in polyline]
+            _draw_chain(draw, pixels, color, dashed=bool(arc.get("construction")))
+        for line_id, line in lines.items():
+            start, end = line["start"], line["end"]
+            color = _sketch_color(line_id, line.get("construction"), free_ids, conflict)
+            if not line.get("construction") and _line_touches_free(line, points, free_ids):
+                color = _FREE
+            _draw_chain(
+                draw,
+                [to_px(start["x"], start["y"]), to_px(end["x"], end["y"])],
+                color,
+                dashed=bool(line.get("construction")),
+            )
+        for point_id, point in points.items():
+            color = _sketch_color(point_id, False, free_ids, conflict)
+            px, py = to_px(point["x"], point["y"])
+            draw.ellipse((px - 2.5, py - 2.5, px + 2.5, py + 2.5), fill=color)
+
+        for text, anchor in labels:
+            px, py = to_px(anchor[0], anchor[1])
+            _draw_label(draw, text, px, py, small)
+        _draw_scale_bar(draw, scale * _SSAA, small)
+    else:
+        draw.text((24, _HEADER + 24), "The sketch has no solved points.", fill=_INK, font=font)
+
+    footer = _sketch_footer(report)
+    draw.text((16, _HEADER + _VIEW_H + 6), footer, fill=_status_color(report.status), font=small)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path, format="PNG")
+    return RenderedView(name="sketch", path=str(out_path.resolve()), width=canvas.width, height=canvas.height)
+
+
+_FREE = (32, 78, 168)
+_CONFLICT = (168, 48, 40)
+_CONSTRUCTION = (120, 116, 108)
+_DIM = (18, 78, 92)
+
+
+def _sketch_color(entity_id, construction, free_ids, conflict) -> tuple[int, int, int]:
+    if construction:
+        return _CONSTRUCTION
+    if conflict:
+        return _CONFLICT
+    if entity_id in free_ids:
+        return _FREE
+    return _INK
+
+
+def _status_color(status: str) -> tuple[int, int, int]:
+    if status == "fully_constrained":
+        return (36, 96, 64)
+    if status == "under_constrained":
+        return _FREE
+    if status in ("over_constrained", "didnt_converge"):
+        return _CONFLICT
+    return _MUTED
+
+
+def _sketch_footer(report: SketchReport) -> str:
+    status = report.status.replace("_", " ")
+    if report.conflicts:
+        named = ", ".join(report.conflicts[:4])
+        return f"{status}  ·  {report.dof} dof  ·  conflict: {named}"
+    if report.free:
+        named = ", ".join(str(item.get("entity")) for item in report.free[:4])
+        return f"{status}  ·  {report.dof} dof  ·  free: {named}"
+    return f"{status}  ·  {report.dof} dof"
+
+
+def _sketch_labels(report: SketchReport, points: dict, circles: dict) -> list[tuple[str, tuple[float, float]]]:
+    labels = []
+    for index, dimension in enumerate(report.dimensions):
+        text = f"{dimension.get('name')}  {dimension.get('text')}"
+        anchor = _dimension_anchor(dimension, points, circles, index)
+        if anchor is not None:
+            labels.append((text, anchor))
+    return labels
+
+
+def _dimension_anchor(dimension: dict, points: dict, circles: dict, index: int) -> tuple[float, float] | None:
+    kind = dimension.get("kind")
+    if kind in ("diameter", "radius", "pattern_on_circle"):
+        circle = circles.get(dimension.get("entity"))
+        if circle:
+            radius = float(circle["radius"])
+            center = circle["center"]
+            angle = math.radians(28 + index * 22)
+            reach = radius + 4.0
+            return (
+                float(center["x"]) + math.cos(angle) * reach,
+                float(center["y"]) + math.sin(angle) * reach,
+            )
+    first = points.get(dimension.get("a"))
+    second = points.get(dimension.get("b"))
+    if kind == "distance" and first and second:
+        mx = (first["x"] + second["x"]) / 2
+        my = (first["y"] + second["y"]) / 2
+        dx = second["x"] - first["x"]
+        dy = second["y"] - first["y"]
+        length = math.hypot(dx, dy) or 1.0
+        return (mx - dy / length * 5.0, my + dx / length * 5.0)
+    if first:
+        return (float(first["x"]), float(first["y"]) + 4.0)
+    entity = dimension.get("entity")
+    if isinstance(entity, str) and entity in points:
+        point = points[entity]
+        return (float(point["x"]), float(point["y"]) + 4.0)
+    return None
+
+
+def _line_touches_free(line: dict, points: dict, free_ids: set) -> bool:
+    # Line records store coordinates, not ids. Match a free point by position.
+    for point_id, point in points.items():
+        if point_id not in free_ids:
+            continue
+        for end in (line["start"], line["end"]):
+            if abs(end["x"] - point["x"]) < 1e-6 and abs(end["y"] - point["y"]) < 1e-6:
+                return True
+    return False
+
+
+def _arc_polyline(arc: dict, count: int = 24) -> list[tuple[float, float]]:
+    center, start, end = arc["center"], arc["start"], arc["end"]
+    radius = math.hypot(start["x"] - center["x"], start["y"] - center["y"])
+    a0 = math.atan2(start["y"] - center["y"], start["x"] - center["x"])
+    a1 = math.atan2(end["y"] - center["y"], end["x"] - center["x"])
+    sweep = (a1 - a0) % (2 * math.pi)
+    if sweep < 1e-6:
+        sweep = 2 * math.pi
+    points = []
+    for step in range(count + 1):
+        angle = a0 + sweep * step / count
+        points.append((center["x"] + radius * math.cos(angle), center["y"] + radius * math.sin(angle)))
+    return points
+
+
+def _draw_circle(draw: ImageDraw.ImageDraw, center: tuple[float, float], radius_px: float, color, dashed: bool) -> None:
+    if radius_px < 0.5:
+        return
+    if not dashed:
+        box = (
+            center[0] - radius_px,
+            center[1] - radius_px,
+            center[0] + radius_px,
+            center[1] + radius_px,
+        )
+        draw.ellipse(box, outline=color, width=2)
+        return
+    steps = 48
+    chain = []
+    for step in range(steps + 1):
+        angle = 2 * math.pi * step / steps
+        chain.append((center[0] + radius_px * math.cos(angle), center[1] + radius_px * math.sin(angle)))
+    _draw_chain(draw, chain, color, dashed=True)
+
+
+def _draw_chain(draw: ImageDraw.ImageDraw, pixels: list[tuple[float, float]], color, dashed: bool) -> None:
+    if len(pixels) < 2:
+        return
+    if not dashed:
+        draw.line(pixels, fill=color, width=2)
+        return
+    for index in range(0, len(pixels) - 1, 2):
+        draw.line((pixels[index], pixels[index + 1]), fill=color, width=2)
+
+
+def _draw_label(draw: ImageDraw.ImageDraw, text: str, x: float, y: float, font: ImageFont.ImageFont) -> None:
+    box = draw.textbbox((x, y), text, font=font)
+    pad = 2
+    draw.rectangle((box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad), fill=_PAPER)
+    draw.text((x, y), text, fill=_DIM, font=font)
 
 
 def _font(size: int) -> ImageFont.ImageFont:
