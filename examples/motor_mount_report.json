@@ -1,0 +1,144 @@
+{
+  "part": {
+    "name": "motor_mount",
+    "source": "script",
+    "units": "mm",
+    "volume_mm3": 20617.09007,
+    "valid": true,
+    "watertight": true,
+    "bounding_box": {
+      "min": {
+        "x": -36.0,
+        "y": -26.0,
+        "z": 0.0
+      },
+      "max": {
+        "x": 36.0,
+        "y": 26.0,
+        "z": 12.0
+      },
+      "size": {
+        "x": 72.0,
+        "y": 52.0,
+        "z": 12.0
+      }
+    }
+  },
+  "measurement": {
+    "units": "mm",
+    "valid": true,
+    "watertight": true,
+    "solid_count": 1,
+    "face_count": 35,
+    "edge_count": 93,
+    "vertex_count": 61,
+    "volume_mm3": 20617.09007,
+    "area_mm2": 10257.170353,
+    "center_of_mass_mm": {
+      "x": -0.0,
+      "y": -0.186253,
+      "z": 3.972809
+    },
+    "bounding_box": {
+      "min": {
+        "x": -36.0,
+        "y": -26.0,
+        "z": 0.0
+      },
+      "max": {
+        "x": 36.0,
+        "y": 26.0,
+        "z": 12.0
+      },
+      "size": {
+        "x": 72.0,
+        "y": 52.0,
+        "z": 12.0
+      }
+    }
+  },
+  "wall": {
+    "estimated_min_mm": 2.4,
+    "threshold_mm": 1.2,
+    "passed": true,
+    "sample_count": 512,
+    "samples_per_edge": 4,
+    "thinnest_point_mm": {
+      "x": 5.656854,
+      "y": -5.656854,
+      "z": 1.5
+    },
+    "method": "inward rays from a grid on each face",
+    "note": "Estimated by shooting rays inward from a grid on each face and measuring the distance to the next roughly parallel face. A thin spot between samples is not seen, so a passing result is evidence, not proof. Features thinner than about 0.15 mm are below the sample step and may be missed."
+  },
+  "views": [
+    {
+      "name": "front",
+      "path": "examples/renders/motor_mount_front.png",
+      "width": 600,
+      "height": 514
+    },
+    {
+      "name": "back",
+      "path": "examples/renders/motor_mount_back.png",
+      "width": 600,
+      "height": 514
+    },
+    {
+      "name": "left",
+      "path": "examples/renders/motor_mount_left.png",
+      "width": 600,
+      "height": 514
+    },
+    {
+      "name": "right",
+      "path": "examples/renders/motor_mount_right.png",
+      "width": 600,
+      "height": 514
+    },
+    {
+      "name": "top",
+      "path": "examples/renders/motor_mount_top.png",
+      "width": 600,
+      "height": 514
+    },
+    {
+      "name": "bottom",
+      "path": "examples/renders/motor_mount_bottom.png",
+      "width": 600,
+      "height": 514
+    },
+    {
+      "name": "iso",
+      "path": "examples/renders/motor_mount_iso.png",
+      "width": 600,
+      "height": 514
+    },
+    {
+      "name": "contact",
+      "path": "examples/renders/motor_mount_contact.png",
+      "width": 2400,
+      "height": 1028
+    }
+  ],
+  "clearance_to_shaft": {
+    "part_a": "motor_mount",
+    "part_b": "shaft",
+    "intersecting": false,
+    "interference_volume_mm3": 0.0,
+    "min_distance_mm": 0.2,
+    "closest_point_a_mm": {
+      "x": 8.0,
+      "y": -0.0,
+      "z": 12.0
+    },
+    "closest_point_b_mm": {
+      "x": 7.8,
+      "y": -0.0,
+      "z": 12.0
+    },
+    "threshold_mm": 0.1,
+    "passed": true,
+    "note": "Interference is the volume of the boolean intersection, in mm^3. When the solids do not intersect, min_distance_mm is the gap between their surfaces. Penetration depth is not computed."
+  }
+}

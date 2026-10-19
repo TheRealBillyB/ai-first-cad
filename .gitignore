@@ -211,6 +211,10 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# aicad session workspaces
+aicad_workspace/
+examples/workspace/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
