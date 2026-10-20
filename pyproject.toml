@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aicad"
-version = "0.4.0"
+version = "0.5.0"
 description = "AI-first CAD for hard-body parts. Model a solid, then see and check it."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -34,7 +34,7 @@ Homepage = "https://github.com/TheRealBillyB/ai-first-cad"
 where = ["src"]
 
 [tool.setuptools.package-data]
-aicad = ["py.typed"]
+aicad = ["py.typed", "app_static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -26,7 +26,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    commands.add_parser("serve", parents=[common], help="Run the MCP server on stdio.")
+    serve_cmd = commands.add_parser("serve", parents=[common], help="Run the MCP server on stdio.")
+    serve_cmd.add_argument(
+        "--connect",
+        default=None,
+        help="Forward every tool to a running workspace app, for example http://127.0.0.1:8765.",
+    )
+
+    app_cmd = commands.add_parser("app", parents=[common], help="Open the workspace app in a browser.")
+    app_cmd.add_argument("--host", default="127.0.0.1")
+    app_cmd.add_argument("--port", type=int, default=8765)
+    app_cmd.add_argument("--no-browser", action="store_true", help="Serve without opening a browser.")
 
     run = commands.add_parser("run", parents=[common], help="Create or replace a part from a script.")
     run.add_argument("script", type=Path, help="Python file that assigns a solid to `part`.")
@@ -159,7 +169,12 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "serve":
         from aicad.server import serve
 
-        serve(args.workspace)
+        serve(args.workspace, connect=args.connect)
+        return 0
+    if args.command == "app":
+        from aicad.app import serve_app
+
+        serve_app(args.workspace, host=args.host, port=args.port, open_browser=not args.no_browser)
         return 0
 
     from aicad.document import Document

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>aicad workspace</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">aicad <em>workspace</em></div>
+    <nav>
+      <button type="button" id="nav-model" class="on">Model</button>
+      <button type="button" id="nav-docs">Documents</button>
+    </nav>
+    <div class="grow"></div>
+    <button type="button" id="undo" title="Undo">Undo</button>
+    <button type="button" id="redo" title="Redo">Redo</button>
+    <span id="who" class="who"></span>
+  </header>
+
+  <div id="page-model" class="shell">
+    <aside class="tree">
+      <div class="tree-head">
+        <h2>Project</h2>
+        <button type="button" id="new-sketch">New sketch</button>
+      </div>
+      <h3>Parts</h3>
+      <ul id="part-list"></ul>
+      <h3>Sketches</h3>
+      <ul id="sketch-list"></ul>
+      <h3>Features</h3>
+      <ul id="feature-list"></ul>
+    </aside>
+
+    <section class="stage">
+      <div class="stage-bar">
+        <div class="seg" id="pick-mode">
+          <button type="button" data-mode="face" class="on">Faces</button>
+          <button type="button" data-mode="edge">Edges</button>
+        </div>
+        <button type="button" id="fit">Fit</button>
+        <span id="selection-readout">Nothing selected</span>
+        <div class="grow"></div>
+        <div class="seg" id="stage-mode">
+          <button type="button" data-stage="solid" class="on">Solid</button>
+          <button type="button" data-stage="sketch">Sketch</button>
+        </div>
+      </div>
+      <div class="viewport">
+        <canvas id="view"></canvas>
+        <canvas id="sketch-canvas" hidden></canvas>
+        <div id="empty" class="empty">Create a sketch, extrude it, and the solid shows up here. An assistant using the chat changes the same document.</div>
+        <div id="sketch-status" class="sketch-status" hidden></div>
+      </div>
+      <div id="sketch-tools" class="sketch-tools" hidden>
+        <div class="seg" id="draw-tools">
+          <button type="button" data-tool="select" class="on">Select</button>
+          <button type="button" data-tool="point">Point</button>
+          <button type="button" data-tool="line">Line</button>
+          <button type="button" data-tool="circle">Circle</button>
+          <button type="button" data-tool="rectangle">Rectangle</button>
+        </div>
+        <div class="seg">
+          <button type="button" data-constraint="horizontal">Horizontal</button>
+          <button type="button" data-constraint="vertical">Vertical</button>
+          <button type="button" data-constraint="coincident">Coincident</button>
+          <button type="button" data-constraint="fix">Fix</button>
+          <button type="button" data-constraint="distance">Distance</button>
+          <button type="button" data-constraint="diameter">Diameter</button>
+        </div>
+        <div class="seg" id="dimension-list"></div>
+        <label>Height <input id="extrude-height" type="number" value="4" step="0.5" /></label>
+        <label>Part <input id="extrude-name" value="part" /></label>
+        <select id="extrude-op">
+          <option value="extrude">Extrude</option>
+          <option value="revolve">Revolve</option>
+          <option value="cut">Cut</option>
+        </select>
+        <button type="button" id="extrude" class="primary">Build solid</button>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="tabs" id="tabs">
+        <button type="button" data-tab="inspect" class="on">Inspect</button>
+        <button type="button" data-tab="section">Section</button>
+        <button type="button" data-tab="features">Features</button>
+        <button type="button" data-tab="fea">FEA</button>
+        <button type="button" data-tab="checks">Checks</button>
+      </div>
+      <div id="panel" class="panel"></div>
+    </aside>
+
+    <section class="chat" id="chat">
+      <header>
+        <strong>Assistant</strong>
+        <span id="chat-key" class="muted">No API key</span>
+        <div class="grow"></div>
+        <button type="button" id="chat-settings">Settings</button>
+      </header>
+      <div id="chat-log" class="chat-log"></div>
+      <form id="chat-form">
+        <input id="chat-input" placeholder="Ask for a change. The assistant uses the same commands as the buttons." />
+        <button type="submit" class="primary">Send</button>
+      </form>
+    </section>
+  </div>
+
+  <div id="page-docs" class="docs" hidden>
+    <aside>
+      <h2>Documents</h2>
+      <ul id="doc-list"></ul>
+      <h2>Requirements</h2>
+      <ul id="req-list"></ul>
+      <form id="req-form" class="req-form">
+        <label>Id <input id="req-id" value="mass" /></label>
+        <label>Title <input id="req-title" value="Maximum mass" /></label>
+        <label>Kind
+          <select id="req-kind">
+            <option value="max_mass">max mass</option>
+            <option value="fits_build_volume">fits build volume</option>
+            <option value="min_wall">min wall</option>
+            <option value="min_safety_factor">min safety factor</option>
+          </select>
+        </label>
+        <label>Part <input id="req-part" placeholder="plate" /></label>
+        <label>Limit <input id="req-limit" value="20" /></label>
+        <label>Material <input id="req-material" value="pla" /></label>
+        <p class="muted">Mass is grams. A build volume is three millimeters, like 200,200,200. Wall is millimeters. Safety factor is a number, and the current FEA supports and loads are stored with it.</p>
+        <button type="submit" class="primary">Add requirement</button>
+        <button type="button" id="req-run">Check now</button>
+      </form>
+    </aside>
+    <section>
+      <div class="doc-bar">
+        <strong id="doc-name">requirements.md</strong>
+        <button type="button" id="doc-save" class="primary">Save</button>
+      </div>
+      <textarea id="doc-editor" spellcheck="false"></textarea>
+      <article id="doc-preview"></article>
+    </section>
+  </div>
+
+  <dialog id="modal">
+    <form method="dialog" id="modal-form">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <menu>
+        <button type="button" id="modal-cancel" value="cancel">Cancel</button>
+        <button type="submit" class="primary" value="ok">OK</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -226,18 +226,29 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 """.strip()
 
 
-def serve(workspace: str | Path) -> None:
-    server = build_server(workspace)
+def serve(workspace: str | Path, connect: str | None = None) -> None:
+    server = build_server(workspace, connect=connect)
     server.run(transport="stdio")
 
 
-def build_server(workspace: str | Path) -> MCPServer:
-    document = Document(workspace)
+def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer:
+    if connect:
+        from aicad.app import HttpCommandClient
+
+        client = HttpCommandClient(connect)
+    else:
+        from aicad.workspace import Workspace
+
+        client = Workspace(workspace)
     mcp = MCPServer(
         "aicad",
         instructions=_INSTRUCTIONS,
-        version="0.4.0",
+        version="0.5.0",
     )
+
+    def run(command: str, **arguments):
+        payload = {key: value for key, value in arguments.items() if value is not None}
+        return client.execute(command, payload, source="mcp")
 
     def guard(fn):
         try:
@@ -248,7 +259,7 @@ def build_server(workspace: str | Path) -> MCPServer:
     @mcp.tool()
     def list_parts() -> dict:
         """List the parts in the current document, with volume and bounding box."""
-        return guard(lambda: {"units": "mm", "parts": [part.to_dict() for part in document.list_parts()]})
+        return guard(lambda: run("list_parts"))
 
     @mcp.tool()
     def create_part_from_script(name: str, script: str) -> dict:
@@ -258,12 +269,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         `plate = Box(40, 20, 3)` then `part = plate`. After this returns, call
         inspect_part and look at the pictures before editing again.
         """
-        return guard(
-            lambda: {
-                "part": document.create_part_from_script(name, script).to_dict(),
-                "next": "Call inspect_part and look at the contact sheet before the next edit.",
-            }
-        )
+        return guard(lambda: run("create_part_from_script", name=name, script=script))
 
     @mcp.tool()
     def create_part_from_ops(name: str, ops: list[dict[str, Any]]) -> dict:
@@ -274,51 +280,32 @@ def build_server(workspace: str | Path) -> MCPServer:
         Optional `center` [x, y, z] and, for cylinders, `axis` [x, y, z].
         Then call inspect_part.
         """
-        return guard(
-            lambda: {
-                "part": document.create_part_from_ops(name, ops).to_dict(),
-                "next": "Call inspect_part and look at the contact sheet before the next edit.",
-            }
-        )
+        return guard(lambda: run("create_part_from_ops", name=name, ops=ops))
 
     @mcp.tool()
     def update_part_script(name: str, script: str) -> dict:
         """Replace a part by running a new script. A failed script keeps the old solid."""
-        return guard(
-            lambda: {
-                "part": document.update_part_script(name, script).to_dict(),
-                "next": "Call inspect_part and look at the contact sheet before the next edit.",
-            }
-        )
+        return guard(lambda: run("update_part_script", name=name, script=script))
 
     @mcp.tool()
     def update_part_ops(name: str, ops: list[dict[str, Any]]) -> dict:
         """Replace a part with a new operation list. A failed rebuild keeps the old solid."""
-        return guard(
-            lambda: {
-                "part": document.update_part_ops(name, ops).to_dict(),
-                "next": "Call inspect_part and look at the contact sheet before the next edit.",
-            }
-        )
+        return guard(lambda: run("update_part_ops", name=name, ops=ops))
 
     @mcp.tool()
     def delete_part(name: str) -> dict:
         """Delete a part and its rendered views from the document."""
-        def _delete() -> dict:
-            document.delete_part(name)
-            return {"deleted": name}
-
-        return guard(_delete)
+        return guard(lambda: run("delete_part", name=name))
 
     @mcp.tool()
     def get_part_source(name: str) -> dict:
         """Return the script, operations, or STEP note that rebuilds this part."""
-        return guard(lambda: document.get_source(name))
+        return guard(lambda: run("get_part_source", name=name))
 
     @mcp.tool()
     def measure_part(name: str) -> dict:
         """Bounding box, volume, area, center of mass, counts, valid, and watertight."""
-        return guard(lambda: document.measure(name).to_dict())
+        return guard(lambda: run("measure_part", name=name))
 
     @mcp.tool()
     def check_wall_thickness(name: str, min_wall_mm: float, samples: int = 4) -> dict:
@@ -327,7 +314,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         The estimate samples each face. It can miss a thin spot between samples.
         A typical FDM rule of thumb is 1.2 mm. `samples` is 1 to 8 per face edge.
         """
-        return guard(lambda: document.check_wall_thickness(name, min_wall_mm, samples).to_dict())
+        return guard(lambda: run("check_wall_thickness", name=name, min_wall_mm=min_wall_mm, samples=samples))
 
     @mcp.tool()
     def check_clearance(part_a: str, part_b: str, min_clearance_mm: float = 0.0) -> dict:
@@ -338,7 +325,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         `min_clearance_mm` of 0 requires that the parts do not touch or overlap.
         """
         return guard(
-            lambda: document.check_clearance(part_a, part_b, min_clearance_mm).to_dict()
+            lambda: run("check_clearance", part_a=part_a, part_b=part_b, min_clearance_mm=min_clearance_mm)
         )
 
     @mcp.tool()
@@ -347,11 +334,7 @@ def build_server(workspace: str | Path) -> MCPServer:
 
         The images are what the part looks like. The text lists their file paths.
         """
-        def _render() -> list[str | Image]:
-            report_views = document.render(name)
-            return _with_images({"views": [view.to_dict() for view in report_views]}, report_views)
-
-        return guard(_render)
+        return guard(lambda: _images(run("render_part", name=name)))
 
     @mcp.tool()
     def inspect_part(
@@ -363,11 +346,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         Look at the contact sheet, then the individual views. Do not treat a script
         that ran cleanly as a part that is correct.
         """
-        def _inspect() -> list[str | Image]:
-            report: InspectReport = document.inspect(name, min_wall_mm, samples)
-            return _with_images(report.to_dict(), report.views)
-
-        return guard(_inspect)
+        return guard(lambda: _images(run("inspect_part", name=name, min_wall_mm=min_wall_mm, samples=samples)))
 
     @mcp.tool()
     def export_part(name: str, format: str, path: str | None = None) -> dict:
@@ -376,14 +355,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         `path` is optional. When omitted, the file is written under the workspace
         exports directory. STEP is the solid; STL is a triangle mesh for printing.
         """
-        def _export() -> dict:
-            destination = path
-            if destination is None:
-                destination = str(document.workspace / "exports" / f"{name}.{format}")
-            written = document.export(name, destination, format)
-            return {"format": format, "path": str(written), "bytes": written.stat().st_size}
-
-        return guard(_export)
+        return guard(lambda: run("export_part", name=name, format=format, path=path))
 
     @mcp.tool()
     def feature_report(name: str) -> dict:
@@ -393,7 +365,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         A cut is flagged when it removes nothing. Parts built without feature.add
         or feature.cut return tracked=false. Operation lists are always tracked.
         """
-        return guard(lambda: document.feature_report(name).to_dict())
+        return guard(lambda: run("feature_report", name=name))
 
     @mcp.tool()
     def section_part(
@@ -409,23 +381,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         normal as [x, y, z]. The image is the cut. area_mm2 is the material in
         that plane. Use this to see whether a rib is buried inside a boss.
         """
-        def _section() -> list[str | Image]:
-            if origin is not None or normal is not None:
-                if origin is None or normal is None:
-                    raise ToolError("An arbitrary section needs both origin and normal.")
-                plane = {"origin": origin, "normal": normal}
-            elif axis is not None:
-                plane = {"axis": axis, "offset": offset}
-            else:
-                raise ToolError("Pass axis and offset, or origin and normal.")
-            report = document.section(name, plane)
-            view = report.view
-            payload = report.to_dict()
-            if view is None:
-                return [json.dumps(payload, indent=2)]
-            return [json.dumps(payload, indent=2), Image(path=view.path)]
-
-        return guard(_section)
+        return guard(lambda: _images(run("section_part", name=name, axis=axis, offset=offset, origin=origin, normal=normal)))
 
     @mcp.tool()
     def create_sketch(name: str, spec: dict[str, Any]) -> list[str | Image]:
@@ -443,11 +399,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         are still free), or over_constrained (which constraints conflict).
         The image shows the solved sketch with dimensions labeled.
         """
-        def _create() -> list[str | Image]:
-            report = document.create_sketch(name, spec)
-            return _with_images(report.to_dict(), [report.view] if report.view else [])
-
-        return guard(_create)
+        return guard(lambda: _images(run("create_sketch", name=name, spec=spec)))
 
     @mcp.tool()
     def get_sketch(name: str) -> list[str | Image]:
@@ -455,11 +407,7 @@ def build_server(workspace: str | Path) -> MCPServer:
 
         Read status, dof, free, and conflicts before building a solid from it.
         """
-        def _get() -> list[str | Image]:
-            report = document.get_sketch(name)
-            return _with_images(report.to_dict(), [report.view] if report.view else [])
-
-        return guard(_get)
+        return guard(lambda: _images(run("get_sketch", name=name)))
 
     @mcp.tool()
     def set_dimension(sketch: str, dimension: str, value: float) -> list[str | Image]:
@@ -469,18 +417,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         dimension is the circle's diameter. A conflicting value is rejected
         and the previous solid stays. rebuilt_parts lists the solids that changed.
         """
-        def _set() -> list[str | Image]:
-            report = document.set_dimension(sketch, dimension, value)
-            rebuilt = []
-            for part in document.list_parts():
-                source = document.get_source(part.name)
-                if source.get("sketch") == sketch:
-                    rebuilt.append(part.to_dict())
-            payload = report.to_dict()
-            payload["rebuilt_parts"] = rebuilt
-            return _with_images(payload, [report.view] if report.view else [])
-
-        return guard(_set)
+        return guard(lambda: _images(run("set_dimension", sketch=sketch, dimension=dimension, value=value)))
 
     @mcp.tool()
     def create_part_from_sketch(name: str, sketch: str, steps: list[dict[str, Any]]) -> list[str | Image]:
@@ -496,29 +433,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         under-constrained sketch builds the current solution and the report
         names what is still free. Then call inspect_part.
         """
-        def _build() -> list[str | Image]:
-            info = document.create_part_from_sketch(name, sketch, steps)
-            report = document.get_sketch(sketch)
-            payload = {
-                "part": info.to_dict(),
-                "sketch": {
-                    "name": report.name,
-                    "status": report.status,
-                    "dof": report.dof,
-                    "free": report.free,
-                    "conflicts": report.conflicts,
-                    "dimensions": report.dimensions,
-                    "note": report.note,
-                },
-                "next": "Call inspect_part and look at the contact sheet before the next edit.",
-            }
-            if report.status == "under_constrained":
-                payload["sketch"]["warning"] = (
-                    "Built from an under-constrained sketch. Free entities can still move."
-                )
-            return _with_images(payload, [report.view] if report.view else [])
-
-        return guard(_build)
+        return guard(lambda: _images(run("create_part_from_sketch", name=name, sketch=sketch, steps=steps)))
 
     @mcp.tool()
     def search_parts(query: str = "") -> dict:
@@ -528,7 +443,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         'bearing', or '608'. Screws need a length when inserted. A screw's shank
         points down, with the underside of the head on local z=0.
         """
-        return guard(lambda: document.search_parts(query))
+        return guard(lambda: run("search_parts", query=query))
 
     @mcp.tool()
     def insert_standard_part(
@@ -549,12 +464,16 @@ def build_server(workspace: str | Path) -> MCPServer:
         and is applied before the translation. Then check_clearance against your part.
         """
         return guard(
-            lambda: {
-                "part": document.insert_standard_part(
-                    name, kind, size, length, position, rotation_deg, fastener_type
-                ).to_dict(),
-                "next": "Call check_clearance against the mating part, and inspect_part to see it.",
-            }
+            lambda: run(
+                "insert_standard_part",
+                name=name,
+                kind=kind,
+                size=size,
+                length=length,
+                position=position,
+                rotation_deg=rotation_deg,
+                fastener_type=fastener_type,
+            )
         )
 
     @mcp.tool()
@@ -568,12 +487,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         position is [x, y, z] in millimeters. rotation_deg is degrees about X, Y, and Z,
         applied before the translation.
         """
-        return guard(
-            lambda: {
-                "part": document.place_part(name, position, rotation_deg).to_dict(),
-                "next": "Call check_clearance if this part should fit another part.",
-            }
-        )
+        return guard(lambda: run("place_part", name=name, position=position, rotation_deg=rotation_deg))
 
     @mcp.tool()
     def list_materials() -> dict:
@@ -585,7 +499,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         certified allowable. Printed materials are weaker across layers than
         the in-plane number used here.
         """
-        return guard(document.list_materials)
+        return guard(lambda: run("list_materials"))
 
     @mcp.tool()
     def describe_faces(name: str) -> dict:
@@ -596,7 +510,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         names do not survive a boolean, so select by geometry in solve_mechanics:
         plane plus normal, cylinder plus radius, nearest plus at, or an index.
         """
-        return guard(lambda: document.describe_faces(name))
+        return guard(lambda: run("describe_faces", name=name))
 
     @mcp.tool()
     def solve_mechanics(name: str, setup: dict[str, Any]) -> list[str | Image]:
@@ -615,11 +529,7 @@ def build_server(workspace: str | Path) -> MCPServer:
         pass, fail, or inconclusive. Overstressed regions are candidates for
         added material; nearly unloaded regions are candidates for removed material.
         """
-        def _solve() -> list[str | Image]:
-            report = document.solve_mechanics(name, setup)
-            return _with_images(report.to_dict(), report.views)
-
-        return guard(_solve)
+        return guard(lambda: _images(run("solve_mechanics", name=name, setup=setup)))
 
     @mcp.tool()
     def import_step(name: str, path: str) -> dict:
@@ -629,12 +539,62 @@ def build_server(workspace: str | Path) -> MCPServer:
         clearance against. The file is copied into the workspace so the part
         can be rebuilt later.
         """
-        return guard(
-            lambda: {
-                "part": document.import_step(name, path).to_dict(),
-                "next": "Call inspect_part if you need to see the imported solid.",
-            }
-        )
+        return guard(lambda: run("import_step", name=name, path=path))
+
+    @mcp.tool()
+    def describe_edges(name: str) -> dict:
+        """List edges with stable ref strings, the same strings a click in the workspace uses."""
+        return guard(lambda: run("describe_edges", name=name))
+
+    @mcp.tool()
+    def update_sketch(name: str, spec: dict[str, Any]) -> list[str | Image]:
+        """Replace a sketch and rebuild parts made from it. The report says if it is fully constrained."""
+        return guard(lambda: _images(run("update_sketch", name=name, spec=spec)))
+
+    @mcp.tool()
+    def update_part_from_sketch(name: str, sketch: str, steps: list[dict[str, Any]]) -> list[str | Image]:
+        """Replace a part with new extrude, revolve, or cut steps from a sketch."""
+        return guard(lambda: _images(run("update_part_from_sketch", name=name, sketch=sketch, steps=steps)))
+
+    @mcp.tool()
+    def set_selection(part: str | None = None, faces: list[str] | None = None, edges: list[str] | None = None) -> dict:
+        """Select faces and edges by ref. The workspace viewport highlights the same selection."""
+        return guard(lambda: run("set_selection", part=part, faces=faces, edges=edges))
+
+    @mcp.tool()
+    def get_requirements() -> dict:
+        """Structured requirements and the latest pass, fail, or unchecked result for each."""
+        return guard(lambda: run("get_requirements"))
+
+    @mcp.tool()
+    def set_requirements(requirements: list[dict[str, Any]]) -> dict:
+        """Replace structured requirements. Kinds: max_mass, fits_build_volume, min_wall, min_safety_factor."""
+        return guard(lambda: run("set_requirements", requirements=requirements))
+
+    @mcp.tool()
+    def check_requirements(run_checks: bool = True) -> dict:
+        """Score requirements against the current design. Safety-factor checks solve when run_checks is true."""
+        return guard(lambda: run("check_requirements", run=run_checks))
+
+    @mcp.tool()
+    def list_documents() -> dict:
+        """List the project's markdown notes."""
+        return guard(lambda: run("list_documents"))
+
+    @mcp.tool()
+    def read_document(name: str) -> dict:
+        """Read one markdown note, such as decisions.md."""
+        return guard(lambda: run("read_document", name=name))
+
+    @mcp.tool()
+    def write_document(name: str, markdown: str) -> dict:
+        """Write a markdown note in the project documents folder."""
+        return guard(lambda: run("write_document", name=name, markdown=markdown))
+
+    @mcp.tool()
+    def get_state() -> dict:
+        """Parts, sketches, the current selection, requirement checks, and the latest panels."""
+        return guard(lambda: run("get_state"))
 
     @mcp.resource("aicad://guide", mime_type="text/markdown")
     def guide() -> str:
@@ -642,6 +602,25 @@ def build_server(workspace: str | Path) -> MCPServer:
         return _GUIDE
 
     return mcp
+
+
+def _images(payload: dict) -> list[str | Image]:
+    views = []
+    for view in payload.get("views") or []:
+        if isinstance(view, dict) and view.get("path"):
+            views.append(_View(view.get("name") or "view", view["path"]))
+    single = payload.get("view")
+    if isinstance(single, dict) and single.get("path"):
+        views.append(_View(single.get("name") or "view", single["path"]))
+    if not views:
+        return [json.dumps(payload, indent=2)]
+    return _with_images(payload, views)
+
+
+class _View:
+    def __init__(self, name: str, path: str):
+        self.name = name
+        self.path = path
 
 
 def _with_images(payload: dict, views) -> list[str | Image]:

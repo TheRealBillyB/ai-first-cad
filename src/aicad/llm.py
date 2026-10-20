@@ -1,0 +1,329 @@
+"""In-app assistant. The person brings an API key. Tool calls are workspace commands.
+
+Settings live in ``~/.config/aicad/settings.json`` (or ``$AICAD_SETTINGS``),
+mode 0600. The key is never written into the project.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Callable
+
+from aicad.errors import AICADError, GeometryError
+from aicad.workspace import COMMANDS, Workspace
+
+_SYSTEM = """
+You are the modeling assistant inside the aicad workspace. A person is looking
+at the same document you are changing. Units are millimeters. Forces are
+newtons and stress is megapascals.
+
+Every change goes through a tool. The viewport, the parts list, and the
+requirement checks update as soon as a tool returns. Read get_state or
+describe_faces before you guess a face. Face and edge refs are strings such
+as plane/z+/0,0,4 and cylinder/r1.7/z+/30,-20,2. Use those refs in
+set_selection and in solve_mechanics selectors: {"ref": "..."}.
+
+After you change geometry, call inspect_part. If the project has requirements,
+call check_requirements. A sketch reports fully_constrained, under_constrained,
+or over_constrained. A point-to-line distance is signed: positive is to the
+right of the directed line.
+
+Do not invent a geometry kernel. Use the tools. Keep replies short and say
+what changed and what the checks say.
+""".strip()
+
+
+def settings_path() -> Path:
+    override = os.environ.get("AICAD_SETTINGS")
+    if override:
+        return Path(override)
+    return Path.home() / ".config" / "aicad" / "settings.json"
+
+
+def load_settings() -> dict[str, Any]:
+    path = settings_path()
+    if not path.is_file():
+        return _defaults()
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise GeometryError(f"Could not read LLM settings {path}: {exc}") from exc
+    merged = _defaults()
+    if isinstance(stored, dict):
+        merged.update({key: value for key, value in stored.items() if key in merged})
+    return merged
+
+
+def save_settings(incoming: dict) -> dict[str, Any]:
+    current = load_settings()
+    for key in ("provider", "base_url", "model", "api_key"):
+        if key in incoming and incoming[key] is not None:
+            current[key] = str(incoming[key]).strip()
+    if current["provider"] not in ("openai", "anthropic", "compatible"):
+        raise GeometryError("provider must be openai, anthropic, or compatible.")
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return public_settings(current)
+
+
+def public_settings(settings: dict | None = None) -> dict[str, Any]:
+    settings = settings if settings is not None else load_settings()
+    key = str(settings.get("api_key") or "")
+    return {
+        "provider": settings.get("provider") or "openai",
+        "base_url": settings.get("base_url") or "",
+        "model": settings.get("model") or "",
+        "has_key": bool(key),
+        "key_hint": ("…" + key[-4:]) if len(key) >= 4 else "",
+    }
+
+
+def _defaults() -> dict[str, str]:
+    return {
+        "provider": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+        "api_key": "",
+    }
+
+
+def tool_specs() -> list[dict]:
+    specs = []
+    for command in COMMANDS.values():
+        if command.name == "mesh_part":
+            continue
+        specs.append(
+            {
+                "name": command.name,
+                "description": command.description,
+                "parameters": command.parameters,
+            }
+        )
+    specs.append(
+        {
+            "name": "undo",
+            "description": "Undo the last change to the document, notes, or requirements.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        }
+    )
+    specs.append(
+        {
+            "name": "redo",
+            "description": "Redo the last undone change.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        }
+    )
+    return specs
+
+
+def run_turn(
+    workspace: Workspace,
+    messages: list[dict],
+    on_event: Callable[[str, dict], None],
+    settings: dict | None = None,
+) -> None:
+    """One user turn: call the model, run tool calls, repeat until it stops."""
+    settings = settings if settings is not None else load_settings()
+    if not str(settings.get("api_key") or "").strip():
+        raise GeometryError(
+            "Add an API key in the assistant settings. The key stays in your user config, not in the project."
+        )
+    transcript: list[dict] = [{"role": "system", "content": _SYSTEM}]
+    for message in messages:
+        transcript.append({"role": message["role"], "content": message.get("content") or ""})
+    provider = settings.get("provider") or "openai"
+    for _round in range(8):
+        if provider == "anthropic":
+            message = _anthropic(settings, transcript)
+        else:
+            message = _openai(settings, transcript)
+        if message.get("content"):
+            on_event("text", {"text": message["content"]})
+        tool_calls = message.get("tool_calls") or []
+        transcript.append(message)
+        if not tool_calls:
+            return
+        for call in tool_calls:
+            name = call["name"]
+            arguments = call.get("arguments") or {}
+            try:
+                result = workspace.execute(name, arguments, source="chat")
+                payload: dict | None = _shrink(result)
+                ok = True
+                error = None
+            except AICADError as exc:
+                payload = None
+                ok = False
+                error = str(exc)
+            on_event(
+                "tool",
+                {"name": name, "arguments": arguments, "ok": ok, "error": error, "result": payload},
+            )
+            transcript.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.get("id") or name,
+                    "name": name,
+                    "content": json.dumps(payload if ok else {"error": error}),
+                }
+            )
+    on_event("text", {"text": "Stopped after 8 tool rounds."})
+
+
+def _openai(settings: dict, transcript: list[dict]) -> dict:
+    url = str(settings.get("base_url") or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
+    tools = [
+        {"type": "function", "function": {"name": spec["name"], "description": spec["description"], "parameters": spec["parameters"]}}
+        for spec in tool_specs()
+    ]
+    messages = []
+    for item in transcript:
+        if item["role"] == "tool":
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": item["tool_call_id"],
+                    "content": item["content"],
+                }
+            )
+            continue
+        message: dict[str, Any] = {"role": item["role"], "content": item.get("content") or ""}
+        if item.get("tool_calls"):
+            message["tool_calls"] = [
+                {
+                    "id": call.get("id") or call["name"],
+                    "type": "function",
+                    "function": {"name": call["name"], "arguments": json.dumps(call.get("arguments") or {})},
+                }
+                for call in item["tool_calls"]
+            ]
+        messages.append(message)
+    body = {
+        "model": settings.get("model") or "gpt-4o-mini",
+        "messages": messages,
+        "tools": tools,
+    }
+    payload = _post(url, body, {"Authorization": f"Bearer {settings['api_key']}", "Content-Type": "application/json"})
+    choice = payload["choices"][0]["message"]
+    calls = []
+    for call in choice.get("tool_calls") or []:
+        function = call.get("function") or {}
+        raw = function.get("arguments") or "{}"
+        try:
+            arguments = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            arguments = {}
+        calls.append({"id": call.get("id"), "name": function.get("name"), "arguments": arguments})
+    return {"role": "assistant", "content": choice.get("content") or "", "tool_calls": calls}
+
+
+def _anthropic(settings: dict, transcript: list[dict]) -> dict:
+    tools = [
+        {"name": spec["name"], "description": spec["description"], "input_schema": spec["parameters"]}
+        for spec in tool_specs()
+    ]
+    system = ""
+    messages: list[dict] = []
+    for item in transcript:
+        if item["role"] == "system":
+            system = item["content"]
+            continue
+        if item["role"] == "tool":
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": item["tool_call_id"],
+                            "content": item["content"],
+                        }
+                    ],
+                }
+            )
+            continue
+        if item["role"] == "assistant" and item.get("tool_calls"):
+            content: list[dict] = []
+            if item.get("content"):
+                content.append({"type": "text", "text": item["content"]})
+            for call in item["tool_calls"]:
+                content.append(
+                    {
+                        "type": "tool_use",
+                        "id": call.get("id") or call["name"],
+                        "name": call["name"],
+                        "input": call.get("arguments") or {},
+                    }
+                )
+            messages.append({"role": "assistant", "content": content})
+            continue
+        messages.append({"role": item["role"], "content": item.get("content") or ""})
+    body = {
+        "model": settings.get("model") or "claude-sonnet-4-5",
+        "max_tokens": 2048,
+        "system": system,
+        "messages": messages,
+        "tools": tools,
+    }
+    payload = _post(
+        "https://api.anthropic.com/v1/messages",
+        body,
+        {
+            "x-api-key": settings["api_key"],
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+    )
+    text = []
+    calls = []
+    for block in payload.get("content") or []:
+        if block.get("type") == "text":
+            text.append(block.get("text") or "")
+        elif block.get("type") == "tool_use":
+            calls.append(
+                {
+                    "id": block.get("id"),
+                    "name": block.get("name"),
+                    "arguments": block.get("input") or {},
+                }
+            )
+    return {"role": "assistant", "content": "\n".join(text).strip(), "tool_calls": calls}
+
+
+def _post(url: str, body: dict, headers: dict) -> dict:
+    request = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise GeometryError(f"The model API returned {exc.code}. {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise GeometryError(f"Could not reach the model API. {exc.reason}") from exc
+
+
+def _shrink(result: dict) -> dict:
+    """Drop bulky geometry so a tool result still fits in a chat context."""
+    if not isinstance(result, dict):
+        return {"value": result}
+    slim = {}
+    for key, value in result.items():
+        if key in ("geometry", "positions", "normals", "triangle_face"):
+            continue
+        if key == "views" and isinstance(value, list):
+            slim[key] = [{"name": view.get("name"), "path": view.get("path")} for view in value if isinstance(view, dict)]
+            continue
+        slim[key] = value
+    text = json.dumps(slim)
+    if len(text) > 12000:
+        return {"note": "Result truncated.", "preview": text[:12000]}
+    return slim
