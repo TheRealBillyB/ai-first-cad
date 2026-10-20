@@ -71,7 +71,7 @@ def reflect(loads: list[dict], solved: dict, spec: dict, actuators: list[dict]) 
             continue
         if driven in actuated:
             continue
-        ratio = _instant_ratio(relation, solved)
+        ratio = _instant_ratio(relation, solved, spec)
         driven_row = by_name[driven]
         driver_row = by_name[driver]
         # Virtual work with driven = ratio * driver. Mixed units convert mm and degrees.
@@ -283,13 +283,20 @@ def _rate(previous: dict | None, load: dict, dt: float) -> dict:
     return {"value_per_s": delta / dt, "delta_value": delta}
 
 
-def _instant_ratio(relation: dict, solved: dict) -> float:
+def _instant_ratio(relation: dict, solved: dict, spec: dict) -> float:
     if relation["type"] == "gear":
         return float(relation.get("ratio") or 1.0)
-    from aicad.kinematics import _four_bar
-
     driver = next(joint["value"] for joint in solved["joints"] if joint["name"] == relation["driver"])
     step = 0.5
+    if relation["type"] == "cylinder":
+        from aicad.kinematics import _cylinder
+
+        joints = {joint["name"]: joint for joint in spec["joints"]}
+        high, _extension, _offset = _cylinder(relation, joints, driver + step)
+        low, _extension, _offset = _cylinder(relation, joints, driver - step)
+        return (high - low) / (2 * step)
+    from aicad.kinematics import _four_bar
+
     high = _four_bar(relation, driver + step)
     low = _four_bar(relation, driver - step)
     return (high - low) / (2 * step)

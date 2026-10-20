@@ -173,9 +173,8 @@ def _rasterize(
             )
             _paint_triangle_color(image, depth, p0, p1, p2, colored)
 
-    if mesh.colors is not None:
-        return image, depth
-    bias = 0.35
+    # Colored assemblies used to return here, so a fabricated joint lost its edges.
+    bias = 0.85 if mesh.colors is not None else 0.35
     for polyline in mesh.edges:
         projected = _project(polyline, x_cam, y_cam, z_cam, scale, width, height, center)
         for start, end in zip(projected[:-1], projected[1:]):
@@ -215,8 +214,8 @@ def _shade(normal: np.ndarray, key: np.ndarray, fill: np.ndarray) -> float:
     if length < 1e-9:
         return 0.55
     direction = normal / length
-    lit = 0.72 * abs(float(direction @ key)) + 0.28 * abs(float(direction @ fill))
-    return 0.34 + 0.66 * lit
+    lit = 0.78 * abs(float(direction @ key)) + 0.22 * abs(float(direction @ fill))
+    return 0.20 + 0.80 * lit
 
 
 def _paint_triangle(

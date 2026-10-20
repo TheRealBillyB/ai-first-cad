@@ -426,6 +426,106 @@ def test_rod_arm_lifts_and_reports_cables_and_power(tmp_path):
     assert 0 in walk["colliding_frames"]
 
 
+def _cylinder_spec(stroke_max: float) -> dict:
+    return {
+        "name": "cyl",
+        "instances": [
+            {"name": "base", "part": "base", "color": [10, 20, 30]},
+            {"name": "arm", "part": "arm"},
+            {"name": "barrel", "part": "barrel"},
+            {"name": "rod", "part": "rod"},
+        ],
+        "joints": [
+            {
+                "name": "shoulder",
+                "type": "revolute",
+                "parent": "base",
+                "child": "arm",
+                "axis": [0, 1, 0],
+                "value": 0,
+            },
+            {
+                "name": "barrel",
+                "type": "revolute",
+                "parent": "base",
+                "child": "barrel",
+                "parent_anchor": [-50, 0, 0],
+                "axis": [0, 1, 0],
+                "value": 0,
+            },
+            {
+                "name": "stroke",
+                "type": "prismatic",
+                "parent": "barrel",
+                "child": "rod",
+                "parent_anchor": [100, 0, 0],
+                "axis": [1, 0, 0],
+                "min": 0,
+                "max": stroke_max,
+            },
+        ],
+        "relations": [
+            {
+                "name": "lift",
+                "type": "cylinder",
+                "driver": "shoulder",
+                "driven": "barrel",
+                "stroke": "stroke",
+                "moving_anchor": [100, 0, 0],
+                "retracted_mm": 100,
+            }
+        ],
+    }
+
+
+def test_cylinder_relation_puts_the_rod_eye_on_the_clevis():
+    solved = solve(_cylinder_spec(80), {"shoulder": 90})
+    values = {joint["name"]: joint for joint in solved["joints"]}
+    assert values["barrel"]["value"] == pytest.approx(63.435, abs=0.05)
+    assert values["stroke"]["value"] == pytest.approx(11.803, abs=0.05)
+    assert values["stroke"]["driven"] is True
+    rod = next(instance for instance in solved["instances"] if instance["name"] == "rod")
+    assert rod["origin_mm"] == pytest.approx([0.0, 0.0, -100.0], abs=0.05)
+    relation = solved["relations"][0]
+    assert relation["stroke_mm"] == pytest.approx(11.803, abs=0.05)
+
+
+def test_cylinder_stroke_clamps_at_the_joint_limit():
+    solved = solve(_cylinder_spec(40))
+    stroke = next(joint for joint in solved["joints"] if joint["name"] == "stroke")
+    assert stroke["commanded"] == pytest.approx(50.0, abs=1e-3)
+    assert stroke["value"] == pytest.approx(40.0, abs=1e-3)
+    assert stroke["limit"] == "clamped"
+    assert solved["warnings"]
+
+
+def test_assembly_mesh_colors_each_part(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [10, 10, 10], [0, 0, 0])
+    _box(document, "arm", [20, 10, 10], [10, 0, 0])
+    document.create_assembly(
+        {
+            "name": "painted",
+            "instances": [
+                {"name": "base", "part": "base", "color": [10, 20, 30]},
+                {"name": "arm", "part": "arm"},
+            ],
+            "joints": [
+                {
+                    "name": "hinge",
+                    "type": "revolute",
+                    "parent": "base",
+                    "child": "arm",
+                    "axis": [0, 1, 0],
+                }
+            ],
+        }
+    )
+    mesh = document.assembly_mesh("painted")
+    assert len(mesh["colors"]) == len(mesh["positions"])
+    assert mesh["colors"][0:3] == [10.0, 20.0, 30.0]
+
+
 def test_fixed_actuator_is_rejected(tmp_path):
     document = Document(tmp_path)
     _box(document, "base", [10, 10, 10], [0, 0, 0])

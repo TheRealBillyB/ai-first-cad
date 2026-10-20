@@ -19,14 +19,21 @@ from aicad.kinematics import apply_pose, expand_motion, normalize, solve, transf
 from aicad.power import actuators_for, estimate_sequence, joint_loads, reflect
 from aicad.render import render_motion_frames
 
+# Distinct enough that a fabricated joint, a yellow cylinder, and a dark rod
+# separate in one picture. An instance may override this with color: [r, g, b].
 _PALETTE = (
-    (176.0, 186.0, 196.0),
-    (196.0, 160.0, 122.0),
-    (150.0, 176.0, 154.0),
-    (186.0, 146.0, 132.0),
-    (154.0, 162.0, 188.0),
-    (188.0, 176.0, 122.0),
-    (164.0, 164.0, 168.0),
+    (78.0, 84.0, 92.0),
+    (186.0, 194.0, 204.0),
+    (46.0, 104.0, 168.0),
+    (196.0, 114.0, 48.0),
+    (214.0, 176.0, 42.0),
+    (222.0, 198.0, 130.0),
+    (36.0, 40.0, 46.0),
+    (164.0, 108.0, 58.0),
+    (176.0, 64.0, 52.0),
+    (72.0, 132.0, 96.0),
+    (116.0, 96.0, 164.0),
+    (214.0, 216.0, 220.0),
 )
 
 
@@ -59,9 +66,10 @@ def collisions(solved: dict, placed: dict[str, kernel.Shape], ignore: list[list[
         for right in names[index + 1 :]:
             if tuple(sorted((left, right))) in skip:
                 continue
-            overlap, distance, point_a, point_b = kernel.clearance_between(placed[left], placed[right])
+            overlap = kernel.overlap_volume(placed[left], placed[right])
             if overlap <= 1e-3:
                 continue
+            _overlap, distance, point_a, point_b = kernel.clearance_between(placed[left], placed[right])
             at = point_a or point_b
             hits.append(
                 {
@@ -217,11 +225,13 @@ def preview_mesh(spec: dict, shapes: dict[str, kernel.Shape], overrides: dict | 
     solved, _placed = posed_shapes(spec, shapes, overrides)
     positions: list[float] = []
     normals: list[float] = []
+    colors: list[float] = []
     triangle_face: list[int] = []
     faces = []
     edges = []
     for index, instance in enumerate(solved["instances"]):
         piece = _transform_mesh(kernel.tessellate(shapes[instance["part"]]), instance["matrix"])
+        color = _instance_color(instance, index)
         faces.append(
             {
                 "index": index,
@@ -236,6 +246,7 @@ def preview_mesh(spec: dict, shapes: dict[str, kernel.Shape], overrides: dict | 
                 normal = piece.normals[int(corner)]
                 positions.extend(float(component) for component in vertex)
                 normals.extend(float(component) for component in normal)
+                colors.extend(color)
             triangle_face.append(index)
         for edge in piece.edges:
             edges.append(
@@ -256,6 +267,7 @@ def preview_mesh(spec: dict, shapes: dict[str, kernel.Shape], overrides: dict | 
         "units": "mm",
         "positions": [round(value, 4) for value in positions],
         "normals": [round(value, 4) for value in normals],
+        "colors": [round(value, 1) for value in colors],
         "triangle_face": triangle_face,
         "faces": faces,
         "edges": edges,
@@ -340,11 +352,18 @@ def _near_waypoint(sample: list[float], points: list[dict], instance: str, seat:
     return False
 
 
+def _instance_color(instance: dict, index: int) -> tuple[float, float, float]:
+    color = instance.get("color")
+    if color:
+        return (float(color[0]), float(color[1]), float(color[2]))
+    return _PALETTE[index % len(_PALETTE)]
+
+
 def _colored_mesh(shapes: dict[str, kernel.Shape], solved: dict) -> kernel.TriangleMesh:
     pieces = []
     for index, instance in enumerate(solved["instances"]):
         piece = _transform_mesh(kernel.tessellate(shapes[instance["part"]]), instance["matrix"])
-        color = np.array(_PALETTE[index % len(_PALETTE)], dtype=np.float64)
+        color = np.array(_instance_color(instance, index), dtype=np.float64)
         piece.colors = np.tile(color, (len(piece.vertices), 1))
         pieces.append(piece)
     return _concatenate(pieces)

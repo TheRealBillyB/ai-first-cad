@@ -872,6 +872,19 @@ function drawSolid() {
   gl.useProgram(view.program);
   bindAttr(gl, view.program, "aPos", new Float32Array(ui.mesh.positions), 3);
   bindAttr(gl, view.program, "aNormal", new Float32Array(ui.mesh.normals), 3);
+  const vertexCount = ui.mesh.positions.length / 3;
+  const colors = new Float32Array(vertexCount * 3);
+  const source = ui.mesh.colors;
+  if (source && source.length === ui.mesh.positions.length) {
+    for (let i = 0; i < source.length; i += 1) colors[i] = source[i] / 255;
+  } else {
+    for (let i = 0; i < vertexCount; i += 1) {
+      colors[i * 3] = 0.72;
+      colors[i * 3 + 1] = 0.66;
+      colors[i * 3 + 2] = 0.56;
+    }
+  }
+  bindAttr(gl, view.program, "aColor", colors, 3);
   const selected = new Float32Array(ui.mesh.triangle_face.length * 3);
   ui.mesh.triangle_face.forEach((face, index) => {
     const on = ui.selectedFaces.includes(ui.mesh.faces[face].ref) ? 1 : 0;
@@ -1641,23 +1654,29 @@ function transformPoint(matrix, point) {
 const SOLID_VS = `
 attribute vec3 aPos;
 attribute vec3 aNormal;
+attribute vec3 aColor;
 attribute float aSelect;
 uniform mat4 uMvp;
 varying vec3 vNormal;
+varying vec3 vColor;
 varying float vSelect;
 void main() {
   vNormal = aNormal;
+  vColor = aColor;
   vSelect = aSelect;
   gl_Position = uMvp * vec4(aPos, 1.0);
 }`;
 const SOLID_FS = `
 precision mediump float;
 varying vec3 vNormal;
+varying vec3 vColor;
 varying float vSelect;
 void main() {
   vec3 n = normalize(vNormal);
-  float light = 0.35 + 0.65 * abs(dot(n, normalize(vec3(0.3, 0.5, 0.8))));
-  vec3 base = vec3(0.72, 0.66, 0.56) * light;
+  vec3 key = normalize(vec3(0.35, 0.45, 0.82));
+  vec3 fill = normalize(vec3(-0.6, -0.2, 0.4));
+  float light = 0.22 + 0.62 * abs(dot(n, key)) + 0.16 * abs(dot(n, fill));
+  vec3 base = vColor * light;
   vec3 selected = vec3(0.86, 0.55, 0.22);
   gl_FragColor = vec4(mix(base, selected, clamp(vSelect, 0.0, 1.0)), 1.0);
 }`;
@@ -1674,7 +1693,7 @@ const EDGE_FS = `
 precision mediump float;
 varying float vSelect;
 void main() {
-  gl_FragColor = mix(vec4(0.15, 0.14, 0.12, 1.0), vec4(0.91, 0.62, 0.24, 1.0), clamp(vSelect, 0.0, 1.0));
+  gl_FragColor = mix(vec4(0.05, 0.05, 0.06, 1.0), vec4(0.91, 0.62, 0.24, 1.0), clamp(vSelect, 0.0, 1.0));
 }`;
 
 boot().catch(showError);

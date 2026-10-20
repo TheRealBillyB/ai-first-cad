@@ -56,7 +56,8 @@ lists its assumptions. A 3D-printed material is weaker across layers than the
 in-plane strength used here.
 
 An assembly places several parts with joints (fixed, revolute, prismatic,
-cylindrical), gear or linkage relations, named poses, and motions.
+cylindrical), gear, linkage, or cylinder relations, named poses, and motions.
+A cylinder relation sets a barrel angle and a rod extension from a revolute.
 `run_motion` sweeps those joints and reports collisions, with a picture per
 frame. `check_cables` measures length, strain, bend radius, and pinching.
 `estimate_power` turns gravity and payloads into joint torque and then into
@@ -69,7 +70,7 @@ requirement that says whether that orientation fits. A slicer estimate appears
 only when OrcaSlicer or PrusaSlicer is installed.
 
 `export_robot` writes URDF and MJCF for an assembly: meshes, joint limits,
-masses, and inertias. Gear and linkage relations are comments. When MuJoCo or
+masses, and inertias. Gear, linkage, and cylinder relations are comments. When MuJoCo or
 PyBullet is installed, the export is loaded and stepped.
 
 `solve_modal` is a CalculiX frequency solve. Declare the excitation (motor,
@@ -276,7 +277,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     mcp = MCPServer(
         "aicad",
         instructions=_INSTRUCTIONS,
-        version="0.8.0",
+        version="0.9.0",
     )
 
     def run(command: str, **arguments):
@@ -636,9 +637,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         spec needs name and instances [{name, part, material, payload_kg}].
         joints are {name, type, parent, child, parent_anchor, child_anchor, axis, value, min, max}.
         type is fixed, revolute (degrees), prismatic (millimeters), or cylindrical
-        (degrees in value, millimeters in slide). relations are gear {driver, driven, ratio, offset}
-        or linkage {driver, driven, ground_mm, crank_mm, coupler_mm, rocker_mm, branch}.
-        A linkage is a planar four-bar map, not a closed spatial loop.
+        (degrees in value, millimeters in slide). relations are gear {driver, driven, ratio, offset},
+        linkage {driver, driven, ground_mm, crank_mm, coupler_mm, rocker_mm, branch},
+        or cylinder {driver, driven, stroke, moving_anchor, retracted_mm}.
+        A linkage is a planar four-bar map, not a closed spatial loop. A cylinder
+        keeps the rod eye on the moving clevis without adding a joint cycle.
         poses, motions, cables, and actuators live on the same spec.
         """
         return guard(lambda: run("create_assembly", spec=spec))
@@ -665,7 +668,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def set_pose(name: str, pose: str) -> dict:
-        """Apply a named pose. A driven joint follows its gear or linkage."""
+        """Apply a named pose. A driven joint follows its gear, linkage, or cylinder."""
         return guard(lambda: run("set_pose", name=name, pose=pose))
 
     @mcp.tool()
