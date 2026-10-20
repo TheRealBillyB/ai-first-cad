@@ -11,6 +11,7 @@
     <div class="brand">aicad <em>workspace</em></div>
     <nav>
       <button type="button" id="nav-model" class="on">Model</button>
+      <button type="button" id="nav-assembly">Assembly</button>
       <button type="button" id="nav-docs">Documents</button>
     </nav>
     <div class="grow"></div>
@@ -104,6 +105,27 @@
         <input id="chat-input" placeholder="Ask for a change. The assistant uses the same commands as the buttons." />
         <button type="submit" class="primary">Send</button>
       </form>
+    </section>
+  </div>
+
+  <div id="page-assembly" class="docs assembly-page" hidden>
+    <aside>
+      <h2>Assemblies</h2>
+      <ul id="assembly-list"></ul>
+      <div id="assembly-controls"></div>
+    </aside>
+    <section class="assembly-stage">
+      <div class="stage-bar">
+        <button type="button" id="assembly-preview">Preview</button>
+        <button type="button" id="assembly-orbit">Orbit</button>
+        <button type="button" id="assembly-cables">Cables</button>
+        <button type="button" id="assembly-power">Power</button>
+        <span id="assembly-status" class="meta"></span>
+      </div>
+      <div id="assembly-view" class="assembly-view">
+        <img id="assembly-picture" alt="Assembly frames" hidden />
+        <div id="assembly-report"></div>
+      </div>
     </section>
   </div>
 

@@ -1,0 +1,124 @@
+{
+  "rod_z_reach_mm": -259.1434,
+  "rod_z_lift_mm": 308.7526,
+  "lift": {
+    "status": "clear",
+    "collision_count": 0,
+    "rod_z_mm": [
+      -259.1434,
+      -142.5872,
+      5.5419,
+      163.8199,
+      308.7526
+    ],
+    "pictures": {
+      "strip": "/workspace/examples/renders/rod_arm_strip.png",
+      "gif": "/workspace/examples/renders/rod_arm.gif"
+    }
+  },
+  "cables": {
+    "status": "pass",
+    "routes": [
+      {
+        "name": "hose",
+        "status": "pass",
+        "length_mm": [
+          413.187,
+          407.167,
+          400.821,
+          395.417,
+          395.819
+        ],
+        "length_change_mm": [
+          -0.0,
+          -6.02,
+          -12.366,
+          -17.77,
+          -17.368
+        ],
+        "max_strain": -0.0,
+        "min_bend_radius_mm": 112.098,
+        "bend_limit_mm": 18.0,
+        "pinch_count": 0
+      },
+      {
+        "name": "cable",
+        "status": "pass",
+        "length_mm": [
+          395.369,
+          398.073,
+          404.303,
+          411.283,
+          417.99
+        ],
+        "length_change_mm": [
+          0.0,
+          2.704,
+          8.934,
+          15.914,
+          22.621
+        ],
+        "max_strain": 0.05721,
+        "min_bend_radius_mm": 111.535,
+        "bend_limit_mm": 12.0,
+        "pinch_count": 0
+      }
+    ],
+    "assumptions": [
+      "The route is a polyline through waypoints and clips that are fixed on parts. It does not sag under gravity.",
+      "Bend radius is the circumradius of three consecutive waypoints. A smooth fillet would be at least this large only when the points already lie on that arc.",
+      "Strain is (length - rest length) / rest length. Rest length is the authored value, or the length of the first frame when it is omitted.",
+      "Tension is stiffness times positive strain. Stiffness is newtons per unit strain, a stand-in for EA. A shorter route is slack, not compression.",
+      "A pinch is a centerline sample closer to a solid than the cable radius plus pinch_mm, or two non-adjacent spans closer than the diameter. Samples within one sample step of a waypoint are the clip seat on that part and are not counted against it.",
+      "Clips do not slip. A later flexible-body model (a Cosserat rod or a chain of rigid segments with bending springs) would add sag, contact, and clip slip, and would be checked against these same length, bend, and gap limits."
+    ]
+  },
+  "power": {
+    "duration_s": 2.0,
+    "pump": {
+      "energy_j": 55.73,
+      "mean_power_w": 27.865,
+      "displaced_volume_mm3": 17551.5
+    },
+    "actuators": [
+      {
+        "name": "shoulder_cylinder",
+        "peak_torque_nm": 45.1315,
+        "peak_force_n": 0.0,
+        "peak_pressure_mpa": 3.8309,
+        "peak_power_w": 32.434,
+        "displaced_volume_mm3": 14393.2
+      },
+      {
+        "name": "elbow_cylinder",
+        "peak_torque_nm": 28.0507,
+        "peak_force_n": 0.0,
+        "peak_pressure_mpa": 4.6504,
+        "peak_power_w": 8.64,
+        "displaced_volume_mm3": 3158.3
+      }
+    ],
+    "assumptions": [
+      "Loads are quasi-static. Inertia, friction, seal drag, and line pressure drop are not included.",
+      "Gravity is 9.81 m/s\u00b2 along \u2212Z. Mass is volume times the material density, plus payload_kg at payload_at or at the center of mass.",
+      "A revolute torque is the moment of supported weight about the joint axis, in N\u00b7m. A prismatic force is the opposing component of that weight along the slide.",
+      "A gear or linkage reflects the driven load onto the driver when the driven joint has no actuator. Ratio is d(driven)/d(driver).",
+      "A hydraulic cylinder turns torque into force with moment_arm_mm. Pressure is force over piston area. Extend uses the bore; retract uses bore minus rod.",
+      "Flow is area times the speed of the piston. Power is pressure times flow divided by efficiency. 1 MPa \u00b7 mm\u00b3/s = 0.001 W.",
+      "An electric motor torque is the joint torque divided by gear ratio and efficiency. Current is that torque divided by the torque constant. Power is joint torque times speed, divided by efficiency. Braking energy is counted as spent, not regenerated.",
+      "Battery energy is the sum of electric actuator energy. Charge is that energy divided by the stated voltage."
+    ]
+  },
+  "walk": {
+    "status": "collision",
+    "collision_count": 4,
+    "colliding_frames": [
+      0,
+      4
+    ],
+    "pictures": {
+      "strip": "/workspace/examples/renders/rod_leg_strip.png",
+      "gif": "/workspace/examples/renders/rod_leg.gif"
+    }
+  }
+}

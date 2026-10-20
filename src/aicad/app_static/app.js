@@ -18,6 +18,9 @@ const ui = {
   rectStart: null,
   circleCenter: null,
   doc: "requirements.md",
+  assembly: null,
+  viewAssembly: null,
+  assemblySignature: "",
 };
 
 async function command(name, args = {}) {
@@ -49,20 +52,24 @@ async function refresh() {
   renderTree();
   renderPanel();
   renderDocs();
+  renderAssemblies();
   renderDimensions();
   $("undo").disabled = !ui.state.can_undo;
   $("redo").disabled = !ui.state.can_redo;
-  if (ui.stage === "solid" && ui.part) await loadMesh();
-  else drawSketch();
+  if (ui.page === "model" && ui.stage === "solid" && (ui.viewAssembly || ui.part)) await loadMesh();
+  else if (ui.page === "model" && ui.stage === "sketch") drawSketch();
 }
 
 async function loadMesh() {
-  if (!ui.part) {
+  if (!ui.viewAssembly && !ui.part) {
     ui.mesh = null;
     drawSolid();
     return;
   }
-  const response = await fetch("/api/mesh?part=" + encodeURIComponent(ui.part));
+  const query = ui.viewAssembly
+    ? "assembly=" + encodeURIComponent(ui.viewAssembly)
+    : "part=" + encodeURIComponent(ui.part);
+  const response = await fetch("/api/mesh?" + query);
   const body = await response.json();
   if (!body.ok) {
     ui.mesh = null;
@@ -73,7 +80,7 @@ async function loadMesh() {
   const firstLook = !ui.mesh || ui.mesh.part !== body.result.part;
   ui.mesh = body.result;
   $("empty").hidden = true;
-  if (firstLook) view.fit();
+  if (firstLook || ui.viewAssembly) view.fit();
   drawSolid();
 }
 
@@ -100,6 +107,7 @@ function renderTree() {
     : `<li class="meta">${features && features.tracked === false ? "Not tracked" : "Run Inspect or Features"}</li>`;
   $("part-list").querySelectorAll("[data-part]").forEach((node) => {
     node.onclick = async () => {
+      ui.viewAssembly = null;
       ui.part = node.dataset.part;
       ui.stage = "solid";
       setStage();
@@ -570,6 +578,7 @@ async function buildSolid() {
   const exists = (ui.state.parts || []).some((part) => part.name === name);
   if (exists) await command("update_part_from_sketch", { name, sketch: ui.sketchName, steps: [step] });
   else await command("create_part_from_sketch", { name, sketch: ui.sketchName, steps: [step] });
+  ui.viewAssembly = null;
   ui.part = name;
   ui.stage = "solid";
   setStage();
@@ -646,6 +655,7 @@ function drawSolid() {
   const gl = view.gl;
   if (!gl) return;
   const rect = canvas.parentElement.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return;
   canvas.width = rect.width * devicePixelRatio;
   canvas.height = rect.height * devicePixelRatio;
   gl.viewport(0, 0, canvas.width, canvas.height);
@@ -883,22 +893,180 @@ function ask(title, fields) {
   });
 }
 
+function renderAssemblies() {
+  if (!$("assembly-list") || !ui.state) return;
+  const assemblies = ui.state.assemblies || [];
+  if (!ui.assembly && assemblies.length) ui.assembly = assemblies[0].name;
+  if (ui.assembly && !assemblies.some((item) => item.name === ui.assembly)) ui.assembly = assemblies[0] ? assemblies[0].name : null;
+  $("assembly-list").innerHTML = assemblies.map((item) =>
+    `<li data-assembly="${item.name}" class="${item.name === ui.assembly ? "on" : ""}"><span>${item.name}</span><span class="meta">${item.joints.length} joints</span></li>`
+  ).join("") || `<li class="meta">No assemblies yet</li>`;
+  $("assembly-list").querySelectorAll("[data-assembly]").forEach((node) => {
+    node.onclick = () => {
+      ui.assembly = node.dataset.assembly;
+      ui.assemblySignature = "";
+      renderAssemblies();
+    };
+  });
+  const current = assemblies.find((item) => item.name === ui.assembly);
+  if (!current) {
+    $("assembly-controls").innerHTML = `<p class="muted">Create an assembly with create_assembly, or run <code>python examples/rod_arm.py</code> and open that workspace.</p>`;
+    return;
+  }
+  const signature = JSON.stringify(current);
+  if (ui.assemblySignature !== signature) {
+    ui.assemblySignature = signature;
+    const joints = current.joints.map((joint) => `
+      <div class="joint-row">
+        <span style="width:92px">${joint.name}</span>
+        <span class="meta" style="width:72px">${joint.type}</span>
+        <input data-joint="${joint.name}" type="number" step="1" value="${joint.value}" ${joint.min != null ? `min="${joint.min}"` : ""} ${joint.max != null ? `max="${joint.max}"` : ""} />
+        <button type="button" data-apply="${joint.name}">Apply</button>
+      </div>`).join("");
+    const poses = current.poses.map((pose) => `<button type="button" data-pose="${pose}">${pose}</button>`).join(" ");
+    const motions = current.motions.map((motion) => `<button type="button" data-motion="${motion}">${motion}</button>`).join(" ");
+    $("assembly-controls").innerHTML = `
+      <h3>Joints</h3>
+      ${joints || `<p class="muted">Grounded only.</p>`}
+      <h3>Poses</h3>
+      <div class="row">${poses || `<span class="muted">None</span>`}</div>
+      <h3>Motion</h3>
+      <div class="row">${motions || `<span class="muted">None</span>`}</div>
+      <p class="muted">${current.instances.map((item) => item.name).join(", ")}</p>`;
+    $("assembly-controls").querySelectorAll("[data-apply]").forEach((button) => {
+      button.onclick = async () => {
+        const input = $("assembly-controls").querySelector(`[data-joint="${button.dataset.apply}"]`);
+        await command("set_joint", { name: ui.assembly, joint: button.dataset.apply, value: Number(input.value) });
+        ui.assemblySignature = "";
+        await refresh();
+      };
+    });
+    $("assembly-controls").querySelectorAll("[data-pose]").forEach((button) => {
+      button.onclick = async () => {
+        await command("set_pose", { name: ui.assembly, pose: button.dataset.pose });
+        ui.assemblySignature = "";
+        await refresh();
+        await showAssemblyPicture();
+      };
+    });
+    $("assembly-controls").querySelectorAll("[data-motion]").forEach((button) => {
+      button.onclick = async () => {
+        $("assembly-status").textContent = "Running " + button.dataset.motion + "…";
+        await command("run_motion", { name: ui.assembly, sequence: button.dataset.motion });
+        ui.assemblySignature = "";
+        await refresh();
+        showMotionReport();
+      };
+    });
+  }
+  showStoredAssemblyReports();
+}
+
+function showStoredAssemblyReports() {
+  const motion = ui.state.panels.motion;
+  const cables = ui.state.panels.cables;
+  const power = ui.state.panels.power;
+  if (motion && motion.assembly === ui.assembly && motion.views && motion.views.length) showMotionReport();
+  else if (cables && cables.assembly === ui.assembly) showCableReport(cables);
+  else if (power && power.assembly === ui.assembly) showPowerReport(power);
+}
+
+function showMotionReport() {
+  const motion = ui.state.panels.motion;
+  if (!motion || motion.assembly !== ui.assembly) return;
+  const strip = (motion.views || []).find((view) => view.name === "strip") || (motion.views || [])[0];
+  const picture = $("assembly-picture");
+  if (strip) {
+    picture.hidden = false;
+    picture.src = fileUrl(strip.path);
+  }
+  const hits = motion.collision_count != null ? `${motion.status || ""} · ${motion.collision_count} collisions` : "preview";
+  $("assembly-status").textContent = hits;
+  const frames = (motion.frames || []).map((frame) => {
+    const pairs = (frame.collisions || []).map((hit) => `${hit.a} × ${hit.b}`).join(", ");
+    return `<li>t=${Number(frame.time_s).toFixed(2)}s ${pairs || "clear"}</li>`;
+  }).join("");
+  $("assembly-report").innerHTML = `<h3>${escapeHtml(motion.motion || motion.name || "Assembly")}</h3><ul>${frames}</ul>`;
+}
+
+function showCableReport(report) {
+  $("assembly-status").textContent = "Cables " + report.status;
+  const rows = (report.cables || []).map((cable) =>
+    `<li><strong>${escapeHtml(cable.name)}</strong> ${cable.status} · length ${cable.length_mm.map((value) => Number(value).toFixed(1)).join(" → ")} mm · strain ${cable.max_strain} · bend ${cable.min_bend_radius_mm == null ? "straight" : cable.min_bend_radius_mm + " mm"} · pinches ${cable.pinch_count}</li>`
+  ).join("");
+  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  $("assembly-report").innerHTML = `<h3>Cables</h3><ul>${rows}</ul><h3>Assumptions</h3><ul>${assumptions}</ul>`;
+}
+
+function showPowerReport(report) {
+  const rows = (report.actuators || []).map((item) =>
+    `<li><strong>${escapeHtml(item.name)}</strong> ${item.kind} · torque ${item.peak_torque_nm} N·m · force ${item.peak_force_n} N · pressure ${item.peak_pressure_mpa} MPa · flow peak in the samples · power ${item.peak_power_w} W · displaced ${item.displaced_volume_mm3} mm³</li>`
+  ).join("");
+  const pump = report.pump ? `<p>Pump mean ${report.pump.mean_power_w} W, displaced ${report.pump.displaced_volume_mm3} mm³ over ${report.duration_s} s.</p>` : "";
+  const battery = report.battery ? `<p>Battery ${report.battery.energy_wh} Wh at ${report.battery.voltage} V (${report.battery.charge_ah} Ah).</p>` : "";
+  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  $("assembly-status").textContent = "Power";
+  $("assembly-report").innerHTML = `<h3>Power</h3><ul>${rows}</ul>${pump}${battery}<h3>Assumptions</h3><ul>${assumptions}</ul>`;
+}
+
+async function showAssemblyPicture() {
+  const report = await command("render_assembly", { name: ui.assembly });
+  await refresh();
+  if (report.views && report.views[0]) {
+    $("assembly-picture").hidden = false;
+    $("assembly-picture").src = fileUrl(report.views[0].path);
+  }
+}
+
 function showPage(page) {
   ui.page = page;
   $("page-model").hidden = page !== "model";
   $("page-docs").hidden = page !== "documents";
+  $("page-assembly").hidden = page !== "assembly";
   $("nav-model").classList.toggle("on", page === "model");
   $("nav-docs").classList.toggle("on", page === "documents");
+  $("nav-assembly").classList.toggle("on", page === "assembly");
   if (page === "documents" && ui.state) {
     renderDocs();
     if (!$("doc-editor").value) loadDoc(ui.doc);
-  } else drawSolid();
+  } else if (page === "assembly") {
+    renderAssemblies();
+  } else if (ui.stage === "solid") requestAnimationFrame(() => drawSolid());
+  else requestAnimationFrame(() => drawSketch());
 }
 
 async function boot() {
   initView();
   $("nav-model").onclick = () => showPage("model");
+  $("nav-assembly").onclick = () => showPage("assembly");
   $("nav-docs").onclick = () => showPage("documents");
+  $("assembly-preview").onclick = () => showAssemblyPicture().catch(showError);
+  $("assembly-orbit").onclick = async () => {
+    if (!ui.assembly) return;
+    ui.viewAssembly = ui.assembly;
+    ui.stage = "solid";
+    showPage("model");
+    await loadMesh();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    view.fit();
+    drawSolid();
+  };
+  $("assembly-cables").onclick = async () => {
+    if (!ui.assembly) return;
+    const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
+    const sequence = current && current.motions[0];
+    const report = await command("check_cables", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
+    await refresh();
+    showCableReport(report);
+  };
+  $("assembly-power").onclick = async () => {
+    if (!ui.assembly) return;
+    const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
+    const sequence = current && current.motions[0];
+    const report = await command("estimate_power", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
+    await refresh();
+    showPowerReport(report);
+  };
   $("undo").onclick = async () => { await command("undo"); await refresh(); };
   $("redo").onclick = async () => { await command("redo"); await refresh(); };
   $("fit").onclick = () => { view.fit(); drawSolid(); };

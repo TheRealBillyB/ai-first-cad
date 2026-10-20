@@ -849,6 +849,55 @@ def _scalar_contact(panels: dict[str, Image.Image]) -> Image.Image:
     return sheet
 
 
+def render_motion_frames(
+    meshes: list[TriangleMesh],
+    out_dir: Path,
+    stem: str,
+    titles: list[str],
+) -> dict:
+    """Write one isometric picture per frame, a strip, and a GIF."""
+    if not meshes:
+        raise RuntimeError("Motion rendering needs at least one mesh.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    basis = _camera_basis((1.0, -1.0, 0.85), (0.0, 0.0, 1.0))
+    combined = np.vstack([mesh.vertices for mesh in meshes])
+    scale, _span = _shared_scale(combined, {"iso": basis})
+    images: list[Image.Image] = []
+    frames = []
+    for index, mesh in enumerate(meshes):
+        title = titles[index] if index < len(titles) else f"frame {index}"
+        image = _compose_view(mesh, basis, scale, title=title, footer=stem)
+        path = out_dir / f"{stem}_{index:02d}.png"
+        image.save(path, format="PNG", optimize=True)
+        images.append(image)
+        frames.append({"index": index, "title": title, "path": str(path.resolve()), "name": "iso"})
+    strip = _strip(images)
+    strip_path = out_dir / f"{stem}_strip.png"
+    strip.save(strip_path, format="PNG", optimize=True)
+    gif_path = out_dir / f"{stem}.gif"
+    images[0].save(
+        gif_path,
+        save_all=True,
+        append_images=images[1:],
+        duration=280,
+        loop=0,
+        disposal=2,
+    )
+    return {
+        "frames": frames,
+        "strip": str(strip_path.resolve()),
+        "gif": str(gif_path.resolve()),
+    }
+
+
+def _strip(images: list[Image.Image]) -> Image.Image:
+    cell_w, cell_h = images[0].size
+    sheet = Image.new("RGB", (cell_w * len(images), cell_h), _PAPER)
+    for index, image in enumerate(images):
+        sheet.paste(image, (index * cell_w, 0))
+    return sheet
+
+
 def _font(size: int) -> ImageFont.ImageFont:
     for path in (
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",

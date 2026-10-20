@@ -151,6 +151,39 @@ def main(argv: list[str] | None = None) -> int:
     )
     faces.add_argument("name")
 
+    assemble = commands.add_parser(
+        "assemble", parents=[common], help="Create or replace an assembly from a JSON spec."
+    )
+    assemble.add_argument("name", help="Assembly name. It overrides the name in the file.")
+    assemble.add_argument("--file", type=Path, required=True, help="JSON assembly spec.")
+
+    joint = commands.add_parser("joint", parents=[common], help="Set one joint value.")
+    joint.add_argument("name")
+    joint.add_argument("joint")
+    joint.add_argument("--value", type=float, required=True, help="Degrees or millimeters.")
+    joint.add_argument("--slide", type=float, default=None, help="Millimeters along a cylindrical joint.")
+
+    pose = commands.add_parser("pose", parents=[common], help="Apply a named pose.")
+    pose.add_argument("name")
+    pose.add_argument("pose")
+
+    motion = commands.add_parser(
+        "motion", parents=[common], help="Run a named motion, or a motion JSON file."
+    )
+    motion.add_argument("name")
+    motion.add_argument("--sequence", default=None, help="Motion stored on the assembly.")
+    motion.add_argument("--file", type=Path, default=None, help="JSON sweep or keyframes.")
+
+    cables = commands.add_parser("cables", parents=[common], help="Check cables and hoses.")
+    cables.add_argument("name")
+    cables.add_argument("--sequence", default=None)
+
+    power = commands.add_parser(
+        "power", parents=[common], help="Estimate joint loads and actuator power."
+    )
+    power.add_argument("name")
+    power.add_argument("--sequence", default=None)
+
     mechanics = commands.add_parser(
         "fea", parents=[common], help="Run a linear static solve from a JSON setup."
     )
@@ -260,6 +293,24 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _emit(document.list_materials())
     if args.command == "faces":
         return _emit(document.describe_faces(args.name))
+    if args.command == "assemble":
+        spec = json.loads(args.file.read_text(encoding="utf-8"))
+        spec["name"] = args.name
+        names = {item["name"] for item in document.list_assemblies()}
+        if args.name in names:
+            return _emit(document.update_assembly(spec))
+        return _emit(document.create_assembly(spec))
+    if args.command == "joint":
+        return _emit(document.set_joint(args.name, args.joint, args.value, args.slide))
+    if args.command == "pose":
+        return _emit(document.set_pose(args.name, args.pose))
+    if args.command == "motion":
+        inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
+        return _emit(document.run_motion(args.name, sequence=args.sequence, motion=inline))
+    if args.command == "cables":
+        return _emit(document.check_cables(args.name, sequence=args.sequence))
+    if args.command == "power":
+        return _emit(document.estimate_power(args.name, sequence=args.sequence))
     if args.command == "fea":
         setup = json.loads(args.file.read_text(encoding="utf-8"))
         return _emit(document.solve_mechanics(args.name, setup).to_dict())
