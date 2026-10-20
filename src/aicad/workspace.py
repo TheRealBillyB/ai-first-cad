@@ -98,7 +98,7 @@ class Workspace:
                 self.geometry_revision += 1
                 self._mesh_cache.clear()
                 self._requirement_cache.clear()
-                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power"):
+                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power", "vibration", "bolts", "fatigue"):
                     self.panels.pop(panel, None)
             self.event_id += 1
             event = {
@@ -536,6 +536,30 @@ def _cmd_fea(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("fea", report.to_dict())
 
 
+def _cmd_modal(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.solve_modal(arguments["name"], arguments["setup"])
+    return workspace._remember_panel("vibration", report)
+
+
+def _cmd_modal_assembly(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.solve_assembly_modal(arguments["name"], arguments.get("setup") or {})
+    return workspace._remember_panel("vibration", report)
+
+
+def _cmd_bolts(workspace: Workspace, arguments: dict) -> dict:
+    spec = arguments.get("spec")
+    if not isinstance(spec, dict):
+        raise GeometryError("check_bolts needs spec: size, grade, and the loads.")
+    return workspace._remember_panel("bolts", workspace.document.check_bolts(spec))
+
+
+def _cmd_fatigue(workspace: Workspace, arguments: dict) -> dict:
+    spec = arguments.get("spec")
+    if not isinstance(spec, dict):
+        raise GeometryError("check_fatigue needs spec: stress_amplitude_mpa and a material.")
+    return workspace._remember_panel("fatigue", workspace.document.check_fatigue(spec))
+
+
 def _cmd_list_docs(workspace: Workspace, _arguments: dict) -> dict:
     return {"documents": workspace._document_names()}
 
@@ -867,6 +891,52 @@ _add(Command(
     "Linear static solve. setup has material, fixes, loads, mesh_size_mm, target_safety_factor. A select can be a viewport ref.",
     _obj({"name": _string("Part name."), "setup": {"type": "object"}}, ["name", "setup"]),
     _cmd_fea,
+))
+_add(Command(
+    "solve_modal",
+    "Natural frequencies and mode shapes. setup has material, fixes, modes, and excitations (rpm or hz). Optional harmonic, random, and fatigue blocks.",
+    _obj({"name": _string("Part name."), "setup": {"type": "object"}}, ["name", "setup"]),
+    _cmd_modal,
+))
+_add(Command(
+    "solve_assembly_modal",
+    "Natural frequencies of a posed assembly. Joints are tied, so a revolute does not flex. Fixes may be omitted; the grounded bottom face is held.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "setup": {"type": "object", "description": "mesh_size_mm, modes, excitations, and optional fixes {instance, select}."},
+        },
+        ["name"],
+    ),
+    _cmd_modal_assembly,
+))
+_add(Command(
+    "check_bolts",
+    "Preload, tightening torque, slip margin, thread stripping, yield, and a vibration-loosening rating for a library fastener size.",
+    _obj(
+        {
+            "spec": {
+                "type": "object",
+                "description": "size, grade, condition, axial_n, shear_n, grip_mm, friction, vibration, and optional part name.",
+            }
+        },
+        ["spec"],
+    ),
+    _cmd_bolts,
+))
+_add(Command(
+    "check_fatigue",
+    "Goodman check of a stated stress amplitude against an estimated endurance limit. The report lists the assumptions.",
+    _obj(
+        {
+            "spec": {
+                "type": "object",
+                "description": "material, stress_amplitude_mpa, mean_stress_mpa, surface, section_mm, target_safety_factor.",
+            }
+        },
+        ["spec"],
+    ),
+    _cmd_fatigue,
 ))
 _add(Command("list_documents", "Markdown notes in this project.", _obj({}, []), _cmd_list_docs))
 _add(Command("read_document", "Read one markdown note.", _obj({"name": _string("File name, such as decisions.md.")}, ["name"]), _cmd_read_doc))

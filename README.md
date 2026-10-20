@@ -228,7 +228,7 @@ Power is quasi-static. Gravity is 9.81 m/s² along −Z. Mass is the solid's vol
 
 A hydraulic cylinder turns that torque into force with `moment_arm_mm`. Extend uses the bore area. Retract uses bore minus rod. Pressure is force over area, in MPa. Flow is area times piston speed. Power is pressure times flow, divided by efficiency. One MPa·mm³/s is 0.001 W. The pump figure is the hydraulic energy over the motion duration, with no regeneration. An electric actuator divides joint torque by gear ratio and efficiency, then divides by the torque constant for current. Power is joint torque times speed, divided by efficiency. Braking energy is counted as spent. Battery watt-hours are that electric energy, and amp-hours divide by the stated voltage.
 
-The same commands are `create_assembly`, `set_joint`, `set_pose`, `run_motion`, `check_cables`, and `estimate_power` on the Python API, the MCP server, and the CLI:
+The same commands are `create_assembly`, `set_joint`, `set_pose`, `run_motion`, `check_cables`, `estimate_power`, `solve_modal`, `solve_assembly_modal`, and `check_bolts` on the Python API, the MCP server, and the CLI:
 
 ```bash
 aicad assemble rod_arm --file arm.json --workspace ./aicad_workspace
@@ -239,9 +239,38 @@ aicad cables rod_arm --sequence lift --workspace ./aicad_workspace
 aicad power rod_arm --sequence lift --workspace ./aicad_workspace
 ```
 
-In the workspace app the Assembly page lists joints, poses, and motions. Apply sets a joint. A pose or a motion runs the same command the assistant uses. Preview and Orbit show the posed solids. Cables and Power open the reports, including the assumptions.
+In the workspace app the Assembly page lists joints, poses, and motions. Apply sets a joint. A pose or a motion runs the same command the assistant uses. Preview and Orbit show the posed solids. Cables, Power, Modes, and Bolt check open the reports, including the assumptions.
 
 `examples/rod_arm.py` builds a simplified drill-rod handler: a base, a two-joint arm, a gripper whose jaws are geared together, an M3 washer used as a clip, a hydraulic hose, and a cable. An 8 kg payload sits on the rod, on top of the rod's own steel mass. From the reach pose to the lift pose the rod origin rises from −259 mm to 309 mm, and the arm does not collide with itself. The hose shortens by about 17 mm and stays slack. The cable grows by about 23 mm, strain 0.057, under its 0.15 limit. The tightest bend on either route is about 112 mm, against limits of 18 mm and 12 mm. Neither route pinches. The shoulder cylinder (20 mm bore, 50 mm moment arm) peaks at 45.1 N·m, 3.83 MPa, and 32 W. The elbow cylinder (16 mm bore, 40 mm moment arm) peaks at 28.1 N·m, 4.65 MPa, and 8.6 W. Over the two-second lift the pump sees about 28 W mean and 17,600 mm³ of displaced fluid. A separate test leg runs a short walk cycle and collides with a block on the planted frames. The pictures are `examples/renders/rod_arm_strip.png`, `examples/renders/rod_arm.gif`, and `examples/renders/rod_leg_strip.png`. The numbers are in `examples/renders/rod_arm_report.json`.
+
+## Vibration and bolted joints
+
+```bash
+python examples/vibration_arm.py
+```
+
+![First mode of the upper link, magnified](examples/renders/vibration_mode.png)
+
+`solve_modal` (CLI: `aicad modal`) meshes one solid and runs CalculiX `*FREQUENCY`. You hold faces the same way a static solve does. The report lists natural frequencies and writes a magnified mode shape. The color is the unscaled eigenvector. The title says the shape is magnified, because a mass-normalized mode is not an operating deflection.
+
+An excitation is a running speed. `kind` is `motor`, `spindle`, `drill`, `engine`, or `pump`, with `rpm` or `hz`. Rotating sources are checked at harmonics 1, 2, and 3. A pump is checked at 1 and 2. A natural frequency within 10% of one of those lines is a resonance. The suggestion is to stiffen (a rib, a taller section, a shorter span), add mass, change the geometry, or change the running speed, depending on which side of the line the mode sits.
+
+`solve_assembly_modal` (CLI: `aicad modal-assembly`) poses the assembly, skips fasteners and other parts under 2% of the largest volume, and ties each joint with a few translation equations. If you omit the supports, the grounded instance is held on its lowest downward face, and the report says that face was chosen automatically. A revolute is locked at the pose. It does not flex, so these frequencies are an upper bound on a real pin.
+
+A harmonic block is a single-mode oscillator with a damping ratio you supply (0.02 if you omit it). A random block is Miles' equation on a flat acceleration spectrum. `check_fatigue` (CLI: `aicad fatigue`) is a Goodman check of a stress amplitude you supply against an estimated endurance limit. Steel uses half the ultimate strength, then surface and size factors. Aluminum is called out as having no true endurance limit. None of the three is a second finite-element solve, and every report says so.
+
+`check_bolts` (CLI: `aicad bolts`) is for a fastener size from the catalog, or for a screw already in the document. It recommends a preload (70% of proof by default) and a tightening torque `K·F·d` for dry, zinc, lubricated, or threadlocker friction. It then compares the residual clamp with the external axial load and the friction capacity with the transverse shear. Slip margin below 1 means the plates slide. That is the usual way a nut walks open under vibration, and it happens while the bolt is still below yield. The report also checks thread stripping and bolt yield. Intense vibration raises the rating when the slip margin is only modest. Countermeasures are listed with what they actually do: more preload and a longer grip protect the clamp; a nyloc nut, wedge-locking washers, threadlocker, and safety wire resist nut rotation and do not create clamp force by themselves.
+
+```bash
+aicad modal upper_link --file modal.json --workspace ./aicad_workspace
+aicad modal-assembly rod_arm --file modal.json --workspace ./aicad_workspace
+aicad bolts --file joint.json --workspace ./aicad_workspace
+aicad fatigue --file fatigue.json --workspace ./aicad_workspace
+```
+
+The part page has Vibration and Bolts tabs. Fix selection uses the face you picked. The Assembly page has Modes, with a drill rpm, and Bolt check. Both run the same commands the assistant uses.
+
+`examples/vibration_arm.py` reuses the rod-handling arm. The upper link, aluminum, is held at the shoulder end. A drill rotary at 120 rpm (2 Hz, and its second and third harmonics) is clear of the link. A hydraulic pump is then placed at 97% of the computed first flexible frequency so the report flags that line and suggests a change. The same two sources are declared for the posed arm, with the joints locked. Four M8-8.8 bolts are checked as the base flange under intense vibration: 1000 N axial and 2500 N shear each, friction 0.14, 20 mm grip. The slip margin is below 1 and the yield margin stays above 1, which is the loosening case. An M12-10.9 with 800 N of shear is the contrast that still holds. A separate fatigue line uses 90 MPa alternating and 40 MPa mean on machined mild steel and lands under a factor of 2. The numbers are in `examples/renders/vibration_report.json`.
 
 ## Connect an assistant
 
@@ -303,6 +332,9 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `list_materials` | PLA, PETG, ABS, nylon, aluminum 6061, and mild steel, with the modulus and strength the solver will use. |
 | `describe_faces` / `describe_edges` | Faces and edges, each with a stable `ref` the viewport also uses. A selector may be `{"ref": "plane/z+/0,0,4"}`. |
 | `solve_mechanics` | Linear static solve. Returns the safety factor, the design review, the assumptions, and stress and displacement pictures. |
+| `solve_modal` / `solve_assembly_modal` | Natural frequencies, magnified mode shapes, and a resonance check against rpm or Hz and harmonics. |
+| `check_bolts` | Preload, torque, slip margin, stripping, yield, and a vibration-loosening rating. |
+| `check_fatigue` | Goodman check of a stated stress amplitude against an estimated endurance limit. |
 | `set_selection` / `get_state` | The current face and edge selection, plus parts, sketches, checks, and the latest panels. |
 | `list_documents` / `read_document` / `write_document` | The project's markdown notes. |
 | `get_requirements` / `set_requirements` / `check_requirements` | Structured requirements and their pass, fail, or unchecked state. |
@@ -405,6 +437,7 @@ Views use Z up. The label on each picture says which way the camera is looking (
 pytest
 python examples/motor_mount.py   # refresh examples/renders and the report
 python examples/rod_arm.py       # assembly keyframes, cable check, and power estimate
+python examples/vibration_arm.py  # modes, resonance, and bolted-joint loosening
 ```
 
 `src/aicad/kernel.py` imports build123d and OpenCascade. `src/aicad/library.py` imports bd_warehouse. `src/aicad/sketch.py` imports the SolveSpace solver. `src/aicad/fea.py` imports Gmsh and runs the `ccx` binary. The rest of aicad talks to plain records.
@@ -421,7 +454,9 @@ python examples/rod_arm.py       # assembly keyframes, cable check, and power es
 - Renders are shaded orthographic pictures from a software rasterizer, not a dimensioned drawing. Sections are filled profiles with a scale bar, not a hatched drawing. There is no click-to-measure.
 - Sketches are on the XY plane and extrude along +Z. A revolve uses the X or Y axis of that same plane. The initial `at` guess has to be near a shape that satisfies the constraints, or the solver reports that it did not converge. Circle-to-line tangency is built from a point and a perpendicular radius, because the solver's tangent constraint does not take a full circle.
 - The SolveSpace solver linked through python-solvespace is GPL-3.0-or-later. Gmsh and CalculiX are GPL as well. aicad is AGPL-3.0-or-later. Those solvers travel with the package or, for `ccx`, with the system install.
-- Mechanics is linear static elasticity. Plasticity, contact, buckling, and fatigue are outside this solve. A safety factor below 1 means the pictured stress has left the elastic range. A force is shared equally by the nodes on the face. Pressure on a curved face uses that face's normal at its center. A bolt load is an axial force along the hole.
+- The static solve is linear elasticity. Plasticity, contact, and buckling are outside it. A safety factor below 1 means the pictured stress has left the elastic range. A force is shared equally by the nodes on the face. Pressure on a curved face uses that face's normal at its center. A bolt load in that solve is an axial force along the hole.
+- Modal analysis is an undamped eigenvalue solve. The pictures are magnified shapes, not amplitudes. An assembly ties joints with a few equations, and a revolute does not flex, so those frequencies are high relative to a real pin. Harmonic response is one mode with an assumed damping ratio. Random response is Miles' equation on a flat spectrum. Fatigue is a Goodman check of a stress you type in. None of those three re-solves the mesh.
+- The bolt check is closed-form. The nut factor K is not a measured torque-tension test. Member stiffness is a cylinder 1.5 diameters wide. Slip margin is the loosening metric. Locking features are described; they are not modeled as extra clamp.
 - Face selectors are geometric. A boolean drops the name you gave a feature, so "the gusset face" has to be a normal, a radius, or a location. A mesh coarser than a hole, or coarser than about half the smallest dimension of the part, is called out, and a pass on that mesh is inconclusive.
 - The printed-layer note is a warning, not a second material model. The strength in the library is one number. Across-layer strength is not solved.
 - Assemblies are a kinematic tree. A gear is a linear map between joint values. A linkage is a planar four-bar, not a spatial loop, so it cannot solve a mechanism that has to close in 3D. Joint-adjacent parts are allowed to overlap. Other overlaps are reported as interference volume, not as a contact force.
@@ -434,7 +469,7 @@ python examples/rod_arm.py       # assembly keyframes, cable check, and power es
 
 ## Next steps
 
-- A second mechanics pass: mesh refinement at the hot spot, contact at a bolt, and a check that is not limited to linear elasticity.
+- Mesh refinement at a hot spot, contact at a bolt, and a check that is not limited to linear elasticity. Modal analysis here is undamped and, for an assembly, locked at the joints.
 - Driving dimensions on 3D features (extrude height, gusset length), not only on the sketch.
 - More catalog parts (NEMA motors, extrusions) and a way to drop a screw into a hole by naming the hole.
 - Driving dimensions on the 3D pictures, the way the sketch view already labels them.

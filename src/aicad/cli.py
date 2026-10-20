@@ -190,6 +190,29 @@ def main(argv: list[str] | None = None) -> int:
     mechanics.add_argument("name")
     mechanics.add_argument("--file", type=Path, required=True, help="JSON with material, fixes, and loads.")
 
+    modal = commands.add_parser(
+        "modal", parents=[common], help="Natural frequencies of one part from a JSON setup."
+    )
+    modal.add_argument("name")
+    modal.add_argument("--file", type=Path, required=True, help="JSON with material, fixes, and excitations.")
+
+    modal_assembly = commands.add_parser(
+        "modal-assembly", parents=[common], help="Natural frequencies of a posed assembly."
+    )
+    modal_assembly.add_argument("name")
+    modal_assembly.add_argument("--file", type=Path, default=None, help="Optional JSON setup.")
+
+    bolts = commands.add_parser(
+        "bolts", parents=[common], help="Preload, slip, and vibration-loosening check."
+    )
+    bolts.add_argument("name", nargs="?", default=None, help="Library part whose size to use.")
+    bolts.add_argument("--file", type=Path, required=True, help="JSON with grade, loads, and optional size.")
+
+    fatigue = commands.add_parser(
+        "fatigue", parents=[common], help="Goodman check of a stated stress amplitude."
+    )
+    fatigue.add_argument("--file", type=Path, required=True, help="JSON with material and stress_amplitude_mpa.")
+
     args = parser.parse_args(argv)
     try:
         return _dispatch(args)
@@ -314,6 +337,19 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "fea":
         setup = json.loads(args.file.read_text(encoding="utf-8"))
         return _emit(document.solve_mechanics(args.name, setup).to_dict())
+    if args.command == "modal":
+        setup = json.loads(args.file.read_text(encoding="utf-8"))
+        return _emit(document.solve_modal(args.name, setup))
+    if args.command == "modal-assembly":
+        setup = json.loads(args.file.read_text(encoding="utf-8")) if args.file else {}
+        return _emit(document.solve_assembly_modal(args.name, setup))
+    if args.command == "bolts":
+        spec = json.loads(args.file.read_text(encoding="utf-8"))
+        if args.name:
+            spec["part"] = args.name
+        return _emit(document.check_bolts(spec))
+    if args.command == "fatigue":
+        return _emit(document.check_fatigue(json.loads(args.file.read_text(encoding="utf-8"))))
     raise AICADError(f"Unknown command {args.command!r}.")
 
 

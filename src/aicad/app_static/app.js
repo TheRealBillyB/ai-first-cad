@@ -183,6 +183,52 @@ function renderPanel() {
     renderFeaSetup();
     return;
   }
+  if (ui.tab === "vibration") {
+    const report = state.panels.vibration;
+    const materials = (state.materials.materials || []).map((item) => `<option value="${item.id}" ${item.id === "steel" ? "selected" : ""}>${item.name}</option>`).join("");
+    root.innerHTML = `
+      <h3>Modes</h3>
+      <div class="row"><select id="modal-material">${materials}</select>
+        <label>mesh <input id="modal-mesh" type="number" value="4" step="0.5" style="width:64px" /></label>
+        <label>modes <input id="modal-count" type="number" value="4" step="1" style="width:48px" /></label></div>
+      <div class="row">
+        <select id="modal-kind"><option value="drill">drill</option><option value="motor">motor</option><option value="spindle">spindle</option><option value="engine">engine</option><option value="pump">pump</option></select>
+        <label>rpm <input id="modal-rpm" type="number" value="120" step="10" style="width:72px" /></label>
+      </div>
+      <div class="row">
+        <button type="button" id="modal-fix">Fix selection</button>
+        <button type="button" id="modal-run" class="primary">Solve</button>
+      </div>
+      <div id="modal-setup" class="muted"></div>
+      ${report && report.part ? modalHtml(report) : `<p class="muted">Hold a face, name the running speed, and read which modes sit near that excitation. The picture is a magnified shape.</p>`}`;
+    $("modal-fix").onclick = () => rememberModalFix();
+    $("modal-run").onclick = () => runModal().catch(showError);
+    renderModalSetup();
+    return;
+  }
+  if (ui.tab === "bolts") {
+    const report = state.panels.bolts;
+    root.innerHTML = `
+      <h3>Bolted joint</h3>
+      <div class="row">
+        <label>size <input id="bolt-size" value="M8" style="width:72px" /></label>
+        <select id="bolt-grade"><option>8.8</option><option>10.9</option><option>12.9</option><option>a2-70</option></select>
+        <select id="bolt-condition"><option value="dry">dry</option><option value="zinc">zinc</option><option value="lubricated">lubricated</option><option value="threadlocker">threadlocker</option></select>
+      </div>
+      <div class="row">
+        <label>axial N <input id="bolt-axial" type="number" value="1000" style="width:72px" /></label>
+        <label>shear N <input id="bolt-shear" type="number" value="2500" style="width:72px" /></label>
+        <label>grip <input id="bolt-grip" type="number" value="20" style="width:56px" /></label>
+      </div>
+      <div class="row">
+        <label>μ <input id="bolt-friction" type="number" value="0.14" step="0.01" style="width:64px" /></label>
+        <select id="bolt-vibration"><option>mild</option><option>moderate</option><option selected>intense</option></select>
+        <button type="button" id="bolt-run" class="primary">Check</button>
+      </div>
+      ${report ? boltHtml(report) : `<p class="muted">Slip under a sideways load is what lets a nut walk. The rating says so before the bolt yields.</p>`}`;
+    $("bolt-run").onclick = () => runBolts().catch(showError);
+    return;
+  }
   const checks = state.requirements || [];
   root.innerHTML = `
     <h3>Requirements</h3>
@@ -236,6 +282,96 @@ function checkHtml(item) {
 }
 
 const feaPlan = { fixes: [], loads: [] };
+const modalPlan = { fixes: [] };
+
+function rememberModalFix() {
+  const ref = ui.selectedFaces[0];
+  if (!ref) return alert("Select a face in the viewport first.");
+  modalPlan.fixes.push({ name: "fix_" + (modalPlan.fixes.length + 1), select: { ref } });
+  renderModalSetup();
+}
+
+function renderModalSetup() {
+  const node = $("modal-setup");
+  if (!node) return;
+  node.textContent = modalPlan.fixes.map((item) => `fix ${item.select.ref}`).join("\n") || "No support yet.";
+}
+
+async function runModal() {
+  if (!ui.part) return;
+  if (!modalPlan.fixes.length) return alert("Fix a face from the selection.");
+  const kind = $("modal-kind").value;
+  await command("solve_modal", {
+    name: ui.part,
+    setup: {
+      material: $("modal-material").value,
+      mesh_size_mm: Number($("modal-mesh").value),
+      modes: Number($("modal-count").value),
+      render_modes: 1,
+      fixes: modalPlan.fixes,
+      excitations: [{ name: kind, kind, rpm: Number($("modal-rpm").value) }],
+    },
+  });
+  await refresh();
+}
+
+async function runBolts() {
+  await command("check_bolts", {
+    spec: {
+      size: $("bolt-size").value,
+      grade: $("bolt-grade").value,
+      condition: $("bolt-condition").value,
+      axial_n: Number($("bolt-axial").value),
+      shear_n: Number($("bolt-shear").value),
+      grip_mm: Number($("bolt-grip").value),
+      friction: Number($("bolt-friction").value),
+      vibration: $("bolt-vibration").value,
+      part: ui.part || undefined,
+    },
+  });
+  await refresh();
+}
+
+function modalHtml(report) {
+  const contact = (report.views || []).find((view) => String(view.name).endsWith("_contact")) || (report.views || [])[0];
+  const rows = (report.modes || []).map((mode) => `<li>mode ${mode.index}: ${mode.frequency_hz} Hz${mode.rigid_body ? " (rigid body)" : ""}</li>`).join("");
+  const flags = ((report.resonance && report.resonance.flags) || []).map((flag) =>
+    `<li>mode ${flag.mode} near ${escapeHtml(flag.source)} harmonic ${flag.harmonic} (${flag.excitation_hz} Hz)</li>`
+  ).join("");
+  const suggestions = ((report.resonance && report.resonance.suggestions) || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  return `<div class="kv">
+      <span>Status</span><b>${report.resonance ? report.resonance.status : ""}</b>
+      <span>First flexible</span><b>${(report.modes || []).filter((mode) => !mode.rigid_body).map((mode) => mode.frequency_hz)[0] ?? "n/a"} Hz</b>
+    </div>
+    <p>${escapeHtml(report.note || "")}</p>
+    <ul>${rows}</ul>
+    ${flags ? `<h3>Resonance</h3><ul>${flags}</ul>` : ""}
+    ${suggestions ? `<h3>Suggestions</h3><ul>${suggestions}</ul>` : ""}
+    <h3>Assumptions</h3><ul>${assumptions}</ul>
+    ${contact ? `<img alt="mode shape" src="${fileUrl(contact.path)}" />` : ""}`;
+}
+
+function boltHtml(report) {
+  const row = report.bolts ? report.bolts[0] : report;
+  const loosening = row.loosening || {};
+  const counters = (loosening.countermeasures || []).filter((item) => item.recommended).map((item) =>
+    `<li><strong>${escapeHtml(item.name)}</strong> — ${escapeHtml(item.effect)}</li>`
+  ).join("");
+  const assumptions = (report.assumptions || row.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  return `<div class="kv">
+      <span>Status</span><b>${row.status || report.worst || ""}</b>
+      <span>Loosening</span><b>${loosening.rating || report.worst || ""}</b>
+      <span>Preload</span><b>${row.preload_n} N</b>
+      <span>Torque</span><b>${row.tightening_torque_nm} N·m</b>
+      <span>Slip margin</span><b>${row.slip_margin ?? "n/a"} (${row.slip_status || ""})</b>
+      <span>Yield margin</span><b>${row.yield_margin ?? "n/a"}</b>
+    </div>
+    <p>${escapeHtml(loosening.summary || report.note || "")}</p>
+    ${(loosening.reasons || []).map((line) => `<p class="warn">${escapeHtml(line)}</p>`).join("")}
+    ${counters ? `<h3>Countermeasures</h3><ul>${counters}</ul>` : ""}
+    <h3>Assumptions</h3><ul>${assumptions}</ul>`;
+}
 
 function rememberLoad(kind) {
   const ref = ui.selectedFaces[0];
@@ -966,9 +1102,13 @@ function showStoredAssemblyReports() {
   const motion = ui.state.panels.motion;
   const cables = ui.state.panels.cables;
   const power = ui.state.panels.power;
+  const vibration = ui.state.panels.vibration;
+  const bolts = ui.state.panels.bolts;
   if (motion && motion.assembly === ui.assembly && motion.views && motion.views.length) showMotionReport();
   else if (cables && cables.assembly === ui.assembly) showCableReport(cables);
   else if (power && power.assembly === ui.assembly) showPowerReport(power);
+  else if (vibration && vibration.assembly === ui.assembly) showModalReport(vibration);
+  else if (bolts && bolts.assembly === ui.assembly) showBoltReport(bolts);
 }
 
 function showMotionReport() {
@@ -1007,6 +1147,36 @@ function showPowerReport(report) {
   const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
   $("assembly-status").textContent = "Power";
   $("assembly-report").innerHTML = `<h3>Power</h3><ul>${rows}</ul>${pump}${battery}<h3>Assumptions</h3><ul>${assumptions}</ul>`;
+}
+
+function showModalReport(report) {
+  const contact = (report.views || []).find((view) => String(view.name).endsWith("_contact")) || (report.views || [])[0];
+  if (contact) {
+    $("assembly-picture").hidden = false;
+    $("assembly-picture").src = fileUrl(contact.path);
+  }
+  const resonance = report.resonance || {};
+  $("assembly-status").textContent = `Modes ${resonance.status || ""}`;
+  const rows = (report.modes || []).map((mode) => `<li>mode ${mode.index}: ${mode.frequency_hz} Hz${mode.rigid_body ? " rigid" : ""}</li>`).join("");
+  const flags = (resonance.flags || []).map((flag) => `<li>mode ${flag.mode} near ${escapeHtml(flag.source)} harmonic ${flag.harmonic} at ${flag.excitation_hz} Hz</li>`).join("");
+  const suggestions = (resonance.suggestions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  $("assembly-report").innerHTML = `<h3>Modes</h3><p>${escapeHtml(report.note || "")}</p><ul>${rows}</ul>${flags ? `<h3>Resonance</h3><ul>${flags}</ul>` : ""}<h3>Suggestions</h3><ul>${suggestions}</ul><p class="muted">${escapeHtml((report.support && report.support.description) || "")}</p><h3>Assumptions</h3><ul>${assumptions}</ul>`;
+}
+
+function showBoltReport(report) {
+  const row = report.bolts ? null : report;
+  const rows = (report.bolts || [report]).map((item) => {
+    const loosening = item.loosening || {};
+    return `<li><strong>${escapeHtml(item.size || "")} ${escapeHtml(String(item.grade || ""))}</strong> ${item.status} · loosening ${loosening.rating} · preload ${item.preload_n} N · torque ${item.tightening_torque_nm} N·m · slip ${item.slip_margin} · yield ${item.yield_margin}</li>`;
+  }).join("");
+  const lead = (report.bolts && report.bolts[0]) || report;
+  const counters = (((lead.loosening || {}).countermeasures) || []).filter((item) => item.recommended).map((item) =>
+    `<li><strong>${escapeHtml(item.name)}</strong> — ${escapeHtml(item.effect)}</li>`
+  ).join("");
+  const assumptions = (report.assumptions || (lead.assumptions || [])).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  $("assembly-status").textContent = "Bolts " + (report.worst || (row && row.loosening && row.loosening.rating) || "");
+  $("assembly-report").innerHTML = `<h3>Bolts</h3><ul>${rows}</ul><h3>Countermeasures</h3><ul>${counters}</ul><h3>Assumptions</h3><ul>${assumptions}</ul>`;
 }
 
 async function showAssemblyPicture() {
@@ -1066,6 +1236,52 @@ async function boot() {
     const report = await command("estimate_power", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
     await refresh();
     showPowerReport(report);
+  };
+  $("assembly-modes").onclick = async () => {
+    try {
+      if (!ui.assembly) return;
+      const rpm = Number($("assembly-rpm").value) || 120;
+      $("assembly-status").textContent = "Solving modes…";
+      const report = await command("solve_assembly_modal", {
+        name: ui.assembly,
+        setup: {
+          mesh_size_mm: 12,
+          modes: 4,
+          render_modes: 1,
+          excitations: [
+            { name: "drill rotary", kind: "drill", rpm },
+            { name: "hydraulic pump", kind: "pump", hz: Math.max(rpm / 60, 1) * 2 },
+          ],
+        },
+      });
+      await refresh();
+      showModalReport(report);
+    } catch (error) {
+      showError(error);
+    }
+  };
+  $("assembly-bolts").onclick = async () => {
+    try {
+      if (!ui.assembly) return;
+      $("assembly-status").textContent = "Checking bolts…";
+      const report = await command("check_bolts", {
+        spec: {
+          assembly: ui.assembly,
+          vibration: "intense",
+          friction: 0.14,
+          grip_mm: 20,
+          condition: "dry",
+          bolts: [
+            { name: "base M8", size: "M8", grade: "8.8", axial_n: 1000, shear_n: 2500 },
+            { name: "contrast M12", size: "M12", grade: "10.9", axial_n: 1000, shear_n: 800 },
+          ],
+        },
+      });
+      await refresh();
+      showBoltReport(report);
+    } catch (error) {
+      showError(error);
+    }
   };
   $("undo").onclick = async () => { await command("undo"); await refresh(); };
   $("redo").onclick = async () => { await command("redo"); await refresh(); };
