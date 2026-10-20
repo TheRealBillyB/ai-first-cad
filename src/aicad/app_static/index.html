@@ -90,6 +90,7 @@
         <button type="button" data-tab="fea">FEA</button>
         <button type="button" data-tab="vibration">Vibration</button>
         <button type="button" data-tab="bolts">Bolts</button>
+        <button type="button" data-tab="print">Print</button>
         <button type="button" data-tab="checks">Checks</button>
       </div>
       <div id="panel" class="panel"></div>
@@ -125,6 +126,7 @@
         <button type="button" id="assembly-modes">Modes</button>
         <label>drill rpm <input id="assembly-rpm" type="number" value="120" style="width:64px" /></label>
         <button type="button" id="assembly-bolts">Bolt check</button>
+        <button type="button" id="assembly-robot">Export robot</button>
         <span id="assembly-status" class="meta"></span>
       </div>
       <div id="assembly-view" class="assembly-view">
@@ -149,12 +151,13 @@
             <option value="fits_build_volume">fits build volume</option>
             <option value="min_wall">min wall</option>
             <option value="min_safety_factor">min safety factor</option>
+            <option value="fits_printer">fits my printer</option>
           </select>
         </label>
         <label>Part <input id="req-part" placeholder="plate" /></label>
         <label>Limit <input id="req-limit" value="20" /></label>
         <label>Material <input id="req-material" value="pla" /></label>
-        <p class="muted">Mass is grams. A build volume is three millimeters, like 200,200,200. Wall is millimeters. Safety factor is a number, and the current FEA supports and loads are stored with it.</p>
+        <p class="muted">Mass is grams. A build volume is three millimeters, like 200,200,200. Wall is millimeters. Safety factor is a number, and the current FEA supports and loads are stored with it. Fits my printer uses a printer id in Limit, such as bambu_a1, prusa_mk4, or ender_3, and an orientation in Material, such as best or z_up.</p>
         <button type="submit" class="primary">Add requirement</button>
         <button type="button" id="req-run">Check now</button>
       </form>

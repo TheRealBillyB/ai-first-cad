@@ -18,6 +18,9 @@ from pathlib import Path
 from aicad import assembly, fea, kernel, library
 from aicad.bolts import check_joint
 from aicad.modal import fatigue_check, solve_modal, solve_modal_assembly
+from aicad.printprep import analyze_print
+from aicad.printprep import list_printers as printer_catalog
+from aicad.robot import export_robot
 from aicad.errors import DocumentError, GeometryError, PartNotFound
 from aicad.kinematics import normalize as normalize_assembly
 from aicad.kinematics import solve as solve_assembly
@@ -774,6 +777,23 @@ class Document:
     def check_fatigue(self, spec: dict) -> dict:
         """Goodman check of a stated stress amplitude. It does not mesh the part."""
         return fatigue_check(spec)
+
+    def check_print(self, name: str, setup: dict | None = None) -> dict:
+        """Overhang map, a suggested orientation, printer fit, and an optional slicer estimate."""
+        with self._lock:
+            part = self._get(name)
+            out_dir = self.workspace / "renders" / name
+            return analyze_print(part.shape, setup or {}, out_dir, name)
+
+    def list_printers(self) -> dict:
+        return printer_catalog()
+
+    def export_robot(self, name: str, out_dir: str | Path | None = None) -> dict:
+        """Write URDF and MJCF for an assembly, then try to load and step the result."""
+        with self._lock:
+            spec = self._get_assembly(name)
+            destination = Path(out_dir) if out_dir else self.workspace / "exports" / "robot" / spec["name"]
+            return export_robot(spec, self._assembly_shapes(spec), destination)
 
     def render_assembly(self, name: str) -> dict:
         """One isometric picture of the assembly in its stored pose."""

@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<mujoco model="arm">
+  <compiler angle="degree" eulerseq="zyx" meshdir="meshes"/>
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <asset>
+    <mesh name="base" file="base.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="link" file="link.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+  <worldbody>
+    <body name="base" pos="0 0 0" euler="0 -0 0">
+      <inertial pos="-1.898173e-19 -4.9474828e-19 0.006" mass="0.013392" fullinertia="1.165104e-06 1.165104e-06 2.0088e-06 1.9824142e-24 6.4428463e-25 6.4428463e-25"/>
+      <geom type="mesh" mesh="base" pos="0 0 0"/>
+      <body name="link" pos="0.015 0 0.012" euler="0 0 0">
+        <inertial pos="0.058474669 4.0141219e-21 5.3521625e-21" mass="0.2107136" fullinertia="2.571264e-07 1.249463e-05 1.249463e-05 2.4580335e-23 3.2112975e-23 3.766587e-25"/>
+        <geom type="mesh" mesh="link" pos="-0 -0 -0"/>
+        <joint name="shoulder" type="hinge" axis="0 1 0" range="-45 90" limited="true"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

@@ -29,6 +29,9 @@ set_selection and in solve_mechanics or solve_modal selectors: {"ref": "..."}.
 
 solve_modal reports natural frequencies. Declare excitations with rpm or hz.
 check_bolts rates self-loosening from the slip margin. Read assumptions on both.
+check_print reports overhangs and whether a part fits a named printer.
+fits_printer is a requirement with a printer id and an optional orientation.
+export_robot writes URDF and MJCF for an assembly.
 
 After you change geometry, call inspect_part. If the project has requirements,
 call check_requirements. A sketch reports fully_constrained, under_constrained,

@@ -1,0 +1,178 @@
+# Start here
+
+This is a CAD program you drive yourself, or hand to an AI assistant. You describe a solid part, look at it, and check whether it is strong enough, whether it will print, and whether a bolted joint will stay tight. The same buttons the app shows are the tools an assistant calls, so you and the assistant are editing one project.
+
+You do not need a mechanical-engineering background to walk through the examples. The numbers are in millimeters. A force is in newtons. A stress from the solver is in megapascals, which is newtons per square millimeter.
+
+If you want the full command list, it is in [README.md](README.md).
+
+## What you can do
+
+- **Model a part.** Draw a flat sketch (lines, arcs, circles, and dimensions) and extrude it into a solid, or describe the solid in a short Python script. Change a named dimension and the solid rebuilds.
+- **Look at it.** The app shows the part in the browser. You can orbit it, pick a face, and cut a section through it. Pictures are also written as PNG files, with no graphics card required.
+- **Check the obvious things.** Volume and mass, wall thickness, and whether two parts collide or have a gap.
+- **Ask if it is strong enough.** Hold some faces still, push on others, and read a safety factor. The picture is colored by stress.
+- **Put parts together.** An assembly has joints (a hinge, a slider, a screw motion). You can play a motion and see where the moving parts hit. A cable or hose can be checked for length and for a bend that is too tight. A power estimate turns the weight of the arm into joint torque and then into pump or motor power.
+- **Ask about vibration.** The program finds the natural frequencies (the speeds at which a part wants to ring) and compares them with a drill, a motor, or a pump. A separate check says whether a bolted joint is likely to shake loose.
+- **Prepare a print.** Turn the part, see which faces need support, and check the size against a Bambu A1, P1, or X1, a Prusa MK4, an Ender 3, and the A1 mini. If PrusaSlicer is installed, you also get a print time and a filament weight.
+- **Hand an assembly to a robot simulator.** Export URDF and MuJoCo files with the joints, the limits, the mass, and the inertia, plus the meshes.
+
+## Install on your own computer
+
+You need Python 3.11 or newer. The geometry library is large (a few hundred megabytes). A C++ compiler is only needed if pip cannot find a prebuilt wheel for the sketch solver.
+
+### Windows
+
+1. Install Python from [python.org](https://www.python.org/downloads/). On the first installer screen, turn on **Add python.exe to PATH**.
+2. Download this project (the green Code button on GitHub, or `git clone` if you use Git) and open PowerShell in that folder.
+3. Create a virtual environment and install:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e ".[dev,robot]"
+```
+
+If PowerShell refuses the activate script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then try the activate line again.
+
+4. Check that the command exists:
+
+```powershell
+aicad --help
+```
+
+### Mac
+
+1. Install Python 3.11 or newer from [python.org](https://www.python.org/downloads/) if `python3 --version` is older than 3.11.
+2. Open Terminal in the project folder and run:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e ".[dev,robot]"
+aicad --help
+```
+
+### What the extra installs are for
+
+- **CalculiX (`ccx`)** runs the strength check and the vibration check. Modeling, print prep, assemblies, and the robot export all work without it. On Ubuntu or Debian: `sudo apt-get install -y calculix-ccx`. On Windows and Mac, install a CalculiX build and make sure `ccx` is on your PATH. Until then, those two checks report that the solver is missing.
+- **PrusaSlicer** adds print time and filament grams. Install it from Prusa's site and make sure the `prusa-slicer` command is on your PATH (on Windows that is `prusa-slicer.exe` in a folder Python can see). If the command is missing, the overhang map and the printer-fit check still run, and the report says the time estimate was skipped.
+- **MuJoCo** is the `robot` extra above. After an export, the program loads the file and takes a few steps so you know the robot file is readable. Without MuJoCo the URDF and MJCF files are still written.
+
+## Open the app
+
+From the project folder, with the virtual environment activated:
+
+```bash
+aicad app --workspace ./aicad_workspace
+```
+
+On Windows the same line works in PowerShell. A browser tab opens at `http://127.0.0.1:8765`. The folder `aicad_workspace` is the project: parts, notes, pictures, and exports. Closing the terminal stops the app.
+
+The left side is the parts list. The middle is the part. The right side is Inspect, Section, Features, FEA, Vibration, Bolts, Print, and Checks. Along the top you can switch to Sketch, Assemblies, and Documents.
+
+![The shelf in the app](docs/images/app_shelf.png)
+
+## Connect an assistant
+
+Two ways. Either one edits the project you are looking at.
+
+### Chat inside the app
+
+Open the app, click **Settings** in the assistant panel, and paste an API key for OpenAI or Anthropic. The key is saved at `~/.config/aicad/settings.json` (on Windows that is `C:\Users\YourName\.config\aicad\settings.json`), mode private to your user. It is not written into the project folder. Then type in the box. The assistant uses the same commands as the buttons.
+
+### An assistant outside the app (Cursor, Claude Desktop)
+
+This is the MCP server. It speaks the same commands over a local pipe.
+
+In Cursor, put this in `~/.cursor/mcp.json`. Use the full path to `aicad` inside the virtual environment, and the full path to the workspace folder.
+
+Mac or Linux:
+
+```json
+{
+  "mcpServers": {
+    "aicad": {
+      "command": "/full/path/to/ai-first-cad/.venv/bin/aicad",
+      "args": ["serve", "--workspace", "/full/path/to/ai-first-cad/aicad_workspace"]
+    }
+  }
+}
+```
+
+Windows:
+
+```json
+{
+  "mcpServers": {
+    "aicad": {
+      "command": "C:\\full\\path\\to\\ai-first-cad\\.venv\\Scripts\\aicad.exe",
+      "args": ["serve", "--workspace", "C:\\full\\path\\to\\ai-first-cad\\aicad_workspace"]
+    }
+  }
+}
+```
+
+If the app is already running and you want the assistant to edit that same window, point the server at it:
+
+```bash
+aicad serve --connect http://127.0.0.1:8765
+```
+
+Use that command as the MCP command, with no `--workspace` argument. One process owns the files.
+
+## A ten-minute tour
+
+Stay in the project folder with the virtual environment activated.
+
+**1. A bracket you can see.** The pictures are already in the repo. Open `examples/renders/motor_mount_contact.png`. It is a small plate with a boss, a bore, four motor screws, and three gussets. `examples/renders/motor_mount_section_y0.png` is a cut through the bore. `examples/renders/fea_gussets_stress_contact.png` is the same bracket under a motor load: the safety factor on that run was about 9, so the part is lightly loaded. To rebuild the pictures:
+
+```bash
+python examples/motor_mount.py
+```
+
+**2. Open the workspace on a small shelf and a two-link arm.**
+
+```bash
+python examples/print_and_robot.py
+aicad app --workspace examples/print_workspace
+```
+
+Click **shelf** in the parts list. Orbit it. The shape is a wall with a plate sticking out.
+
+**3. Print check.** Open the **Print** tab. Leave orientation on **best**, leave slice unchecked, and click **Analyze**. The suggested orientation is `y_up`: support area 0, height 30 mm, and every listed printer fits. The picture for the modeled orientation, with the plate's underside in red, is below. Red means the face leans more than 45° from vertical and is not the face sitting on the bed.
+
+![Modeled orientation, underside needs support](examples/renders/overhang_upright.png)
+
+![Turned so a flat face is on the bed](examples/renders/overhang_best.png)
+
+![The same check in the app](docs/images/app_print.png)
+
+On a machine with PrusaSlicer, tick **slice** (or pass `"slice": true` from the assistant). For this shelf, at the slicer's default profile and a filament price of $20/kg, the modeled orientation was about **31 min 25 s**, **9.06 g**, **$0.18**. The suggested orientation was about **30 min 59 s** and **9.82 g**. Those numbers move if you change layer height or infill in the slicer. The density passed in is PLA at 1.24 g/cm³ so the gram line is not left at zero.
+
+**4. Fits my printer.** Open **Documents**. Add a requirement: kind **fits my printer**, part `shelf`, limit `ender_3`, material `best`. Click **Check now**. It passes: the oriented shelf is 40 × 40 × 30 mm and an Ender 3 is 220 × 220 × 250 mm.
+
+![A printer requirement that passes](docs/images/app_requirements.png)
+
+**5. Robot export.** Open **Assemblies**, click **arm**, click **Preview**, then **Export robot**. You get a URDF and a MuJoCo file under `examples/print_workspace/exports/robot/arm/`, with a shoulder hinge from −45° to 90°. If MuJoCo is installed, the line says the file was loaded and stepped.
+
+![The arm, exported](docs/images/app_robot.png)
+
+The same files, regenerated by the example script, live in `examples/robot_arm/` (`robot.urdf`, `robot.xml`, and `meshes/`).
+
+**6. If you have another ten minutes.** `python examples/rod_arm.py` builds a two-joint arm with a hose, a cable, and a power estimate, and writes `examples/renders/rod_arm_strip.png`. `python examples/vibration_arm.py` needs CalculiX. It writes a magnified mode picture and a bolt check: the M8 joint slips under the sample shear while the bolt itself is still below yield.
+
+![A magnified mode shape of the upper link](examples/renders/vibration_mode.png)
+
+## Where the checks can mislead you
+
+- The strength check is linear and elastic. It will not show a dent, a buckle, or two parts pressing on each other.
+- Vibration pictures are exaggerated shapes so you can see the pattern. They are not how far the part moves at that speed. An assembly vibration check locks the hinges, so the frequencies come out higher than a real pin joint.
+- The bolt number uses a handbook friction factor. It is not a measured torque test. A locking nut resists turning. It does not create clamping force.
+- Print orientations are the six ways to point a modeled axis up. A diagonal pose is not tried. The slicer uses its default profile.
+- The robot file does not enforce a gear or a linkage. Those relations are written as comments. Effort and velocity on each joint are placeholders, not the power estimate.
+- Scripts the assistant sends are real Python on your machine. Point the workspace at a folder you are willing to let it write.
+
+The longer list is in the README under Limitations.

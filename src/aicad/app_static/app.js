@@ -229,6 +229,39 @@ function renderPanel() {
     $("bolt-run").onclick = () => runBolts().catch(showError);
     return;
   }
+  if (ui.tab === "print") {
+    const report = state.panels.print;
+    root.innerHTML = `
+      <h3>Print</h3>
+      <div class="row">
+        <select id="print-orientation">
+          <option value="best">best</option>
+          <option value="z_up">z up</option>
+          <option value="z_down">z down</option>
+          <option value="x_up">x up</option>
+          <option value="x_down">x down</option>
+          <option value="y_up">y up</option>
+          <option value="y_down">y down</option>
+        </select>
+        <label>overhang ° <input id="print-threshold" type="number" value="45" style="width:56px" /></label>
+      </div>
+      <div class="row">
+        <select id="print-printer">
+          <option value="">any bed</option>
+          <option value="bambu_a1">Bambu A1</option>
+          <option value="bambu_a1_mini">A1 mini</option>
+          <option value="bambu_p1">Bambu P1</option>
+          <option value="bambu_x1">Bambu X1</option>
+          <option value="prusa_mk4">Prusa MK4</option>
+          <option value="ender_3">Ender 3</option>
+        </select>
+        <label><input id="print-slice" type="checkbox" /> slice</label>
+        <button type="button" id="print-run" class="primary">Analyze</button>
+      </div>
+      ${report && report.part === ui.part ? printHtml(report) : `<p class="muted">Colors show how far each face leans from vertical. A face past the overhang angle needs support, unless it is the face on the bed.</p>`}`;
+    $("print-run").onclick = () => runPrint().catch(showError);
+    return;
+  }
   const checks = state.requirements || [];
   root.innerHTML = `
     <h3>Requirements</h3>
@@ -313,6 +346,42 @@ async function runModal() {
     },
   });
   await refresh();
+}
+
+async function runPrint() {
+  if (!ui.part) return;
+  const printer = $("print-printer").value;
+  await command("check_print", {
+    name: ui.part,
+    setup: {
+      orientation: $("print-orientation").value,
+      threshold_deg: Number($("print-threshold").value),
+      printer: printer || undefined,
+      slice: $("print-slice").checked,
+    },
+  });
+  await refresh();
+}
+
+function printHtml(report) {
+  const contact = (report.views || []).find((view) => String(view.name).endsWith("_contact")) || (report.views || [])[0];
+  const printers = (report.printers || []).map((row) =>
+    `<li>${escapeHtml(row.name)}: ${row.fits ? "fits" : "does not fit"}</li>`
+  ).join("");
+  const slicer = report.slicer || {};
+  const sliceLine = slicer.status === "sliced"
+    ? `${escapeHtml(slicer.time || "")}, ${slicer.grams} g${slicer.cost != null ? `, cost ${slicer.cost}` : ""}`
+    : escapeHtml(slicer.note || slicer.status || "");
+  return `<div class="kv">
+      <span>Status</span><b>${report.status}</b>
+      <span>Orientation</span><b>${escapeHtml(report.orientation || "")}</b>
+      <span>Support</span><b>${report.support_area_mm2} mm²</b>
+      <span>Height</span><b>${report.height_mm} mm</b>
+    </div>
+    <p>${escapeHtml(report.note || "")}</p>
+    <h3>Printers</h3><ul>${printers}</ul>
+    <h3>Slicer</h3><p>${sliceLine}</p>
+    ${contact ? `<img alt="overhang map" src="${fileUrl(contact.path)}" />` : ""}`;
 }
 
 async function runBolts() {
@@ -1164,6 +1233,21 @@ function showModalReport(report) {
   $("assembly-report").innerHTML = `<h3>Modes</h3><p>${escapeHtml(report.note || "")}</p><ul>${rows}</ul>${flags ? `<h3>Resonance</h3><ul>${flags}</ul>` : ""}<h3>Suggestions</h3><ul>${suggestions}</ul><p class="muted">${escapeHtml((report.support && report.support.description) || "")}</p><h3>Assumptions</h3><ul>${assumptions}</ul>`;
 }
 
+function showRobotReport(report) {
+  const validation = report.validation || {};
+  const mujoco = validation.mujoco || {};
+  const bullet = validation.pybullet || {};
+  const rows = (report.joints || []).map((joint) =>
+    `<li>${escapeHtml(joint.name)} ${escapeHtml(joint.type)} · ${escapeHtml(joint.parent)} → ${escapeHtml(joint.child)}</li>`
+  ).join("");
+  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  $("assembly-status").textContent = "Robot export";
+  $("assembly-report").innerHTML = `<h3>Robot</h3><p>${escapeHtml(report.note || "")}</p>
+    <p>MuJoCo ${escapeHtml(mujoco.status || "")}. PyBullet ${escapeHtml(bullet.status || "")}.</p>
+    <p class="muted">${escapeHtml(report.urdf || "")}</p>
+    <ul>${rows}</ul><h3>Assumptions</h3><ul>${assumptions}</ul>`;
+}
+
 function showBoltReport(report) {
   const row = report.bolts ? null : report;
   const rows = (report.bolts || [report]).map((item) => {
@@ -1256,6 +1340,17 @@ async function boot() {
       });
       await refresh();
       showModalReport(report);
+    } catch (error) {
+      showError(error);
+    }
+  };
+  $("assembly-robot").onclick = async () => {
+    try {
+      if (!ui.assembly) return;
+      $("assembly-status").textContent = "Exporting robot…";
+      const report = await command("export_robot", { name: ui.assembly });
+      await refresh();
+      showRobotReport(report);
     } catch (error) {
       showError(error);
     }
@@ -1355,6 +1450,10 @@ async function boot() {
       item.size_mm = size;
     }
     if (kind === "min_wall") item.min_mm = requiredNumber(limitText, "Enter the minimum wall in millimeters.");
+    if (kind === "fits_printer") {
+      item.printer = limitText || "bambu_a1";
+      item.orientation = $("req-material").value || "best";
+    }
     if (kind === "min_safety_factor") {
       item.minimum = requiredNumber(limitText, "Enter the minimum safety factor.");
       if (feaPlan.fixes.length && feaPlan.loads.length) {

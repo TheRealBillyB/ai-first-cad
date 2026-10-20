@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aicad"
-version = "0.7.0"
+version = "0.8.0"
 description = "AI-first CAD for hard-body parts. Model a solid, then see and check it."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -23,6 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+robot = ["mujoco>=3.1"]
 
 [project.scripts]
 aicad = "aicad.cli:main"

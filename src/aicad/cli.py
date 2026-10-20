@@ -213,6 +213,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     fatigue.add_argument("--file", type=Path, required=True, help="JSON with material and stress_amplitude_mpa.")
 
+    printed = commands.add_parser(
+        "print", parents=[common], help="Overhang map, orientation, and printer fit."
+    )
+    printed.add_argument("name")
+    printed.add_argument("--orientation", default="best", help="best, z_up, z_down, x_up, x_down, y_up, or y_down.")
+    printed.add_argument("--printer", default=None, help="bambu_a1, prusa_mk4, ender_3, and the other known beds.")
+    printed.add_argument("--threshold", type=float, default=45.0, help="Degrees from vertical before a face needs support.")
+    printed.add_argument("--slice", action="store_true", help="Ask OrcaSlicer or PrusaSlicer for time and grams.")
+    printed.add_argument("--price-per-kg", type=float, default=None, help="Used when the gcode has no filament cost.")
+
+    robot = commands.add_parser(
+        "robot", parents=[common], help="Export an assembly as URDF and MJCF."
+    )
+    robot.add_argument("name")
+    robot.add_argument("--out", type=Path, default=None, help="Directory for the robot files.")
+
     args = parser.parse_args(argv)
     try:
         return _dispatch(args)
@@ -350,6 +366,19 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _emit(document.check_bolts(spec))
     if args.command == "fatigue":
         return _emit(document.check_fatigue(json.loads(args.file.read_text(encoding="utf-8"))))
+    if args.command == "print":
+        setup = {
+            "orientation": args.orientation,
+            "threshold_deg": args.threshold,
+            "slice": bool(args.slice),
+        }
+        if args.printer:
+            setup["printer"] = args.printer
+        if args.price_per_kg is not None:
+            setup["price_per_kg"] = args.price_per_kg
+        return _emit(document.check_print(args.name, setup))
+    if args.command == "robot":
+        return _emit(document.export_robot(args.name, args.out))
     raise AICADError(f"Unknown command {args.command!r}.")
 
 

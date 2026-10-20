@@ -13,8 +13,9 @@ from typing import Any
 
 from aicad import fea
 from aicad.errors import GeometryError
+from aicad.printprep import fits_printer, orientation_size
 
-_KINDS = ("max_mass", "fits_build_volume", "min_wall", "min_safety_factor")
+_KINDS = ("max_mass", "fits_build_volume", "fits_printer", "min_wall", "min_safety_factor")
 
 
 def normalize(payload: dict | list | None) -> list[dict]:
@@ -114,6 +115,27 @@ def _one(document, item: dict, cache: dict[str, dict], run: bool) -> dict:
                 f"The build volume, also sorted, is {envelope[0]:.2f} × {envelope[1]:.2f} × {envelope[2]:.2f} mm. "
                 "Sorting lets the part be turned to fit."
             ),
+            unit="mm",
+        )
+    if kind == "fits_printer":
+        printer = item.get("printer")
+        if not printer:
+            raise GeometryError(f"{item['id']}: fits_printer needs a printer, such as bambu_a1 or prusa_mk4.")
+        orientation = str(item.get("orientation") or "best")
+        sized = orientation_size(document._get(part).shape, orientation)  # noqa: SLF001
+        fit = fits_printer(sized["size_mm"], str(printer))
+        detail = (
+            f"{part} in orientation {sized['orientation']} is "
+            f"{fit['part_mm'][0]:.2f} × {fit['part_mm'][1]:.2f} × {fit['part_mm'][2]:.2f} mm. "
+            f"{fit['name']} is {fit['bed_mm'][0]:.0f} × {fit['bed_mm'][1]:.0f} × {fit['bed_mm'][2]:.0f} mm. "
+            "Height is the oriented Z. The footprint may swap X and Y."
+        )
+        return _row(
+            item,
+            "pass" if fit["fits"] else "fail",
+            fit["part_mm"],
+            fit["bed_mm"],
+            detail,
             unit="mm",
         )
     key = _cache_key(item, token)
