@@ -526,6 +526,128 @@ def test_assembly_mesh_colors_each_part(tmp_path):
     assert mesh["colors"][0:3] == [10.0, 20.0, 30.0]
 
 
+def test_a_child_must_meet_its_parent_and_the_viewport_uses_that_placement(tmp_path):
+    from aicad.assembly import loose_mounts, posed_shapes
+
+    document = Document(tmp_path)
+    _box(document, "base", [20, 20, 20], [0, 0, 0])
+    _box(document, "block", [10, 10, 10], [0, 0, 0])
+    document.create_part_from_script(
+        "tube",
+        "part = feature.add('wall', Rot(0, -90, 0) * Cylinder(15, 40))\n"
+        "part = feature.cut('bore', Rot(0, -90, 0) * Cylinder(8, 44))\n",
+    )
+    document.create_part_from_script(
+        "shaft",
+        "part = feature.add('shaft', Rot(0, -90, 0) * Cylinder(4, 24))\n",
+    )
+    shapes = {name: part.base for name, part in document._parts.items()}
+
+    def placed(spec):
+        solved, solids = posed_shapes(spec, shapes)
+        return loose_mounts(solved, solids), solved, solids
+
+    near, _solved, _solids = placed(
+        {
+            "name": "near",
+            "instances": [{"name": "base", "part": "base"}, {"name": "block", "part": "block"}],
+            "joints": [
+                {
+                    "name": "seat",
+                    "type": "fixed",
+                    "parent": "base",
+                    "child": "block",
+                    "parent_anchor": [15.5, 0, 0],
+                }
+            ],
+        }
+    )
+    assert near == []
+    far, _solved, _solids = placed(
+        {
+            "name": "far",
+            "instances": [{"name": "base", "part": "base"}, {"name": "block", "part": "block"}],
+            "joints": [
+                {
+                    "name": "seat",
+                    "type": "fixed",
+                    "parent": "base",
+                    "child": "block",
+                    "parent_anchor": [80, 0, 0],
+                }
+            ],
+        }
+    )
+    assert [row["child"] for row in far] == ["block"]
+    assert far[0]["gap_mm"] > 20
+    engaged, _solved, _solids = placed(
+        {
+            "name": "bore",
+            "instances": [{"name": "tube", "part": "tube"}, {"name": "shaft", "part": "shaft"}],
+            "joints": [{"name": "slide", "type": "fixed", "parent": "tube", "child": "shaft"}],
+        }
+    )
+    assert engaged == []
+
+    document.create_assembly(
+        {
+            "name": "near",
+            "instances": [{"name": "base", "part": "base"}, {"name": "block", "part": "block"}],
+            "joints": [
+                {
+                    "name": "seat",
+                    "type": "fixed",
+                    "parent": "base",
+                    "child": "block",
+                    "parent_anchor": [15.5, 0, 0],
+                }
+            ],
+        }
+    )
+    mesh = document.assembly_mesh("near")
+    index = next(face["index"] for face in mesh["faces"] if face["ref"] == "instance/block")
+    xs = [
+        mesh["positions"][tri * 9 + corner * 3]
+        for tri, face in enumerate(mesh["triangle_face"])
+        if face == index
+        for corner in range(3)
+    ]
+    assert max(xs) == pytest.approx(20.5, abs=0.5)
+    assert min(xs) == pytest.approx(10.5, abs=0.5)
+
+
+def test_rod_handler_parts_stay_on_their_parents_at_every_pose(tmp_path):
+    import importlib.util
+
+    from aicad.assembly import loose_mounts, posed_shapes
+
+    path = Path(__file__).resolve().parents[1] / "examples" / "rod_handler.py"
+    spec = importlib.util.spec_from_file_location("rod_handler", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    document = Document(tmp_path)
+    built = module._build(document)
+    document.create_assembly(built["spec"])
+    shapes = {name: part.base for name, part in document._parts.items()}
+    for pose in built["spec"]["poses"]:
+        document.set_pose("rod_handler", pose)
+        packed = document.get_assembly("rod_handler")
+        solved, solids = posed_shapes(packed["assembly"], shapes)
+        loose = loose_mounts(solved, solids)
+        assert loose == [], pose
+        mesh = document.assembly_mesh("rod_handler")
+        jaw_index = next(face["index"] for face in mesh["faces"] if face["ref"] == "instance/jaw")
+        mesh_z = [
+            mesh["positions"][tri * 9 + corner * 3 + 2]
+            for tri, face in enumerate(mesh["triangle_face"])
+            if face == jaw_index
+            for corner in range(3)
+        ]
+        box = solids["jaw"].impl.bounding_box()
+        assert min(mesh_z) == pytest.approx(box.min.Z, abs=0.6)
+        assert max(mesh_z) == pytest.approx(box.max.Z, abs=0.6)
+
+
 def test_fixed_actuator_is_rejected(tmp_path):
     document = Document(tmp_path)
     _box(document, "base", [10, 10, 10], [0, 0, 0])

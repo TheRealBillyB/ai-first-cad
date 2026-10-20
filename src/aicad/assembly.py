@@ -54,6 +54,53 @@ def posed_shapes(spec: dict, shapes: dict[str, kernel.Shape], overrides: dict | 
     return solved, placed
 
 
+def mount_gaps(solved: dict, placed: dict[str, kernel.Shape]) -> list[dict]:
+    """Surface gap from each child solid to its parent solid.
+
+    A gap of zero with overlap means the solids touch or pass through each
+    other. A shaft in a clearance bore reports the radial gap and no overlap.
+    """
+    rows = []
+    for joint in solved["joints"]:
+        parent = joint["parent"]
+        child = joint["child"]
+        overlap, distance, *_rest = kernel.clearance_between(placed[parent], placed[child])
+        rows.append(
+            {
+                "joint": joint["name"],
+                "parent": parent,
+                "child": child,
+                "type": joint["type"],
+                "gap_mm": distance,
+                "overlap_mm3": overlap,
+                "boxes_meet": not kernel.aabb_separated(placed[parent], placed[child]),
+            }
+        )
+    return rows
+
+
+def loose_mounts(
+    solved: dict,
+    placed: dict[str, kernel.Shape],
+    *,
+    gap_mm: float = 3.0,
+    bore_gap_mm: float = 12.0,
+) -> list[dict]:
+    """Children that neither meet their parent nor sit in its bore.
+
+    ``gap_mm`` is the mounting gap. ``bore_gap_mm`` is the extra allowance
+    when the boxes already meet, which is a pin or a piston in a clearance hole.
+    """
+    loose = []
+    for row in mount_gaps(solved, placed):
+        if row["overlap_mm3"] > 0 or row["gap_mm"] <= gap_mm:
+            continue
+        if row["boxes_meet"] and row["gap_mm"] <= bore_gap_mm:
+            continue
+        loose.append(row)
+    return loose
+
+
 def collisions(solved: dict, placed: dict[str, kernel.Shape], ignore: list[list[str]] | None = None) -> list[dict]:
     skip = set()
     for pair in ignore or []:

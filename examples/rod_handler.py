@@ -287,6 +287,15 @@ part = feature.cut("lightening_a", Pos(110, 0, 2) * Rot(90, 0, 0) * Cylinder(11,
 part = feature.cut("lightening_b", Pos(210, 0, 2) * Rot(90, 0, 0) * Cylinder(11, 70))
 part = feature.add("cradle", cradle)
 part = feature.cut("rod_seat", seat)
+# The barrel is above the rod. The post is a plate on the cradle's inner
+# end, clear of the rod (the rod reaches x=345.5), and the bridge stops
+# just short of the barrel so the jaw can still slide.
+post = Pos(326, 0, 80) * Box(34, 48, 150)
+foot = Pos(338.5, 0, 8) * Box(9, 48, 36)
+bridge = Pos(355.5, 0, 152) * Box(32, 36, 28)
+part = feature.add("jaw_post", post)
+part = feature.add("jaw_foot", foot)
+part = feature.add("jaw_bridge", bridge)
 {FINISH}
 """
 

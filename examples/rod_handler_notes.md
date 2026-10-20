@@ -46,6 +46,10 @@ With the chuck taking the other end, the free length is the stick-up past the ha
 
 The upper link's first mode, before the root doubler, was 31.6 Hz, within 5% of the third harmonic of 600 rpm (30 Hz). After the doubler it is 70.6 Hz, and the same drill speeds are clear. Joint compliance would lower that number. The check says so.
 
+## The jaw was floating off the forearm
+
+At the reach pose the jaw barrel is a child of the forearm, and the viewport mesh uses that same solved transform. The solids did not meet. The barrel sat 95 mm off the cradle, so the red jaw read as a separate part past the orange arm. A post on the inner end of the cradle, clear of the HQ rod, and a bridge that stops 0.5 mm short of the barrel close that gap. The jaw still slides 64 mm onto the rod. Both poses report every child on its parent.
+
 ## Robot export
 
 The export writes a URDF and a MuJoCo file, 29 links and 8 moving joints. MuJoCo loaded the file and took 5 steps. Cylinder relations are comments in the robot file. A simulator will not keep the rod eye on the clevis unless something else does. PyBullet is not installed here, so that check was skipped and the URDF was still written.
