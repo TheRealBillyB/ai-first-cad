@@ -685,7 +685,7 @@ class Document:
             driven = next((row for row in result["solved"]["joints"] if row["name"] == joint), None)
             if driven and driven["driven"]:
                 result["note"] = (
-                    f"{joint} is driven by a gear or a linkage, so its value follows the driver."
+                    f"{joint} is driven by a relation, so its value follows the driver."
                 )
             return result
 

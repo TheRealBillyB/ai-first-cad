@@ -1,0 +1,722 @@
+{
+  "eyes": {
+    "shoulder_cylinder": {
+      "clevis_mm": [
+        237.275,
+        86.361,
+        232.861
+      ],
+      "eye_mm": [
+        237.275,
+        86.361,
+        232.861
+      ],
+      "miss_mm": 0.0,
+      "stroke_mm": 37.4444,
+      "barrel_deg": -9.2733
+    },
+    "elbow_cylinder": {
+      "clevis_mm": [
+        647.122,
+        235.533,
+        263.49
+      ],
+      "eye_mm": [
+        647.122,
+        235.533,
+        263.49
+      ],
+      "miss_mm": 0.0,
+      "stroke_mm": 121.7034,
+      "barrel_deg": 10.1137
+    }
+  },
+  "mass": {
+    "visible_kg": 10.267,
+    "hq_3m_kg": 34.225,
+    "payload_kg": 23.957
+  },
+  "cylinders": {
+    "shoulder": {
+      "retracted_mm": 228.534,
+      "stroke_mm": 134.395,
+      "barrel_min_deg": -49.211,
+      "barrel_max_deg": 8.853
+    },
+    "elbow": {
+      "retracted_mm": 288.882,
+      "stroke_mm": 140.553,
+      "barrel_min_deg": -15.48,
+      "barrel_max_deg": 25.889
+    },
+    "moment_arm_mm": {
+      "shoulder": 74.63,
+      "elbow": 22.91
+    }
+  },
+  "features": {
+    "coupon": {
+      "redundant": [
+        "eye_rib"
+      ],
+      "warning": null,
+      "steps": [
+        {
+          "name": "cheek",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.0,
+          "note": "100% of 'cheek' became new material (32000.0 of 32000.0 mm^3)."
+        },
+        {
+          "name": "eye",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.3636,
+          "note": "64% of 'eye' became new material (15877.6 of 24950.5 mm^3)."
+        },
+        {
+          "name": "eye_rib",
+          "op": "add",
+          "redundant": true,
+          "buried_fraction": 1.0,
+          "note": "100% of 'eye_rib' was already inside the part (800.0 of 800.0 mm^3). It adds little new material. A rib or gusset buried in a boss does not stiffen the joint."
+        },
+        {
+          "name": "bore",
+          "op": "cut",
+          "redundant": false,
+          "buried_fraction": null,
+          "note": "'bore' removed 17693.4 mm^3 (92% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+        },
+        {
+          "name": "lug",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.2351,
+          "note": "76% of 'lug' became new material (3230.8 of 4224.0 mm^3)."
+        },
+        {
+          "name": "lug_bore",
+          "op": "cut",
+          "redundant": false,
+          "buried_fraction": null,
+          "note": "'lug_bore' removed 603.2 mm^3 (25% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+        }
+      ]
+    },
+    "upper": {
+      "redundant": [],
+      "warning": null,
+      "steps": [
+        {
+          "name": "side_a",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.0,
+          "note": "100% of 'side_a' became new material (342912.0 of 342912.0 mm^3)."
+        },
+        {
+          "name": "side_b",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.0,
+          "note": "100% of 'side_b' became new material (342912.0 of 342912.0 mm^3)."
+        },
+        {
+          "name": "top_strap",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.15,
+          "note": "85% of 'top_strap' became new material (206720.0 of 243200.0 mm^3)."
+        },
+        {
+          "name": "bottom_heel",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.2,
+          "note": "80% of 'bottom_heel' became new material (20480.0 of 25600.0 mm^3)."
+        },
+        {
+          "name": "bottom_toe",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.2,
+          "note": "80% of 'bottom_toe' became new material (61440.0 of 76800.0 mm^3)."
+        },
+        {
+          "name": "clevis_bridge",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.0303,
+          "note": "97% of 'clevis_bridge' became new material (204800.0 of 211200.0 mm^3)."
+        },
+        {
+          "name": "web",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.3231,
+          "note": "68% of 'web' became new material (33792.0 of 49920.0 mm^3)."
+        },
+        {
+          "name": "shoulder_eye_a",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.3636,
+          "note": "64% of 'shoulder_eye_a' became new material (34482.1 of 54186.2 mm^3)."
+        },
+        {
+          "name": "shoulder_eye_b",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.3636,
+          "note": "64% of 'shoulder_eye_b' became new material (34482.1 of 54186.2 mm^3)."
+        },
+        {
+          "name": "elbow_eye_a",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.4444,
+          "note": "56% of 'elbow_eye_a' became new material (24630.1 of 44334.2 mm^3)."
+        },
+        {
+          "name": "elbow_eye_b",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.4444,
+          "note": "56% of 'elbow_eye_b' became new material (24630.1 of 44334.2 mm^3)."
+        },
+        {
+          "name": "root_doubler_a",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.3595,
+          "note": "64% of 'root_doubler_a' became new material (110678.9 of 172800.0 mm^3)."
+        },
+        {
+          "name": "root_doubler_b",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.3595,
+          "note": "64% of 'root_doubler_b' became new material (110678.9 of 172800.0 mm^3)."
+        },
+        {
+          "name": "shoulder_bore",
+          "op": "cut",
+          "redundant": false,
+          "buried_fraction": null,
+          "note": "'shoulder_bore' removed 43429.4 mm^3 (45% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+        },
+        {
+          "name": "elbow_bore",
+          "op": "cut",
+          "redundant": false,
+          "buried_fraction": null,
+          "note": "'elbow_bore' removed 28952.9 mm^3 (30% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+        },
+        {
+          "name": "gusset_a",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.2,
+          "note": "80% of 'gusset_a' became new material (21600.0 of 27000.0 mm^3)."
+        },
+        {
+          "name": "gusset_b",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.2,
+          "note": "80% of 'gusset_b' became new material (21600.0 of 27000.0 mm^3)."
+        },
+        {
+          "name": "shoulder_lug_a",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.2891,
+          "note": "71% of 'shoulder_lug_a' became new material (200192.0 of 281600.0 mm^3)."
+        },
+        {
+          "name": "shoulder_lug_b",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.2891,
+          "note": "71% of 'shoulder_lug_b' became new material (200192.0 of 281600.0 mm^3)."
+        },
+        {
+          "name": "shoulder_lug_bore",
+          "op": "cut",
+          "redundant": false,
+          "buried_fraction": null,
+          "note": "'shoulder_lug_bore' removed 22167.1 mm^3 (71% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+        },
+        {
+          "name": "elbow_lug_a",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.1028,
+          "note": "90% of 'elbow_lug_a' became new material (256320.0 of 285696.0 mm^3)."
+        },
+        {
+          "name": "elbow_lug_b",
+          "op": "add",
+          "redundant": false,
+          "buried_fraction": 0.1028,
+          "note": "90% of 'elbow_lug_b' became new material (256320.0 of 285696.0 mm^3)."
+        },
+        {
+          "name": "elbow_lug_bore",
+          "op": "cut",
+          "redundant": false,
+          "buried_fraction": null,
+          "note": "'elbow_lug_bore' removed 9698.1 mm^3 (54% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+        },
+        {
+          "name": "lightening_a",
+          "op": "cut",
+          "redundant": false,
+          "buried_fraction": null,
+          "note": "'lightening_a' removed 12736.1 mm^3 (22% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+        },
+        {
+          "name": "lightening_b",
+          "op": "cut",
+          "redundant": false,
+          "buried_fraction": null,
+          "note": "'lightening_b' removed 8494.9 mm^3 (15% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+        },
+        {
+          "name": "lightening_c",
+          "op": "cut",
+          "redundant": false,
+          "buried_fraction": null,
+          "note": "'lightening_c' removed 8494.9 mm^3 (15% of the cutter). A through hole is often a small fraction of a long cutter; that is expected."
+        }
+      ]
+    }
+  },
+  "motion": {
+    "status": "clear",
+    "colliding_frames": [],
+    "collision_count": 0,
+    "hits": [],
+    "rod_z_mm": [
+      -83.9365,
+      292.539,
+      687.7968,
+      991.4362
+    ]
+  },
+  "hoses_first": {
+    "status": "fail",
+    "routes": [
+      {
+        "name": "shoulder_hose",
+        "status": "fail",
+        "length_mm": [
+          185.125,
+          177.463,
+          171.348,
+          166.855
+        ],
+        "max_strain": -0.0,
+        "min_bend_radius_mm": 77.377,
+        "bend_limit_mm": 48.0,
+        "pinch_count": 7
+      },
+      {
+        "name": "elbow_hose",
+        "status": "fail",
+        "length_mm": [
+          539.017,
+          561.534,
+          579.01,
+          590.727
+        ],
+        "max_strain": 0.09593,
+        "min_bend_radius_mm": 149.537,
+        "bend_limit_mm": 48.0,
+        "pinch_count": 13
+      }
+    ]
+  },
+  "hoses": {
+    "status": "pass",
+    "routes": [
+      {
+        "name": "shoulder_hose",
+        "status": "pass",
+        "length_mm": [
+          654.547,
+          626.027,
+          597.071,
+          567.714
+        ],
+        "max_strain": -0.01961,
+        "min_bend_radius_mm": 127.846,
+        "bend_limit_mm": 48.0,
+        "pinch_count": 0
+      },
+      {
+        "name": "elbow_hose",
+        "status": "pass",
+        "length_mm": [
+          670.792,
+          682.483,
+          691.505,
+          697.499
+        ],
+        "max_strain": -0.01961,
+        "min_bend_radius_mm": 63.51,
+        "bend_limit_mm": 48.0,
+        "pinch_count": 0
+      }
+    ]
+  },
+  "power": {
+    "actuators": [
+      {
+        "name": "shoulder_cylinder",
+        "joint": "shoulder",
+        "peak_torque_nm": 404.0174,
+        "peak_force_n": 0.0,
+        "peak_pressure_mpa": 6.1764,
+        "peak_power_w": 149.324
+      },
+      {
+        "name": "elbow_cylinder",
+        "joint": "elbow",
+        "peak_torque_nm": 144.3711,
+        "peak_force_n": 0.0,
+        "peak_pressure_mpa": 7.1895,
+        "peak_power_w": 55.336
+      },
+      {
+        "name": "jaw_cylinder",
+        "joint": "jaw",
+        "peak_torque_nm": 0.0,
+        "peak_force_n": 3.578,
+        "peak_pressure_mpa": 0.0044,
+        "peak_power_w": 0.09
+      }
+    ],
+    "pump": {
+      "energy_j": 449.168,
+      "mean_power_w": 149.723,
+      "displaced_volume_mm3": 132749.3
+    },
+    "assumptions": [
+      "Loads are quasi-static. Inertia, friction, seal drag, and line pressure drop are not included.",
+      "Gravity is 9.81 m/s\u00b2 along \u2212Z. Mass is volume times the material density, plus payload_kg at payload_at or at the center of mass.",
+      "A revolute torque is the moment of supported weight about the joint axis, in N\u00b7m. A prismatic force is the opposing component of that weight along the slide.",
+      "A gear or linkage reflects the driven load onto the driver when the driven joint has no actuator. Ratio is d(driven)/d(driver).",
+      "A hydraulic cylinder turns torque into force with moment_arm_mm. Pressure is force over piston area. Extend uses the bore; retract uses bore minus rod.",
+      "Flow is area times the speed of the piston. Power is pressure times flow divided by efficiency. 1 MPa \u00b7 mm\u00b3/s = 0.001 W.",
+      "An electric motor torque is the joint torque divided by gear ratio and efficiency. Current is that torque divided by the torque constant. Power is joint torque times speed, divided by efficiency. Braking energy is counted as spent, not regenerated.",
+      "Battery energy is the sum of electric actuator energy. Charge is that energy divided by the stated voltage."
+    ]
+  },
+  "bolts": {
+    "snatch_n": 8000.0,
+    "first_pattern": {
+      "size": "M12",
+      "grade": "8.8",
+      "count": 8,
+      "radius_mm": 130,
+      "shear_n": 8846.2,
+      "status": "fail",
+      "slip_margin": 0.567,
+      "yield_margin": 1.565,
+      "loosening": "high",
+      "note": "High loosening risk. The plates can slip or the joint can separate. A stronger bolt does not fix slip. The clamp and a locking feature do."
+    },
+    "slew_pattern": {
+      "size": "M20",
+      "grade": "10.9",
+      "count": 8,
+      "radius_mm": 165,
+      "locking": [
+        "wedge-locking washers"
+      ],
+      "shear_n": 6969.7,
+      "status": "pass",
+      "slip_margin": 3.264,
+      "yield_margin": 1.507,
+      "loosening": "low",
+      "note": "Low loosening risk for the stated loads. A drilling rig still wants a locking feature, because embedment and shock are not in this static margin."
+    }
+  },
+  "fea": {
+    "coupon": {
+      "status": "solved",
+      "max_von_mises_mpa": 344.3931,
+      "max_von_mises_at_mm": {
+        "x": -0.0,
+        "y": 0.0,
+        "z": -58.0
+      },
+      "max_displacement_mm": 0.033533,
+      "min_safety_factor": 0.726,
+      "warnings": [],
+      "note": "mild steel: peak von Mises 344 MPa, minimum safety factor 0.73, peak displacement 0.0335 mm. Design review: fail at a target safety factor of 2.",
+      "views": [
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_stress_front.png",
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_stress_right.png",
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_stress_top.png",
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_stress_iso.png",
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_stress_contact.png",
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_displacement_front.png",
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_displacement_right.png",
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_displacement_top.png",
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_displacement_iso.png",
+        "/workspace/examples/rod_handler_workspace/renders/eye_coupon/fea_displacement_contact.png"
+      ]
+    },
+    "upper": {
+      "status": "solved",
+      "max_von_mises_mpa": 60.0499,
+      "max_von_mises_at_mm": {
+        "x": 201.484823,
+        "y": 37.520126,
+        "z": 44.0
+      },
+      "max_displacement_mm": 0.216941,
+      "min_safety_factor": 4.163,
+      "warnings": [],
+      "note": "mild steel: peak von Mises 60 MPa, minimum safety factor 4.16, peak displacement 0.217 mm. Design review: pass at a target safety factor of 2.",
+      "views": [
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_stress_front.png",
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_stress_right.png",
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_stress_top.png",
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_stress_iso.png",
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_stress_contact.png",
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_displacement_front.png",
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_displacement_right.png",
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_displacement_top.png",
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_displacement_iso.png",
+        "/workspace/examples/rod_handler_workspace/renders/upper/fea_displacement_contact.png"
+      ]
+    }
+  },
+  "modal": {
+    "rod_3m": {
+      "status": "resonance",
+      "modes": [
+        {
+          "hz": 9.495,
+          "rigid": false
+        },
+        {
+          "hz": 9.496,
+          "rigid": false
+        },
+        {
+          "hz": 59.048,
+          "rigid": false
+        },
+        {
+          "hz": 59.05,
+          "rigid": false
+        },
+        {
+          "hz": 163.367,
+          "rigid": false
+        },
+        {
+          "hz": 163.371,
+          "rigid": false
+        }
+      ],
+      "flags": [
+        {
+          "mode": 1,
+          "frequency_hz": 9.495,
+          "source": "HQ drill 600 rpm",
+          "kind": "drill",
+          "harmonic": 1,
+          "excitation_hz": 10.0,
+          "separation": 0.0532
+        },
+        {
+          "mode": 2,
+          "frequency_hz": 9.496,
+          "source": "HQ drill 600 rpm",
+          "kind": "drill",
+          "harmonic": 1,
+          "excitation_hz": 10.0,
+          "separation": 0.0531
+        }
+      ],
+      "suggestions": [
+        "Mode 1 at 9.49 Hz is within 5% of HQ drill 600 rpm harmonic 1 at 10.00 Hz. The mode is just below the excitation. Stiffening raises it past the excitation. Adding mass drops it further away. A shorter span or a taller section is the usual stiffening. Changing the running speed moves the excitation instead.",
+        "Mode 2 at 9.50 Hz is within 5% of HQ drill 600 rpm harmonic 1 at 10.00 Hz. The mode is just below the excitation. Stiffening raises it past the excitation. Adding mass drops it further away. A shorter span or a taller section is the usual stiffening. Changing the running speed moves the excitation instead."
+      ],
+      "warnings": [],
+      "note": "First flexible frequency 9.49 Hz. 2 excitation line(s) fall inside the resonance margin."
+    },
+    "rod_1_5m": {
+      "status": "resonance",
+      "modes": [
+        {
+          "hz": 37.852,
+          "rigid": false
+        },
+        {
+          "hz": 37.852,
+          "rigid": false
+        },
+        {
+          "hz": 230.196,
+          "rigid": false
+        },
+        {
+          "hz": 230.199,
+          "rigid": false
+        }
+      ],
+      "flags": [
+        {
+          "mode": 1,
+          "frequency_hz": 37.852,
+          "source": "HQ drill 700 rpm",
+          "kind": "drill",
+          "harmonic": 3,
+          "excitation_hz": 35.0,
+          "separation": 0.0753
+        },
+        {
+          "mode": 2,
+          "frequency_hz": 37.852,
+          "source": "HQ drill 700 rpm",
+          "kind": "drill",
+          "harmonic": 3,
+          "excitation_hz": 35.0,
+          "separation": 0.0753
+        }
+      ],
+      "suggestions": [
+        "Mode 1 at 37.85 Hz is within 8% of HQ drill 700 rpm harmonic 3 at 35.00 Hz. The mode is just above the excitation. Adding mass lowers it. Stiffening (a rib, a taller section, a shorter span) pushes it further up. Changing the running speed moves the excitation instead.",
+        "Mode 2 at 37.85 Hz is within 8% of HQ drill 700 rpm harmonic 3 at 35.00 Hz. The mode is just above the excitation. Adding mass lowers it. Stiffening (a rib, a taller section, a shorter span) pushes it further up. Changing the running speed moves the excitation instead."
+      ],
+      "warnings": [],
+      "note": "First flexible frequency 37.85 Hz. 2 excitation line(s) fall inside the resonance margin."
+    },
+    "rod_1_2m": {
+      "status": "clear",
+      "modes": [
+        {
+          "hz": 58.984,
+          "rigid": false
+        },
+        {
+          "hz": 58.986,
+          "rigid": false
+        },
+        {
+          "hz": 353.061,
+          "rigid": false
+        },
+        {
+          "hz": 353.071,
+          "rigid": false
+        }
+      ],
+      "flags": [],
+      "suggestions": [
+        "No flexible frequency sits within 10% of a declared excitation or its harmonics. That is a clearance, not a proof that the real assembly is quiet. Joint compliance would lower these frequencies."
+      ],
+      "warnings": [],
+      "note": "First flexible frequency 58.98 Hz. No declared excitation sits inside the resonance margin."
+    },
+    "upper": {
+      "status": "clear",
+      "modes": [
+        {
+          "hz": 70.555,
+          "rigid": false
+        },
+        {
+          "hz": 153.823,
+          "rigid": false
+        },
+        {
+          "hz": 242.264,
+          "rigid": false
+        },
+        {
+          "hz": 598.041,
+          "rigid": false
+        }
+      ],
+      "flags": [],
+      "suggestions": [
+        "No flexible frequency sits within 10% of a declared excitation or its harmonics. That is a clearance, not a proof that the real assembly is quiet. Joint compliance would lower these frequencies."
+      ],
+      "warnings": [],
+      "note": "First flexible frequency 70.56 Hz. No declared excitation sits inside the resonance margin."
+    }
+  },
+  "robot": {
+    "validation": {
+      "mujoco": {
+        "status": "loaded",
+        "nq": 8,
+        "nbody": 30,
+        "steps": 5
+      },
+      "pybullet": {
+        "status": "skipped",
+        "note": "pybullet is not installed. The URDF is still written."
+      }
+    },
+    "note": "Exported rod_handler: 29 links, 8 moving joints. A simulator loaded the file and stepped.",
+    "joints": [
+      {
+        "name": "slew",
+        "type": "revolute",
+        "limit_assumed": false
+      },
+      {
+        "name": "shoulder",
+        "type": "revolute",
+        "limit_assumed": false
+      },
+      {
+        "name": "elbow",
+        "type": "revolute",
+        "limit_assumed": false
+      },
+      {
+        "name": "shoulder_barrel",
+        "type": "revolute",
+        "limit_assumed": false
+      },
+      {
+        "name": "shoulder_stroke",
+        "type": "prismatic",
+        "limit_assumed": false
+      },
+      {
+        "name": "elbow_barrel",
+        "type": "revolute",
+        "limit_assumed": false
+      },
+      {
+        "name": "elbow_stroke",
+        "type": "prismatic",
+        "limit_assumed": false
+      },
+      {
+        "name": "jaw",
+        "type": "prismatic",
+        "limit_assumed": false
+      }
+    ],
+    "link_count": 29
+  },
+  "pictures": {
+    "overall": "/workspace/examples/renders/rod_handler_overall.png",
+    "joint": "/workspace/examples/renders/rod_handler_joint_00.png",
+    "cylinder": "/workspace/examples/renders/rod_handler_cylinder_00.png",
+    "lift_strip": "/workspace/examples/renders/rod_handler_lift_strip.png"
+  }
+}

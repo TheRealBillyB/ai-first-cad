@@ -2,8 +2,8 @@
 
 Meshes stay in millimeters and are scaled by 0.001 in the robot file, so a
 simulator sees meters. Mass is kilograms and inertia is about the center of
-mass in kg·m². A joint's origin is the pose at value 0. Gear and linkage
-relations are comments: a URDF tree cannot enforce them.
+mass in kg·m². A joint's origin is the pose at value 0. Gear, linkage, and
+cylinder relations are comments: a URDF tree cannot enforce them.
 """
 
 from __future__ import annotations
@@ -492,6 +492,12 @@ def _relation_text(relation: dict) -> str:
             f"{relation.get('driven')} = {relation.get('ratio')} * {relation.get('driver')} "
             f"+ {relation.get('offset')}. Not enforced in the URDF."
         )
+    if relation.get("type") == "cylinder":
+        return (
+            f"hydraulic cylinder: {relation.get('driver')} sets the barrel {relation.get('driven')} "
+            f"and the rod extension {relation.get('stroke')} "
+            f"(retracted {relation.get('retracted_mm')} mm). Not enforced in the URDF."
+        )
     return (
         f"planar four-bar from {relation.get('driver')} to {relation.get('driven')}. "
         "Not enforced in the URDF."
@@ -507,11 +513,13 @@ def _assumptions(spec: dict) -> list[str]:
         "Revolute limits are radians in the URDF and degrees in the MJCF. Prismatic limits are meters. A missing limit becomes ±180° or ±200 mm.",
         "effort 10 and velocity 1 are placeholders. They are not the power estimate.",
         "A cylindrical joint is a revolute plus a prismatic, with a small intermediate link so a simulator accepts the mass.",
-        "Gear and linkage relations are XML comments. The exported tree does not enforce them.",
+        "Gear, linkage, and cylinder relations are XML comments. The exported tree does not enforce them.",
         "Every grounded part is fixed to a world link, so the file has one root.",
     ]
     if spec.get("relations"):
-        lines.append("This assembly has gear or linkage relations. A simulator will not move the driven joint for you.")
+        lines.append(
+            "This assembly has gear, linkage, or cylinder relations. A simulator will not move the driven joint for you."
+        )
     return lines
 
 

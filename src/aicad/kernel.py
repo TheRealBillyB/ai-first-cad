@@ -289,6 +289,31 @@ def _ray_wall_thickness(
     return thinnest, accepted, n, thinnest_point
 
 
+def aabb_separated(a: Shape, b: Shape) -> bool:
+    """True when the axis-aligned boxes cannot intersect. A touch still returns False."""
+    a_low, a_high = _aabb(a)
+    b_low, b_high = _aabb(b)
+    for index in range(3):
+        if a_high[index] < b_low[index] or b_high[index] < a_low[index]:
+            return True
+    return False
+
+
+def overlap_volume(a: Shape, b: Shape) -> float:
+    """Intersection volume in mm³. Separated boxes are not sent to the boolean."""
+    if aabb_separated(a, b):
+        return 0.0
+    common = a.impl & b.impl
+    overlap = float(common.volume) if common is not None else 0.0
+    return 0.0 if overlap < 0 else overlap
+
+
+def _aabb(shape: Shape) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    box = shape.impl.bounding_box()
+    low, high = box.min, box.max
+    return (float(low.X), float(low.Y), float(low.Z)), (float(high.X), float(high.Y), float(high.Z))
+
+
 def clearance_between(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Vec3 | None]:
     """Return intersection volume, surface gap, and the closest point on each solid.
 

@@ -1,9 +1,11 @@
 """Joints, poses, and forward kinematics.
 
 A structural joint (fixed, revolute, prismatic, cylindrical) is an edge in a
-tree. Gear and linkage relations write a driven joint's value from a driver.
-They do not close a spatial loop: a linkage here is a planar four-bar map
-from one angle to another, and a gear is a linear map between joint values.
+tree. Gear and linkage relations write one driven joint from a driver. A
+cylinder relation writes two: the barrel angle and the rod extension, from
+the pin-to-pin distance of a driver revolute. That keeps a hydraulic cylinder
+on its clevises without a spatial loop. A linkage here is a planar four-bar
+map, and a gear is a linear map between joint values.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from typing import Any
 from aicad.errors import GeometryError
 
 _STRUCTURAL = ("fixed", "revolute", "prismatic", "cylindrical")
-_RELATIONS = ("gear", "linkage")
+_RELATIONS = ("gear", "linkage", "cylinder")
 _MISSING = object()
 
 
@@ -43,6 +45,7 @@ def normalize(spec: dict) -> dict:
                 "name": ident,
                 "part": str(instance["part"]),
                 "material": str(instance.get("material") or "steel"),
+                "color": _color(instance.get("color")),
                 "placement": _placement(instance.get("placement")),
                 "payload_kg": _optional_float(instance.get("payload_kg"), 0.0),
                 "payload_at": _point(instance.get("payload_at"), f"{ident} payload_at", default=None),
@@ -92,8 +95,9 @@ def normalize(spec: dict) -> dict:
         joints.append(record)
     _roots_and_cycles(seen, joints)
     relations = []
+    joint_index = {joint["name"]: joint for joint in joints}
     for index, relation in enumerate(spec.get("relations") or []):
-        relations.append(_relation(relation, index, joint_names))
+        relations.append(_relation(relation, index, joint_index))
     poses = {}
     for pose_name, values in (spec.get("poses") or {}).items():
         if not isinstance(values, dict):
@@ -137,15 +141,31 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
             slides[joint["name"]] = float(blob.get("slide", joint["slide"]))
         else:
             slides[joint["name"]] = float(joint["slide"])
-    driven = {relation["driven"] for relation in spec["relations"]}
+    driven = set()
+    for relation in spec["relations"]:
+        driven.add(relation["driven"])
+        if relation["type"] == "cylinder":
+            driven.add(relation["stroke"])
+    joint_index = {joint["name"]: joint for joint in spec["joints"]}
     warnings = []
     for _ in range(8):
         for relation in spec["relations"]:
             driver = commanded[relation["driver"]]
             if relation["type"] == "gear":
                 commanded[relation["driven"]] = relation["ratio"] * driver + relation["offset"]
-            else:
+            elif relation["type"] == "linkage":
                 commanded[relation["driven"]] = _four_bar(relation, driver)
+            else:
+                angle, extension, offset_mm = _cylinder(relation, joint_index, driver)
+                commanded[relation["driven"]] = angle
+                commanded[relation["stroke"]] = extension
+                if offset_mm > 2.0:
+                    note = (
+                        f"{relation['name']} is {offset_mm:.1f} mm out of the plane of its pin. "
+                        "The clevises do not share that plane, so the barrel angle is the in-plane part only."
+                    )
+                    if note not in warnings:
+                        warnings.append(note)
     limit_notes = []
     limited: dict[str, float] = {}
     for joint in spec["joints"]:
@@ -183,17 +203,20 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
         )
     relation_rows = []
     for relation in spec["relations"]:
-        relation_rows.append(
-            {
-                "name": relation["name"],
-                "type": relation["type"],
-                "driver": relation["driver"],
-                "driven": relation["driven"],
-                "driver_value": round(limited[relation["driver"]], 4),
-                "driven_value": round(limited[relation["driven"]], 4),
-                "ratio": relation.get("ratio"),
-            }
-        )
+        row = {
+            "name": relation["name"],
+            "type": relation["type"],
+            "driver": relation["driver"],
+            "driven": relation["driven"],
+            "driver_value": round(limited[relation["driver"]], 4),
+            "driven_value": round(limited[relation["driven"]], 4),
+            "ratio": relation.get("ratio"),
+        }
+        if relation["type"] == "cylinder":
+            row["stroke"] = relation["stroke"]
+            row["stroke_mm"] = round(limited[relation["stroke"]], 4)
+            row["retracted_mm"] = relation["retracted_mm"]
+        relation_rows.append(row)
     instances = []
     for instance in spec["instances"]:
         matrix = worlds[instance["name"]]
@@ -204,6 +227,7 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
                 "material": instance["material"],
                 "payload_kg": instance["payload_kg"],
                 "payload_at": instance["payload_at"],
+                "color": instance.get("color"),
                 "origin_mm": [round(matrix[row][3], 4) for row in range(3)],
                 "matrix": [[round(value, 6) for value in row] for row in matrix],
             }
@@ -281,12 +305,14 @@ def transform_point(matrix: list[list[float]], point: list[float]) -> list[float
     return _transform_point(matrix, point)
 
 
-def _relation(relation: dict, index: int, joints: set[str]) -> dict:
+def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
     if not isinstance(relation, dict):
         raise GeometryError(f"Relation {index} must be an object.")
     kind = relation.get("type")
     if kind not in _RELATIONS:
-        raise GeometryError(f"Relation {index} type {kind!r} is unknown. Use gear or linkage.")
+        raise GeometryError(
+            f"Relation {index} type {kind!r} is unknown. Use gear, linkage, or cylinder."
+        )
     name = str(relation.get("name") or f"{kind}_{index + 1}")
     driver = str(relation.get("driver") or "")
     driven = str(relation.get("driven") or "")
@@ -298,7 +324,7 @@ def _relation(relation: dict, index: int, joints: set[str]) -> dict:
     if kind == "gear":
         record["ratio"] = float(relation.get("ratio", 1.0))
         record["offset"] = float(relation.get("offset", 0.0))
-    else:
+    elif kind == "linkage":
         for key in ("ground_mm", "crank_mm", "coupler_mm", "rocker_mm"):
             if relation.get(key) is None:
                 raise GeometryError(f"Linkage {name!r} needs {key}.")
@@ -308,7 +334,89 @@ def _relation(relation: dict, index: int, joints: set[str]) -> dict:
         record["branch"] = str(relation.get("branch") or "open")
         if record["branch"] not in ("open", "crossed"):
             raise GeometryError(f"Linkage {name!r} branch must be open or crossed.")
+    else:
+        stroke = str(relation.get("stroke") or "")
+        if stroke not in joints:
+            raise GeometryError(f"Cylinder {name!r} needs a stroke joint that is in this assembly.")
+        if stroke in (driver, driven):
+            raise GeometryError(f"Cylinder {name!r} uses three different joints: driver, barrel, and stroke.")
+        barrel = joints[driven]
+        rod = joints[stroke]
+        arm = joints[driver]
+        if arm["type"] not in ("revolute", "cylindrical"):
+            raise GeometryError(f"Cylinder {name!r} drives from a revolute. {driver!r} is {arm['type']}.")
+        if barrel["type"] != "revolute":
+            raise GeometryError(f"Cylinder {name!r} barrel joint {driven!r} must be revolute.")
+        if rod["type"] != "prismatic":
+            raise GeometryError(f"Cylinder {name!r} stroke joint {stroke!r} must be prismatic.")
+        if arm["parent"] != barrel["parent"]:
+            raise GeometryError(
+                f"Cylinder {name!r} needs the arm joint and the barrel joint on the same parent instance."
+            )
+        if rod["parent"] != barrel["child"]:
+            raise GeometryError(
+                f"Cylinder {name!r} stroke joint must be parented to the barrel instance {barrel['child']!r}."
+            )
+        retracted = relation.get("retracted_mm")
+        if retracted is None or float(retracted) <= 0:
+            raise GeometryError(f"Cylinder {name!r} needs retracted_mm, the pin-to-pin length at stroke 0.")
+        anchor = relation.get("moving_anchor")
+        if anchor is None:
+            raise GeometryError(
+                f"Cylinder {name!r} needs moving_anchor, the clevis point in the driver child frame."
+            )
+        if relation.get("bore_axis") is None:
+            bore = [1.0, 0.0, 0.0]
+        else:
+            bore = _unit(_point(relation.get("bore_axis"), f"{name} bore_axis"))
+        along = sum(barrel["axis"][i] * bore[i] for i in range(3))
+        if abs(along) > 1e-3:
+            raise GeometryError(f"Cylinder {name!r} bore_axis must be perpendicular to the barrel pin.")
+        record["stroke"] = stroke
+        record["retracted_mm"] = float(retracted)
+        record["moving_anchor"] = _point(anchor, f"{name} moving_anchor")
+        record["bore_axis"] = bore
     return record
+
+
+def _cylinder(relation: dict, joints: dict[str, dict], driver_degrees: float) -> tuple[float, float, float]:
+    """Barrel angle (degrees), rod extension (mm), and the out-of-plane offset (mm).
+
+    The moving clevis is a point on the driver child. The fixed clevis is the
+    barrel joint's parent anchor. Both are in the shared parent frame. With
+    the barrel pin as the axis, angle 0 points ``bore_axis`` along the barrel
+    child. Extension is pin-to-pin length minus ``retracted_mm``.
+    """
+    driver = joints[relation["driver"]]
+    barrel = joints[relation["driven"]]
+    rotation = _rotation(driver["axis"], math.radians(driver_degrees))
+    local = [
+        relation["moving_anchor"][i] - driver["child_anchor"][i]
+        for i in range(3)
+    ]
+    rotated = _matvec(rotation, local)
+    point_b = [driver["parent_anchor"][i] + rotated[i] for i in range(3)]
+    point_a = barrel["parent_anchor"]
+    delta = [point_b[i] - point_a[i] for i in range(3)]
+    length = math.sqrt(sum(component * component for component in delta))
+    if length < 1e-6:
+        raise GeometryError(f"Cylinder {relation['name']!r} has zero pin-to-pin length.")
+    bore = relation["bore_axis"]
+    axis = barrel["axis"]
+    cross = [
+        axis[1] * bore[2] - axis[2] * bore[1],
+        axis[2] * bore[0] - axis[0] * bore[2],
+        axis[0] * bore[1] - axis[1] * bore[0],
+    ]
+    hat = [component / length for component in delta]
+    cosine = sum(hat[i] * bore[i] for i in range(3))
+    sine = sum(hat[i] * cross[i] for i in range(3))
+    if math.hypot(cosine, sine) < 1e-6:
+        raise GeometryError(f"Cylinder {relation['name']!r} lies on its pin axis.")
+    angle = math.degrees(math.atan2(sine, cosine))
+    extension = length - relation["retracted_mm"]
+    offset = abs(sum(delta[i] * axis[i] for i in range(3)))
+    return angle, extension, offset
 
 
 def _four_bar(relation: dict, driver_degrees: float) -> float:
@@ -508,6 +616,20 @@ def _point(value: Any, label: str, default: Any = _MISSING) -> list[float] | Non
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         raise GeometryError(f"{label} must be three numbers.")
     return [float(component) for component in value]
+
+
+def _color(value: Any) -> list[float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise GeometryError("An instance color is three numbers from 0 to 255.")
+    channels = []
+    for component in value:
+        channel = float(component)
+        if channel < 0 or channel > 255:
+            raise GeometryError("An instance color channel is from 0 to 255.")
+        channels.append(channel)
+    return channels
 
 
 def _optional_float(value: Any, default: float) -> float:
