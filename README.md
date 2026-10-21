@@ -4,7 +4,7 @@ A CAD tool built so an assistant can use it as well as a person can.
 
 Today an assistant writing CAD code (OpenSCAD, CadQuery, build123d) works blind. It emits a script and hopes the solid is the one you described. aicad is the missing perception loop: after each modeling step the assistant can look at the part and check it. The focus is hard-body mechanical parts, the kind you print or bolt onto a robot.
 
-This is a small first version. It does not invent a geometry kernel. [build123d](https://github.com/gumyr/build123d) (OpenCascade) sits behind one module, `aicad.kernel`, so it can be swapped later. Everything an assistant calls is plain Python, a CLI, or an MCP server.
+This is a small first version. It does not invent a geometry kernel. [build123d](https://github.com/gumyr/build123d) (OpenCascade) sits behind one module, `aicad.kernel`, so it can be swapped later. A person and an assistant share one command layer: the workspace app, the in-app chat, the CLI, the Python API, and the MCP server all call the same operations on the same document.
 
 ![Motor mount bracket from the standard views](examples/renders/motor_mount_contact.png)
 
@@ -25,6 +25,7 @@ This is a small first version. It does not invent a geometry kernel. [build123d]
 - Estimate minimum wall thickness from rays and from cross-sections, and compare it with a threshold. The report says which method produced the number.
 - Check interference or clearance between two parts.
 - Run a linear static check. Pick a material (PLA, PETG, ABS, nylon, aluminum 6061, or mild steel), hold faces and apply forces, pressures, or bolt loads by describing the face, and read the peak von Mises stress, the peak displacement, the minimum safety factor, and a pass/fail against a target. Stress and displacement pictures come back from several angles.
+- Open the workspace with `aicad app` and edit the same document in the browser: orbit the solid, pick a face or an edge by the reference an assistant uses, draw a constrained sketch, extrude or revolve or cut it, change a dimension, undo, and read inspection, section, feature, and FEA panels. A chat panel drives those same commands with an API key you keep on the machine. Each project also has markdown notes and structured requirements that pass or fail against the current solid.
 
 Units are millimeters. Forces are newtons, so a stress from the solver is in megapascals.
 
@@ -155,6 +156,43 @@ Every report states the material, the loads, the supports, the mesh size, and th
 
 On the example load both brackets pass with a safety factor near 9. The gusseted peak is 5.43 MPa and the buried-rib peak is 5.57 MPa, both at a frame-hole edge. The ribs and the gussets are not what sets the safety factor for this load. Most of the volume is far below the peak, so the design review marks quiet regions as candidates for removed material, or as a sign that this load is smaller than the part was sized for. A load about four times larger would bring the safety factor down near the target of 2, because the model is linear.
 
+## Workspace
+
+```bash
+aicad app --workspace ./aicad_workspace
+```
+
+![A fully constrained rectangle, with its driving dimensions](examples/renders/workspace_sketch.png)
+
+![The extruded plate. The selected face is the same reference an assistant uses](examples/renders/workspace_viewport.png)
+
+![Mass checks against the current solid: 68.65 g passes 100 g and fails 20 g](examples/renders/workspace_checks.png)
+
+That starts a local server and opens the browser. `--no-browser` leaves the tab to you, and `--host` / `--port` change the bind address (the default is `http://127.0.0.1:8765`). The page is static HTML, CSS, and JavaScript. The Python process owns the document, so the same server can later sit behind a desktop shell such as Tauri. This version does not package that shell.
+
+Every button, sketch click, dimension edit, and undo goes through `Workspace.execute`, which is the same registry the MCP tools call. An external assistant attaches to the running app and edits the document the browser is showing:
+
+```bash
+aicad serve --connect http://127.0.0.1:8765
+```
+
+The viewport listens for those commands and refreshes. A face click and `describe_faces` publish the same string, for example `plane/z+/0.000,0.000,4.000` or `cylinder/r1.7/z+/30.000,-20.000,2.000`. `set_selection` and a mechanics selector both accept that string as `{"ref": "..."}`.
+
+The sketch tools draw points, lines, circles, and rectangles, then add horizontal, vertical, coincident, fix, distance, and diameter constraints. The status line says fully constrained, under-constrained, or over-constrained, with the remaining degrees of freedom. Named dimensions sit on the toolbar; editing one calls `set_dimension` and regenerates every solid made from that sketch. Extrude, revolve, and cut use the solved profile.
+
+The side panels run `inspect_part`, `section_part`, `feature_report`, and `solve_mechanics`, and they keep the picture from the revision that produced it. The Checks tab and the Documents page share `requirements.json`:
+
+| Kind | What it compares |
+| --- | --- |
+| `max_mass` | Volume times a library density, in grams. |
+| `fits_build_volume` | The part's sorted size against a printer volume, so the part may be turned to fit. |
+| `min_wall` | The wall-thickness estimate. It stays unchecked until you press Check now. |
+| `min_safety_factor` | A linear static solve. The setup is the same object `solve_mechanics` uses, and a face `ref` is a valid selector. It stays unchecked until you ask for the solve. |
+
+`documents/requirements.md` and `documents/decisions.md` are ordinary markdown. Undo restores the solids, the notes, and the requirements together.
+
+The assistant panel takes an OpenAI-compatible endpoint or Anthropic. Settings go to `~/.config/aicad/settings.json`, or to `$AICAD_SETTINGS`, with mode `0600`. The key is not written into the project. The chat model calls the same tools, including `get_requirements` and `check_requirements`.
+
 ## Connect an assistant
 
 `aicad serve` speaks [MCP](https://modelcontextprotocol.io) over stdio. The tools are the same operations as the CLI.
@@ -213,8 +251,11 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `export_part` | Write STEP or STL. |
 | `list_parts` / `get_part_source` / `delete_part` | Document housekeeping. |
 | `list_materials` | PLA, PETG, ABS, nylon, aluminum 6061, and mild steel, with the modulus and strength the solver will use. |
-| `describe_faces` | Every face: kind, center, area, and a normal or a radius and axis. |
+| `describe_faces` / `describe_edges` | Faces and edges, each with a stable `ref` the viewport also uses. A selector may be `{"ref": "plane/z+/0,0,4"}`. |
 | `solve_mechanics` | Linear static solve. Returns the safety factor, the design review, the assumptions, and stress and displacement pictures. |
+| `set_selection` / `get_state` | The current face and edge selection, plus parts, sketches, checks, and the latest panels. |
+| `list_documents` / `read_document` / `write_document` | The project's markdown notes. |
+| `get_requirements` / `set_requirements` / `check_requirements` | Structured requirements and their pass, fail, or unchecked state. |
 
 `render_part` and `inspect_part` return PNG image blocks plus a JSON report. The assistant should look at the contact sheet, not only the numbers.
 
@@ -332,7 +373,10 @@ python examples/motor_mount.py   # refresh examples/renders and the report
 - Mechanics is linear static elasticity. Plasticity, contact, buckling, and fatigue are outside this solve. A safety factor below 1 means the pictured stress has left the elastic range. A force is shared equally by the nodes on the face. Pressure on a curved face uses that face's normal at its center. A bolt load is an axial force along the hole.
 - Face selectors are geometric. A boolean drops the name you gave a feature, so "the gusset face" has to be a normal, a radius, or a location. A mesh coarser than a hole, or coarser than about half the smallest dimension of the part, is called out, and a pass on that mesh is inconclusive.
 - The printed-layer note is a warning, not a second material model. The strength in the library is one number. Across-layer strength is not solved.
-- The session file is for one writer. Two servers on the same workspace will overwrite each other.
+- The session file is for one writer. Two servers on the same workspace will overwrite each other. `aicad app` plus `aicad serve --connect` is one writer: the app process.
+- The solid view needs WebGL. The sketch view is a 2D canvas. Rectangle, line, circle, and point are the drawing tools in this version, and a rectangle replaces the current sketch profile.
+- API keys stay in the user config named above. The project directory does not receive them.
+- A desktop package (for example Tauri) can wrap this server later. `aicad app` is the way to run the workspace now.
 
 ## Next steps
 
@@ -342,7 +386,7 @@ python examples/motor_mount.py   # refresh examples/renders and the report
 - Driving dimensions on the 3D pictures, the way the sketch view already labels them.
 - A tighter wall-thickness check, for example an offset of the solid, used beside the rays and the sections.
 - Assemblies and joints, so a bracket and a motor can be constrained, not only placed and checked for a gap.
-- A small viewer a person can orbit while the assistant works.
+- A desktop shell around the same local server.
 
 ## License
 

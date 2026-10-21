@@ -40,6 +40,7 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "poisson": 0.36,
         "strength_mpa": 50.0,
         "strength_kind": "tensile",
+        "density_g_cm3": 1.24,
         "printed": True,
         "note": "Typical in-plane tensile values for PLA. Printed parts vary with temperature, pigment, and print settings.",
     },
@@ -49,6 +50,7 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "poisson": 0.40,
         "strength_mpa": 50.0,
         "strength_kind": "tensile",
+        "density_g_cm3": 1.27,
         "printed": True,
         "note": "Typical PETG tensile values. The real filament datasheet should replace these before a design is released.",
     },
@@ -58,6 +60,7 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "poisson": 0.35,
         "strength_mpa": 40.0,
         "strength_kind": "tensile",
+        "density_g_cm3": 1.04,
         "printed": True,
         "note": "Typical ABS tensile values.",
     },
@@ -67,6 +70,7 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "poisson": 0.40,
         "strength_mpa": 45.0,
         "strength_kind": "tensile",
+        "density_g_cm3": 1.14,
         "printed": True,
         "note": "Dry nylon, roughly PA6 or PA12. Moisture lowers both the modulus and the strength.",
     },
@@ -76,6 +80,7 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "poisson": 0.33,
         "strength_mpa": 276.0,
         "strength_kind": "yield",
+        "density_g_cm3": 2.70,
         "printed": False,
         "note": "6061-T6 yield strength. The safety factor is against yield, not ultimate rupture.",
     },
@@ -85,6 +90,7 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "poisson": 0.30,
         "strength_mpa": 250.0,
         "strength_kind": "yield",
+        "density_g_cm3": 7.85,
         "printed": False,
         "note": "A generic mild steel, near AISI 1020. The safety factor is against yield.",
     },
@@ -151,9 +157,20 @@ def select_faces(catalog: list[dict], selector: dict) -> list[dict]:
     ``at`` and returns the face whose center is closest. ``all: true`` forces
     every match instead of the single closest face.
     """
-    if not isinstance(selector, dict) or "kind" not in selector:
+    if not isinstance(selector, dict):
         raise GeometryError(
-            "A face selector needs kind: plane, cylinder, nearest, or index."
+            "A face selector needs kind: plane, cylinder, nearest, or index, or a ref from the viewport."
+        )
+    if selector.get("ref"):
+        from aicad.refs import ref_to_selector
+
+        expanded = ref_to_selector(str(selector["ref"]))
+        if expanded.get("kind") == "edge":
+            raise GeometryError(f"Reference {selector['ref']!r} is an edge. A load or a support needs a face.")
+        selector = {**expanded, **{key: value for key, value in selector.items() if key not in ("ref",)}}
+    if "kind" not in selector:
+        raise GeometryError(
+            "A face selector needs kind: plane, cylinder, nearest, or index, or a ref from the viewport."
         )
     kind = selector["kind"]
     if kind == "index":

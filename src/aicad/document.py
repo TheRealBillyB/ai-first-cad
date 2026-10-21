@@ -162,9 +162,7 @@ class Document:
             renders = self.workspace / "renders" / name
             if renders.exists():
                 shutil.rmtree(renders)
-            copied = self.workspace / "imports" / f"{name}.step"
-            if copied.is_file():
-                copied.unlink()
+            # The copied STEP file stays so undo can rebuild an imported part.
             self._save()
 
     def list_parts(self) -> list[PartInfo]:
@@ -603,30 +601,46 @@ class Document:
                 f"Sketch {name!r} already exists. Update it, or use set_dimension to change a named dimension."
             )
 
+    def session_payload(self) -> dict:
+        """The serializable document. Undo stores this and restores it."""
+        with self._lock:
+            return self._payload()
+
+    def replace_session(self, payload: dict) -> None:
+        """Rebuild every part from a payload previously returned by :meth:`session_payload`."""
+        with self._lock:
+            self._parts.clear()
+            self._sketches.clear()
+            self._apply_payload(payload)
+            self._save()
+
     def _session_path(self) -> Path:
         return self.workspace / "session.json"
 
-    def _save(self) -> None:
-        payload = {
+    def _payload(self) -> dict:
+        return {
             "units": "mm",
             "sketches": [
-                {"name": sketch.name, "spec": sketch.spec} for sketch in self._sketches.values()
+                {"name": sketch.name, "spec": copy.deepcopy(sketch.spec)} for sketch in self._sketches.values()
             ],
             "parts": [
                 {
                     "name": part.name,
                     "source": part.source,
                     "script": part.script,
-                    "ops": part.ops,
+                    "ops": copy.deepcopy(part.ops) if part.ops is not None else None,
                     "step_file": part.step_file,
-                    "library": part.library_spec,
-                    "placement": part.placement,
+                    "library": copy.deepcopy(part.library_spec) if part.library_spec is not None else None,
+                    "placement": copy.deepcopy(part.placement),
                     "sketch": part.sketch_name,
-                    "steps": part.sketch_steps,
+                    "steps": copy.deepcopy(part.sketch_steps) if part.sketch_steps is not None else None,
                 }
                 for part in self._parts.values()
             ],
         }
+
+    def _save(self) -> None:
+        payload = self._payload()
         path = self._session_path()
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -640,6 +654,9 @@ class Document:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise DocumentError(f"Could not read {path}: {exc}") from exc
+        self._apply_payload(payload)
+
+    def _apply_payload(self, payload: dict) -> None:
         for record in payload.get("sketches", []):
             self._sketches[record["name"]] = _Sketch(record["name"], record["spec"])
         for record in payload.get("parts", []):
@@ -666,7 +683,7 @@ class Document:
                     sketch = self._sketches.get(sketch_name)
                     if sketch is None:
                         raise DocumentError(
-                            f"Part {name!r} needs sketch {sketch_name!r}, which is not in {path}."
+                            f"Part {name!r} needs sketch {sketch_name!r}, which is not in the session."
                         )
                     solved = solve_sketch(sketch.spec, sketch.name)
                     if solved.status in _UNBUILDABLE:
@@ -681,7 +698,7 @@ class Document:
                 )
             except Exception as exc:
                 raise DocumentError(
-                    f"Could not rebuild part {name!r} from {path}: {exc}"
+                    f"Could not rebuild part {name!r} from the session: {exc}"
                 ) from exc
             self._parts[name] = _Part(
                 name,

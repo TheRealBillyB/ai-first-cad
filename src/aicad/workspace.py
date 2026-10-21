@@ -1,0 +1,823 @@
+"""The command layer shared by the workspace UI, the in-app assistant, and MCP.
+
+Every change to a document goes through :meth:`Workspace.execute`. Undo stores
+the session, the markdown notes, and the requirements, then restores them.
+Listeners hear the same event whether a person or an assistant ran the command.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from aicad import kernel
+from aicad.document import Document
+from aicad.errors import AICADError, GeometryError
+from aicad.refs import resolve_edge
+from aicad.requirements import evaluate, normalize
+
+_DOC_NAME = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}\.md$")
+_UNDO_LIMIT = 40
+
+
+@dataclass(frozen=True)
+class Command:
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    handler: Callable[["Workspace", dict], dict]
+    undo: bool = False
+
+
+class Workspace:
+    """One open project. The UI and the assistant share this object."""
+
+    def __init__(self, path: str | Path):
+        self.document = Document(path)
+        self.root = self.document.workspace
+        self.documents = self.root / "documents"
+        self.requirements_path = self.root / "requirements.json"
+        self._lock = threading.RLock()
+        self._listeners: list[Callable[[dict], None]] = []
+        self.geometry_revision = 0
+        self.event_id = 0
+        self._undo: list[dict] = []
+        self._redo: list[dict] = []
+        self.selection: dict[str, Any] = {"part": None, "faces": [], "edges": []}
+        self.panels: dict[str, dict] = {}
+        self._mesh_cache: dict[tuple, dict] = {}
+        self._requirement_cache: dict[str, dict] = {}
+        self._requirements: list[dict] = []
+        self._sketch_cache: list[dict] = []
+        self._sketch_cache_revision = -1
+        self._ensure_project_files()
+
+    def listen(self, callback: Callable[[dict], None]) -> Callable[[], None]:
+        with self._lock:
+            self._listeners.append(callback)
+
+        def unsubscribe() -> None:
+            with self._lock:
+                if callback in self._listeners:
+                    self._listeners.remove(callback)
+
+        return unsubscribe
+
+    def execute(self, name: str, arguments: dict | None = None, source: str = "api") -> dict:
+        """Run one command. ``source`` is ``ui``, ``chat``, ``mcp``, or ``api``."""
+        if name == "undo":
+            return self.undo(source)
+        if name == "redo":
+            return self.redo(source)
+        command = COMMANDS.get(name)
+        if command is None:
+            known = ", ".join(sorted(COMMANDS))
+            raise GeometryError(f"Unknown command {name!r}. Commands: {known}.")
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            raise GeometryError(f"Arguments for {name} must be an object.")
+        with self._lock:
+            if command.undo:
+                self._undo.append(self._snapshot())
+                if len(self._undo) > _UNDO_LIMIT:
+                    self._undo.pop(0)
+                self._redo.clear()
+            try:
+                result = command.handler(self, arguments)
+            except Exception:
+                if command.undo:
+                    self._undo.pop()
+                raise
+            if command.undo:
+                self.geometry_revision += 1
+                self._mesh_cache.clear()
+                self._requirement_cache.clear()
+                self.panels.pop("inspect", None)
+                self.panels.pop("section", None)
+                self.panels.pop("features", None)
+                self.panels.pop("fea", None)
+            self.event_id += 1
+            event = {
+                "event": self.event_id,
+                "revision": self.geometry_revision,
+                "command": name,
+                "source": source,
+            }
+            listeners = list(self._listeners)
+        for listener in listeners:
+            listener(event)
+        return result
+
+    def undo(self, source: str = "ui") -> dict:
+        with self._lock:
+            if not self._undo:
+                raise GeometryError("Nothing to undo.")
+            self._redo.append(self._snapshot())
+            self._restore(self._undo.pop())
+            self.geometry_revision += 1
+            self.event_id += 1
+            event = {
+                "event": self.event_id,
+                "revision": self.geometry_revision,
+                "command": "undo",
+                "source": source,
+            }
+            listeners = list(self._listeners)
+        for listener in listeners:
+            listener(event)
+        return {"undone": True, "revision": self.geometry_revision}
+
+    def redo(self, source: str = "ui") -> dict:
+        with self._lock:
+            if not self._redo:
+                raise GeometryError("Nothing to redo.")
+            self._undo.append(self._snapshot())
+            self._restore(self._redo.pop())
+            self.geometry_revision += 1
+            self.event_id += 1
+            event = {
+                "event": self.event_id,
+                "revision": self.geometry_revision,
+                "command": "redo",
+                "source": source,
+            }
+            listeners = list(self._listeners)
+        for listener in listeners:
+            listener(event)
+        return {"redone": True, "revision": self.geometry_revision}
+
+    def state(self) -> dict:
+        with self._lock:
+            checks = evaluate(self.document, self._requirements, cache=self._requirement_cache, run=False)
+            if self._sketch_cache_revision != self.geometry_revision:
+                sketches = []
+                for name in self.document.list_sketches():
+                    report = self.document.get_sketch(name)
+                    sketches.append(
+                        {
+                            "name": name,
+                            "status": report.status,
+                            "dof": report.dof,
+                            "free": report.free,
+                            "conflicts": report.conflicts,
+                            "dimensions": report.dimensions,
+                            "geometry": report.geometry,
+                            "note": report.note,
+                            "spec": copy.deepcopy(self.document._get_sketch(name).spec),  # noqa: SLF001
+                        }
+                    )
+                self._sketch_cache = sketches
+                self._sketch_cache_revision = self.geometry_revision
+            sketches = self._sketch_cache
+            return {
+                "units": "mm",
+                "revision": self.geometry_revision,
+                "event": self.event_id,
+                "can_undo": bool(self._undo),
+                "can_redo": bool(self._redo),
+                "parts": [part.to_dict() for part in self.document.list_parts()],
+                "sketches": sketches,
+                "selection": copy.deepcopy(self.selection),
+                "documents": self._document_names(),
+                "requirements": checks,
+                "panels": {key: value["payload"] for key, value in self.panels.items()},
+                "panel_revision": {key: value["revision"] for key, value in self.panels.items()},
+                "materials": self.document.list_materials(),
+            }
+
+    def mesh(self, name: str) -> dict:
+        with self._lock:
+            key = (name, self.geometry_revision)
+            cached = self._mesh_cache.get(key)
+            if cached is None:
+                shape = self.document._get(name).shape  # noqa: SLF001 — the mesh is a view of the live solid
+                cached = kernel.viewport_mesh(shape)
+                cached["part"] = name
+                self._mesh_cache[key] = cached
+            return cached
+
+    def commands(self) -> list[dict]:
+        listed = [
+            {"name": command.name, "description": command.description, "parameters": command.parameters, "undo": command.undo}
+            for command in COMMANDS.values()
+        ]
+        listed.append(
+            {
+                "name": "undo",
+                "description": "Restore the document, notes, and requirements to the previous state.",
+                "parameters": {"type": "object", "properties": {}},
+                "undo": False,
+            }
+        )
+        listed.append(
+            {
+                "name": "redo",
+                "description": "Reapply the last undone command.",
+                "parameters": {"type": "object", "properties": {}},
+                "undo": False,
+            }
+        )
+        return listed
+
+    def _snapshot(self) -> dict:
+        return {
+            "session": self.document.session_payload(),
+            "documents": {name: (self.documents / name).read_text(encoding="utf-8") for name in self._document_names()},
+            "requirements": copy.deepcopy(self._requirements),
+            "selection": copy.deepcopy(self.selection),
+        }
+
+    def _restore(self, snapshot: dict) -> None:
+        self.document.replace_session(snapshot["session"])
+        self.documents.mkdir(parents=True, exist_ok=True)
+        keep = set(snapshot["documents"])
+        for path in self.documents.glob("*.md"):
+            if path.name not in keep:
+                path.unlink()
+        for name, text in snapshot["documents"].items():
+            (self.documents / name).write_text(text, encoding="utf-8")
+        self._requirements = copy.deepcopy(snapshot["requirements"])
+        self._write_requirements()
+        self.selection = copy.deepcopy(snapshot["selection"])
+        self._mesh_cache.clear()
+        self._requirement_cache.clear()
+        self.panels.clear()
+
+    def _ensure_project_files(self) -> None:
+        self.documents.mkdir(parents=True, exist_ok=True)
+        requirements_md = self.documents / "requirements.md"
+        decisions_md = self.documents / "decisions.md"
+        if not requirements_md.exists():
+            requirements_md.write_text(
+                "# Requirements\n\n"
+                "The checks in the requirements panel are the numbers. "
+                "Use this note for the intent those numbers do not capture.\n",
+                encoding="utf-8",
+            )
+        if not decisions_md.exists():
+            decisions_md.write_text(
+                "# Decisions\n\n"
+                "Record why a dimension, a material, or a load case changed.\n",
+                encoding="utf-8",
+            )
+        if self.requirements_path.is_file():
+            try:
+                loaded = json.loads(self.requirements_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise GeometryError(f"Could not read {self.requirements_path}: {exc}") from exc
+            self._requirements = normalize(loaded)
+        else:
+            self._requirements = []
+            self._write_requirements()
+
+    def _write_requirements(self) -> None:
+        payload = {"requirements": self._requirements}
+        self.requirements_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    def _document_names(self) -> list[str]:
+        if not self.documents.is_dir():
+            return []
+        return sorted(path.name for path in self.documents.glob("*.md"))
+
+    def _document_path(self, name: str) -> Path:
+        if not isinstance(name, str) or not _DOC_NAME.match(name):
+            raise GeometryError("A document name looks like decisions.md: letters, numbers, underscore, hyphen.")
+        return self.documents / name
+
+    def _remember_panel(self, key: str, payload: dict) -> dict:
+        self.panels[key] = {"revision": self.geometry_revision, "payload": payload}
+        return payload
+
+
+def _obj(properties: dict, required: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _string(description: str) -> dict:
+    return {"type": "string", "description": description}
+
+
+def _number(description: str) -> dict:
+    return {"type": "number", "description": description}
+
+
+def _part(workspace: Workspace, arguments: dict):
+    return workspace.document._get(arguments["name"])  # noqa: SLF001
+
+
+def _cmd_list_parts(workspace: Workspace, _arguments: dict) -> dict:
+    return {"units": "mm", "parts": [part.to_dict() for part in workspace.document.list_parts()]}
+
+
+def _cmd_create_script(workspace: Workspace, arguments: dict) -> dict:
+    info = workspace.document.create_part_from_script(arguments["name"], arguments["script"])
+    return {"part": info.to_dict(), "next": "Call inspect_part and look at the model before the next edit."}
+
+
+def _cmd_create_ops(workspace: Workspace, arguments: dict) -> dict:
+    info = workspace.document.create_part_from_ops(arguments["name"], arguments["ops"])
+    return {"part": info.to_dict(), "next": "Call inspect_part and look at the model before the next edit."}
+
+
+def _cmd_update_script(workspace: Workspace, arguments: dict) -> dict:
+    info = workspace.document.update_part_script(arguments["name"], arguments["script"])
+    return {"part": info.to_dict(), "next": "Call inspect_part and look at the model before the next edit."}
+
+
+def _cmd_update_ops(workspace: Workspace, arguments: dict) -> dict:
+    info = workspace.document.update_part_ops(arguments["name"], arguments["ops"])
+    return {"part": info.to_dict(), "next": "Call inspect_part and look at the model before the next edit."}
+
+
+def _cmd_delete_part(workspace: Workspace, arguments: dict) -> dict:
+    workspace.document.delete_part(arguments["name"])
+    if workspace.selection.get("part") == arguments["name"]:
+        workspace.selection = {"part": None, "faces": [], "edges": []}
+    return {"deleted": arguments["name"]}
+
+
+def _cmd_source(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.get_source(arguments["name"])
+
+
+def _cmd_measure(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.measure(arguments["name"]).to_dict()
+
+
+def _cmd_wall(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.check_wall_thickness(
+        arguments["name"], arguments["min_wall_mm"], int(arguments.get("samples") or 4)
+    ).to_dict()
+
+
+def _cmd_clearance(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.check_clearance(
+        arguments["part_a"], arguments["part_b"], float(arguments.get("min_clearance_mm") or 0.0)
+    ).to_dict()
+
+
+def _cmd_render(workspace: Workspace, arguments: dict) -> dict:
+    views = workspace.document.render(arguments["name"])
+    return {"views": [view.to_dict() for view in views]}
+
+
+def _cmd_inspect(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.inspect(
+        arguments["name"], arguments.get("min_wall_mm"), int(arguments.get("samples") or 4)
+    )
+    return workspace._remember_panel("inspect", report.to_dict())
+
+
+def _cmd_export(workspace: Workspace, arguments: dict) -> dict:
+    destination = arguments.get("path")
+    if not destination:
+        destination = str(workspace.root / "exports" / f"{arguments['name']}.{arguments['format']}")
+    written = workspace.document.export(arguments["name"], destination, arguments["format"])
+    return {"format": arguments["format"], "path": str(written), "bytes": written.stat().st_size}
+
+
+def _cmd_features(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.feature_report(arguments["name"]).to_dict()
+    return workspace._remember_panel("features", report)
+
+
+def _cmd_section(workspace: Workspace, arguments: dict) -> dict:
+    if arguments.get("origin") is not None or arguments.get("normal") is not None:
+        if arguments.get("origin") is None or arguments.get("normal") is None:
+            raise GeometryError("An arbitrary section needs both origin and normal.")
+        plane = {"origin": arguments["origin"], "normal": arguments["normal"]}
+    elif arguments.get("axis"):
+        plane = {"axis": arguments["axis"], "offset": float(arguments.get("offset") or 0.0)}
+    else:
+        raise GeometryError("Pass axis and offset, or origin and normal.")
+    report = workspace.document.section(arguments["name"], plane)
+    return workspace._remember_panel("section", report.to_dict())
+
+
+def _cmd_create_sketch(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.create_sketch(arguments["name"], arguments["spec"])
+    return report.to_dict()
+
+
+def _cmd_update_sketch(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.update_sketch(arguments["name"], arguments["spec"])
+    return report.to_dict()
+
+
+def _cmd_get_sketch(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.get_sketch(arguments["name"]).to_dict()
+    report["spec"] = copy.deepcopy(workspace.document._get_sketch(arguments["name"]).spec)  # noqa: SLF001
+    return report
+
+
+def _cmd_set_dimension(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.set_dimension(arguments["sketch"], arguments["dimension"], float(arguments["value"]))
+    rebuilt = []
+    for part in workspace.document.list_parts():
+        source = workspace.document.get_source(part.name)
+        if source.get("sketch") == arguments["sketch"]:
+            rebuilt.append(part.to_dict())
+    payload = report.to_dict()
+    payload["rebuilt_parts"] = rebuilt
+    return payload
+
+
+def _sketch_payload(info, report) -> dict:
+    payload = {
+        "part": info.to_dict(),
+        "sketch": {
+            "name": report.name,
+            "status": report.status,
+            "dof": report.dof,
+            "free": report.free,
+            "conflicts": report.conflicts,
+            "dimensions": report.dimensions,
+            "note": report.note,
+        },
+        "next": "Call inspect_part and look at the model before the next edit.",
+    }
+    if report.status == "under_constrained":
+        payload["sketch"]["warning"] = "Built from an under-constrained sketch. Free entities can still move."
+    if report.view is not None:
+        payload["view"] = report.view.to_dict()
+    return payload
+
+
+def _cmd_part_from_sketch(workspace: Workspace, arguments: dict) -> dict:
+    info = workspace.document.create_part_from_sketch(arguments["name"], arguments["sketch"], arguments["steps"])
+    report = workspace.document.get_sketch(arguments["sketch"])
+    return _sketch_payload(info, report)
+
+
+def _cmd_update_part_from_sketch(workspace: Workspace, arguments: dict) -> dict:
+    info = workspace.document.update_part_from_sketch(arguments["name"], arguments["sketch"], arguments["steps"])
+    report = workspace.document.get_sketch(arguments["sketch"])
+    return _sketch_payload(info, report)
+
+
+def _cmd_search(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.search_parts(str(arguments.get("query") or ""))
+
+
+def _cmd_insert(workspace: Workspace, arguments: dict) -> dict:
+    info = workspace.document.insert_standard_part(
+        arguments["name"],
+        arguments["kind"],
+        arguments["size"],
+        length=arguments.get("length"),
+        position=arguments.get("position"),
+        rotation_deg=arguments.get("rotation_deg"),
+        fastener_type=arguments.get("fastener_type"),
+    )
+    return {"part": info.to_dict(), "next": "Call check_clearance if this part should fit another part."}
+
+
+def _cmd_place(workspace: Workspace, arguments: dict) -> dict:
+    info = workspace.document.place_part(arguments["name"], arguments["position"], arguments.get("rotation_deg"))
+    return {"part": info.to_dict()}
+
+
+def _cmd_import(workspace: Workspace, arguments: dict) -> dict:
+    info = workspace.document.import_step(arguments["name"], arguments["path"])
+    return {"part": info.to_dict()}
+
+
+def _cmd_materials(workspace: Workspace, _arguments: dict) -> dict:
+    return workspace.document.list_materials()
+
+
+def _cmd_faces(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.describe_faces(arguments["name"])
+
+
+def _cmd_edges(workspace: Workspace, arguments: dict) -> dict:
+    part = _part(workspace, arguments)
+    edges = kernel.describe_edges(part.shape)
+    return {
+        "part": arguments["name"],
+        "units": "mm",
+        "edges": edges,
+        "note": "An edge reference looks like edge/line/x,y,z. The same string is what a click selects.",
+    }
+
+
+def _cmd_mesh(workspace: Workspace, arguments: dict) -> dict:
+    mesh = workspace.mesh(arguments["name"])
+    return {
+        "part": arguments["name"],
+        "triangles": len(mesh["triangle_face"]),
+        "faces": [{"index": face["index"], "kind": face["kind"], "ref": face["ref"], "center_mm": face["center_mm"]} for face in mesh["faces"]],
+        "edges": [{"index": edge["index"], "kind": edge["kind"], "ref": edge["ref"]} for edge in mesh["edges"]],
+        "note": "The viewport already shows this mesh. Use a ref from faces or edges in a later command.",
+    }
+
+
+def _cmd_fea(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.solve_mechanics(arguments["name"], arguments["setup"])
+    return workspace._remember_panel("fea", report.to_dict())
+
+
+def _cmd_list_docs(workspace: Workspace, _arguments: dict) -> dict:
+    return {"documents": workspace._document_names()}
+
+
+def _cmd_read_doc(workspace: Workspace, arguments: dict) -> dict:
+    path = workspace._document_path(arguments["name"])
+    if not path.is_file():
+        raise GeometryError(f"No document {arguments['name']!r}.")
+    return {"name": arguments["name"], "markdown": path.read_text(encoding="utf-8")}
+
+
+def _cmd_write_doc(workspace: Workspace, arguments: dict) -> dict:
+    path = workspace._document_path(arguments["name"])
+    text = arguments.get("markdown")
+    if not isinstance(text, str):
+        raise GeometryError("markdown must be a string.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return {"name": arguments["name"], "bytes": path.stat().st_size}
+
+
+def _cmd_delete_doc(workspace: Workspace, arguments: dict) -> dict:
+    path = workspace._document_path(arguments["name"])
+    if path.is_file():
+        path.unlink()
+    return {"deleted": arguments["name"]}
+
+
+def _cmd_get_requirements(workspace: Workspace, _arguments: dict) -> dict:
+    checks = evaluate(workspace.document, workspace._requirements, cache=workspace._requirement_cache, run=False)
+    return {"requirements": workspace._requirements, "checks": checks}
+
+
+def _cmd_set_requirements(workspace: Workspace, arguments: dict) -> dict:
+    workspace._requirements = normalize(arguments.get("requirements", arguments))
+    workspace._write_requirements()
+    workspace._requirement_cache.clear()
+    checks = evaluate(workspace.document, workspace._requirements, cache=workspace._requirement_cache, run=False)
+    return {"requirements": workspace._requirements, "checks": checks}
+
+
+def _cmd_check_requirements(workspace: Workspace, arguments: dict) -> dict:
+    run = bool(arguments.get("run", True))
+    checks = evaluate(workspace.document, workspace._requirements, cache=workspace._requirement_cache, run=run)
+    passed = sum(1 for item in checks if item["status"] == "pass")
+    failed = sum(1 for item in checks if item["status"] == "fail")
+    return {
+        "checks": checks,
+        "passed": passed,
+        "failed": failed,
+        "note": f"{passed} passed, {failed} failed, {len(checks)} requirements.",
+    }
+
+
+def _cmd_set_selection(workspace: Workspace, arguments: dict) -> dict:
+    part = arguments.get("part")
+    faces = arguments.get("faces") or []
+    edges = arguments.get("edges") or []
+    if part:
+        catalog = workspace.document.describe_faces(part)["faces"]
+        known = {face["ref"] for face in catalog}
+        for ref in faces:
+            if ref not in known:
+                raise GeometryError(f"Face reference {ref!r} is not on part {part!r}. Call describe_faces.")
+        edge_catalog = kernel.describe_edges(workspace.document._get(part).shape)  # noqa: SLF001
+        for ref in edges:
+            resolve_edge(edge_catalog, ref)
+    workspace.selection = {"part": part, "faces": list(faces), "edges": list(edges)}
+    return {"selection": workspace.selection}
+
+
+def _cmd_state(workspace: Workspace, _arguments: dict) -> dict:
+    return workspace.state()
+
+
+_PART = _obj({"name": _string("Part name.")}, ["name"])
+
+
+COMMANDS: dict[str, Command] = {}
+
+
+def _add(command: Command) -> None:
+    COMMANDS[command.name] = command
+
+
+_add(Command("list_parts", "List parts with volume and bounding box.", _obj({}, []), _cmd_list_parts))
+_add(Command(
+    "create_part_from_script",
+    "Create a part from a build123d script. Assign the solid to part. Units are millimeters.",
+    _obj({"name": _string("New part name."), "script": _string("Python script.")}, ["name", "script"]),
+    _cmd_create_script,
+    undo=True,
+))
+_add(Command(
+    "create_part_from_ops",
+    "Create a part from add/cut boxes and cylinders.",
+    _obj({"name": _string("New part name."), "ops": {"type": "array", "description": "Operations."}}, ["name", "ops"]),
+    _cmd_create_ops,
+    undo=True,
+))
+_add(Command(
+    "update_part_script",
+    "Replace a part's script. A failed script keeps the previous solid.",
+    _obj({"name": _string("Part name."), "script": _string("Python script.")}, ["name", "script"]),
+    _cmd_update_script,
+    undo=True,
+))
+_add(Command(
+    "update_part_ops",
+    "Replace a part's operation list.",
+    _obj({"name": _string("Part name."), "ops": {"type": "array"}}, ["name", "ops"]),
+    _cmd_update_ops,
+    undo=True,
+))
+_add(Command("delete_part", "Delete a part from the document.", _PART, _cmd_delete_part, undo=True))
+_add(Command("get_part_source", "Return the script, operations, sketch, or STEP note that rebuilds a part.", _PART, _cmd_source))
+_add(Command("measure_part", "Bounding box, volume, area, center of mass, valid, watertight.", _PART, _cmd_measure))
+_add(Command(
+    "check_wall_thickness",
+    "Estimate minimum wall thickness and compare it with min_wall_mm.",
+    _obj({"name": _string("Part name."), "min_wall_mm": _number("Threshold in mm."), "samples": {"type": "integer"}}, ["name", "min_wall_mm"]),
+    _cmd_wall,
+))
+_add(Command(
+    "check_clearance",
+    "Interference volume or gap between two parts.",
+    _obj({"part_a": _string("First part."), "part_b": _string("Second part."), "min_clearance_mm": _number("Required gap.")}, ["part_a", "part_b"]),
+    _cmd_clearance,
+))
+_add(Command("render_part", "Render the standard shaded views.", _PART, _cmd_render))
+_add(Command(
+    "inspect_part",
+    "Measure, estimate wall thickness, report features, and render. Call this after a modeling change.",
+    _obj({"name": _string("Part name."), "min_wall_mm": _number("Optional threshold."), "samples": {"type": "integer"}}, ["name"]),
+    _cmd_inspect,
+))
+_add(Command(
+    "export_part",
+    "Write STEP or STL.",
+    _obj({"name": _string("Part name."), "format": _string("step or stl."), "path": _string("Optional output path.")}, ["name", "format"]),
+    _cmd_export,
+))
+_add(Command("feature_report", "How much of each feature was new material or already buried.", _PART, _cmd_features))
+_add(Command(
+    "section_part",
+    "Planar cross-section: area, thickness, and a picture. Pass axis and offset, or origin and normal.",
+    _obj(
+        {
+            "name": _string("Part name."),
+            "axis": _string("x, y, or z."),
+            "offset": _number("Offset along the axis, mm."),
+            "origin": {"type": "array"},
+            "normal": {"type": "array"},
+        },
+        ["name"],
+    ),
+    _cmd_section,
+))
+_add(Command(
+    "create_sketch",
+    "Store and solve a 2D sketch. status is fully_constrained, under_constrained, or over_constrained.",
+    _obj({"name": _string("Sketch name."), "spec": {"type": "object", "description": "entities and constraints."}}, ["name", "spec"]),
+    _cmd_create_sketch,
+    undo=True,
+))
+_add(Command(
+    "update_sketch",
+    "Replace a sketch spec and rebuild parts made from it.",
+    _obj({"name": _string("Sketch name."), "spec": {"type": "object"}}, ["name", "spec"]),
+    _cmd_update_sketch,
+    undo=True,
+))
+_add(Command("get_sketch", "Solve a stored sketch and return status, free entities, dimensions, and geometry.", _PART, _cmd_get_sketch))
+_add(Command(
+    "set_dimension",
+    "Change one named sketch dimension and regenerate solids made from that sketch.",
+    _obj({"sketch": _string("Sketch name."), "dimension": _string("Dimension name."), "value": _number("New value, mm or degrees.")}, ["sketch", "dimension", "value"]),
+    _cmd_set_dimension,
+    undo=True,
+))
+_add(Command(
+    "create_part_from_sketch",
+    "Extrude, revolve, or cut a solved sketch into a new solid.",
+    _obj({"name": _string("New part name."), "sketch": _string("Sketch name."), "steps": {"type": "array"}}, ["name", "sketch", "steps"]),
+    _cmd_part_from_sketch,
+    undo=True,
+))
+_add(Command(
+    "update_part_from_sketch",
+    "Replace a part's solid with new extrude, revolve, or cut steps from a sketch.",
+    _obj({"name": _string("Part name."), "sketch": _string("Sketch name."), "steps": {"type": "array"}}, ["name", "sketch", "steps"]),
+    _cmd_update_part_from_sketch,
+    undo=True,
+))
+_add(Command(
+    "search_parts",
+    "Search screws, nuts, washers, and bearings.",
+    _obj({"query": _string("Text such as M3 or 608.")}, []),
+    _cmd_search,
+))
+_add(Command(
+    "insert_standard_part",
+    "Insert a catalog part and place it.",
+    _obj(
+        {
+            "name": _string("New part name."),
+            "kind": _string("Catalog kind."),
+            "size": _string("Catalog size."),
+            "length": _number("Screw length under the head."),
+            "position": {"type": "array"},
+            "rotation_deg": {"type": "array"},
+            "fastener_type": _string("Optional fastener type."),
+        },
+        ["name", "kind", "size"],
+    ),
+    _cmd_insert,
+    undo=True,
+))
+_add(Command(
+    "place_part",
+    "Move a part. Replaces the previous placement.",
+    _obj({"name": _string("Part name."), "position": {"type": "array"}, "rotation_deg": {"type": "array"}}, ["name", "position"]),
+    _cmd_place,
+    undo=True,
+))
+_add(Command(
+    "import_step",
+    "Copy a STEP file in as a part.",
+    _obj({"name": _string("New part name."), "path": _string("Path to a STEP file.")}, ["name", "path"]),
+    _cmd_import,
+    undo=True,
+))
+_add(Command("list_materials", "Handbook materials for a linear static solve, including density.", _obj({}, []), _cmd_materials))
+_add(Command(
+    "describe_faces",
+    "List faces with stable ref strings. Use ref in a fix, a load, or set_selection.",
+    _PART,
+    _cmd_faces,
+))
+_add(Command("describe_edges", "List edges with stable ref strings.", _PART, _cmd_edges))
+_add(Command(
+    "mesh_part",
+    "Summary of the viewport mesh and the face and edge refs. The picture is already on screen.",
+    _PART,
+    _cmd_mesh,
+))
+_add(Command(
+    "solve_mechanics",
+    "Linear static solve. setup has material, fixes, loads, mesh_size_mm, target_safety_factor. A select can be a viewport ref.",
+    _obj({"name": _string("Part name."), "setup": {"type": "object"}}, ["name", "setup"]),
+    _cmd_fea,
+))
+_add(Command("list_documents", "Markdown notes in this project.", _obj({}, []), _cmd_list_docs))
+_add(Command("read_document", "Read one markdown note.", _obj({"name": _string("File name, such as decisions.md.")}, ["name"]), _cmd_read_doc))
+_add(Command(
+    "write_document",
+    "Create or replace a markdown note.",
+    _obj({"name": _string("File name ending in .md."), "markdown": _string("Markdown source.")}, ["name", "markdown"]),
+    _cmd_write_doc,
+    undo=True,
+))
+_add(Command("delete_document", "Delete a markdown note.", _obj({"name": _string("File name.")}, ["name"]), _cmd_delete_doc, undo=True))
+_add(Command("get_requirements", "Structured requirements and their current pass, fail, or unchecked state.", _obj({}, []), _cmd_get_requirements))
+_add(Command(
+    "set_requirements",
+    "Replace the structured requirements. Kinds: max_mass, fits_build_volume, min_wall, min_safety_factor.",
+    _obj({"requirements": {"type": "array"}}, ["requirements"]),
+    _cmd_set_requirements,
+    undo=True,
+))
+_add(Command(
+    "check_requirements",
+    "Score the structured requirements. run true also solves wall thickness and safety-factor loads.",
+    _obj({"run": {"type": "boolean", "description": "Solve checks that are still unchecked."}}, []),
+    _cmd_check_requirements,
+))
+_add(Command(
+    "set_selection",
+    "Select faces and edges by the same ref strings the viewport uses. The person sees this selection.",
+    _obj(
+        {
+            "part": _string("Part name, or null to clear."),
+            "faces": {"type": "array", "items": {"type": "string"}},
+            "edges": {"type": "array", "items": {"type": "string"}},
+        },
+        [],
+    ),
+    _cmd_set_selection,
+))
+_add(Command("get_state", "Parts, sketches, selection, requirement checks, and the latest inspection panels.", _obj({}, []), _cmd_state))
+
+
+__all__ = ["COMMANDS", "Command", "Workspace"]

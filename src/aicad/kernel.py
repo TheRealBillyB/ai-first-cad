@@ -38,6 +38,7 @@ from OCP.GeomAbs import GeomAbs_SurfaceType
 from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
 
 from aicad.errors import GeometryError, ScriptError
+from aicad.refs import edge_ref, face_ref
 from aicad.models import (
     BoundingBox,
     FeatureReport,
@@ -395,7 +396,94 @@ def describe_faces(shape: Shape) -> list[dict]:
                 "axis_direction": None if axis_direction is None else [round_mm(v, 6) for v in axis_direction],
             }
         )
+        catalog[-1]["ref"] = face_ref(catalog[-1])
     return catalog
+
+
+def describe_edges(shape: Shape) -> list[dict]:
+    """Describe each edge so a click and an assistant share one reference."""
+    catalog = []
+    for index, edge in enumerate(shape.impl.edges()):
+        kind = str(edge.geom_type).split(".")[-1].lower()
+        if kind not in ("line", "circle", "ellipse", "bspline", "bezier"):
+            kind = "curve"
+        samples = edge.positions(deflection=0.4)
+        if len(samples) >= 2:
+            midpoint = [
+                round_mm(float(samples[len(samples) // 2].X)),
+                round_mm(float(samples[len(samples) // 2].Y)),
+                round_mm(float(samples[len(samples) // 2].Z)),
+            ]
+        else:
+            center = edge.center()
+            midpoint = [round_mm(center.X), round_mm(center.Y), round_mm(center.Z)]
+        record = {
+            "index": index,
+            "kind": "circle" if kind == "circle" else "line" if kind == "line" else "curve",
+            "length_mm": round_mm(float(edge.length)),
+            "midpoint_mm": midpoint,
+        }
+        record["ref"] = edge_ref(record["kind"], midpoint)
+        catalog.append(record)
+    return catalog
+
+
+def viewport_mesh(shape: Shape) -> dict:
+    """Triangles tagged by face, plus edge polylines, for the workspace viewer.
+
+    A face reference on each triangle is the same string ``describe_faces``
+    publishes, so a click and an assistant name the same face.
+    """
+    faces = describe_faces(shape)
+    edges = describe_edges(shape)
+    impl = shape.impl
+    diagonal = float(impl.bounding_box().diagonal) or 1.0
+    tolerance = min(0.28, max(0.08, diagonal * 0.004))
+    positions: list[float] = []
+    normals: list[float] = []
+    triangle_face: list[int] = []
+    for index, face in enumerate(impl.faces()):
+        vertices, triangles = face.tessellate(tolerance)
+        if not triangles:
+            continue
+        points = [(float(vertex.X), float(vertex.Y), float(vertex.Z)) for vertex in vertices]
+        for tri in triangles:
+            corners = [points[int(tri[0])], points[int(tri[1])], points[int(tri[2])]]
+            ax, ay, az = corners[1][0] - corners[0][0], corners[1][1] - corners[0][1], corners[1][2] - corners[0][2]
+            bx, by, bz = corners[2][0] - corners[0][0], corners[2][1] - corners[0][1], corners[2][2] - corners[0][2]
+            nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+            length = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+            nx, ny, nz = nx / length, ny / length, nz / length
+            for corner in corners:
+                positions.extend(round(component, 4) for component in corner)
+                normals.extend((round(nx, 4), round(ny, 4), round(nz, 4)))
+            triangle_face.append(index)
+    edge_payload = []
+    for edge, record in zip(impl.edges(), edges):
+        samples = edge.positions(deflection=tolerance)
+        edge_payload.append(
+            {
+                "index": record["index"],
+                "kind": record["kind"],
+                "ref": record["ref"],
+                "length_mm": record["length_mm"],
+                "midpoint_mm": record["midpoint_mm"],
+                "points": [[round(float(point.X), 4), round(float(point.Y), 4), round(float(point.Z), 4)] for point in samples],
+            }
+        )
+    bbox = impl.bounding_box()
+    return {
+        "units": "mm",
+        "positions": positions,
+        "normals": normals,
+        "triangle_face": triangle_face,
+        "faces": faces,
+        "edges": edge_payload,
+        "bounding_box": {
+            "min": [round_mm(bbox.min.X), round_mm(bbox.min.Y), round_mm(bbox.min.Z)],
+            "max": [round_mm(bbox.max.X), round_mm(bbox.max.Y), round_mm(bbox.max.Z)],
+        },
+    }
 
 
 def distance_point_to_face(shape: Shape, face_index: int, point: tuple[float, float, float]) -> float:
