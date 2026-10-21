@@ -7,11 +7,9 @@ name = "aicad"
 version = "0.9.0"
 description = "AI-first CAD for hard-body parts. Model a solid, then see and check it."
 readme = "README.md"
+# SPDX expression only. Current setuptools rejects a License :: classifier beside it (PEP 639).
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.11"
-classifiers = [
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
-]
 authors = [{ name = "TheRealBillyB" }]
 keywords = ["cad", "build123d", "mcp", "3d-printing", "mechanical"]
 dependencies = [
