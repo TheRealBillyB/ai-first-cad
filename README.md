@@ -26,8 +26,9 @@ This is a small first version. It does not invent a geometry kernel. [build123d]
 - Check interference or clearance between two parts.
 - Run a linear static check. Pick a material (PLA, PETG, ABS, nylon, aluminum 6061, or mild steel), hold faces and apply forces, pressures, or bolt loads by describing the face, and read the peak von Mises stress, the peak displacement, the minimum safety factor, and a pass/fail against a target. Stress and displacement pictures come back from several angles.
 - Open the workspace with `aicad app` and edit the same document in the browser: orbit the solid, pick a face or an edge by the reference an assistant uses, draw a constrained sketch, extrude or revolve or cut it, change a dimension, undo, and read inspection, section, feature, and FEA panels. A chat panel drives those same commands with an API key you keep on the machine. Each project also has markdown notes and structured requirements that pass or fail against the current solid.
+- Assemble parts you already modeled, including catalog parts, with fixed, revolute, prismatic, and cylindrical joints, plus gear and planar linkage relations. Name poses, sweep a motion, and see where the moving solids collide. Route a cable or a hose through clips and check length, bend radius, and pinching. Estimate the joint torque and the hydraulic or electric power that motion needs.
 
-Units are millimeters. Forces are newtons, so a stress from the solver is in megapascals.
+Units are millimeters. Forces are newtons, so a stress from the solver is in megapascals. Joint torque is newton-meters. Hydraulic pressure is megapascals.
 
 ## Install
 
@@ -193,6 +194,55 @@ The side panels run `inspect_part`, `section_part`, `feature_report`, and `solve
 
 The assistant panel takes an OpenAI-compatible endpoint or Anthropic. Settings go to `~/.config/aicad/settings.json`, or to `$AICAD_SETTINGS`, with mode `0600`. The key is not written into the project. The chat model calls the same tools, including `get_requirements` and `check_requirements`.
 
+## Assemblies, motion, cables, and power
+
+```bash
+python examples/rod_arm.py
+aicad app --workspace examples/rod_arm_workspace
+```
+
+![Five frames of the rod arm, from the reach pose to the lift](examples/renders/rod_arm_strip.png)
+
+![A test leg plants on a block, swings clear, and plants again](examples/renders/rod_leg_strip.png)
+
+An assembly is a list of instances of parts that are already in the document, custom or from the catalog. Structural joints form a tree. One instance is grounded because nothing drives it. The joint types are:
+
+| Type | Value | What moves |
+| --- | --- | --- |
+| `fixed` | ignored | The child is welded at the anchors. |
+| `revolute` | degrees | The child spins about the axis. |
+| `prismatic` | millimeters | The child slides along the axis. |
+| `cylindrical` | degrees, plus `slide` in millimeters | Spin and slide on the same axis. |
+
+`parent_anchor` and `child_anchor` are points in each part's local frame, in millimeters. `axis` is a direction in the parent. Limits clamp the value after relations run, and the report says when a command was held at a stop.
+
+A gear is linear: driven = ratio × driver + offset. A linkage is a planar four-bar (`ground_mm`, `crank_mm`, `coupler_mm`, `rocker_mm`, branch `open` or `crossed`). It writes one angle from another. It does not close a spatial loop. A true loop closure is later work.
+
+Named poses store joint values. A motion is a sweep (`joint`, `start`, `end`, `frames`) or keyframes (`{"pose": "lift"}` or `{"joints": {"shoulder": -40}}`), with `samples` and `duration_s`. If the duration is omitted, rates use one second and the report says so. `run_motion` places every sample, reports interference between instances that are not joined to each other, and writes an isometric frame, a strip, and a GIF. The two sides of a joint are allowed to touch.
+
+Cables and hoses are polylines through waypoints fixed on parts (`instance`, `at`, and whether that point is a clip). Each route has a diameter, a minimum bend radius, and a stiffness (`low`, `medium`, `high`, or newtons per unit strain). Through a motion the check reports length change, strain against the rest length, bend radius at each waypoint, pinching between the centerline and a moving solid, and a self-intersection of the route. Rest length is the authored value, or the length of the first frame. A shorter route is slack, not compression. Samples next to a waypoint are the clip seat and are not counted as a pinch of that part.
+
+This is a kinematic model. The line does not sag, and clips do not slip. A later flexible-body model, a Cosserat rod or a chain of rigid segments with bending springs, would add sag, contact, and clip slip. It would still be checked against these length, bend, and gap limits.
+
+Power is quasi-static. Gravity is 9.81 m/s² along −Z. Mass is the solid's volume times the material density, plus `payload_kg` at `payload_at` or at the center of mass. A revolute joint sees the moment of the supported weight about its axis. A prismatic joint sees the component of that weight along the slide. Inertia, friction, seal drag, and line loss are omitted, and the report says so. A gear or linkage reflects the driven load onto the driver when the driven joint has no actuator of its own.
+
+A hydraulic cylinder turns that torque into force with `moment_arm_mm`. Extend uses the bore area. Retract uses bore minus rod. Pressure is force over area, in MPa. Flow is area times piston speed. Power is pressure times flow, divided by efficiency. One MPa·mm³/s is 0.001 W. The pump figure is the hydraulic energy over the motion duration, with no regeneration. An electric actuator divides joint torque by gear ratio and efficiency, then divides by the torque constant for current. Power is joint torque times speed, divided by efficiency. Braking energy is counted as spent. Battery watt-hours are that electric energy, and amp-hours divide by the stated voltage.
+
+The same commands are `create_assembly`, `set_joint`, `set_pose`, `run_motion`, `check_cables`, and `estimate_power` on the Python API, the MCP server, and the CLI:
+
+```bash
+aicad assemble rod_arm --file arm.json --workspace ./aicad_workspace
+aicad joint rod_arm shoulder --value -40 --workspace ./aicad_workspace
+aicad pose rod_arm lift --workspace ./aicad_workspace
+aicad motion rod_arm --sequence lift --workspace ./aicad_workspace
+aicad cables rod_arm --sequence lift --workspace ./aicad_workspace
+aicad power rod_arm --sequence lift --workspace ./aicad_workspace
+```
+
+In the workspace app the Assembly page lists joints, poses, and motions. Apply sets a joint. A pose or a motion runs the same command the assistant uses. Preview and Orbit show the posed solids. Cables and Power open the reports, including the assumptions.
+
+`examples/rod_arm.py` builds a simplified drill-rod handler: a base, a two-joint arm, a gripper whose jaws are geared together, an M3 washer used as a clip, a hydraulic hose, and a cable. An 8 kg payload sits on the rod, on top of the rod's own steel mass. From the reach pose to the lift pose the rod origin rises from −259 mm to 309 mm, and the arm does not collide with itself. The hose shortens by about 17 mm and stays slack. The cable grows by about 23 mm, strain 0.057, under its 0.15 limit. The tightest bend on either route is about 112 mm, against limits of 18 mm and 12 mm. Neither route pinches. The shoulder cylinder (20 mm bore, 50 mm moment arm) peaks at 45.1 N·m, 3.83 MPa, and 32 W. The elbow cylinder (16 mm bore, 40 mm moment arm) peaks at 28.1 N·m, 4.65 MPa, and 8.6 W. Over the two-second lift the pump sees about 28 W mean and 17,600 mm³ of displaced fluid. A separate test leg runs a short walk cycle and collides with a block on the planted frames. The pictures are `examples/renders/rod_arm_strip.png`, `examples/renders/rod_arm.gif`, and `examples/renders/rod_leg_strip.png`. The numbers are in `examples/renders/rod_arm_report.json`.
+
 ## Connect an assistant
 
 `aicad serve` speaks [MCP](https://modelcontextprotocol.io) over stdio. The tools are the same operations as the CLI.
@@ -354,6 +404,7 @@ Views use Z up. The label on each picture says which way the camera is looking (
 ```bash
 pytest
 python examples/motor_mount.py   # refresh examples/renders and the report
+python examples/rod_arm.py       # assembly keyframes, cable check, and power estimate
 ```
 
 `src/aicad/kernel.py` imports build123d and OpenCascade. `src/aicad/library.py` imports bd_warehouse. `src/aicad/sketch.py` imports the SolveSpace solver. `src/aicad/fea.py` imports Gmsh and runs the `ccx` binary. The rest of aicad talks to plain records.
@@ -373,6 +424,9 @@ python examples/motor_mount.py   # refresh examples/renders and the report
 - Mechanics is linear static elasticity. Plasticity, contact, buckling, and fatigue are outside this solve. A safety factor below 1 means the pictured stress has left the elastic range. A force is shared equally by the nodes on the face. Pressure on a curved face uses that face's normal at its center. A bolt load is an axial force along the hole.
 - Face selectors are geometric. A boolean drops the name you gave a feature, so "the gusset face" has to be a normal, a radius, or a location. A mesh coarser than a hole, or coarser than about half the smallest dimension of the part, is called out, and a pass on that mesh is inconclusive.
 - The printed-layer note is a warning, not a second material model. The strength in the library is one number. Across-layer strength is not solved.
+- Assemblies are a kinematic tree. A gear is a linear map between joint values. A linkage is a planar four-bar, not a spatial loop, so it cannot solve a mechanism that has to close in 3D. Joint-adjacent parts are allowed to overlap. Other overlaps are reported as interference volume, not as a contact force.
+- Cables and hoses are polylines through fixed clips. They do not sag, stretch continuously, or slip. Bend radius is the circumradius of three waypoints, which is harsher than a filleted route. A flexible-body rod would replace the polyline and would still be scored against the same length, bend, and gap limits.
+- Power is quasi-static. Gravity and payloads are included. Inertia, friction, seal drag, pressure drop, and pump dynamics are not. A hydraulic moment arm is a number you supply, not a cylinder located in the assembly. Electric braking energy is counted as spent.
 - The session file is for one writer. Two servers on the same workspace will overwrite each other. `aicad app` plus `aicad serve --connect` is one writer: the app process.
 - The solid view needs WebGL. The sketch view is a 2D canvas. Rectangle, line, circle, and point are the drawing tools in this version, and a rectangle replaces the current sketch profile.
 - API keys stay in the user config named above. The project directory does not receive them.
@@ -385,7 +439,8 @@ python examples/motor_mount.py   # refresh examples/renders and the report
 - More catalog parts (NEMA motors, extrusions) and a way to drop a screw into a hole by naming the hole.
 - Driving dimensions on the 3D pictures, the way the sketch view already labels them.
 - A tighter wall-thickness check, for example an offset of the solid, used beside the rays and the sections.
-- Assemblies and joints, so a bracket and a motor can be constrained, not only placed and checked for a gap.
+- A flexible cable: a Cosserat rod or a chain of segments with bending springs, sagging and contacting the parts the polyline only measures.
+- Spatial loop closure, so a linkage can be a real mechanism instead of a planar map from one angle to another.
 - A desktop shell around the same local server.
 
 ## License

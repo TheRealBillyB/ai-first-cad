@@ -54,6 +54,14 @@ from `list_materials`, and call `solve_mechanics`. Read the safety factor, the
 warnings, and the stress picture before you add or remove material. The report
 lists its assumptions. A 3D-printed material is weaker across layers than the
 in-plane strength used here.
+
+An assembly places several parts with joints (fixed, revolute, prismatic,
+cylindrical), gear or linkage relations, named poses, and motions.
+`run_motion` sweeps those joints and reports collisions, with a picture per
+frame. `check_cables` measures length, strain, bend radius, and pinching.
+`estimate_power` turns gravity and payloads into joint torque and then into
+hydraulic pressure and flow, or motor current and a rough battery figure.
+Read the assumptions on those reports. Cables are kinematic polylines.
 """.strip()
 
 _GUIDE = """
@@ -223,6 +231,10 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `check_clearance` on two parts reports interference, or the gap if they are apart.
 - `inspect_part` renders front, back, left, right, top, bottom, and isometric views.
 - `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
+- `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
+- `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
+- `check_cables` routes polylines through waypoints fixed on parts. It reports length change, strain, bend-radius violations, and pinching. It does not simulate a flexible body.
+- `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
 """.strip()
 
 
@@ -243,7 +255,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     mcp = MCPServer(
         "aicad",
         instructions=_INSTRUCTIONS,
-        version="0.5.0",
+        version="0.6.0",
     )
 
     def run(command: str, **arguments):
@@ -592,8 +604,98 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("write_document", name=name, markdown=markdown))
 
     @mcp.tool()
+    def create_assembly(spec: dict[str, Any]) -> dict:
+        """Place parts that are already in the document.
+
+        spec needs name and instances [{name, part, material, payload_kg}].
+        joints are {name, type, parent, child, parent_anchor, child_anchor, axis, value, min, max}.
+        type is fixed, revolute (degrees), prismatic (millimeters), or cylindrical
+        (degrees in value, millimeters in slide). relations are gear {driver, driven, ratio, offset}
+        or linkage {driver, driven, ground_mm, crank_mm, coupler_mm, rocker_mm, branch}.
+        A linkage is a planar four-bar map, not a closed spatial loop.
+        poses, motions, cables, and actuators live on the same spec.
+        """
+        return guard(lambda: run("create_assembly", spec=spec))
+
+    @mcp.tool()
+    def update_assembly(spec: dict[str, Any]) -> dict:
+        """Replace an assembly spec."""
+        return guard(lambda: run("update_assembly", spec=spec))
+
+    @mcp.tool()
+    def get_assembly(name: str) -> dict:
+        """Solve an assembly and return joint values, limits, and instance origins."""
+        return guard(lambda: run("get_assembly", name=name))
+
+    @mcp.tool()
+    def list_assemblies() -> dict:
+        """List assemblies, joint values, poses, and motion names."""
+        return guard(lambda: run("list_assemblies"))
+
+    @mcp.tool()
+    def set_joint(name: str, joint: str, value: float, slide: float | None = None) -> dict:
+        """Set a joint. Revolute values are degrees. Prismatic values are millimeters."""
+        return guard(lambda: run("set_joint", name=name, joint=joint, value=value, slide=slide))
+
+    @mcp.tool()
+    def set_pose(name: str, pose: str) -> dict:
+        """Apply a named pose. A driven joint follows its gear or linkage."""
+        return guard(lambda: run("set_pose", name=name, pose=pose))
+
+    @mcp.tool()
+    def run_motion(name: str, sequence: str | None = None, motion: dict[str, Any] | None = None) -> list[str | Image]:
+        """Sweep a joint or play keyframes. Reports collisions and returns a frame per sample.
+
+        sequence names a motion stored on the assembly. motion is an inline
+        {sweep: {joint, start, end, frames}} or {keyframes, samples, duration_s}.
+        A collision record has the frame, the two instances, and a point.
+        Parent and child of a joint are allowed to touch.
+        """
+        return guard(lambda: _images(run("run_motion", name=name, sequence=sequence, motion=motion)))
+
+    @mcp.tool()
+    def check_cables(name: str, sequence: str | None = None, motion: dict[str, Any] | None = None) -> dict:
+        """Check cables and hoses through the current pose or a motion.
+
+        Each route has waypoints {instance, at, clip}, diameter_mm, min_bend_radius_mm,
+        and stiffness (low, medium, high, or newtons per unit strain). The report
+        has length change, strain, bend-radius violations, and pinches. The route
+        is a polyline. It does not sag.
+        """
+        return guard(lambda: run("check_cables", name=name, sequence=sequence, motion=motion))
+
+    @mcp.tool()
+    def estimate_power(
+        name: str,
+        sequence: str | None = None,
+        motion: dict[str, Any] | None = None,
+        actuators: list[dict[str, Any]] | None = None,
+    ) -> dict:
+        """Estimate joint torque and actuator power from gravity and payloads.
+
+        Quasi-static: no inertia. A hydraulic_cylinder needs bore_mm, rod_mm, and
+        moment_arm_mm on a revolute joint. An electric actuator needs
+        torque_constant_nm_per_a or force_constant_n_per_a, plus voltage.
+        Read assumptions. Pressure is MPa, flow is mm³/s, power is watts.
+        """
+        return guard(
+            lambda: run(
+                "estimate_power",
+                name=name,
+                sequence=sequence,
+                motion=motion,
+                actuators=actuators,
+            )
+        )
+
+    @mcp.tool()
+    def render_assembly(name: str) -> list[str | Image]:
+        """Render the assembly in its current pose."""
+        return guard(lambda: _images(run("render_assembly", name=name)))
+
+    @mcp.tool()
     def get_state() -> dict:
-        """Parts, sketches, the current selection, requirement checks, and the latest panels."""
+        """Parts, assemblies, sketches, the current selection, requirement checks, and the latest panels."""
         return guard(lambda: run("get_state"))
 
     @mcp.resource("aicad://guide", mime_type="text/markdown")

@@ -15,8 +15,11 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from aicad import fea, kernel, library
+from aicad import assembly, fea, kernel, library
 from aicad.errors import DocumentError, GeometryError, PartNotFound
+from aicad.kinematics import normalize as normalize_assembly
+from aicad.kinematics import solve as solve_assembly
+from aicad.power import actuators_for
 from aicad.models import (
     ClearanceReport,
     FeatureReport,
@@ -30,7 +33,7 @@ from aicad.models import (
     Vec3,
     WallReport,
 )
-from aicad.render import render_section, render_sketch, render_views
+from aicad.render import render_motion_frames, render_section, render_sketch, render_views
 from aicad.sketch import Sketch, set_spec_dimension, solve_sketch
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
@@ -87,6 +90,7 @@ class Document:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self._parts: dict[str, _Part] = {}
         self._sketches: dict[str, _Sketch] = {}
+        self._assemblies: dict[str, dict] = {}
         self._lock = threading.RLock()
         self._load()
 
@@ -601,6 +605,198 @@ class Document:
                 f"Sketch {name!r} already exists. Update it, or use set_dimension to change a named dimension."
             )
 
+    def create_assembly(self, spec: dict) -> dict:
+        """Store an assembly of parts that already exist in this document."""
+        with self._lock:
+            name = _assembly_name(spec)
+            if name in self._assemblies:
+                raise GeometryError(
+                    f"Assembly {name!r} already exists. Update it, or choose another name."
+                )
+            return self._commit_assembly(spec)
+
+    def update_assembly(self, spec: dict) -> dict:
+        with self._lock:
+            name = _assembly_name(spec)
+            if name not in self._assemblies:
+                known = ", ".join(self._assemblies) or "(none)"
+                raise GeometryError(f"No assembly named {name!r}. Assemblies: {known}.")
+            return self._commit_assembly(spec)
+
+    def get_assembly(self, name: str) -> dict:
+        with self._lock:
+            spec = self._get_assembly(name)
+            return {"assembly": copy.deepcopy(spec), "solved": solve_assembly(spec)}
+
+    def list_assemblies(self) -> list[dict]:
+        """Names, joint values, poses, and motions. This does not place solids or test collisions."""
+        with self._lock:
+            listed = []
+            for spec in self._assemblies.values():
+                listed.append(
+                    {
+                        "name": spec["name"],
+                        "instances": [
+                            {"name": instance["name"], "part": instance["part"]}
+                            for instance in spec["instances"]
+                        ],
+                        "joints": [
+                            {
+                                "name": joint["name"],
+                                "type": joint["type"],
+                                "parent": joint["parent"],
+                                "child": joint["child"],
+                                "value": joint["value"],
+                                "slide": joint["slide"],
+                                "min": joint.get("min"),
+                                "max": joint.get("max"),
+                            }
+                            for joint in spec["joints"]
+                        ],
+                        "poses": sorted(spec["poses"]),
+                        "motions": sorted(spec["motions"]),
+                        "cables": [cable.get("name", f"cable_{index + 1}") for index, cable in enumerate(spec["cables"])],
+                        "actuators": [
+                            actuator.get("name") or actuator.get("joint") for actuator in spec["actuators"]
+                        ],
+                    }
+                )
+            return listed
+
+    def set_joint(self, name: str, joint: str, value: float, slide: float | None = None) -> dict:
+        with self._lock:
+            spec = copy.deepcopy(self._get_assembly(name))
+            found = next((item for item in spec["joints"] if item["name"] == joint), None)
+            if found is None:
+                known = ", ".join(item["name"] for item in spec["joints"]) or "(none)"
+                raise GeometryError(f"No joint {joint!r} on {name!r}. Joints: {known}.")
+            try:
+                found["value"] = float(value)
+                if slide is not None:
+                    found["slide"] = float(slide)
+            except (TypeError, ValueError) as exc:
+                raise GeometryError("A joint value must be a number.") from exc
+            result = self._commit_assembly(spec)
+            driven = next((row for row in result["solved"]["joints"] if row["name"] == joint), None)
+            if driven and driven["driven"]:
+                result["note"] = (
+                    f"{joint} is driven by a gear or a linkage, so its value follows the driver."
+                )
+            return result
+
+    def set_pose(self, name: str, pose: str) -> dict:
+        with self._lock:
+            spec = copy.deepcopy(self._get_assembly(name))
+            if pose not in spec["poses"]:
+                known = ", ".join(spec["poses"]) or "(none)"
+                raise GeometryError(f"No pose {pose!r} on {name!r}. Poses: {known}.")
+            for joint in spec["joints"]:
+                if joint["name"] in spec["poses"][pose]:
+                    joint["value"] = float(spec["poses"][pose][joint["name"]])
+            result = self._commit_assembly(spec)
+            result["pose"] = pose
+            return result
+
+    def run_motion(
+        self,
+        name: str,
+        sequence: str | None = None,
+        motion: dict | None = None,
+        render: bool = True,
+    ) -> dict:
+        with self._lock:
+            spec = self._get_assembly(name)
+            chosen = assembly.motion_by_name(spec, sequence, motion)
+            if chosen is None:
+                known = ", ".join(spec["motions"]) or "(none)"
+                raise GeometryError(f"Name a motion on {name!r}, or pass one. Motions: {known}.")
+            out = None
+            if render:
+                out = self.workspace / "renders" / "assemblies" / spec["name"]
+            return assembly.run_motion(spec, self._assembly_shapes(spec), chosen, out)
+
+    def check_cables(self, name: str, sequence: str | None = None, motion: dict | None = None) -> dict:
+        with self._lock:
+            spec = self._get_assembly(name)
+            chosen = assembly.motion_by_name(spec, sequence, motion) if (sequence or motion) else None
+            return assembly.check_cables(spec, self._assembly_shapes(spec), chosen)
+
+    def estimate_power(
+        self,
+        name: str,
+        sequence: str | None = None,
+        motion: dict | None = None,
+        actuators: list[dict] | None = None,
+    ) -> dict:
+        with self._lock:
+            spec = self._get_assembly(name)
+            chosen = assembly.motion_by_name(spec, sequence, motion) if (sequence or motion) else None
+            return assembly.estimate_power(spec, self._assembly_shapes(spec), chosen, actuators)
+
+    def render_assembly(self, name: str) -> dict:
+        """One isometric picture of the assembly in its stored pose."""
+        with self._lock:
+            spec = self._get_assembly(name)
+            shapes = self._assembly_shapes(spec)
+            solved, _placed = assembly.posed_shapes(spec, shapes)
+            mesh = assembly._colored_mesh(shapes, solved)  # noqa: SLF001
+            out = self.workspace / "renders" / "assemblies" / spec["name"]
+            pictures = render_motion_frames(
+                [mesh],
+                out,
+                "preview",
+                [spec["name"]],
+            )
+            return {"name": spec["name"], "solved": solved, "pictures": pictures}
+
+    def assembly_mesh(self, name: str) -> dict:
+        with self._lock:
+            spec = self._get_assembly(name)
+            return assembly.preview_mesh(spec, self._assembly_shapes(spec))
+
+    def _commit_assembly(self, spec: dict) -> dict:
+        cleaned = normalize_assembly(spec)
+        self._require_assembly_parts(cleaned)
+        if cleaned["actuators"]:
+            actuators_for(cleaned)
+        solved = solve_assembly(cleaned)
+        by_name = {row["name"]: row for row in solved["joints"]}
+        for joint in cleaned["joints"]:
+            row = by_name[joint["name"]]
+            joint["value"] = row["value"]
+            joint["slide"] = row["slide"]
+        self._assemblies[cleaned["name"]] = cleaned
+        self._save()
+        return {"assembly": copy.deepcopy(cleaned), "solved": solved}
+
+    def _get_assembly(self, name: str) -> dict:
+        _validate_name(name)
+        spec = self._assemblies.get(name)
+        if spec is None:
+            known = ", ".join(self._assemblies) or "(none)"
+            raise GeometryError(f"No assembly named {name!r}. Assemblies: {known}.")
+        return spec
+
+    def _require_assembly_parts(self, spec: dict) -> None:
+        missing = []
+        for instance in spec["instances"]:
+            if instance["part"] not in self._parts and instance["part"] not in missing:
+                missing.append(instance["part"])
+        if missing:
+            known = ", ".join(self._parts) or "(none)"
+            raise GeometryError(
+                f"Assembly {spec['name']!r} needs parts that are not in the document: "
+                f"{', '.join(missing)}. Parts: {known}."
+            )
+
+    def _assembly_shapes(self, spec: dict) -> dict:
+        shapes = {}
+        for instance in spec["instances"]:
+            part_name = instance["part"]
+            if part_name not in shapes:
+                shapes[part_name] = self._get(part_name).base
+        return shapes
+
     def session_payload(self) -> dict:
         """The serializable document. Undo stores this and restores it."""
         with self._lock:
@@ -611,6 +807,7 @@ class Document:
         with self._lock:
             self._parts.clear()
             self._sketches.clear()
+            self._assemblies.clear()
             self._apply_payload(payload)
             self._save()
 
@@ -637,6 +834,7 @@ class Document:
                 }
                 for part in self._parts.values()
             ],
+            "assemblies": [copy.deepcopy(spec) for spec in self._assemblies.values()],
         }
 
     def _save(self) -> None:
@@ -713,6 +911,18 @@ class Document:
                 sketch_name=record.get("sketch") if source == "sketch" else None,
                 sketch_steps=record.get("steps") if source == "sketch" else None,
             )
+        self._assemblies.clear()
+        for record in payload.get("assemblies", []):
+            cleaned = normalize_assembly(record)
+            self._require_assembly_parts(cleaned)
+            self._assemblies[cleaned["name"]] = cleaned
+
+
+def _assembly_name(spec: dict) -> str:
+    if not isinstance(spec, dict) or not isinstance(spec.get("name"), str):
+        raise GeometryError("An assembly spec needs a name.")
+    _validate_name(spec["name"])
+    return spec["name"]
 
 
 def _validate_name(name: str) -> None:

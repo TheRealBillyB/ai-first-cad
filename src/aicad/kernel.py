@@ -35,7 +35,10 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
 from OCP.GeomAbs import GeomAbs_SurfaceType
-from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
+from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+from OCP.TopAbs import TopAbs_IN, TopAbs_ON
+from OCP.TopLoc import TopLoc_Location
+from OCP.gp import gp_Dir, gp_Lin, gp_Pnt, gp_Trsf
 
 from aicad.errors import GeometryError, ScriptError
 from aicad.refs import edge_ref, face_ref
@@ -805,6 +808,43 @@ def place(shape: Shape, position: tuple[float, float, float], rotation_deg: tupl
         return shape
     moved = Pos(px, py, pz) * Rot(rx, ry, rz) * shape.impl
     return Shape(_require_solid(moved), features=shape.feature_report())
+
+
+def transform_shape(shape: Shape, matrix: list[list[float]]) -> Shape:
+    """Place a solid by a 4×4 matrix. The matrix maps the solid's local frame into the world."""
+    if len(matrix) != 4 or any(len(row) != 4 for row in matrix):
+        raise GeometryError("A placement matrix is 4×4.")
+    trsf = gp_Trsf()
+    trsf.SetValues(
+        float(matrix[0][0]),
+        float(matrix[0][1]),
+        float(matrix[0][2]),
+        float(matrix[0][3]),
+        float(matrix[1][0]),
+        float(matrix[1][1]),
+        float(matrix[1][2]),
+        float(matrix[1][3]),
+        float(matrix[2][0]),
+        float(matrix[2][1]),
+        float(matrix[2][2]),
+        float(matrix[2][3]),
+    )
+    from build123d import Location
+
+    moved = shape.impl.moved(Location(TopLoc_Location(trsf)))
+    return Shape(moved, features=shape.feature_report())
+
+
+def distance_to_point(shape: Shape, point: tuple[float, float, float] | list[float]) -> dict:
+    """Gap from a point to the solid's boundary. Distance is 0 when the point is inside."""
+    pnt = gp_Pnt(float(point[0]), float(point[1]), float(point[2]))
+    classifier = BRepClass3d_SolidClassifier(shape.impl.wrapped, pnt, 1e-6)
+    inside = classifier.State() in (TopAbs_IN, TopAbs_ON)
+    vertex = BRepBuilderAPI_MakeVertex(pnt).Vertex()
+    tool = BRepExtrema_DistShapeShape(shape.impl.wrapped, vertex)
+    tool.Perform()
+    gap = 0.0 if inside or not tool.IsDone() else float(tool.Value())
+    return {"distance_mm": round_mm(gap), "inside": inside}
 
 
 def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | None = None) -> Shape:

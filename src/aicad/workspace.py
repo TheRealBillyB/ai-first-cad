@@ -98,10 +98,8 @@ class Workspace:
                 self.geometry_revision += 1
                 self._mesh_cache.clear()
                 self._requirement_cache.clear()
-                self.panels.pop("inspect", None)
-                self.panels.pop("section", None)
-                self.panels.pop("features", None)
-                self.panels.pop("fea", None)
+                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power"):
+                    self.panels.pop(panel, None)
             self.event_id += 1
             event = {
                 "event": self.event_id,
@@ -182,6 +180,7 @@ class Workspace:
                 "can_undo": bool(self._undo),
                 "can_redo": bool(self._redo),
                 "parts": [part.to_dict() for part in self.document.list_parts()],
+                "assemblies": self.document.list_assemblies(),
                 "sketches": sketches,
                 "selection": copy.deepcopy(self.selection),
                 "documents": self._document_names(),
@@ -199,6 +198,15 @@ class Workspace:
                 shape = self.document._get(name).shape  # noqa: SLF001 — the mesh is a view of the live solid
                 cached = kernel.viewport_mesh(shape)
                 cached["part"] = name
+                self._mesh_cache[key] = cached
+            return cached
+
+    def assembly_mesh(self, name: str) -> dict:
+        with self._lock:
+            key = ("assembly", name, self.geometry_revision)
+            cached = self._mesh_cache.get(key)
+            if cached is None:
+                cached = self.document.assembly_mesh(name)
                 self._mesh_cache[key] = cached
             return cached
 
@@ -599,6 +607,86 @@ def _cmd_set_selection(workspace: Workspace, arguments: dict) -> dict:
     return {"selection": workspace.selection}
 
 
+def _cmd_create_assembly(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.create_assembly(arguments["spec"])
+
+
+def _cmd_update_assembly(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.update_assembly(arguments["spec"])
+
+
+def _cmd_get_assembly(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.get_assembly(arguments["name"])
+
+
+def _cmd_list_assemblies(workspace: Workspace, _arguments: dict) -> dict:
+    return {"assemblies": workspace.document.list_assemblies()}
+
+
+def _cmd_set_joint(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.set_joint(
+        arguments["name"],
+        arguments["joint"],
+        arguments["value"],
+        arguments.get("slide"),
+    )
+
+
+def _cmd_set_pose(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.set_pose(arguments["name"], arguments["pose"])
+
+
+def _cmd_run_motion(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.run_motion(
+        arguments["name"],
+        sequence=arguments.get("sequence"),
+        motion=arguments.get("motion"),
+    )
+    report = _with_motion_views(report)
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("motion", report)  # noqa: SLF001
+
+
+def _cmd_check_cables(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.check_cables(
+        arguments["name"],
+        sequence=arguments.get("sequence"),
+        motion=arguments.get("motion"),
+    )
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("cables", report)  # noqa: SLF001
+
+
+def _cmd_estimate_power(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.estimate_power(
+        arguments["name"],
+        sequence=arguments.get("sequence"),
+        motion=arguments.get("motion"),
+        actuators=arguments.get("actuators"),
+    )
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("power", report)  # noqa: SLF001
+
+
+def _cmd_render_assembly(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.render_assembly(arguments["name"])
+    report = _with_motion_views(report)
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("motion", report)  # noqa: SLF001
+
+
+def _with_motion_views(report: dict) -> dict:
+    pictures = report.get("pictures") or {}
+    views = []
+    for frame in pictures.get("frames") or []:
+        views.append({"name": f"frame_{int(frame['index']):02d}", "path": frame["path"]})
+    if pictures.get("strip"):
+        views.append({"name": "strip", "path": pictures["strip"]})
+    copied = dict(report)
+    copied["views"] = views
+    return copied
+
+
 def _cmd_state(workspace: Workspace, _arguments: dict) -> dict:
     return workspace.state()
 
@@ -817,7 +905,86 @@ _add(Command(
     ),
     _cmd_set_selection,
 ))
-_add(Command("get_state", "Parts, sketches, selection, requirement checks, and the latest inspection panels.", _obj({}, []), _cmd_state))
+_ASSEMBLY = _obj({"name": _string("Assembly name.")}, ["name"])
+_MOTION = _obj(
+    {
+        "name": _string("Assembly name."),
+        "sequence": _string("Named motion on the assembly."),
+        "motion": {"type": "object", "description": "Inline sweep or keyframes, used when sequence is omitted."},
+    },
+    ["name"],
+)
+_add(Command(
+    "create_assembly",
+    "Place parts with joints, gear or linkage relations, poses, motions, cables, and actuators.",
+    _obj({"spec": {"type": "object", "description": "Assembly spec: instances, joints, relations, poses, motions, cables, actuators."}}, ["spec"]),
+    _cmd_create_assembly,
+    undo=True,
+))
+_add(Command(
+    "update_assembly",
+    "Replace an assembly spec. Parts it names must already be in the document.",
+    _obj({"spec": {"type": "object"}}, ["spec"]),
+    _cmd_update_assembly,
+    undo=True,
+))
+_add(Command("list_assemblies", "List assemblies with joint values, poses, and motion names. Does not test collisions.", _obj({}, []), _cmd_list_assemblies))
+_add(Command("get_assembly", "Solve an assembly and return joint frames and instance origins.", _ASSEMBLY, _cmd_get_assembly))
+_add(Command(
+    "set_joint",
+    "Set one joint. Revolute values are degrees. Prismatic values are millimeters. A cylindrical joint also takes slide in millimeters.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "joint": _string("Joint name."),
+            "value": _number("Degrees or millimeters, depending on the joint."),
+            "slide": _number("Extra millimeters along a cylindrical joint."),
+        },
+        ["name", "joint", "value"],
+    ),
+    _cmd_set_joint,
+    undo=True,
+))
+_add(Command(
+    "set_pose",
+    "Move the assembly to a named pose. Driven joints follow their gear or linkage.",
+    _obj({"name": _string("Assembly name."), "pose": _string("Pose name.")}, ["name", "pose"]),
+    _cmd_set_pose,
+    undo=True,
+))
+_add(Command(
+    "run_motion",
+    "Sweep a joint or play keyframes. Reports collisions and renders an isometric frame for each sample.",
+    _MOTION,
+    _cmd_run_motion,
+))
+_add(Command(
+    "check_cables",
+    "Measure cable and hose length, strain, bend radius, and pinching through a pose or a motion.",
+    _MOTION,
+    _cmd_check_cables,
+))
+_add(Command(
+    "estimate_power",
+    "Quasi-static joint torque or force, then hydraulic pressure and flow or electric current and battery energy.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "sequence": _string("Named motion. Omit to estimate the stored pose over one second."),
+            "motion": {"type": "object"},
+            "actuators": {"type": "array", "description": "Optional actuator list. The assembly's actuators are used when this is omitted."},
+        },
+        ["name"],
+    ),
+    _cmd_estimate_power,
+))
+_add(Command(
+    "render_assembly",
+    "Render the assembly in its current pose.",
+    _ASSEMBLY,
+    _cmd_render_assembly,
+))
+_add(Command("get_state", "Parts, assemblies, sketches, selection, requirement checks, and the latest panels.", _obj({}, []), _cmd_state))
 
 
 __all__ = ["COMMANDS", "Command", "Workspace"]

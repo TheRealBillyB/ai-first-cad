@@ -23,7 +23,7 @@ from aicad.llm import load_settings, public_settings, run_turn, save_settings
 from aicad.workspace import Workspace
 
 _STATIC = Path(__file__).resolve().parent / "app_static"
-_FILE_SUFFIXES = {".png", ".svg", ".json", ".md", ".txt"}
+_FILE_SUFFIXES = {".png", ".gif", ".svg", ".json", ".md", ".txt"}
 
 
 class HttpCommandClient:
@@ -101,8 +101,13 @@ def _handler(session: Workspace):
                 elif path == "/api/commands":
                     self._json({"ok": True, "result": self.workspace.commands()})
                 elif path == "/api/mesh":
-                    name = parse_qs(parsed.query).get("part", [""])[0]
-                    self._json({"ok": True, "result": self.workspace.mesh(name)})
+                    query = parse_qs(parsed.query)
+                    assembly_name = query.get("assembly", [""])[0]
+                    if assembly_name:
+                        self._json({"ok": True, "result": self.workspace.assembly_mesh(assembly_name)})
+                    else:
+                        name = query.get("part", [""])[0]
+                        self._json({"ok": True, "result": self.workspace.mesh(name)})
                 elif path == "/api/settings":
                     self._json({"ok": True, "result": public_settings()})
                 elif path == "/api/file":
