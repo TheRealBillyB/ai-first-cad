@@ -8,6 +8,10 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A plugin that links aicad is AGPL-3.0-or-later | Combining an add-on with the core keeps the improvements shared. |
+| Plugin permissions are a declaration, not a sandbox | Once allowed, a pack runs in-process; the design-script sandbox is a separate control. |
+| A third-party plugin runs only after an explicit allow | Opening a design must not run an unverified pack, and the warning names the publisher and the permissions it declared. |
+| Plugin API version 1 is entry points plus a static manifest | The host can list a pack and warn before importing it, and a breaking change has to bump the version. |
 | AGPL-3.0-or-later | A service for humanity, so improvements stay shared: no paid license, and contributions use a DCO. |
 
 ## 2026-10-19
