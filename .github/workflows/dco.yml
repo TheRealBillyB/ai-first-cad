@@ -1,0 +1,43 @@
+name: DCO
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: Developer Certificate of Origin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require Signed-off-by on each commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          missing=0
+          while IFS= read -r sha; do
+            [ -z "$sha" ] && continue
+            # A merge commit has more than one parent. GitHub writes those, and
+            # they are not the contributor's sign-off.
+            parents=$(git rev-list --parents -n 1 "$sha")
+            set -- $parents
+            if [ "$#" -gt 2 ]; then
+              echo "skip merge $sha"
+              continue
+            fi
+            author=$(git log -1 --format='%an <%ae>' "$sha")
+            subject=$(git log -1 --format='%s' "$sha")
+            expected="Signed-off-by: $author"
+            if ! git log -1 --format='%B' "$sha" | grep -F -x -q "$expected"; then
+              echo "::error::Commit $sha ($subject) is missing a Developer Certificate of Origin sign-off. Use git commit -s so the trailer is: $expected"
+              missing=1
+            fi
+          done < <(git rev-list "${BASE_SHA}..${HEAD_SHA}")
+          exit "$missing"

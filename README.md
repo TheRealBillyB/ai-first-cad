@@ -1,5 +1,7 @@
 # aicad
 
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
+
 A CAD tool built so an assistant can use it as well as a person can.
 
 Today an assistant writing CAD code (OpenSCAD, CadQuery, build123d) works blind. It emits a script and hopes the solid is the one you described. aicad is the missing perception loop: after each modeling step the assistant can look at the part and check it. The focus is hard-body mechanical parts, the kind you print or bolt onto a robot.
@@ -46,9 +48,9 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The sketch solver is [python-solvespace](https://github.com/KmolYuan/solvespace), a wrapper around the SolveSpace geometric constraint solver. That solver is GPL-3.0-or-later. aicad itself is AGPL-3.0-or-later; installing aicad also installs the GPL solver. If pip has no wheel for your Python, it compiles the solver and needs a C++ compiler plus Python headers (`python3-dev` and `g++` on Debian or Ubuntu).
+The sketch solver is [python-solvespace](https://github.com/KmolYuan/solvespace), a wrapper around the SolveSpace geometric constraint solver. That solver is GPL-3.0-or-later. aicad is AGPL-3.0-or-later, and that GPL solver can be combined with it. If pip has no wheel for your Python, it compiles the solver and needs a C++ compiler plus Python headers (`python3-dev` and `g++` on Debian or Ubuntu).
 
-The mechanics solver is [CalculiX](https://www.calculix.de/) (`ccx`), which is GPL. Meshing uses [Gmsh](https://gmsh.info/), also GPL, through the `gmsh` Python module that pip installs with aicad. Install the CalculiX binary separately:
+The mechanics solver is [CalculiX](https://www.calculix.de/) (`ccx`), which is GPL-2.0-only and runs as a separate program. Meshing uses [Gmsh](https://gmsh.info/), GPL-2.0-or-later, through the `gmsh` Python module that pip installs with aicad. Install the CalculiX binary separately:
 
 ```bash
 sudo apt-get install -y calculix-ccx
@@ -495,7 +497,7 @@ GitHub Actions runs `pytest` on every push and pull request (`.github/workflows/
 - The catalog is screws, nuts, washers, and one family of ball bearings. It is not a McMaster mirror. An arbitrary bought part is a STEP import.
 - Renders are shaded orthographic pictures from a software rasterizer, not a dimensioned drawing. Sections are filled profiles with a scale bar, not a hatched drawing. There is no click-to-measure.
 - Sketches are on the XY plane and extrude along +Z. A revolve uses the X or Y axis of that same plane. The initial `at` guess has to be near a shape that satisfies the constraints, or the solver reports that it did not converge. Circle-to-line tangency is built from a point and a perpendicular radius, because the solver's tangent constraint does not take a full circle.
-- The SolveSpace solver linked through python-solvespace is GPL-3.0-or-later. Gmsh and CalculiX are GPL as well. aicad is AGPL-3.0-or-later. Those solvers travel with the package or, for `ccx`, with the system install.
+- The SolveSpace solver linked through python-solvespace is GPL-3.0-or-later. Gmsh is GPL-2.0-or-later. CalculiX, which aicad runs as a separate program, is GPL-2.0-only. aicad is AGPL-3.0-or-later. Those solvers travel with the package or, for `ccx`, with the system install. The combination is covered in [docs/LICENSE_AUDIT.md](docs/LICENSE_AUDIT.md).
 - The static solve is linear elasticity. Plasticity, contact, and buckling are outside it. A safety factor below 1 means the pictured stress has left the elastic range. A force is shared equally by the nodes on the face. Pressure on a curved face uses that face's normal at its center. A bolt load in that solve is an axial force along the hole.
 - Modal analysis is an undamped eigenvalue solve. The pictures are magnified shapes, not amplitudes. An assembly ties joints with a few equations, and a revolute does not flex, so those frequencies are high relative to a real pin. Harmonic response is one mode with an assumed damping ratio. Random response is Miles' equation on a flat spectrum. Fatigue is a Goodman check of a stress you type in. None of those three re-solves the mesh.
 - The bolt check is closed-form. The nut factor K is not a measured torque-tension test. Member stiffness is a cylinder 1.5 diameters wide. Slip margin is the loosening metric. Locking features are described; they are not modeled as extra clamp.
@@ -528,3 +530,7 @@ GitHub Actions runs `pytest` on every push and pull request (`.github/workflows/
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Decided on 2026-10-21. aicad is meant as a service for humanity, so an improvement from anyone, including a company, stays shared. There is no paid license and no dual license. You keep the copyright in what you write. Contributions use a Developer Certificate of Origin (`git commit -s`), not a contributor license agreement, and no relicensing grant is required. See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
+A dependency-by-dependency check is in [docs/LICENSE_AUDIT.md](docs/LICENSE_AUDIT.md).
