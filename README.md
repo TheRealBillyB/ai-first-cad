@@ -1,3 +1,7 @@
+# ai-first-cad
+
+A cad software designed with ai assistants in mind.
+
 # aicad
 
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
@@ -9,6 +13,8 @@ Today an assistant writing CAD code (OpenSCAD, CadQuery, build123d) works blind.
 This is a small first version. It does not invent a geometry kernel. [build123d](https://github.com/gumyr/build123d) (OpenCascade) sits behind one module, `aicad.kernel`, so it can be swapped later. A person and an assistant share one command layer: the workspace app, the in-app chat, the CLI, the Python API, and the MCP server all call the same operations on the same document.
 
 New to CAD, or new to this repo? Read [START_HERE.md](START_HERE.md). It is a plain-language tour: install on Windows or Mac, open the app, connect an assistant, and walk the examples.
+
+Report a vulnerability in private. The steps are in [SECURITY.md](SECURITY.md).
 
 ![Motor mount bracket from the standard views](examples/renders/motor_mount_contact.png)
 
