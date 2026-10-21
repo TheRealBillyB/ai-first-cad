@@ -1,0 +1,534 @@
+{
+  "units": {
+    "length": "mm",
+    "force": "N",
+    "stress": "MPa"
+  },
+  "load_case": {
+    "material": "pla",
+    "mesh_size_mm": 1.5,
+    "target_safety_factor": 2.0,
+    "fixes": [
+      {
+        "name": "frame_bolts",
+        "select": {
+          "kind": "cylinder",
+          "radius": 1.7,
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "tolerance": 0.05
+        }
+      }
+    ],
+    "loads": [
+      {
+        "name": "shaft_side",
+        "type": "force",
+        "vector": [
+          100,
+          0,
+          0
+        ],
+        "select": {
+          "kind": "cylinder",
+          "radius": 8,
+          "axis": [
+            0,
+            0,
+            1
+          ]
+        }
+      },
+      {
+        "name": "motor_axial",
+        "type": "force",
+        "vector": [
+          0,
+          0,
+          -30
+        ],
+        "select": {
+          "kind": "plane",
+          "normal": [
+            0,
+            0,
+            1
+          ],
+          "at": [
+            0,
+            0,
+            12
+          ]
+        }
+      }
+    ]
+  },
+  "gussets": {
+    "part": "gussets",
+    "status": "solved",
+    "solver": "CalculiX (ccx) + Gmsh",
+    "material": {
+      "id": "pla",
+      "name": "PLA",
+      "youngs_modulus_mpa": 3500.0,
+      "poisson": 0.36,
+      "strength_mpa": 50.0,
+      "strength_kind": "tensile",
+      "printed": true
+    },
+    "mesh": {
+      "size_mm": 1.5,
+      "elements": 34238,
+      "nodes": 58074,
+      "order": 2,
+      "kind": "quadratic tetrahedra"
+    },
+    "fixes": [
+      {
+        "name": "frame_bolts",
+        "type": "fix",
+        "face_count": 4,
+        "face_indices": [
+          10,
+          12,
+          16,
+          18
+        ],
+        "area_mm2": 170.90264,
+        "centers_mm": [
+          [
+            -31.7,
+            -20.0,
+            2.0
+          ],
+          [
+            28.3,
+            -20.0,
+            2.0
+          ],
+          [
+            -31.7,
+            20.0,
+            2.0
+          ],
+          [
+            28.3,
+            20.0,
+            2.0
+          ]
+        ]
+      }
+    ],
+    "loads": [
+      {
+        "name": "shaft_side",
+        "type": "force",
+        "face_count": 1,
+        "face_indices": [
+          14
+        ],
+        "area_mm2": 603.185789,
+        "centers_mm": [
+          [
+            -8.0,
+            0.0,
+            6.0
+          ]
+        ]
+      },
+      {
+        "name": "motor_axial",
+        "type": "force",
+        "face_count": 1,
+        "face_indices": [
+          31
+        ],
+        "area_mm2": 791.006332,
+        "centers_mm": [
+          [
+            -0.0,
+            -0.04931,
+            12.0
+          ]
+        ]
+      }
+    ],
+    "max_von_mises_mpa": 5.4288,
+    "max_von_mises_at_mm": {
+      "x": 28.429405,
+      "y": -19.349438,
+      "z": 0.0
+    },
+    "max_displacement_mm": 0.018555,
+    "max_displacement_vector_mm": {
+      "x": 0.00468,
+      "y": -0.001045,
+      "z": -0.017925
+    },
+    "max_displacement_at_mm": {
+      "x": 9.372956,
+      "y": -15.367098,
+      "z": 12.0
+    },
+    "min_safety_factor": 9.21,
+    "min_safety_factor_at_mm": {
+      "x": 28.429405,
+      "y": -19.349438,
+      "z": 0.0
+    },
+    "warnings": [],
+    "assumptions": [
+      "Linear static analysis with small displacements. The geometry is the unloaded CAD shape.",
+      "Material PLA: Young's modulus 3500 MPa, Poisson's ratio 0.36, tensile strength 50 MPa. Typical in-plane tensile values for PLA. Printed parts vary with temperature, pigment, and print settings.",
+      "Isotropic linear elasticity. No plasticity, contact, buckling, or fatigue. A safety factor below 1 means the linear model has left the elastic range; the pictured stress is not a yielded shape.",
+      "Mesh target size 1.5 mm, 34238 quadratic tetrahedra, 58074 nodes. Solver is CalculiX. The picture colors nodal von Mises stress extrapolated by CalculiX; the reported maximum is the highest nodal value.",
+      "Units are millimeters and newtons, so stress is in megapascals.",
+      "The design review uses a target safety factor of 2 on this load case, not on a factored copy of it.",
+      "A total force or bolt load is shared equally by the nodes on the selected faces. Positive pressure pushes into the face, opposite the outward normal. A bolt load is an axial force along the hole, not a thread or a contact patch.",
+      "This is a 3D-printed material. The strength used here is an in-plane tensile number. A printed part is weaker across layers, often about half, so a load that pulls the layers apart can fail while this safety factor still looks acceptable.",
+      "Fixed faces: frame_bolts. Every node on those faces is held in X, Y, and Z.",
+      "Loads: shaft_side (force), motor_axial (force)."
+    ],
+    "review": {
+      "target_safety_factor": 2.0,
+      "status": "pass",
+      "allowable_mpa": 25.0,
+      "overstressed": [],
+      "understressed": [
+        {
+          "center_mm": [
+            14.020888,
+            6.038041,
+            9.939905
+          ],
+          "mean_von_mises_mpa": 0.1683,
+          "volume_mm3": 69.554675,
+          "note": "Carries almost none of the peak stress. A candidate for removed material."
+        },
+        {
+          "center_mm": [
+            9.994908,
+            -1.914362,
+            6.046321
+          ],
+          "mean_von_mises_mpa": 0.1807,
+          "volume_mm3": 69.267569,
+          "note": "Carries almost none of the peak stress. A candidate for removed material."
+        },
+        {
+          "center_mm": [
+            1.960633,
+            14.069043,
+            2.047671
+          ],
+          "mean_von_mises_mpa": 0.26,
+          "volume_mm3": 68.241576,
+          "note": "Carries almost none of the peak stress. A candidate for removed material."
+        }
+      ],
+      "overstressed_volume_mm3": 0.0,
+      "understressed_volume_mm3": 16199.247022,
+      "part_volume_mm3": 20479.280744,
+      "note": "Most of the volume is far below the peak stress. The part is lightly loaded for this safety factor, so a lot of it is a candidate for removed material, or the load is smaller than the part was sized for."
+    },
+    "views": [
+      {
+        "name": "stress_front",
+        "path": "examples/renders/fea_gussets_stress_front.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "stress_right",
+        "path": "examples/renders/fea_gussets_stress_right.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "stress_top",
+        "path": "examples/renders/fea_gussets_stress_top.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "stress_iso",
+        "path": "examples/renders/fea_gussets_stress_iso.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "stress_contact",
+        "path": "examples/renders/fea_gussets_stress_contact.png",
+        "width": 1200,
+        "height": 1028
+      },
+      {
+        "name": "displacement_front",
+        "path": "examples/renders/fea_gussets_displacement_front.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "displacement_right",
+        "path": "examples/renders/fea_gussets_displacement_right.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "displacement_top",
+        "path": "examples/renders/fea_gussets_displacement_top.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "displacement_iso",
+        "path": "examples/renders/fea_gussets_displacement_iso.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "displacement_contact",
+        "path": "examples/renders/fea_gussets_displacement_contact.png",
+        "width": 1200,
+        "height": 1028
+      }
+    ],
+    "note": "PLA: peak von Mises 5.43 MPa, minimum safety factor 9.21, peak displacement 0.0186 mm. Design review: pass at a target safety factor of 2."
+  },
+  "buried_ribs": {
+    "part": "buried_ribs",
+    "status": "solved",
+    "solver": "CalculiX (ccx) + Gmsh",
+    "material": {
+      "id": "pla",
+      "name": "PLA",
+      "youngs_modulus_mpa": 3500.0,
+      "poisson": 0.36,
+      "strength_mpa": 50.0,
+      "strength_kind": "tensile",
+      "printed": true
+    },
+    "mesh": {
+      "size_mm": 1.5,
+      "elements": 33368,
+      "nodes": 56650,
+      "order": 2,
+      "kind": "quadratic tetrahedra"
+    },
+    "fixes": [
+      {
+        "name": "frame_bolts",
+        "type": "fix",
+        "face_count": 4,
+        "face_indices": [
+          10,
+          22,
+          23,
+          24
+        ],
+        "area_mm2": 170.90264,
+        "centers_mm": [
+          [
+            -31.7,
+            -20.0,
+            2.0
+          ],
+          [
+            28.3,
+            -20.0,
+            2.0
+          ],
+          [
+            -31.7,
+            20.0,
+            2.0
+          ],
+          [
+            28.3,
+            20.0,
+            2.0
+          ]
+        ]
+      }
+    ],
+    "loads": [
+      {
+        "name": "shaft_side",
+        "type": "force",
+        "face_count": 1,
+        "face_indices": [
+          26
+        ],
+        "area_mm2": 603.185789,
+        "centers_mm": [
+          [
+            -8.0,
+            0.0,
+            6.0
+          ]
+        ]
+      },
+      {
+        "name": "motor_axial",
+        "type": "force",
+        "face_count": 1,
+        "face_indices": [
+          34
+        ],
+        "area_mm2": 784.644181,
+        "centers_mm": [
+          [
+            0.0,
+            -0.0,
+            12.0
+          ]
+        ]
+      }
+    ],
+    "max_von_mises_mpa": 5.5675,
+    "max_von_mises_at_mm": {
+      "x": 28.429405,
+      "y": 19.349438,
+      "z": 0.0
+    },
+    "max_displacement_mm": 0.016827,
+    "max_displacement_vector_mm": {
+      "x": 0.004498,
+      "y": 0.000846,
+      "z": -0.016193
+    },
+    "max_displacement_at_mm": {
+      "x": 8.567053,
+      "y": 15.830528,
+      "z": 12.0
+    },
+    "min_safety_factor": 8.981,
+    "min_safety_factor_at_mm": {
+      "x": 28.429405,
+      "y": 19.349438,
+      "z": 0.0
+    },
+    "warnings": [],
+    "assumptions": [
+      "Linear static analysis with small displacements. The geometry is the unloaded CAD shape.",
+      "Material PLA: Young's modulus 3500 MPa, Poisson's ratio 0.36, tensile strength 50 MPa. Typical in-plane tensile values for PLA. Printed parts vary with temperature, pigment, and print settings.",
+      "Isotropic linear elasticity. No plasticity, contact, buckling, or fatigue. A safety factor below 1 means the linear model has left the elastic range; the pictured stress is not a yielded shape.",
+      "Mesh target size 1.5 mm, 33368 quadratic tetrahedra, 56650 nodes. Solver is CalculiX. The picture colors nodal von Mises stress extrapolated by CalculiX; the reported maximum is the highest nodal value.",
+      "Units are millimeters and newtons, so stress is in megapascals.",
+      "The design review uses a target safety factor of 2 on this load case, not on a factored copy of it.",
+      "A total force or bolt load is shared equally by the nodes on the selected faces. Positive pressure pushes into the face, opposite the outward normal. A bolt load is an axial force along the hole, not a thread or a contact patch.",
+      "This is a 3D-printed material. The strength used here is an in-plane tensile number. A printed part is weaker across layers, often about half, so a load that pulls the layers apart can fail while this safety factor still looks acceptable.",
+      "Fixed faces: frame_bolts. Every node on those faces is held in X, Y, and Z.",
+      "Loads: shaft_side (force), motor_axial (force)."
+    ],
+    "review": {
+      "target_safety_factor": 2.0,
+      "status": "pass",
+      "allowable_mpa": 25.0,
+      "overstressed": [],
+      "understressed": [
+        {
+          "center_mm": [
+            9.914334,
+            -1.97715,
+            6.055727
+          ],
+          "mean_von_mises_mpa": 0.1569,
+          "volume_mm3": 71.165133,
+          "note": "Carries almost none of the peak stress. A candidate for removed material."
+        },
+        {
+          "center_mm": [
+            1.999066,
+            9.896276,
+            5.976094
+          ],
+          "mean_von_mises_mpa": 0.2649,
+          "volume_mm3": 69.63396,
+          "note": "Carries almost none of the peak stress. A candidate for removed material."
+        },
+        {
+          "center_mm": [
+            -17.985487,
+            6.026742,
+            2.028737
+          ],
+          "mean_von_mises_mpa": 0.2187,
+          "volume_mm3": 69.118976,
+          "note": "Carries almost none of the peak stress. A candidate for removed material."
+        }
+      ],
+      "overstressed_volume_mm3": 0.0,
+      "understressed_volume_mm3": 17318.709023,
+      "part_volume_mm3": 20672.264282,
+      "note": "Most of the volume is far below the peak stress. The part is lightly loaded for this safety factor, so a lot of it is a candidate for removed material, or the load is smaller than the part was sized for."
+    },
+    "views": [
+      {
+        "name": "stress_front",
+        "path": "examples/renders/fea_ribs_stress_front.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "stress_right",
+        "path": "examples/renders/fea_ribs_stress_right.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "stress_top",
+        "path": "examples/renders/fea_ribs_stress_top.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "stress_iso",
+        "path": "examples/renders/fea_ribs_stress_iso.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "stress_contact",
+        "path": "examples/renders/fea_ribs_stress_contact.png",
+        "width": 1200,
+        "height": 1028
+      },
+      {
+        "name": "displacement_front",
+        "path": "examples/renders/fea_ribs_displacement_front.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "displacement_right",
+        "path": "examples/renders/fea_ribs_displacement_right.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "displacement_top",
+        "path": "examples/renders/fea_ribs_displacement_top.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "displacement_iso",
+        "path": "examples/renders/fea_ribs_displacement_iso.png",
+        "width": 600,
+        "height": 514
+      },
+      {
+        "name": "displacement_contact",
+        "path": "examples/renders/fea_ribs_displacement_contact.png",
+        "width": 1200,
+        "height": 1028
+      }
+    ],
+    "note": "PLA: peak von Mises 5.57 MPa, minimum safety factor 8.98, peak displacement 0.0168 mm. Design review: pass at a target safety factor of 2."
+  },
+  "reading": "Both brackets are PLA under the same design load: the four \u00d83.4 frame holes are fixed, the bore carries 100 N in +X, and the boss top carries 30 N in \u2212Z. The target safety factor is 2. Gusseted bracket: peak von Mises 5.4288 MPa at (28.43, -19.35, 0.00) mm, minimum safety factor 9.21, peak displacement 0.018555 mm, design review pass. Buried-rib bracket: peak von Mises 5.5675 MPa at (28.43, 19.35, 0.00) mm, minimum safety factor 8.981, peak displacement 0.016827 mm, design review pass. The gusseted bracket has the lower peak stress. The buried-rib bracket's peak is 1.03 times that value. On this load the hot spot is a frame-hole edge on both parts, so the ribs and the gussets are not what sets the safety factor. Gusseted: no region is over the allowable stress at this load and target. Gusseted: a quiet region around (14.02, 6.04, 9.94) mm carries almost none of the peak and is a candidate for removed material. Most of the volume is far below the peak stress. The part is lightly loaded for this safety factor, so a lot of it is a candidate for removed material, or the load is smaller than the part was sized for. Buried-rib: no region is over the allowable stress at this load and target. Buried-rib: a quiet region around (9.91, -1.98, 6.06) mm carries almost none of the peak and is a candidate for removed material. Most of the volume is far below the peak stress. The part is lightly loaded for this safety factor, so a lot of it is a candidate for removed material, or the load is smaller than the part was sized for. Each stress picture and each displacement picture is scaled to its own maximum. Compare the titles, not the colors. The mesh, the material, the supports, and the linear-isotropic caveats are in each report's assumptions. PLA is a printed material here, so the strength is an in-plane tensile number and the part is weaker across layers."
+}

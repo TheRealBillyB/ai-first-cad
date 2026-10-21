@@ -1,0 +1,121 @@
+{
+  "plane": "xy",
+  "entities": [
+    {
+      "id": "origin",
+      "type": "point",
+      "at": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "id": "sw",
+      "type": "point",
+      "at": [
+        -36.0,
+        -26.0
+      ]
+    },
+    {
+      "id": "se",
+      "type": "point",
+      "at": [
+        36.0,
+        -26.0
+      ]
+    },
+    {
+      "id": "ne",
+      "type": "point",
+      "at": [
+        36.0,
+        26.0
+      ]
+    },
+    {
+      "id": "nw",
+      "type": "point",
+      "at": [
+        -36.0,
+        26.0
+      ]
+    },
+    {
+      "id": "bottom",
+      "type": "line",
+      "start": "sw",
+      "end": "se",
+      "construction": false
+    },
+    {
+      "id": "right",
+      "type": "line",
+      "start": "se",
+      "end": "ne",
+      "construction": false
+    },
+    {
+      "id": "top",
+      "type": "line",
+      "start": "ne",
+      "end": "nw",
+      "construction": false
+    },
+    {
+      "id": "left",
+      "type": "line",
+      "start": "nw",
+      "end": "sw",
+      "construction": false
+    },
+    {
+      "id": "diag",
+      "type": "line",
+      "start": "sw",
+      "end": "ne",
+      "construction": true
+    }
+  ],
+  "constraints": [
+    {
+      "type": "fix",
+      "entity": "origin"
+    },
+    {
+      "type": "horizontal",
+      "entity": "bottom"
+    },
+    {
+      "type": "horizontal",
+      "entity": "top"
+    },
+    {
+      "type": "vertical",
+      "entity": "left"
+    },
+    {
+      "type": "vertical",
+      "entity": "right"
+    },
+    {
+      "type": "distance",
+      "a": "sw",
+      "b": "se",
+      "value": 72.0,
+      "name": "base_length"
+    },
+    {
+      "type": "distance",
+      "a": "sw",
+      "b": "nw",
+      "value": 52.0,
+      "name": "base_width"
+    },
+    {
+      "type": "midpoint",
+      "point": "origin",
+      "line": "diag"
+    }
+  ]
+}
