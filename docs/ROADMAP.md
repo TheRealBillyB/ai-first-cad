@@ -1,0 +1,107 @@
+# Roadmap
+
+Where the software work stands. Statuses describe this repository. They are not a release checklist.
+
+| Marker | Meaning |
+| --- | --- |
+| **Done** | Present in this repository |
+| **In progress** | Started, and not finished |
+| **Queued** | Agreed, and not in the tree yet |
+| **Next** | The tracks that follow what is already in the tree |
+| **Planned** | The direction after those tracks |
+| **Later** | Far enough out that the shape can still change |
+
+The order below is a part you can trust, then a place where a person can design, then machines that move, with hoses, cables, and a power estimate. The rules for that order are in [Principles](PRINCIPLES.md).
+
+## Done
+
+### A shared way to build a part and check it
+
+A Python library, a command-line tool (`aicad`), and an MCP server (`aicad serve`). The same operations are available on all three.
+
+- **Views.** Front, back, left, right, top, bottom, and isometric, plus one contact sheet. A headless rasterizer draws them with no screen and no graphics card.
+- **Measurements.** Bounding box, volume, surface area, center of mass, and whether the solid is valid and watertight (a closed surface, one real inside and outside).
+- **Thinnest wall.** A sampled estimate. The report names the method that produced the number. A passing check is evidence to read alongside the picture.
+- **Clearance.** Overlap between two parts, or the gap when they do not touch.
+- **Files.** Export STEP (the format other CAD tools and machine shops expect) and STL (the triangle file a 3D printer slices).
+- **An example.** A motor-mount bracket, and a shaft meant to pass through its bore. Units are millimeters.
+
+### Seeing inside the part, and a small catalog of real parts
+
+- **Section views.** Cut the part on a plane and get a picture of the profile, the cut area, and the thinnest width in that plane.
+- **Feature contribution.** Each added or subtracted shape reports how much material was new, already buried, or actually removed. An added shape is flagged when at least half of its volume was already inside the part. A cut is flagged when it removes nothing. This came from the example bracket: the first ribs spanned a band that sat almost entirely inside the boss, so only the tips stuck out. The old ribs are kept as an example that should fail.
+- **A parts library.** Socket-head screws, hex nuts, plain washers, and deep-groove ball bearings, built from published sizes by [bd_warehouse](https://github.com/gumyr/bd_warehouse). A STEP file from somewhere else (a McMaster-Carr download, a motor, a plate) can be imported and placed. Clearance works against any of these. Bought parts outside that set come in as STEP files.
+- **The bracket, redrawn.** The current example uses three gussets with a blunt toe. The feature report does not flag them. The buried-rib version remains so the check still has a failure to show.
+
+## Queued
+
+### Sketches driven by constraints
+
+Two-dimensional sketches whose lines and arcs are held by constraints (a length, a right angle, two lines that must stay parallel), solved by a real constraint solver. SolveSpace is the likely engine.
+
+The sketch says when it is under-constrained (it can still wiggle; a dimension is missing) and when it is over-constrained (the dimensions disagree). Changing a dimension rebuilds the solid. This is also the groundwork for tolerances: how far a size is allowed to drift and still count as correct.
+
+### A first strength check
+
+Linear static FEA: a numerical estimate of stress under a steady load. Gmsh is the likely mesher (it splits the solid into small elements) and CalculiX, or something in that family, is the likely solver.
+
+A run has a material, loads, and a safety factor (how much stronger the part needs to be than the load). The result includes a stress map and the assumptions, written out: what was held still, what was pushed, and what this kind of analysis leaves out. A design-review helper reads that result and says what passed, what failed, and why, so the next edit is aimed at the failure.
+
+## Next
+
+These tracks follow what is already in the tree. They are separate enough to be built in parallel once the command layer they share is settled.
+
+### The Workspace app
+
+A real editing application. A browser interface talks to a local Python backend. Wrapping that as a desktop app can come after the interface is solid.
+
+A person designs the part here: sketch, extrude, select a face, edit a dimension. Those are the same commands the assistant uses. The screen has:
+
+- a live 3D view
+- a chat panel where the user connects their own AI
+- a Documents page where requirements and design decisions are written and kept
+
+Requirements are checked against every design. The first kinds of goal: it holds this load, it fits the printer bed, it stays under this mass.
+
+### Assemblies and motion
+
+Parts joined by real joints. A revolute joint is a hinge. A prismatic joint is a slider. Gears, and other joint types, belong here too.
+
+The motion can be swept through its range while the program looks for collisions. Scripted tests cover what a machine actually does: walking, lifting, standing.
+
+### Cabling and hoses
+
+Route electrical cables, hydraulic lines, and the brackets and clips that hold them. Checks cover bend radius (the tightest curve the line can take), how the length changes through the motion, the strain that causes, pinching, and collisions with the mechanism.
+
+This is the start of flexible-body behavior. The lines have to bend, change length, and move the way hoses and cables do.
+
+### Power and fluid estimates
+
+Start from the loads and the motions, and estimate what it takes to drive them:
+
+- force and torque at each actuator
+- hydraulic pressure, flow, fluid volume, and pump power
+- motor current, electrical power, and battery size
+
+The numbers are estimates with their assumptions attached, in the same spirit as the strength check.
+
+## Planned
+
+### Print and manufacturing prep
+
+For printing: overhangs, supports, and a slicer, so print time and filament cost are numbers. For other processes: checks aimed at CNC machining and sheet metal.
+
+### Robot export
+
+Write the files a physics simulator already understands, such as URDF and MJCF, so a robot design can be dropped in and tried at walking, lifting, and drilling.
+
+## Later
+
+- **Drawings.** Technical drawings with tolerances, GD&T (the standard language for how far a size and a form may vary), and a bill of materials.
+- **History you can see.** Visual version history, and diffs an assistant can compare, so "what changed, and did it get better?" has a picture as well as a sentence.
+- **Electronics.** Board layout through an existing tool, with KiCad the likely one, under the same "reuse the engine" rule.
+
+## Related
+
+- [Principles](PRINCIPLES.md)
+- [Decisions](DECISIONS.md)
