@@ -190,6 +190,45 @@ def main(argv: list[str] | None = None) -> int:
     mechanics.add_argument("name")
     mechanics.add_argument("--file", type=Path, required=True, help="JSON with material, fixes, and loads.")
 
+    modal = commands.add_parser(
+        "modal", parents=[common], help="Natural frequencies of one part from a JSON setup."
+    )
+    modal.add_argument("name")
+    modal.add_argument("--file", type=Path, required=True, help="JSON with material, fixes, and excitations.")
+
+    modal_assembly = commands.add_parser(
+        "modal-assembly", parents=[common], help="Natural frequencies of a posed assembly."
+    )
+    modal_assembly.add_argument("name")
+    modal_assembly.add_argument("--file", type=Path, default=None, help="Optional JSON setup.")
+
+    bolts = commands.add_parser(
+        "bolts", parents=[common], help="Preload, slip, and vibration-loosening check."
+    )
+    bolts.add_argument("name", nargs="?", default=None, help="Library part whose size to use.")
+    bolts.add_argument("--file", type=Path, required=True, help="JSON with grade, loads, and optional size.")
+
+    fatigue = commands.add_parser(
+        "fatigue", parents=[common], help="Goodman check of a stated stress amplitude."
+    )
+    fatigue.add_argument("--file", type=Path, required=True, help="JSON with material and stress_amplitude_mpa.")
+
+    printed = commands.add_parser(
+        "print", parents=[common], help="Overhang map, orientation, and printer fit."
+    )
+    printed.add_argument("name")
+    printed.add_argument("--orientation", default="best", help="best, z_up, z_down, x_up, x_down, y_up, or y_down.")
+    printed.add_argument("--printer", default=None, help="bambu_a1, prusa_mk4, ender_3, and the other known beds.")
+    printed.add_argument("--threshold", type=float, default=45.0, help="Degrees from vertical before a face needs support.")
+    printed.add_argument("--slice", action="store_true", help="Ask OrcaSlicer or PrusaSlicer for time and grams.")
+    printed.add_argument("--price-per-kg", type=float, default=None, help="Used when the gcode has no filament cost.")
+
+    robot = commands.add_parser(
+        "robot", parents=[common], help="Export an assembly as URDF and MJCF."
+    )
+    robot.add_argument("name")
+    robot.add_argument("--out", type=Path, default=None, help="Directory for the robot files.")
+
     args = parser.parse_args(argv)
     try:
         return _dispatch(args)
@@ -314,6 +353,32 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "fea":
         setup = json.loads(args.file.read_text(encoding="utf-8"))
         return _emit(document.solve_mechanics(args.name, setup).to_dict())
+    if args.command == "modal":
+        setup = json.loads(args.file.read_text(encoding="utf-8"))
+        return _emit(document.solve_modal(args.name, setup))
+    if args.command == "modal-assembly":
+        setup = json.loads(args.file.read_text(encoding="utf-8")) if args.file else {}
+        return _emit(document.solve_assembly_modal(args.name, setup))
+    if args.command == "bolts":
+        spec = json.loads(args.file.read_text(encoding="utf-8"))
+        if args.name:
+            spec["part"] = args.name
+        return _emit(document.check_bolts(spec))
+    if args.command == "fatigue":
+        return _emit(document.check_fatigue(json.loads(args.file.read_text(encoding="utf-8"))))
+    if args.command == "print":
+        setup = {
+            "orientation": args.orientation,
+            "threshold_deg": args.threshold,
+            "slice": bool(args.slice),
+        }
+        if args.printer:
+            setup["printer"] = args.printer
+        if args.price_per_kg is not None:
+            setup["price_per_kg"] = args.price_per_kg
+        return _emit(document.check_print(args.name, setup))
+    if args.command == "robot":
+        return _emit(document.export_robot(args.name, args.out))
     raise AICADError(f"Unknown command {args.command!r}.")
 
 

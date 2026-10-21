@@ -62,6 +62,21 @@ frame. `check_cables` measures length, strain, bend radius, and pinching.
 `estimate_power` turns gravity and payloads into joint torque and then into
 hydraulic pressure and flow, or motor current and a rough battery figure.
 Read the assumptions on those reports. Cables are kinematic polylines.
+
+`check_print` turns a part, colors the faces that need support, and checks the
+oriented size against a Bambu, Prusa, or Ender bed. `fits_printer` is the
+requirement that says whether that orientation fits. A slicer estimate appears
+only when OrcaSlicer or PrusaSlicer is installed.
+
+`export_robot` writes URDF and MJCF for an assembly: meshes, joint limits,
+masses, and inertias. Gear and linkage relations are comments. When MuJoCo or
+PyBullet is installed, the export is loaded and stepped.
+
+`solve_modal` is a CalculiX frequency solve. Declare the excitation (motor,
+drill, pump, or engine rpm or Hz). A natural frequency within 10% of that
+line or its harmonics is a resonance risk. `solve_assembly_modal` ties the
+joints, so a revolute does not flex. `check_bolts` is the loosening check:
+slip margin first, then yield and thread stripping. Read the assumptions.
 """.strip()
 
 _GUIDE = """
@@ -235,6 +250,12 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
 - `check_cables` routes polylines through waypoints fixed on parts. It reports length change, strain, bend-radius violations, and pinching. It does not simulate a flexible body.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
+- `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
+- `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
+- `check_bolts` takes size, grade, axial_n, shear_n, and vibration (`mild`, `moderate`, `intense`). Slip under transverse load is the loosening mechanism. The countermeasures explain what a nyloc nut, a wedge washer, threadlocker, and safety wire do and do not do.
+- `check_fatigue` is a Goodman check of a stress you supply. It is not a cycle-by-cycle solve.
+- `check_print` reports overhang area, a best orientation among the six axis poses, and printer fit. `list_printers` names the beds. A requirement of kind `fits_printer` uses `printer` and optional `orientation`.
+- `export_robot` writes URDF and MJCF next to STL meshes. Joint origins are the zero pose. A cylindrical joint becomes a revolute plus a prismatic.
 """.strip()
 
 
@@ -255,7 +276,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     mcp = MCPServer(
         "aicad",
         instructions=_INSTRUCTIONS,
-        version="0.6.0",
+        version="0.8.0",
     )
 
     def run(command: str, **arguments):
@@ -580,7 +601,12 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def set_requirements(requirements: list[dict[str, Any]]) -> dict:
-        """Replace structured requirements. Kinds: max_mass, fits_build_volume, min_wall, min_safety_factor."""
+        """Replace structured requirements.
+
+        Kinds: max_mass, fits_build_volume, fits_printer, min_wall, min_safety_factor.
+        fits_printer needs printer (bambu_a1, prusa_mk4, ender_3, ...) and optional
+        orientation (best or z_up). Height is the oriented Z. The footprint may swap X and Y.
+        """
         return guard(lambda: run("set_requirements", requirements=requirements))
 
     @mcp.tool()
@@ -694,6 +720,79 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: _images(run("render_assembly", name=name)))
 
     @mcp.tool()
+    def solve_modal(name: str, setup: dict[str, Any]) -> list[str | Image]:
+        """Natural frequencies and magnified mode shapes of one part.
+
+        setup needs material and fixes (the same face selectors as solve_mechanics).
+        Optional mesh_size_mm, modes, and excitations: {name, kind, rpm} or {hz}.
+        kind is motor, spindle, drill, engine, or pump. A match within the margin
+        (default 0.10) is a resonance. Optional harmonic {frequency_hz, force_n, zeta},
+        random {psd_g2_per_hz, zeta, stress_per_g}, and fatigue
+        {stress_amplitude_mpa, mean_stress_mpa, surface, section_mm}.
+        Read assumptions. The picture is a shape, not an operating amplitude.
+        """
+        return guard(lambda: _images(run("solve_modal", name=name, setup=setup)))
+
+    @mcp.tool()
+    def solve_assembly_modal(name: str, setup: dict[str, Any] | None = None) -> list[str | Image]:
+        """Natural frequencies of a posed assembly.
+
+        Joints are tied with translation equations and do not flex, so a revolute
+        is stiffer here than a real pin. Omit fixes to hold the grounded instance
+        on its lowest downward face. Small parts such as washers are skipped.
+        Excitations are the same objects solve_modal uses.
+        """
+        return guard(lambda: _images(run("solve_assembly_modal", name=name, setup=setup)))
+
+    @mcp.tool()
+    def check_bolts(spec: dict[str, Any]) -> dict:
+        """Preload, torque, clamp, slip, stripping, yield, and a loosening rating.
+
+        spec needs size (M8 or M8-1.25) and the loads axial_n and shear_n.
+        grade defaults to 8.8. condition is dry, zinc, lubricated, or threadlocker.
+        vibration is mild, moderate, or intense. part names a library screw whose
+        size and length fill in what you omit. Slip of the plates is what lets a
+        nut walk under vibration. Read assumptions and the countermeasures.
+        """
+        return guard(lambda: run("check_bolts", spec=spec))
+
+    @mcp.tool()
+    def check_print(name: str, setup: dict[str, Any] | None = None) -> list[str | Image]:
+        """Overhang map, suggested orientation, and printer fit.
+
+        setup.orientation is best or one of z_up, z_down, x_up, x_down, y_up, y_down.
+        threshold_deg defaults to 45 (degrees from vertical). printer names a bed
+        from list_printers. slice true asks OrcaSlicer or PrusaSlicer for time and
+        grams, and skips that part when neither is installed.
+        """
+        return guard(lambda: _images(run("check_print", name=name, setup=setup)))
+
+    @mcp.tool()
+    def list_printers() -> dict:
+        """Build volumes for Bambu A1, A1 mini, P1, X1, Prusa MK4, and Ender 3."""
+        return guard(lambda: run("list_printers"))
+
+    @mcp.tool()
+    def export_robot(name: str, path: str | None = None) -> dict:
+        """Export an assembly to URDF and MJCF with meshes, limits, masses, and inertias.
+
+        Joint origins are the pose at value 0. A cylindrical joint is a revolute
+        plus a prismatic. Gear and linkage relations are comments. The report says
+        whether MuJoCo or PyBullet loaded the file and stepped it.
+        """
+        return guard(lambda: run("export_robot", name=name, path=path))
+
+    @mcp.tool()
+    def check_fatigue(spec: dict[str, Any]) -> dict:
+        """Goodman check of a stated alternating stress against an estimated endurance limit.
+
+        spec needs stress_amplitude_mpa. material defaults to steel. surface is
+        polished, machined, as_rolled, or printed. Pass amplification when a
+        resonance multiplies a quasi-static stress. The report lists every assumption.
+        """
+        return guard(lambda: run("check_fatigue", spec=spec))
+
+    @mcp.tool()
     def get_state() -> dict:
         """Parts, assemblies, sketches, the current selection, requirement checks, and the latest panels."""
         return guard(lambda: run("get_state"))
@@ -736,6 +835,9 @@ def _with_images(payload: dict, views) -> list[str | Image]:
 _VIEW_RANK = {
     "contact": 0,
     "stress_contact": 0,
+    "mode1_contact": 0,
+    "overhang_contact": 0,
+    "mode2_contact": 1,
     "displacement_contact": 1,
     "stress_iso": 2,
     "displacement_iso": 3,

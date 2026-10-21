@@ -98,7 +98,7 @@ class Workspace:
                 self.geometry_revision += 1
                 self._mesh_cache.clear()
                 self._requirement_cache.clear()
-                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power"):
+                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power", "vibration", "bolts", "fatigue", "print", "robot"):
                     self.panels.pop(panel, None)
             self.event_id += 1
             event = {
@@ -536,6 +536,47 @@ def _cmd_fea(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("fea", report.to_dict())
 
 
+def _cmd_modal(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.solve_modal(arguments["name"], arguments["setup"])
+    return workspace._remember_panel("vibration", report)
+
+
+def _cmd_modal_assembly(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.solve_assembly_modal(arguments["name"], arguments.get("setup") or {})
+    return workspace._remember_panel("vibration", report)
+
+
+def _cmd_bolts(workspace: Workspace, arguments: dict) -> dict:
+    spec = arguments.get("spec")
+    if not isinstance(spec, dict):
+        raise GeometryError("check_bolts needs spec: size, grade, and the loads.")
+    return workspace._remember_panel("bolts", workspace.document.check_bolts(spec))
+
+
+def _cmd_print(workspace: Workspace, arguments: dict) -> dict:
+    setup = arguments.get("setup") or {}
+    if not isinstance(setup, dict):
+        raise GeometryError("check_print setup is an object with orientation, printer, and threshold_deg.")
+    report = workspace.document.check_print(arguments["name"], setup)
+    return workspace._remember_panel("print", report)
+
+
+def _cmd_printers(workspace: Workspace, _arguments: dict) -> dict:
+    return workspace.document.list_printers()
+
+
+def _cmd_robot(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.export_robot(arguments["name"], arguments.get("path"))
+    return workspace._remember_panel("robot", report)
+
+
+def _cmd_fatigue(workspace: Workspace, arguments: dict) -> dict:
+    spec = arguments.get("spec")
+    if not isinstance(spec, dict):
+        raise GeometryError("check_fatigue needs spec: stress_amplitude_mpa and a material.")
+    return workspace._remember_panel("fatigue", workspace.document.check_fatigue(spec))
+
+
 def _cmd_list_docs(workspace: Workspace, _arguments: dict) -> dict:
     return {"documents": workspace._document_names()}
 
@@ -868,6 +909,80 @@ _add(Command(
     _obj({"name": _string("Part name."), "setup": {"type": "object"}}, ["name", "setup"]),
     _cmd_fea,
 ))
+_add(Command(
+    "solve_modal",
+    "Natural frequencies and mode shapes. setup has material, fixes, modes, and excitations (rpm or hz). Optional harmonic, random, and fatigue blocks.",
+    _obj({"name": _string("Part name."), "setup": {"type": "object"}}, ["name", "setup"]),
+    _cmd_modal,
+))
+_add(Command(
+    "solve_assembly_modal",
+    "Natural frequencies of a posed assembly. Joints are tied, so a revolute does not flex. Fixes may be omitted; the grounded bottom face is held.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "setup": {"type": "object", "description": "mesh_size_mm, modes, excitations, and optional fixes {instance, select}."},
+        },
+        ["name"],
+    ),
+    _cmd_modal_assembly,
+))
+_add(Command(
+    "check_bolts",
+    "Preload, tightening torque, slip margin, thread stripping, yield, and a vibration-loosening rating for a library fastener size.",
+    _obj(
+        {
+            "spec": {
+                "type": "object",
+                "description": "size, grade, condition, axial_n, shear_n, grip_mm, friction, vibration, and optional part name.",
+            }
+        },
+        ["spec"],
+    ),
+    _cmd_bolts,
+))
+_add(Command(
+    "check_print",
+    "Overhang map for one orientation, a suggested orientation, and whether the part fits a named printer. A slicer estimate is included when slice is true and OrcaSlicer or PrusaSlicer is installed.",
+    _obj(
+        {
+            "name": _string("Part name."),
+            "setup": {
+                "type": "object",
+                "description": "orientation (best or z_up), threshold_deg, printer, slice, price_per_kg.",
+            },
+        },
+        ["name"],
+    ),
+    _cmd_print,
+))
+_add(Command("list_printers", "Published build volumes for the printers a print check knows.", _obj({}, []), _cmd_printers))
+_add(Command(
+    "export_robot",
+    "Write URDF and MJCF for an assembly, with meshes, joint limits, masses, and inertias. Loads and steps the file when MuJoCo or PyBullet is installed.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "path": _string("Optional output directory."),
+        },
+        ["name"],
+    ),
+    _cmd_robot,
+))
+_add(Command(
+    "check_fatigue",
+    "Goodman check of a stated stress amplitude against an estimated endurance limit. The report lists the assumptions.",
+    _obj(
+        {
+            "spec": {
+                "type": "object",
+                "description": "material, stress_amplitude_mpa, mean_stress_mpa, surface, section_mm, target_safety_factor.",
+            }
+        },
+        ["spec"],
+    ),
+    _cmd_fatigue,
+))
 _add(Command("list_documents", "Markdown notes in this project.", _obj({}, []), _cmd_list_docs))
 _add(Command("read_document", "Read one markdown note.", _obj({"name": _string("File name, such as decisions.md.")}, ["name"]), _cmd_read_doc))
 _add(Command(
@@ -881,7 +996,7 @@ _add(Command("delete_document", "Delete a markdown note.", _obj({"name": _string
 _add(Command("get_requirements", "Structured requirements and their current pass, fail, or unchecked state.", _obj({}, []), _cmd_get_requirements))
 _add(Command(
     "set_requirements",
-    "Replace the structured requirements. Kinds: max_mass, fits_build_volume, min_wall, min_safety_factor.",
+    "Replace the structured requirements. Kinds: max_mass, fits_build_volume, fits_printer, min_wall, min_safety_factor.",
     _obj({"requirements": {"type": "array"}}, ["requirements"]),
     _cmd_set_requirements,
     undo=True,

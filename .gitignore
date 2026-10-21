@@ -215,6 +215,8 @@ tempCodeRunnerFile.py
 aicad_workspace/
 examples/workspace/
 examples/rod_arm_workspace/
+examples/vibration_workspace/
+examples/print_workspace/
 
 # Marimo
 marimo/_static/

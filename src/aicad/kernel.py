@@ -31,6 +31,8 @@ from build123d import (
     revolve,
 )
 from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRepGProp import BRepGProp
+from OCP.GProp import GProp_GProps
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
@@ -300,6 +302,27 @@ def clearance_between(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Ve
     if overlap > _INTERFERENCE_VOLUME:
         distance = 0.0
     return round_mm(overlap), round_mm(distance), _vec(first), _vec(second)
+
+
+def solid_inertia(shape: Shape) -> dict:
+    """Volume, center of mass, and the inertia tensor about that center.
+
+    The tensor is in millimeters to the fifth: multiply by density in kg/mm³
+    for kg·mm². OpenCascade returns the physical tensor, products included.
+    """
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape.impl.wrapped, props)
+    center = props.CentreOfMass()
+    matrix = props.MatrixOfInertia()
+    tensor = [
+        [float(matrix.Value(row, col)) for col in (1, 2, 3)]
+        for row in (1, 2, 3)
+    ]
+    return {
+        "volume_mm3": float(props.Mass()),
+        "center_mm": [float(center.X()), float(center.Y()), float(center.Z())],
+        "inertia_mm5": tensor,
+    }
 
 
 def export_step_file(shape: Shape, path: Path) -> None:

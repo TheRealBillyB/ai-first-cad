@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -456,9 +457,30 @@ def _bind_load(item: dict, catalog: list[dict], index: int) -> dict:
     return {"kind": kind, "name": name, "faces": faces, "zero": zero, "spec": item}
 
 
+def _allow_gmsh_from_worker() -> None:
+    """Gmsh installs a signal handler, which Python allows only on the main thread.
+
+    The workspace server runs each command on a worker thread. Swallow that one
+    restriction so a modal or static solve from the browser can still mesh.
+    """
+    if threading.current_thread() is threading.main_thread() or getattr(signal, "_aicad_worker", False):
+        return
+    original = signal.signal
+
+    def _install(number, handler):
+        try:
+            return original(number, handler)
+        except ValueError:
+            return None
+
+    signal.signal = _install  # type: ignore[method-assign]
+    signal._aicad_worker = True  # type: ignore[attr-defined]
+
+
 def _mesh_solid(shape: kernel.Shape, mesh_size: float, order: int) -> dict:
     import gmsh
 
+    _allow_gmsh_from_worker()
     with _LOCK:
         with tempfile.TemporaryDirectory() as directory:
             step_path = Path(directory) / "part.step"

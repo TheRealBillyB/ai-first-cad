@@ -16,6 +16,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from aicad import assembly, fea, kernel, library
+from aicad.bolts import check_joint
+from aicad.modal import fatigue_check, solve_modal, solve_modal_assembly
+from aicad.printprep import analyze_print
+from aicad.printprep import list_printers as printer_catalog
+from aicad.robot import export_robot
 from aicad.errors import DocumentError, GeometryError, PartNotFound
 from aicad.kinematics import normalize as normalize_assembly
 from aicad.kinematics import solve as solve_assembly
@@ -732,6 +737,63 @@ class Document:
             spec = self._get_assembly(name)
             chosen = assembly.motion_by_name(spec, sequence, motion) if (sequence or motion) else None
             return assembly.estimate_power(spec, self._assembly_shapes(spec), chosen, actuators)
+
+    def solve_modal(self, name: str, setup: dict) -> dict:
+        """Natural frequencies of one part. Pictures land next to the other renders."""
+        with self._lock:
+            part = self._get(name)
+            out_dir = self.workspace / "renders" / name
+            return solve_modal(part.shape, setup, out_dir=out_dir, stem="modal", part_name=name)
+
+    def solve_assembly_modal(self, name: str, setup: dict | None = None) -> dict:
+        """Natural frequencies of a posed assembly. Joints are tied and do not flex."""
+        with self._lock:
+            spec = self._get_assembly(name)
+            out_dir = self.workspace / "renders" / "assemblies" / spec["name"]
+            return solve_modal_assembly(spec, self._assembly_shapes(spec), setup or {}, out_dir)
+
+    def check_bolts(self, spec: dict) -> dict:
+        """Preload, torque, slip, and loosening for a fastener. A library part can supply the size."""
+        if not isinstance(spec, dict):
+            raise GeometryError("A bolt check is an object with size, grade, and loads.")
+        with self._lock:
+            merged = dict(spec)
+            part_name = merged.get("part")
+            if part_name:
+                part = self._get(str(part_name))
+                library_spec = part.library_spec or {}
+                if not merged.get("size") and library_spec.get("size"):
+                    merged["size"] = library_spec["size"]
+                if merged.get("grip_mm") is None and merged.get("length") is None and library_spec.get("length"):
+                    merged["grip_mm"] = library_spec["length"]
+                merged["library_kind"] = library_spec.get("kind")
+            report = check_joint(merged)
+            if part_name:
+                report["part"] = part_name
+            if merged.get("assembly"):
+                report["assembly"] = merged["assembly"]
+            return report
+
+    def check_fatigue(self, spec: dict) -> dict:
+        """Goodman check of a stated stress amplitude. It does not mesh the part."""
+        return fatigue_check(spec)
+
+    def check_print(self, name: str, setup: dict | None = None) -> dict:
+        """Overhang map, a suggested orientation, printer fit, and an optional slicer estimate."""
+        with self._lock:
+            part = self._get(name)
+            out_dir = self.workspace / "renders" / name
+            return analyze_print(part.shape, setup or {}, out_dir, name)
+
+    def list_printers(self) -> dict:
+        return printer_catalog()
+
+    def export_robot(self, name: str, out_dir: str | Path | None = None) -> dict:
+        """Write URDF and MJCF for an assembly, then try to load and step the result."""
+        with self._lock:
+            spec = self._get_assembly(name)
+            destination = Path(out_dir) if out_dir else self.workspace / "exports" / "robot" / spec["name"]
+            return export_robot(spec, self._assembly_shapes(spec), destination)
 
     def render_assembly(self, name: str) -> dict:
         """One isometric picture of the assembly in its stored pose."""

@@ -1,0 +1,574 @@
+{
+  "source": "drill rotary at 120 rpm, and a hydraulic pump at 97% of each first flexible frequency",
+  "upper_link_hz": 469.686,
+  "upper_link": {
+    "solver": "CalculiX *FREQUENCY + Gmsh",
+    "part": "upper_link",
+    "assembly": null,
+    "material": "aluminum 6061-T6",
+    "mesh_size_mm": 6.0,
+    "element_order": 2,
+    "node_count": 7772,
+    "element_count": 4341,
+    "modes": [
+      {
+        "index": 1,
+        "frequency_hz": 469.686,
+        "omega_rad_s": 2951.122,
+        "eigenvalue": 8709119.0,
+        "rigid_body": false,
+        "display_scale": 0.3614
+      },
+      {
+        "index": 2,
+        "frequency_hz": 469.697,
+        "omega_rad_s": 2951.196,
+        "eigenvalue": 8709557.0,
+        "rigid_body": false
+      },
+      {
+        "index": 3,
+        "frequency_hz": 2744.684,
+        "omega_rad_s": 17245.36,
+        "eigenvalue": 297402400.0,
+        "rigid_body": false
+      },
+      {
+        "index": 4,
+        "frequency_hz": 2744.741,
+        "omega_rad_s": 17245.72,
+        "eigenvalue": 297414700.0,
+        "rigid_body": false
+      }
+    ],
+    "resonance": {
+      "status": "resonance",
+      "margin": 0.1,
+      "flags": [
+        {
+          "mode": 1,
+          "frequency_hz": 469.686,
+          "source": "hydraulic pump",
+          "kind": "pump",
+          "harmonic": 1,
+          "excitation_hz": 455.595,
+          "separation": 0.03
+        },
+        {
+          "mode": 2,
+          "frequency_hz": 469.697,
+          "source": "hydraulic pump",
+          "kind": "pump",
+          "harmonic": 1,
+          "excitation_hz": 455.595,
+          "separation": 0.03
+        }
+      ],
+      "rigid_body_modes": [],
+      "suggestions": [
+        "Mode 1 at 469.69 Hz is within 3% of hydraulic pump harmonic 1 at 455.60 Hz. The mode is just above the excitation. Adding mass lowers it. Stiffening (a rib, a taller section, a shorter span) pushes it further up. Changing the running speed moves the excitation instead.",
+        "Mode 2 at 469.70 Hz is within 3% of hydraulic pump harmonic 1 at 455.60 Hz. The mode is just above the excitation. Adding mass lowers it. Stiffening (a rib, a taller section, a shorter span) pushes it further up. Changing the running speed moves the excitation instead."
+      ],
+      "excitations": [
+        {
+          "name": "drill rotary",
+          "kind": "drill",
+          "fundamental_hz": 2.0,
+          "from": "rpm/60",
+          "harmonics": [
+            1,
+            2,
+            3
+          ],
+          "harmonics_hz": [
+            2.0,
+            4.0,
+            6.0
+          ]
+        },
+        {
+          "name": "hydraulic pump",
+          "kind": "pump",
+          "fundamental_hz": 455.595,
+          "from": "Hz",
+          "harmonics": [
+            1,
+            2
+          ],
+          "harmonics_hz": [
+            455.595,
+            911.19
+          ]
+        }
+      ]
+    },
+    "support": {
+      "automatic": false,
+      "faces": [
+        0
+      ],
+      "description": "The faces named in fixes are held on all three translations."
+    },
+    "harmonic": {
+      "model": "single-degree-of-freedom",
+      "natural_hz": 469.686,
+      "drive_hz": 455.595,
+      "zeta": 0.02,
+      "modal_force": 1.0,
+      "amplification": 14.144,
+      "displacement_mm": 2e-06,
+      "stress_amplitude_mpa": null,
+      "assumptions": [
+        "One mode. The eigenvector is mass-normalized, so the modal mass is 1 tonne and the receptance is in mm/N.",
+        "Damping ratio \u03b6 = 0.02 is an assumption. A welded steel frame is often near 0.02. It was not measured.",
+        "The force is applied at one node, along the eigenvector there. A distributed load would use the integral of \u03c6\u00b7f.",
+        "Stress is reported only when static_stress_mpa or stress_per_newton is supplied, and it is that static stress times the amplification.",
+        "Modes other than this one are omitted. Close modes would add to the displacement."
+      ],
+      "note": "Displacement is for a unit modal force at \u03b6 = 0.02, not a force integrated over the mesh. The amplification is the number that matters next to the pump line."
+    },
+    "random": {
+      "model": "Miles",
+      "natural_hz": 469.686,
+      "zeta": 0.02,
+      "quality_factor": 25.0,
+      "psd_g2_per_hz": 0.02,
+      "sigma_g": 19.2065,
+      "stress_sigma_mpa": 288.0978,
+      "assumptions": [
+        "Miles' equation for a single mode in a white acceleration spectrum: \u03c3_g = sqrt(\u03c0/2 \u00b7 fn \u00b7 Q \u00b7 PSD), with Q = 1/(2\u03b6).",
+        "The PSD is flat across the resonance in g\u00b2/Hz. A real spectrum that rolls off changes this number.",
+        "The result is a 1\u03c3 acceleration. Peaks of a Gaussian ride near 3\u03c3. This is not a fatigue spectrum yet.",
+        "Stress is \u03c3_g times stress_per_g when that number is supplied. It is not computed from the mesh."
+      ],
+      "note": "stress_per_g is a stated 15 MPa per g. It was not computed from this mesh."
+    },
+    "fatigue": null,
+    "warnings": [],
+    "assumptions": [
+      "Length is millimeters and force is newtons, so CalculiX mass is tonnes. Density is the handbook g/cm\u00b3 times 1e-9.",
+      "The frequency is the cycles/time column, in hertz. The eigenvalue beside it is \u03c9\u00b2 in rad\u00b2/s\u00b2.",
+      "The material is linear, isotropic, and uniform in each solid. Damping is not in the eigenvalue problem.",
+      "Eigenvectors are mass-normalized. The pictures scale the shape so the largest arrow is about 15% of the bounding diagonal. Color is the unscaled magnitude. The picture is a shape, not an operating amplitude.",
+      "A frequency under 1 Hz is treated as a rigid-body mode.",
+      "Resonance is a fractional gap: |fn \u2212 k\u00b7f| / fn at or under the margin, default 10%. Rotating sources use harmonics 1, 2, and 3. A pump uses 1 and 2. rpm is divided by 60.",
+      "Moving a mode off an excitation means stiffening (ribs, a taller section, a shorter span), adding mass, changing the geometry, or changing the running speed.",
+      "The named faces are fixed in translation. Rotation of a node on that face is not independently constrained beyond the surrounding elements.",
+      "A harmonic number is a single-mode oscillator with an assumed damping ratio. A random number is Miles' equation on a flat PSD. Fatigue is a Goodman check of a stress you supply. None of the three is a second finite-element solve."
+    ],
+    "note": "First flexible frequency 469.69 Hz. No declared excitation sits inside the resonance margin.",
+    "stated_excitations": [
+      {
+        "name": "drill rotary",
+        "kind": "drill",
+        "rpm": 120
+      },
+      {
+        "name": "hydraulic pump",
+        "kind": "pump",
+        "hz": 455.595,
+        "note": "Set at 97% of the first flexible frequency so the margin flags a near-resonance."
+      }
+    ]
+  },
+  "assembly_hz": 62.079,
+  "assembly": {
+    "solver": "CalculiX *FREQUENCY + Gmsh",
+    "part": null,
+    "assembly": "rod_arm",
+    "material": "aluminum 6061-T6, mild steel",
+    "mesh_size_mm": 12.0,
+    "element_order": 2,
+    "node_count": 7420,
+    "element_count": 3602,
+    "modes": [
+      {
+        "index": 1,
+        "frequency_hz": 62.079,
+        "omega_rad_s": 390.053,
+        "eigenvalue": 152141.3,
+        "rigid_body": false,
+        "display_scale": 2.2154
+      },
+      {
+        "index": 2,
+        "frequency_hz": 83.965,
+        "omega_rad_s": 527.5673,
+        "eigenvalue": 278327.3,
+        "rigid_body": false
+      },
+      {
+        "index": 3,
+        "frequency_hz": 94.186,
+        "omega_rad_s": 591.7894,
+        "eigenvalue": 350214.7,
+        "rigid_body": false
+      },
+      {
+        "index": 4,
+        "frequency_hz": 137.437,
+        "omega_rad_s": 863.5398,
+        "eigenvalue": 745701.1,
+        "rigid_body": false
+      }
+    ],
+    "resonance": {
+      "status": "resonance",
+      "margin": 0.1,
+      "flags": [
+        {
+          "mode": 1,
+          "frequency_hz": 62.079,
+          "source": "hydraulic pump",
+          "kind": "pump",
+          "harmonic": 1,
+          "excitation_hz": 60.217,
+          "separation": 0.03
+        }
+      ],
+      "rigid_body_modes": [],
+      "suggestions": [
+        "Mode 1 at 62.08 Hz is within 3% of hydraulic pump harmonic 1 at 60.22 Hz. The mode is just above the excitation. Adding mass lowers it. Stiffening (a rib, a taller section, a shorter span) pushes it further up. Changing the running speed moves the excitation instead."
+      ],
+      "excitations": [
+        {
+          "name": "drill rotary",
+          "kind": "drill",
+          "fundamental_hz": 2.0,
+          "from": "rpm/60",
+          "harmonics": [
+            1,
+            2,
+            3
+          ],
+          "harmonics_hz": [
+            2.0,
+            4.0,
+            6.0
+          ]
+        },
+        {
+          "name": "hydraulic pump",
+          "kind": "pump",
+          "fundamental_hz": 60.217,
+          "from": "Hz",
+          "harmonics": [
+            1,
+            2
+          ],
+          "harmonics_hz": [
+            60.217,
+            120.434
+          ]
+        }
+      ]
+    },
+    "support": {
+      "automatic": true,
+      "description": "Held automatically on the grounded bottom face. face 4 at z=0.0 mm"
+    },
+    "harmonic": null,
+    "random": null,
+    "fatigue": null,
+    "warnings": [
+      "Skipped clip (16.74 mm\u00b3).",
+      "Skipped jaw_l (2688.0 mm\u00b3).",
+      "Skipped jaw_r (2688.0 mm\u00b3).",
+      "Joint clip was not tied because base or clip was left out of the mesh.",
+      "Joint shoulder ties 8 node pairs around [0.0, 0.0, 50.0] within 15.0 mm. The child nodes follow the parent. The joint cannot rotate in this model.",
+      "Joint elbow ties 8 node pairs around [190.5256, 0.0, -60.0] within 15.0 mm. The child nodes follow the parent. The joint cannot rotate in this model.",
+      "Joint wrist ties 8 node pairs around [266.5969, 0.0, -223.1354] within 15.0 mm. The child nodes follow the parent. The joint cannot rotate in this model.",
+      "Joint jaw was not tied because gripper or jaw_l was left out of the mesh.",
+      "Joint jaw_r was not tied because gripper or jaw_r was left out of the mesh.",
+      "Joint grasp ties 8 node pairs around [274.5607, 0.0, -259.1434] within 15.0 mm. The child nodes follow the parent. The joint cannot rotate in this model."
+    ],
+    "assumptions": [
+      "Length is millimeters and force is newtons, so CalculiX mass is tonnes. Density is the handbook g/cm\u00b3 times 1e-9.",
+      "The frequency is the cycles/time column, in hertz. The eigenvalue beside it is \u03c9\u00b2 in rad\u00b2/s\u00b2.",
+      "The material is linear, isotropic, and uniform in each solid. Damping is not in the eigenvalue problem.",
+      "Eigenvectors are mass-normalized. The pictures scale the shape so the largest arrow is about 15% of the bounding diagonal. Color is the unscaled magnitude. The picture is a shape, not an operating amplitude.",
+      "A frequency under 1 Hz is treated as a rigid-body mode.",
+      "Resonance is a fractional gap: |fn \u2212 k\u00b7f| / fn at or under the margin, default 10%. Rotating sources use harmonics 1, 2, and 3. A pump uses 1 and 2. rpm is divided by 60.",
+      "Moving a mode off an excitation means stiffening (ribs, a taller section, a shorter span), adding mass, changing the geometry, or changing the running speed.",
+      "Each joint is a handful of translation equations between nearby nodes. The joint is locked at the pose, so a revolute does not flex. These frequencies are an upper bound on a real pinned joint.",
+      "An instance under 2% of the largest volume is omitted. A fastener or a washer is not in the modes.",
+      "A harmonic number is a single-mode oscillator with an assumed damping ratio. A random number is Miles' equation on a flat PSD. Fatigue is a Goodman check of a stress you supply. None of the three is a second finite-element solve."
+    ],
+    "note": "First flexible frequency 62.08 Hz. No declared excitation sits inside the resonance margin.",
+    "skipped_instances": [
+      {
+        "instance": "clip",
+        "volume_mm3": 16.74,
+        "reason": "Under 2% of the largest instance, so it is left out of the mesh."
+      },
+      {
+        "instance": "jaw_l",
+        "volume_mm3": 2688.0,
+        "reason": "Under 2% of the largest instance, so it is left out of the mesh."
+      },
+      {
+        "instance": "jaw_r",
+        "volume_mm3": 2688.0,
+        "reason": "Under 2% of the largest instance, so it is left out of the mesh."
+      }
+    ],
+    "ties": {
+      "pair_count": 10,
+      "note": "Each pair constrains three translations."
+    },
+    "pose": "Joints are locked at the stored pose. A revolute does not flex in this solve.",
+    "stated_excitations": [
+      {
+        "name": "drill rotary",
+        "kind": "drill",
+        "rpm": 120
+      },
+      {
+        "name": "hydraulic pump",
+        "kind": "pump",
+        "hz": 60.217,
+        "note": "Set at 97% of the first flexible frequency so the margin flags a near-resonance."
+      }
+    ]
+  },
+  "bolts": {
+    "bolts": [
+      {
+        "size": "M8",
+        "pitch_mm": 1.25,
+        "grade": "8.8",
+        "grade_name": "property class 8.8",
+        "condition": "dry",
+        "status": "fail",
+        "tensile_stress_area_mm2": 36.609,
+        "proof_load_n": 21233.0,
+        "preload_n": 14863.1,
+        "preload_fraction": 0.7,
+        "tightening_torque_nm": 23.781,
+        "nut_factor": 0.2,
+        "grip_mm": 20.0,
+        "load_factor": 0.2445,
+        "bolt_force_n": 15107.6,
+        "residual_clamp_n": 14107.6,
+        "separates": false,
+        "friction": 0.14,
+        "interfaces": 1,
+        "friction_capacity_n": 1975.1,
+        "shear_n": 2500.0,
+        "slip_margin": 0.79,
+        "slip_status": "slips",
+        "yield_margin": 1.551,
+        "proof_margin": 1.405,
+        "stripping": {
+          "engagement_mm": 6.4,
+          "bolt_shear_area_mm2": 65.01,
+          "nut_shear_area_mm2": 80.42,
+          "capacity_n": 20802.4,
+          "margin": 1.377,
+          "status": "holds"
+        },
+        "locking": [],
+        "loosening": {
+          "rating": "high",
+          "vibration": "intense",
+          "reasons": [
+            "Transverse load exceeds friction. Plates that slip let the thread walk open. That is the usual way a bolt loosens under vibration, and it happens before the bolt yields.",
+            "No locking feature is declared. Preload alone is what is holding the nut."
+          ],
+          "countermeasures": [
+            {
+              "name": "higher preload",
+              "when": "The slip margin is thin and the bolt is still below yield.",
+              "effect": "Friction capacity is the preload times the plate coefficient. More preload, more force before the plates slip. Stay under proof load. This check used a fraction of proof load for that reason.",
+              "recommended": true
+            },
+            {
+              "name": "longer grip length",
+              "when": "Preload disappears after tightening, or the joint sees shock.",
+              "effect": "A longer stretch stores more elastic energy, so a little embedment or a thermal change removes a smaller share of the preload. A sleeve or a thicker stack does this. It does not add friction by itself.",
+              "recommended": true
+            },
+            {
+              "name": "nyloc nut",
+              "when": "The nut must resist rotation after clamp friction is disturbed.",
+              "effect": "The nylon insert adds a prevailing torque. The nut is harder to turn even if the plates shuffle. It does not stop the plates from slipping, and it does not replace preload. Heat and reuse wear the insert down.",
+              "recommended": true
+            },
+            {
+              "name": "wedge-locking washers",
+              "when": "The joint sees transverse vibration and the mating face is hard enough for the cams.",
+              "effect": "The cams increase bolt tension if the nut tries to rotate loose, so loosening raises the clamp instead of dropping it. They need preload to start with, and they want a surface that does not crush.",
+              "recommended": true
+            },
+            {
+              "name": "threadlocker",
+              "when": "A chemical bond in the threads is acceptable for service.",
+              "effect": "Liquid locker fills the clearance and bonds the threads, so the nut resists turning. It is a supplement. The plates can still slip if preload is low, and a high-strength locker is awkward to service. Use the lubricated torque for the wet threads, not the dry one.",
+              "recommended": true
+            },
+            {
+              "name": "safety wire",
+              "when": "Someone can see the joint, and a positive lock is required.",
+              "effect": "Wire through the bolt head or the nut stops it from turning. A broken wire is obvious. Wire does not increase clamp force, so it does not fix a joint that is already slipping.",
+              "recommended": true
+            }
+          ],
+          "summary": "High loosening risk. The plates can slip or the joint can separate. A stronger bolt does not fix slip. The clamp and a locking feature do."
+        },
+        "assumptions": [
+          "Sizes use the ISO coarse pitch unless the size string gives a pitch, as in M8-1.25.",
+          "Tensile stress area is \u03c0/4 * (d - 0.9382*p)^2, the usual ISO approximation.",
+          "Recommended preload is 70% of proof load. Proof stress is the ISO 898-1 value for the grade. A2-70 uses 450 MPa as a conservative stand-in for proof.",
+          "Tightening torque is K*F*d with K = 0.20 for the dry condition. K is a friction lump, not a measured torque-tension test. Lubricant, plating, and reuse move it.",
+          "Bolt stiffness is At*E/grip. Member stiffness is a steel cylinder of diameter 1.5*d over the same grip. The load factor is bolt stiffness over the sum. It is not a finite-element joint.",
+          "Friction capacity is \u03bc*residual clamp*interfaces with \u03bc = 0.14. Residual clamp is preload minus the share of a separating axial load carried by the members.",
+          "A separating axial load unloads the clamp. A compressive external load is ignored. Shear is transverse to the bolt.",
+          "Slip margin below 1 means the plates slide. Transverse slip is the Junker mechanism of self-loosening. The bolt can be well below yield while the nut still walks.",
+          "Thread shear area is half the minor-diameter cylinder (bolt) or major-diameter cylinder (nut) over the engagement. Shear yield is taken as half of tensile yield. A short engagement fails this before the bolt yields.",
+          "Intense vibration can ratchet a joint with a modest slip margin. Micro-slip, embedment, and relaxation are not simulated. The rating says so by raising the risk when the environment is intense.",
+          "Locking features resist nut rotation. They do not create clamp force. Wedge washers, nyloc nuts, threadlocker, and safety wire are described on the report."
+        ],
+        "note": "High loosening risk. The plates can slip or the joint can separate. A stronger bolt does not fix slip. The clamp and a locking feature do."
+      },
+      {
+        "size": "M12",
+        "pitch_mm": 1.75,
+        "grade": "10.9",
+        "grade_name": "property class 10.9",
+        "condition": "dry",
+        "status": "pass",
+        "tensile_stress_area_mm2": 84.267,
+        "proof_load_n": 69941.2,
+        "preload_n": 48958.9,
+        "preload_fraction": 0.7,
+        "tightening_torque_nm": 117.501,
+        "nut_factor": 0.2,
+        "grip_mm": 20.0,
+        "load_factor": 0.2488,
+        "bolt_force_n": 49207.6,
+        "residual_clamp_n": 48207.6,
+        "separates": false,
+        "friction": 0.14,
+        "interfaces": 1,
+        "friction_capacity_n": 6749.1,
+        "shear_n": 800.0,
+        "slip_margin": 8.436,
+        "slip_status": "holds",
+        "yield_margin": 1.61,
+        "proof_margin": 1.421,
+        "stripping": {
+          "engagement_mm": 9.600000000000001,
+          "bolt_shear_area_mm2": 148.58,
+          "nut_shear_area_mm2": 180.96,
+          "capacity_n": 69832.3,
+          "margin": 1.419,
+          "status": "holds"
+        },
+        "locking": [],
+        "loosening": {
+          "rating": "low",
+          "vibration": "intense",
+          "reasons": [
+            "Clamp friction covers the stated shear with reserve, and the joint does not separate."
+          ],
+          "countermeasures": [
+            {
+              "name": "higher preload",
+              "when": "The slip margin is thin and the bolt is still below yield.",
+              "effect": "Friction capacity is the preload times the plate coefficient. More preload, more force before the plates slip. Stay under proof load. This check used a fraction of proof load for that reason.",
+              "recommended": false
+            },
+            {
+              "name": "longer grip length",
+              "when": "Preload disappears after tightening, or the joint sees shock.",
+              "effect": "A longer stretch stores more elastic energy, so a little embedment or a thermal change removes a smaller share of the preload. A sleeve or a thicker stack does this. It does not add friction by itself.",
+              "recommended": false
+            },
+            {
+              "name": "nyloc nut",
+              "when": "The nut must resist rotation after clamp friction is disturbed.",
+              "effect": "The nylon insert adds a prevailing torque. The nut is harder to turn even if the plates shuffle. It does not stop the plates from slipping, and it does not replace preload. Heat and reuse wear the insert down.",
+              "recommended": false
+            },
+            {
+              "name": "wedge-locking washers",
+              "when": "The joint sees transverse vibration and the mating face is hard enough for the cams.",
+              "effect": "The cams increase bolt tension if the nut tries to rotate loose, so loosening raises the clamp instead of dropping it. They need preload to start with, and they want a surface that does not crush.",
+              "recommended": false
+            },
+            {
+              "name": "threadlocker",
+              "when": "A chemical bond in the threads is acceptable for service.",
+              "effect": "Liquid locker fills the clearance and bonds the threads, so the nut resists turning. It is a supplement. The plates can still slip if preload is low, and a high-strength locker is awkward to service. Use the lubricated torque for the wet threads, not the dry one.",
+              "recommended": false
+            },
+            {
+              "name": "safety wire",
+              "when": "Someone can see the joint, and a positive lock is required.",
+              "effect": "Wire through the bolt head or the nut stops it from turning. A broken wire is obvious. Wire does not increase clamp force, so it does not fix a joint that is already slipping.",
+              "recommended": false
+            }
+          ],
+          "summary": "Low loosening risk for the stated loads. A drilling rig still wants a locking feature, because embedment and shock are not in this static margin."
+        },
+        "assumptions": [
+          "Sizes use the ISO coarse pitch unless the size string gives a pitch, as in M8-1.25.",
+          "Tensile stress area is \u03c0/4 * (d - 0.9382*p)^2, the usual ISO approximation.",
+          "Recommended preload is 70% of proof load. Proof stress is the ISO 898-1 value for the grade. A2-70 uses 450 MPa as a conservative stand-in for proof.",
+          "Tightening torque is K*F*d with K = 0.20 for the dry condition. K is a friction lump, not a measured torque-tension test. Lubricant, plating, and reuse move it.",
+          "Bolt stiffness is At*E/grip. Member stiffness is a steel cylinder of diameter 1.5*d over the same grip. The load factor is bolt stiffness over the sum. It is not a finite-element joint.",
+          "Friction capacity is \u03bc*residual clamp*interfaces with \u03bc = 0.14. Residual clamp is preload minus the share of a separating axial load carried by the members.",
+          "A separating axial load unloads the clamp. A compressive external load is ignored. Shear is transverse to the bolt.",
+          "Slip margin below 1 means the plates slide. Transverse slip is the Junker mechanism of self-loosening. The bolt can be well below yield while the nut still walks.",
+          "Thread shear area is half the minor-diameter cylinder (bolt) or major-diameter cylinder (nut) over the engagement. Shear yield is taken as half of tensile yield. A short engagement fails this before the bolt yields.",
+          "Intense vibration can ratchet a joint with a modest slip margin. Micro-slip, embedment, and relaxation are not simulated. The rating says so by raising the risk when the environment is intense.",
+          "Locking features resist nut rotation. They do not create clamp force. Wedge washers, nyloc nuts, threadlocker, and safety wire are described on the report."
+        ],
+        "note": "Low loosening risk for the stated loads. A drilling rig still wants a locking feature, because embedment and shock are not in this static margin."
+      }
+    ],
+    "worst": "high",
+    "assumptions": [
+      "Sizes use the ISO coarse pitch unless the size string gives a pitch, as in M8-1.25.",
+      "Tensile stress area is \u03c0/4 * (d - 0.9382*p)^2, the usual ISO approximation.",
+      "Recommended preload is 70% of proof load. Proof stress is the ISO 898-1 value for the grade. A2-70 uses 450 MPa as a conservative stand-in for proof.",
+      "Tightening torque is K*F*d with K = 0.20 for the dry condition. K is a friction lump, not a measured torque-tension test. Lubricant, plating, and reuse move it.",
+      "Bolt stiffness is At*E/grip. Member stiffness is a steel cylinder of diameter 1.5*d over the same grip. The load factor is bolt stiffness over the sum. It is not a finite-element joint.",
+      "Friction capacity is \u03bc*residual clamp*interfaces with \u03bc = 0.14. Residual clamp is preload minus the share of a separating axial load carried by the members.",
+      "A separating axial load unloads the clamp. A compressive external load is ignored. Shear is transverse to the bolt.",
+      "Slip margin below 1 means the plates slide. Transverse slip is the Junker mechanism of self-loosening. The bolt can be well below yield while the nut still walks.",
+      "Thread shear area is half the minor-diameter cylinder (bolt) or major-diameter cylinder (nut) over the engagement. Shear yield is taken as half of tensile yield. A short engagement fails this before the bolt yields.",
+      "Intense vibration can ratchet a joint with a modest slip margin. Micro-slip, embedment, and relaxation are not simulated. The rating says so by raising the risk when the environment is intense.",
+      "Locking features resist nut rotation. They do not create clamp force. Wedge washers, nyloc nuts, threadlocker, and safety wire are described on the report."
+    ],
+    "note": "2 fasteners. The joint is rated by the highest loosening risk.",
+    "load_note": "Each fastener is given 1000 N of separating shock and a transverse share of the rig. This is not the 8 kg rod's static weight. The grip is a 20 mm flange, not the full 50 mm base block."
+  },
+  "fatigue": {
+    "status": "fail",
+    "material": "mild steel",
+    "stress_amplitude_mpa": 90.0,
+    "mean_stress_mpa": 40.0,
+    "mean_used_mpa": 40.0,
+    "ultimate_mpa": 420.0,
+    "surface": "machined",
+    "surface_factor": 0.8,
+    "size_factor": 0.85,
+    "section_mm": 12.0,
+    "endurance_mpa": 142.8,
+    "amplification": null,
+    "compared_amplitude_mpa": 90.0,
+    "safety_factor": 1.378,
+    "target_safety_factor": 2.0,
+    "assumptions": [
+      "Ultimate strength is the handbook stand-in 420 MPa for mild steel.",
+      "Steel uses Se' = 0.5\u00b7Sut up to 1400 MPa, then 700 MPa.",
+      "Surface factor 0.8 is for machined. Size factor 0.85 is 0.85 above 10 mm.",
+      "Goodman: 1/n = \u03c3a/Se + \u03c3m/Sut. A compressive mean is not added. There is no Marin reliability or temperature factor.",
+      "The stress amplitude is an input. This check does not compute it from a load or a mesh.",
+      "A resonance nearby multiplies the amplitude only when amplification is passed in. Quasi-static stress is not the resonant stress.",
+      "Passing a factor of 2 on this estimate is not a certified life. The S-N curve, the notch, and the real spectrum are not in the model."
+    ],
+    "note": "Goodman safety factor 1.38 against a target of 2. Endurance limit used here is 142.8 MPa."
+  }
+}

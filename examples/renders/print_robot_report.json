@@ -1,0 +1,185 @@
+{
+  "upright": {
+    "status": "pass",
+    "orientation": "z_up",
+    "support_area_mm2": 960.0,
+    "support_fraction": 0.1685,
+    "height_mm": 40.0,
+    "size_mm": [
+      40.0,
+      30.0,
+      40.0
+    ],
+    "printer": {
+      "id": "ender_3",
+      "name": "Creality Ender 3",
+      "bed_mm": [
+        220,
+        220,
+        250
+      ],
+      "fits": true,
+      "note": "Fits in this orientation, turning in the plane if that helps."
+    },
+    "printers": [
+      {
+        "id": "bambu_a1",
+        "fits": true
+      },
+      {
+        "id": "bambu_a1_mini",
+        "fits": true
+      },
+      {
+        "id": "bambu_p1",
+        "fits": true
+      },
+      {
+        "id": "bambu_x1",
+        "fits": true
+      },
+      {
+        "id": "prusa_mk4",
+        "fits": true
+      },
+      {
+        "id": "ender_3",
+        "fits": true
+      }
+    ],
+    "slicer": {
+      "status": "sliced",
+      "time": "31m 25s",
+      "grams": 9.06,
+      "cost": 0.18,
+      "note": "Sliced with prusa-slicer. Estimated time 31m 25s. Filament 9.06 g. Cost 0.18."
+    },
+    "note": "Orientation z_up. Support area 960 mm\u00b2 (17% of the surface). Height 40.0 mm. Creality Ender 3 fits. Slicer: 31m 25s, 9.06 g."
+  },
+  "best": {
+    "status": "pass",
+    "orientation": "y_up",
+    "support_area_mm2": 0.0,
+    "support_fraction": 0.0,
+    "height_mm": 30.0,
+    "size_mm": [
+      40.0,
+      40.0,
+      30.0
+    ],
+    "printer": {
+      "id": "prusa_mk4",
+      "name": "Prusa MK4",
+      "bed_mm": [
+        250,
+        210,
+        220
+      ],
+      "fits": true,
+      "note": "Fits in this orientation, turning in the plane if that helps."
+    },
+    "printers": [
+      {
+        "id": "bambu_a1",
+        "fits": true
+      },
+      {
+        "id": "bambu_a1_mini",
+        "fits": true
+      },
+      {
+        "id": "bambu_p1",
+        "fits": true
+      },
+      {
+        "id": "bambu_x1",
+        "fits": true
+      },
+      {
+        "id": "prusa_mk4",
+        "fits": true
+      },
+      {
+        "id": "ender_3",
+        "fits": true
+      }
+    ],
+    "slicer": {
+      "status": "sliced",
+      "time": "30m 59s",
+      "grams": 9.82,
+      "cost": 0.2,
+      "note": "Sliced with prusa-slicer. Estimated time 30m 59s. Filament 9.82 g. Cost 0.2."
+    },
+    "note": "Suggested orientation y_up. Support area 0 mm\u00b2 (0% of the surface). Height 30.0 mm. Prusa MK4 fits. Slicer: 30m 59s, 9.82 g."
+  },
+  "robot": {
+    "urdf": "examples/robot_arm/robot.urdf",
+    "mjcf": "examples/robot_arm/robot.xml",
+    "links": [
+      {
+        "name": "base",
+        "part": "base",
+        "mass_kg": 0.013392,
+        "center_m": [
+          -0.0,
+          -0.0,
+          0.006
+        ]
+      },
+      {
+        "name": "link",
+        "part": "link",
+        "mass_kg": 0.210714,
+        "center_m": [
+          0.058475,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "joints": [
+      {
+        "name": "world_to_base",
+        "type": "fixed",
+        "parent": "world",
+        "child": "base",
+        "axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "lower": null,
+        "upper": null,
+        "limit_assumed": false
+      },
+      {
+        "name": "shoulder",
+        "type": "revolute",
+        "parent": "base",
+        "child": "link",
+        "axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "lower": -0.7853981633974483,
+        "upper": 1.5707963267948966,
+        "limit_assumed": false
+      }
+    ],
+    "validation": {
+      "mujoco": {
+        "status": "loaded",
+        "nq": 1,
+        "nbody": 3,
+        "steps": 5
+      },
+      "pybullet": {
+        "status": "skipped",
+        "note": "pybullet is not installed. The URDF is still written."
+      }
+    },
+    "note": "Exported arm: 2 links, 1 moving joints. A simulator loaded the file and stepped."
+  }
+}
