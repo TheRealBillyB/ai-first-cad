@@ -47,7 +47,17 @@ function fileUrl(path) {
   return "/api/file?path=" + encodeURIComponent(path);
 }
 
+let refreshChain = Promise.resolve();
+
 async function refresh(options = {}) {
+  // Events from a fast assistant arrive while the previous refresh is still
+  // fetching. Running them one after another keeps the last state on screen.
+  const run = refreshChain.then(() => applyRefresh(options));
+  refreshChain = run.then(() => {}, () => {});
+  return run;
+}
+
+async function applyRefresh(options = {}) {
   const response = await fetch("/api/state");
   const body = await response.json();
   if (!body.ok) throw new Error(body.error);
@@ -1730,10 +1740,23 @@ function scheduleParameter(id, value) {
 async function commitParameter(id, value) {
   if (!ui.part) return;
   const number = Number(value);
-  if (!Number.isFinite(number)) throw new Error("Type a number.");
-  await command("set_parameter", { name: ui.part, parameter: id, value: number });
+  if (!Number.isFinite(number)) {
+    await restoreShape();
+    throw new Error("Type a number.");
+  }
+  try {
+    await command("set_parameter", { name: ui.part, parameter: id, value: number });
+  } catch (error) {
+    await restoreShape();
+    throw error;
+  }
   ui.parameterKey = "";
   await refresh();
+}
+
+async function restoreShape() {
+  ui.parameterKey = "";
+  await renderShape();
 }
 
 async function commitPlacement() {
@@ -1742,9 +1765,15 @@ async function commitPlacement() {
   const position = [0, 1, 2].map((index) => Number(slot.querySelector(`[data-place="${index}"]`).value));
   const rotation = [0, 1, 2].map((index) => Number(slot.querySelector(`[data-spin="${index}"]`).value));
   if (position.some((value) => !Number.isFinite(value)) || rotation.some((value) => !Number.isFinite(value))) {
+    await restoreShape();
     throw new Error("Placement needs numbers.");
   }
-  await command("place_part", { name: ui.part, position, rotation_deg: rotation });
+  try {
+    await command("place_part", { name: ui.part, position, rotation_deg: rotation });
+  } catch (error) {
+    await restoreShape();
+    throw error;
+  }
   ui.parameterKey = "";
   await refresh();
 }
@@ -1796,20 +1825,30 @@ async function browseProjects(mode) {
       <label>Folder <input id="folder-path" value="${escapeAttr(listed.path)}" /></label>
       <div class="row">${listed.parent ? `<button type="button" id="folder-up">Up</button>` : ""}<button type="button" id="folder-go">Show</button></div>
       <div class="folder-list">${folders}</div>
-      ${mode === "save" ? `<label>New folder name <input id="save-name" value="${escapeAttr((ui.state.project.name || "project") + "-copy")}" /></label>` : `<p class="muted">Open uses the folder in the box. A folder with no project starts empty.</p>`}`;
+      ${mode === "save" ? `<label>New folder name <input id="save-name" value="${escapeAttr((ui.state.project.name || "project") + "-copy")}" /></label>` : `<p class="muted">Open uses the folder in the box. A folder with no project starts empty.</p>`}
+      <p id="folder-error" class="warn" hidden></p>`;
     $("modal-body").querySelectorAll("[data-go]").forEach((button) => {
-      button.onclick = () => { current = button.dataset.go; paint().catch(showError); };
+      button.onclick = () => { current = button.dataset.go; paint().catch(showDialogError); };
     });
     $("modal-body").querySelectorAll("[data-open]").forEach((button) => {
       button.onclick = () => finish(button.dataset.open);
     });
     const up = $("folder-up");
-    if (up) up.onclick = () => { current = listed.parent; paint().catch(showError); };
-    $("folder-go").onclick = () => { current = $("folder-path").value.trim(); paint().catch(showError); };
+    if (up) up.onclick = () => { current = listed.parent; paint().catch(showDialogError); };
+    $("folder-go").onclick = () => { current = $("folder-path").value.trim(); paint().catch(showDialogError); };
   };
   const finish = async (path, name) => {
-    if (mode === "open") await command("open_project", { path });
-    else await command("save_project_as", name ? { path, name } : { path });
+    if (mode === "save" && !name) {
+      showDialogError("Type a folder name.");
+      return;
+    }
+    try {
+      if (mode === "open") await command("open_project", { path });
+      else await command("save_project_as", { path, name });
+    } catch (error) {
+      showDialogError(error && error.message ? error.message : String(error));
+      return;
+    }
     dialog.close();
     ui.part = null;
     ui.parameterKey = "";
@@ -1828,6 +1867,17 @@ async function browseProjects(mode) {
     const name = nameField ? nameField.value.trim() : "";
     finish(path, mode === "save" ? name : null).catch(showError);
   };
+}
+
+function showDialogError(error) {
+  const message = error && error.message ? error.message : String(error || "That folder could not be used.");
+  const slot = $("folder-error");
+  if (!slot) {
+    showError(error instanceof Error ? error : new Error(message));
+    return;
+  }
+  slot.hidden = false;
+  slot.textContent = message;
 }
 
 async function boot() {

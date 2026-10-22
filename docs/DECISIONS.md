@@ -30,6 +30,9 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | An exploded view follows the joints | A slide moves on its axis, a hinge comes off its pin, and a catalog fastener lifts out. The gap is not a dimension. |
 | A drawing uses OpenCascade hidden-line removal | The edges come from the kernel already in use, so the sheet does not add a solver. |
 | A dimensioned sheet is a layout drawing, not a shop drawing | Overall sizes are the kernel's axis-aligned box of the posed solids. GD&T and tolerances stay off the sheet. |
+| Save As copies the saved script solid | The solid lives in `.aicad/geometry`. The copy has to open without running the script. |
+| A size or a placement stays within a million millimeters | The viewport stores coordinates in 32-bit floats, and a huge box next to a normal part makes the normal part disappear. |
+| A new project folder uses a Windows folder name | Save As rejects a trailing space or dot, a reserved name such as CON, and characters Windows forbids, so the copy can be created there. |
 | Live mode follows the assistant, not the person at the screen | A recording should frame the part an assistant just changed; the person's own drag should leave the camera where they put it. |
 | Measure is two clicks, and a third click adds the angle | Distance is the line between the first two points, and the angle is at the second point, so the same command works from a click or from coordinates. |
 | A size slider edits the number the solid was built from | An operation size, a sketch dimension, an extrude height, or a catalog length rebuilds the solid; a script or a STEP file has a placement and no such number. |

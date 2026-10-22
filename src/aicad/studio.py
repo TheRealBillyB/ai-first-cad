@@ -21,6 +21,12 @@ from aicad.models import round_mm
 _RECENT_LIMIT = 8
 _ACTIVITY_LIMIT = 12
 _FOLDER_LIMIT = 200
+# The viewport keeps coordinates in 32-bit floats. Past this, a normal part
+# next to the edited one disappears. One kilometer is still a huge part.
+_MAX_MM = 1_000_000
+_MAX_ANGLE_DEG = 3600
+_WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL"}
+_FORBIDDEN_NAME = set('<>:"|?*')
 
 # Commands that change the model or answer a check. Reads stay out of the feed.
 _LOUD = {
@@ -166,22 +172,25 @@ def save_project(workspace) -> dict:
 
 def save_project_as(workspace, path: str, name: str | None = None) -> dict:
     parent = Path(path).expanduser()
-    if name:
-        _folder_name(name)
-        destination = (parent / name).resolve()
+    if name is not None:
+        destination = (parent / _folder_name(name)).resolve()
     else:
         destination = parent.resolve()
     source = workspace.root.resolve()
-    if destination == source:
+    if _same_folder(destination, source):
         raise GeometryError("Save as needs a different folder.")
-    if destination == source or source in destination.parents or destination in source.parents:
+    if _nested_folders(destination, source):
         raise GeometryError("Save the copy beside this project, not inside it.")
     if destination.is_file():
         raise GeometryError(f"{destination} is a file, not a folder.")
     if (destination / "session.json").is_file():
         raise GeometryError(f"{destination} already has a project. Pick a new folder.")
-    destination.mkdir(parents=True, exist_ok=True)
-    _copy_project(source, destination)
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        _copy_project(source, destination)
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        raise GeometryError(f"Could not save into {destination}. {reason}.") from exc
     switch_project(workspace, destination)
     return {"path": str(destination), "name": destination.name, "saved": True}
 
@@ -251,6 +260,11 @@ def set_parameter(workspace, name: str, parameter: str, value: float) -> dict:
         choices = ", ".join(known) or "(none)"
         raise GeometryError(f"No parameter {parameter!r} on part {name!r}. Parameters: {choices}.")
     spec = known[parameter]
+    if spec["kind"] == "angle":
+        if abs(number) > _MAX_ANGLE_DEG:
+            raise GeometryError(f"That angle is larger than {_MAX_ANGLE_DEG} degrees.")
+    elif abs(number) > _MAX_MM:
+        raise GeometryError(f"That size is larger than {_MAX_MM} mm.")
     if spec["kind"] == "length" and number <= 0:
         raise GeometryError(f"{spec['label']} has to be greater than zero.")
     source = workspace.document.get_source(name)
@@ -337,9 +351,13 @@ def build_scene(workspace) -> dict:
     faces: list[dict] = []
     edges: list[dict] = []
     names: list[str] = []
-    if not parts:
-        return _empty_scene()
-    for index, info in enumerate(parts):
+    unbuilt = [info.name for info in parts if not info.built]
+    drawable = [info for info in parts if info.built]
+    if not drawable:
+        scene = _empty_scene()
+        scene["unbuilt"] = unbuilt
+        return scene
+    for index, info in enumerate(drawable):
         mesh = workspace.mesh(info.name)
         color = _PART_COLORS[index % len(_PART_COLORS)]
         face_base = len(faces)
@@ -377,6 +395,7 @@ def build_scene(workspace) -> dict:
             "min": [round_mm(value) for value in mins],
             "max": [round_mm(value) for value in maxs],
         },
+        "unbuilt": unbuilt,
     }
 
 
@@ -593,13 +612,69 @@ def _copy_project(source: Path, destination: Path) -> None:
         origin = source / folder
         if origin.is_dir():
             shutil.copytree(origin, destination / folder, dirs_exist_ok=True)
+    # A script part is stored as text plus a STEP solid. Opening the copy
+    # must not run the script, so the solid has to travel with the folder.
+    geometry = source / ".aicad" / "geometry"
+    if geometry.is_dir():
+        shutil.copytree(geometry, destination / ".aicad" / "geometry", dirs_exist_ok=True)
+    log = source / ".aicad" / "script_log.jsonl"
+    if log.is_file():
+        target = destination / ".aicad" / "script_log.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(log, target)
 
 
-def _folder_name(name: str) -> None:
-    if not isinstance(name, str) or not name.strip() or name.strip() in (".", ".."):
+def reject_placement(position, rotation_deg=None) -> None:
+    """Refuse a move the viewport cannot draw next to a normal part."""
+    _bounded_vector(position, "That position", _MAX_MM, "mm")
+    if rotation_deg is not None:
+        _bounded_vector(rotation_deg, "That rotation", _MAX_ANGLE_DEG, "degrees")
+
+
+def _bounded_vector(value, label: str, limit: float, unit: str) -> None:
+    if not isinstance(value, (list, tuple)):
+        return
+    for item in value:
+        try:
+            number = float(item)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(number):
+            raise GeometryError(f"{label} has to be a finite number.")
+        if abs(number) > limit:
+            shown = int(limit) if limit == int(limit) else limit
+            raise GeometryError(f"{label} is larger than {shown} {unit}.")
+
+
+def _same_folder(left: Path, right: Path) -> bool:
+    """True when two paths are one folder, including a Windows case difference."""
+    return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
+def _nested_folders(left: Path, right: Path) -> bool:
+    """True when one folder is inside the other. Case matches Windows."""
+    left_key = os.path.normcase(str(left))
+    right_key = os.path.normcase(str(right))
+    if left_key == right_key:
+        return False
+    return left_key.startswith(right_key + os.sep) or right_key.startswith(left_key + os.sep)
+
+
+def _folder_name(name: str) -> str:
+    """A new folder name that Windows can create as well as Linux and macOS."""
+    if not isinstance(name, str) or not name.strip() or name.strip() in {".", ".."}:
         raise GeometryError("Type a folder name.")
-    if "/" in name or "\\" in name:
-        raise GeometryError("The folder name cannot contain a slash.")
+    if name != name.strip() or name.endswith("."):
+        raise GeometryError("The folder name cannot start or end with a space or a dot.")
+    if any(ord(character) < 32 or character in _FORBIDDEN_NAME or character in "/\\" for character in name):
+        raise GeometryError("The folder name cannot contain a slash or any of : * ? \" < > |.")
+    stem = name.split(".", 1)[0].upper()
+    reserved = stem in _WINDOWS_RESERVED or (
+        len(stem) == 4 and stem[:3] in {"COM", "LPT"} and stem[3] in "123456789"
+    )
+    if reserved:
+        raise GeometryError(f"{name} is reserved on Windows. Pick another folder name.")
+    return name
 
 
 def _op_parameters(ops: list) -> list[dict]:
@@ -887,4 +962,5 @@ def _empty_scene() -> dict:
         "faces": [],
         "edges": [],
         "bounding_box": {"min": [0.0, 0.0, 0.0], "max": [0.0, 0.0, 0.0]},
+        "unbuilt": [],
     }

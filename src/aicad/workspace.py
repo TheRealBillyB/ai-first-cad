@@ -603,6 +603,9 @@ def _cmd_insert(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_place(workspace: Workspace, arguments: dict) -> dict:
+    from aicad.studio import reject_placement
+
+    reject_placement(arguments.get("position"), arguments.get("rotation_deg"))
     info = workspace.document.place_part(arguments["name"], arguments["position"], arguments.get("rotation_deg"))
     return {"part": info.to_dict()}
 

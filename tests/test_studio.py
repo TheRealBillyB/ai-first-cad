@@ -1,6 +1,7 @@
 """Open, save, solid sizes, point measure, and the live-mode notes."""
 
 import json
+import os
 from http.client import HTTPConnection
 from pathlib import Path
 
@@ -172,6 +173,119 @@ def test_open_save_as_and_recent_projects(tmp_path, monkeypatch):
         workspace.execute("save_project_as", {"path": str(copy)})
     with pytest.raises(GeometryError, match="No folder"):
         workspace.execute("open_project", {"path": str(tmp_path / "missing")})
+
+
+def test_save_as_keeps_a_space_and_a_unicode_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    workspace = Workspace(tmp_path / "project")
+    _box(workspace)
+    empty = tmp_path / "already here"
+    empty.mkdir()
+    (empty / "notes.txt").write_text("keep", encoding="utf-8")
+    saved = workspace.execute("save_project_as", {"path": str(empty)})
+    assert Path(saved["path"]) == empty.resolve()
+    assert (empty / "notes.txt").read_text(encoding="utf-8") == "keep"
+    assert (empty / "session.json").is_file()
+    named = workspace.execute("save_project_as", {"path": str(tmp_path), "name": "my project"})
+    assert Path(named["path"]) == (tmp_path / "my project").resolve()
+    unicode_name = workspace.execute("save_project_as", {"path": str(tmp_path), "name": "零件 α"})
+    assert (tmp_path / "零件 α" / "session.json").is_file()
+    assert workspace.root == Path(unicode_name["path"])
+
+
+def test_save_as_refuses_names_windows_cannot_create(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    workspace = Workspace(tmp_path / "Project" / "job")
+    _box(workspace)
+    refused = (
+        ("", "folder name"),
+        ("   ", "folder name"),
+        ("trailing ", "space or a dot"),
+        ("my project.", "space or a dot"),
+        ("CON", "reserved"),
+        ("aux.txt", "reserved"),
+        ("COM1", "reserved"),
+        ("lpt9", "reserved"),
+        ("bad:name", "cannot contain"),
+        ("nested/child", "cannot contain"),
+    )
+    for name, message in refused:
+        with pytest.raises(GeometryError, match=message):
+            workspace.execute("save_project_as", {"path": str(tmp_path), "name": name})
+    assert workspace.root == (tmp_path / "Project" / "job").resolve()
+    real_normcase = os.path.normcase
+    monkeypatch.setattr(
+        "aicad.studio.os.path.normcase",
+        lambda value: real_normcase(str(value)).casefold(),
+    )
+    with pytest.raises(GeometryError, match="different folder"):
+        workspace.execute("save_project_as", {"path": str(tmp_path / "Project"), "name": "JOB"})
+    with pytest.raises(GeometryError, match="beside this project"):
+        workspace.execute("save_project_as", {"path": str(tmp_path), "name": "project"})
+
+
+def test_save_as_keeps_the_script_solid(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    workspace = Workspace(tmp_path / "project")
+    _box(workspace, "block", (10, 10, 10))
+    workspace.execute("create_part_from_script", {"name": "box", "script": "part = Box(2, 3, 4)\n"})
+    saved = workspace.execute("save_project_as", {"path": str(tmp_path), "name": "copy"})
+    copy = Workspace(saved["path"])
+    scene = copy.scene_mesh()
+    assert scene["unbuilt"] == []
+    assert "box" in scene["parts"]
+    assert scene["positions"]
+    for file in (Path(saved["path"]) / ".aicad" / "geometry").glob("*.step"):
+        file.unlink()
+    reopened = Workspace(saved["path"])
+    scene = reopened.scene_mesh()
+    assert scene["unbuilt"] == ["box"]
+    assert "block" in scene["parts"]
+    assert scene["positions"]
+
+
+def test_save_as_reports_a_folder_it_cannot_write(tmp_path, monkeypatch):
+    if os.geteuid() == 0:
+        pytest.skip("the root user ignores a read-only folder")
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    workspace = Workspace(tmp_path / "project")
+    _box(workspace)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o555)
+    try:
+        with pytest.raises(GeometryError, match="Could not save"):
+            workspace.execute("save_project_as", {"path": str(locked), "name": "copy"})
+        assert workspace.root == (tmp_path / "project").resolve()
+        assert not (locked / "copy" / "session.json").exists()
+    finally:
+        locked.chmod(0o755)
+
+
+def test_a_huge_size_or_move_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    workspace = Workspace(tmp_path / "project")
+    _box(workspace)
+    before = workspace.document.measure("block").bounding_box.size.x
+    for value, message in (
+        ("abc", "has to be a number"),
+        (-1, "greater than zero"),
+        (0, "greater than zero"),
+        (1e12, "1000000"),
+        (float("inf"), "finite"),
+    ):
+        with pytest.raises(GeometryError, match=message):
+            workspace.execute("set_parameter", {"name": "block", "parameter": "op/0/size.x", "value": value})
+    assert workspace.document.measure("block").bounding_box.size.x == pytest.approx(before)
+    with pytest.raises(GeometryError, match="1000000"):
+        workspace.execute("place_part", {"name": "block", "position": [1e15, 0, 0]})
+    with pytest.raises(GeometryError, match="finite"):
+        workspace.execute("place_part", {"name": "block", "position": [float("nan"), 0, 0]})
+    with pytest.raises(GeometryError, match="3600"):
+        workspace.execute("place_part", {"name": "block", "position": [0, 0, 0], "rotation_deg": [0, 0, 9000]})
+    assert workspace.document.get_source("block")["placement"]["position"] == [0.0, 0.0, 0.0]
+    workspace.execute("set_parameter", {"name": "block", "parameter": "op/0/size.x", "value": 1000000})
+    assert workspace.document.measure("block").bounding_box.size.x == pytest.approx(1000000)
 
 
 def test_folder_list_marks_a_project(tmp_path, monkeypatch):
