@@ -38,7 +38,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Measure is two clicks, and a third click adds the angle | Distance is the line between the first two points, and the angle is at the second point, so the same command works from a click or from coordinates. |
 | A size slider edits the number the solid was built from | An operation size, a sketch dimension, an extrude height, or a catalog length rebuilds the solid; a script or a STEP file has a placement and no such number. |
 | Open, Save, and Save As are folders, and undo stays the history | A project is the folder on disk, and named versions would be a second history beside the undo stack. |
-| Plan & Sketch keeps an empty panel on the project tree | The mount is `#plan-mount`. This change does not fill it. |
+| `#plan-mount` and `#plan-body` are filled by `plan.js` | `plan.js` sends the workspace session token. |
 
 ## 2026-10-21
 
