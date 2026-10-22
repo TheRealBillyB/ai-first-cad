@@ -88,7 +88,7 @@ def finite_number(
         raise GeometryError(f"{label} must be a positive number.")
     if bound is not None and abs(number) > bound:
         raise GeometryError(
-            f"{label} is {number:g} {unit}, past the {bound:g} {unit} limit. "
+            f"{label} is {number:.12g} {unit}, past the {bound:.12g} {unit} limit. "
             "Ordinary parts stay within a kilometer."
         )
     return number

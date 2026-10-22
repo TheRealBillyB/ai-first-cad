@@ -274,8 +274,10 @@ def test_bh_f06_a_failed_script_keeps_the_network_grant(tmp_path, config_home):
 
 def test_bh_f08_a_kilometer_box_is_rejected(tmp_path):
     document = Document(tmp_path)
-    with pytest.raises(AICADError):
+    with pytest.raises(AICADError, match="1e\\+15"):
         document.create_part_from_ops("huge", [{"op": "add", "shape": "box", "size": [1e15, 1e15, 1e15]}])
+    with pytest.raises(AICADError, match="1000001"):
+        document.create_part_from_ops("over", [{"op": "add", "shape": "box", "size": [1_000_001, 10, 10]}])
     assert document.list_parts() == []
     reopened = Document(tmp_path)
     assert reopened.list_parts() == []
