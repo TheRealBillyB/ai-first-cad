@@ -5,6 +5,8 @@ locations Python needs, and it may read and write only the project folder.
 The network is denied. CPU time comes from ``setrlimit``. The address-space
 cap is not applied: macOS maps a system library cache larger than that cap
 into every process, and setting the cap stops the script before it runs.
+The parent watches the script's resident memory instead and stops it above
+the same 4 GiB limit.
 Apple has deprecated ``sandbox-exec``. It is still the practical per-process
 profile that does not need a container or an extra install. If it is missing,
 or the limits cannot be set, the script is not run.
@@ -12,9 +14,11 @@ or the limits cannot be set, the script is not run.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import resource
 import shutil
+import subprocess
 from collections.abc import Callable, Sequence
 
 _SYSTEM_ROOTS = (
@@ -131,3 +135,99 @@ def identity_failures(cpu_seconds: int, memory_bytes: int) -> list[str]:
 
 def network_error_is_confined(error: OSError) -> bool:
     return error.errno in {getattr(os, "EPERM", 1), getattr(os, "EACCES", 13)}
+
+
+# proc_taskinfo from <libproc.h>. Resident size is the second 8-byte field.
+_PROC_PIDTASKINFO = 4
+
+
+class _ProcTaskInfo(ctypes.Structure):
+    _fields_ = [
+        ("pti_virtual_size", ctypes.c_uint64),
+        ("pti_resident_size", ctypes.c_uint64),
+        ("pti_total_user", ctypes.c_uint64),
+        ("pti_total_system", ctypes.c_uint64),
+        ("pti_threads_user", ctypes.c_uint64),
+        ("pti_threads_system", ctypes.c_uint64),
+        ("pti_policy", ctypes.c_int32),
+        ("pti_faults", ctypes.c_int32),
+        ("pti_pageins", ctypes.c_int32),
+        ("pti_cow_faults", ctypes.c_int32),
+        ("pti_messages_sent", ctypes.c_int32),
+        ("pti_messages_received", ctypes.c_int32),
+        ("pti_syscalls_mach", ctypes.c_int32),
+        ("pti_syscalls_unix", ctypes.c_int32),
+        ("pti_csw", ctypes.c_int32),
+        ("pti_threadnum", ctypes.c_int32),
+        ("pti_numrunning", ctypes.c_int32),
+        ("pti_priority", ctypes.c_int32),
+    ]
+
+
+_libproc = None
+_libproc_failed = False
+
+
+def _proc_pidinfo():
+    """The libproc handle, or None when this Mac will not load it."""
+    global _libproc, _libproc_failed
+    if _libproc_failed:
+        return None
+    if _libproc is not None:
+        return _libproc
+    try:
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        lib.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidinfo.restype = ctypes.c_int
+    except OSError:
+        _libproc_failed = True
+        return None
+    _libproc = lib
+    return lib
+
+
+def _resident_via_proc_pidinfo(pid: int) -> int | None:
+    lib = _proc_pidinfo()
+    if lib is None:
+        return None
+    info = _ProcTaskInfo()
+    written = lib.proc_pidinfo(pid, _PROC_PIDTASKINFO, 0, ctypes.byref(info), ctypes.sizeof(info))
+    if written < 16:
+        return None
+    return int(info.pti_resident_size)
+
+
+def _resident_via_ps(pid: int) -> int | None:
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    text = completed.stdout.strip().split()
+    if not text:
+        return None
+    try:
+        # ps reports resident memory in kilobytes.
+        return int(text[0]) * 1024
+    except ValueError:
+        return None
+
+
+def resident_bytes(pid: int) -> int | None:
+    """Resident memory of one process, in bytes. None if it is already gone."""
+    if pid <= 0:
+        return None
+    size = _resident_via_proc_pidinfo(pid)
+    if size is not None:
+        return size
+    return _resident_via_ps(pid)

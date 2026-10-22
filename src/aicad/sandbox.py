@@ -2,11 +2,12 @@
 
 Linux confines the process with Landlock (files, TCP, and signals) and a small
 seccomp filter (every other socket, and starting a new session). macOS uses
-``sandbox-exec`` and ``setrlimit`` for CPU time. Windows uses an AppContainer
-and a Job Object. CPU time, memory, and a wall-clock limit are set on that
-process. macOS does not set the address-space cap, because the system library
-cache is already larger than it. If the limits that do apply cannot be
-applied, the script is not run.
+``sandbox-exec`` and ``setrlimit`` for CPU time. The parent watches the
+script's resident memory and stops it above the memory cap, because the
+address-space cap counts a system library cache and was stopping every script.
+Windows uses an AppContainer and a Job Object. CPU time, memory, and a
+wall-clock limit are set on that process. If those limits cannot be applied,
+the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
@@ -26,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,6 +93,8 @@ _ESCAPE_SYSCALLS = {
     "x86_64": (112, 109),
     "aarch64": (157, 154),
 }
+# How often the macOS parent checks the script's resident memory.
+_MEMORY_POLL_SECONDS = 0.25
 _LANDLOCK_SCOPE_SIGNAL = 1 << 1
 
 _SECRET_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
@@ -855,8 +859,31 @@ def _descendants(leader: int) -> set[int]:
     return found
 
 
-def _watch_descendants(leader: int, seen: set[int], lock: threading.Lock, stop: threading.Event) -> None:
-    """Remember children, and kill any that leave the script's process group."""
+def _tree_resident_bytes(leader: int, children: set[int]) -> int | None:
+    """Resident bytes of the script and the children still running under it."""
+    from aicad.sandbox_macos import resident_bytes
+
+    leader_size = resident_bytes(leader)
+    if leader_size is None:
+        return None
+    total = leader_size
+    for pid in children:
+        extra = resident_bytes(pid)
+        if extra:
+            total += extra
+    return total
+
+
+def _watch_descendants(
+    leader: int,
+    seen: set[int],
+    lock: threading.Lock,
+    stop: threading.Event,
+    memory_cap: int | None = None,
+    memory_hit: threading.Event | None = None,
+) -> None:
+    """Remember children, kill any that leave the group, and enforce the macOS memory cap."""
+    next_sample = 0.0
     while not stop.is_set():
         try:
             found = _descendants(leader)
@@ -873,6 +900,14 @@ def _watch_descendants(leader: int, seen: set[int], lock: threading.Lock, stop: 
             seen.update(found)
         for pid in escaped:
             _kill_pid(pid)
+        if memory_cap is not None and time.monotonic() >= next_sample:
+            next_sample = time.monotonic() + _MEMORY_POLL_SECONDS
+            used = _tree_resident_bytes(leader, found)
+            if used is not None and used > memory_cap:
+                if memory_hit is not None:
+                    memory_hit.set()
+                _kill_process_tree(leader, seen, lock)
+                return
         stop.wait(0.02)
 
 
@@ -929,6 +964,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     watcher: threading.Thread | None = None
     seen: set[int] = set()
     seen_lock = threading.Lock()
+    memory_hit = threading.Event()
+    memory_cap = memory_bytes() if sys.platform == "darwin" else None
     try:
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
@@ -961,7 +998,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         stop_watch = threading.Event()
         watcher = threading.Thread(
             target=_watch_descendants,
-            args=(proc.pid, seen, seen_lock, stop_watch),
+            args=(proc.pid, seen, seen_lock, stop_watch, memory_cap, memory_hit),
             name="aicad-sandbox-reap",
             daemon=True,
         )
@@ -979,7 +1016,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             proc.returncode if proc.returncode is not None else -1,
             stdout_b.decode("utf-8", "replace"),
             stderr_b.decode("utf-8", "replace"),
-            memory_killed=False,
+            memory_killed=memory_hit.is_set(),
         )
     finally:
         if stop_watch is not None:
@@ -1000,6 +1037,9 @@ def _payload_from_result(
     *,
     memory_killed: bool,
 ) -> dict:
+    if memory_killed:
+        shutil.rmtree(job, ignore_errors=True)
+        raise ScriptError("The script was stopped because it hit the memory or CPU limit.")
     result_path = job / "result.json"
     if not result_path.is_file():
         tail = stderr[-2000:]

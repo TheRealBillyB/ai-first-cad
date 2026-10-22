@@ -227,6 +227,31 @@ def test_windows_sandbox_is_an_appcontainer(tmp_path, config_home):
     _assert_confined(probe["tcp"])
 
 
+@pytest.mark.sandbox_windows
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process rights")
+def test_windows_script_cannot_open_its_parent(tmp_path, config_home):
+    """Direct OpenProcess / TerminateProcess on this aicad process is denied."""
+    script = (
+        "import ctypes\n"
+        "from ctypes import wintypes\n"
+        "import aicad.sandbox as sandbox\n"
+        "kernel = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]\n"
+        "kernel.OpenProcess.restype = wintypes.HANDLE\n"
+        "kernel.CloseHandle.argtypes = [wintypes.HANDLE]\n"
+        "rights = 0x0001 | 0x1000\n"
+        "handle = kernel.OpenProcess(rights, False, sandbox.os.getppid())\n"
+        "if handle:\n"
+        "    kernel.CloseHandle(handle)\n"
+        "    open('open.txt', 'w', encoding='utf-8').write('opened')\n"
+        "else:\n"
+        "    open('open.txt', 'w', encoding='utf-8').write('denied:%s' % ctypes.get_last_error())\n"
+        "part = Box(1, 1, 1)\n"
+    )
+    run_part_script(script, tmp_path)
+    assert (tmp_path / "open.txt").read_text(encoding="utf-8").startswith("denied")
+
+
 def test_wall_clock_limit_stops_the_script(tmp_path, config_home, monkeypatch):
     monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "2")
     monkeypatch.setenv("AICAD_SCRIPT_CPU_SECONDS", "30")
@@ -241,14 +266,6 @@ def test_cpu_or_memory_limit_stops_the_script(tmp_path, config_home, monkeypatch
         run_part_script("while True:\n    pass\n", tmp_path)
 
 
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason=(
-        "macOS maps a system library cache larger than the memory cap into every "
-        "process, so the address-space limit is not applied. CPU time and the "
-        "wall clock still stop a script."
-    ),
-)
 def test_memory_limit_stops_a_huge_allocation(tmp_path, config_home, monkeypatch):
     monkeypatch.setenv("AICAD_SCRIPT_MEMORY_MB", "256")
     monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "60")

@@ -622,6 +622,171 @@ def _job_memory_killed(job: wintypes.HANDLE, memory_bytes: int) -> bool:
     return peak >= int(memory_bytes * 0.85)
 
 
+# Rights a script must not hold on this aicad process. A deny entry is checked
+# before any allow, so OpenProcess and TerminateProcess fail for these.
+_PROCESS_DENY_MASK = (
+    0x0001  # PROCESS_TERMINATE
+    | 0x0002  # PROCESS_CREATE_THREAD
+    | 0x0008  # PROCESS_VM_OPERATION
+    | 0x0010  # PROCESS_VM_READ
+    | 0x0020  # PROCESS_VM_WRITE
+    | 0x0040  # PROCESS_DUP_HANDLE
+    | 0x0080  # PROCESS_CREATE_PROCESS
+    | 0x0100  # PROCESS_SET_QUOTA
+    | 0x0200  # PROCESS_SET_INFORMATION
+    | 0x0400  # PROCESS_QUERY_INFORMATION
+    | 0x0800  # PROCESS_SUSPEND_RESUME
+    | 0x1000  # PROCESS_QUERY_LIMITED_INFORMATION
+)
+_SE_KERNEL_OBJECT = 6
+_DACL_SECURITY_INFORMATION = 0x4
+_DENY_ACCESS = 3
+_TRUSTEE_IS_SID = 0
+# Every AppContainer, and the less-privileged variant. The script's own package
+# id is denied as well, in case a future token does not carry these groups.
+_APP_PACKAGE_SIDS = ("S-1-15-2-1", "S-1-15-2-2")
+_process_deny_applied = False
+
+
+class _Trustee(ctypes.Structure):
+    _fields_ = [
+        ("pMultipleTrustee", ctypes.c_void_p),
+        ("MultipleTrusteeOperation", ctypes.c_int),
+        ("TrusteeForm", ctypes.c_int),
+        ("TrusteeType", ctypes.c_int),
+        ("ptstrName", ctypes.c_void_p),
+    ]
+
+
+class _ExplicitAccess(ctypes.Structure):
+    _fields_ = [
+        ("grfAccessPermissions", wintypes.DWORD),
+        ("grfAccessMode", wintypes.DWORD),
+        ("grfInheritance", wintypes.DWORD),
+        ("Trustee", _Trustee),
+    ]
+
+
+def deny_script_process_access(package_sid: str) -> None:
+    """Deny the script's container the right to open this process.
+
+    A Job Object cannot stop OpenProcess on a process outside the job.
+    An AppContainer can open an object only when that object's access list
+    grants the container. The denial here makes OpenProcess and
+    TerminateProcess fail for this aicad process even if Windows had granted
+    them. If the denial cannot be written, the script is not run.
+    """
+    global _process_deny_applied
+    if _process_deny_applied:
+        return
+    _bind()
+    advapi32 = _advapi32()
+    kernel32 = _kernel32()
+    advapi32.GetSecurityInfo.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetSecurityInfo.restype = wintypes.DWORD
+    advapi32.SetSecurityInfo.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    advapi32.SetSecurityInfo.restype = wintypes.DWORD
+    advapi32.SetEntriesInAclW.argtypes = [
+        wintypes.ULONG,
+        ctypes.POINTER(_ExplicitAccess),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.SetEntriesInAclW.restype = wintypes.DWORD
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    sids: list[ctypes.c_void_p] = []
+    descriptor = ctypes.c_void_p()
+    new_acl = ctypes.c_void_p()
+    try:
+        for text in (package_sid, *_APP_PACKAGE_SIDS):
+            sid = ctypes.c_void_p()
+            if not advapi32.ConvertStringSidToSidW(text, ctypes.byref(sid)):
+                raise OSError(_win_error(f"Could not read the sandbox id {text}"))
+            sids.append(sid)
+        entries = (_ExplicitAccess * len(sids))()
+        for index, sid in enumerate(sids):
+            entries[index].grfAccessPermissions = _PROCESS_DENY_MASK
+            entries[index].grfAccessMode = _DENY_ACCESS
+            entries[index].grfInheritance = 0
+            entries[index].Trustee.TrusteeForm = _TRUSTEE_IS_SID
+            entries[index].Trustee.ptstrName = sid.value
+        owner = ctypes.c_void_p()
+        group = ctypes.c_void_p()
+        dacl = ctypes.c_void_p()
+        sacl = ctypes.c_void_p()
+        status = advapi32.GetSecurityInfo(
+            kernel32.GetCurrentProcess(),
+            _SE_KERNEL_OBJECT,
+            _DACL_SECURITY_INFORMATION,
+            ctypes.byref(owner),
+            ctypes.byref(group),
+            ctypes.byref(dacl),
+            ctypes.byref(sacl),
+            ctypes.byref(descriptor),
+        )
+        if status != 0:
+            raise OSError(
+                "Windows could not read this process's access list "
+                f"(error {status}), so the script was not run."
+            )
+        if not dacl.value:
+            raise OSError(
+                "Windows did not give this process an access list to deny the script, "
+                "so the script was not run."
+            )
+        status = advapi32.SetEntriesInAclW(
+            len(sids),
+            entries,
+            dacl,
+            ctypes.byref(new_acl),
+        )
+        if status != 0 or not new_acl.value:
+            raise OSError(
+                "Windows could not deny the script the right to open this process "
+                f"(error {status}), so the script was not run."
+            )
+        status = advapi32.SetSecurityInfo(
+            kernel32.GetCurrentProcess(),
+            _SE_KERNEL_OBJECT,
+            _DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            new_acl,
+            None,
+        )
+        if status != 0:
+            raise OSError(
+                "Windows could not deny the script the right to open this process "
+                f"(error {status}), so the script was not run."
+            )
+        _process_deny_applied = True
+    finally:
+        for sid in sids:
+            kernel32.LocalFree(sid)
+        if new_acl.value:
+            kernel32.LocalFree(new_acl)
+        if descriptor.value:
+            kernel32.LocalFree(descriptor)
+
+
 def spawn(
     command: list[str],
     *,
@@ -644,6 +809,7 @@ def spawn(
     job = None
     process = None
     try:
+        deny_script_process_access(sid_text)
         grant_workspace(workspace, sid_text)
         job = _create_job(cpu_seconds, memory_bytes)
         process = _launch(

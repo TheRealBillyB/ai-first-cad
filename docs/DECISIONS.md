@@ -8,6 +8,8 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| The script cannot open this aicad process on Windows | A job cannot block OpenProcess; the AppContainer is denied that right on this process. |
+| macOS stops a script whose resident memory passes 4 GiB | The parent checks that a few times a second, because the address-space cap was stopping every script. |
 | A failed design script keeps the one-shot network grant | The grant is spent only when that script finishes without an error. |
 | Linux does not hide another process's `/proc` command line | Remounting `/proc` from the sandbox is refused, and Python still needs `/proc` for itself. |
 | macOS does not set the 4 GiB address cap | The system library cache is already larger, and the cap was stopping every script. |
