@@ -6,29 +6,39 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu stays on 3.12, which is what the Linux suite was written against.
+          # Windows and macOS use 3.11 because the sketch solver publishes wheels
+          # for 3.11 and not for 3.12. 3.12 on those systems would have to compile it.
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.11"
+          - os: macos-latest
+            python: "3.11"
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
-      - name: Install CalculiX and the libraries the geometry kernel loads
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            calculix-ccx \
-            libgl1 libglu1-mesa libglib2.0-0 \
-            libx11-6 libxext6 libxrender1 libxcursor1 libxfixes3 libxft2 libxinerama1 \
-            libfontconfig1 \
-            build-essential python3-dev
+          python-version: ${{ matrix.python }}
 
       - name: Install aicad
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,robot]"
+        run: python install.py
 
-      - name: Run the test suite, including MCP parity and the script sandbox
-        run: pytest
+      - name: Check the install and CalculiX
+        run: python install.py --check
+
+      - name: Run the test suite
+        shell: bash
+        run: |
+          if [ -x .venv/bin/pytest ]; then
+            exec .venv/bin/pytest
+          fi
+          exec .venv/Scripts/pytest.exe

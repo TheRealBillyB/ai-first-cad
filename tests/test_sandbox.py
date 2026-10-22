@@ -1,7 +1,12 @@
-"""Design scripts stay in the project, and opening a project does not run them."""
+"""Design scripts stay in the project, and opening a project does not run them.
+
+These tests run on Linux, macOS, and Windows. Each machine has to confine the
+probe with its own sandbox. A missing file does not count as confined.
+"""
 
 import asyncio
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -168,13 +173,58 @@ print(" | ".join(errors))
     assert '"ok": true' in log
 
 
+# EPERM, EACCES, ENETUNREACH, and the Windows access-denied socket codes.
+# ENOENT (2) is a missing path, not a sandbox.
+_CONFINED_ERRNOS = {1, 13, 101, 10013, 10051}
+
+
+def _assert_confined(label: str) -> None:
+    assert label.startswith("denied:"), label
+    code = int(label.rsplit(":", 1)[1])
+    assert code in _CONFINED_ERRNOS, label
+
+
+@pytest.mark.sandbox
 def test_os_probe_blocks_network_and_outside_files(tmp_path, config_home):
     probe = os_probe(tmp_path)
-    assert probe["read_outside"].startswith("denied")
-    assert probe["write_outside"].startswith("denied")
+    _assert_confined(probe["read_outside"])
+    _assert_confined(probe["write_outside"])
     assert probe["write_inside"] == "ok"
-    assert probe["tcp"].startswith("denied")
-    assert probe["udp"].startswith("denied")
+    _assert_confined(probe["tcp"])
+    _assert_confined(probe["udp"])
+    if sys.platform.startswith("linux"):
+        assert probe["mechanism"] == "landlock+seccomp"
+    elif sys.platform == "darwin":
+        assert probe["mechanism"] == "seatbelt"
+    elif sys.platform == "win32":
+        assert probe["mechanism"] == "appcontainer+job"
+
+
+@pytest.mark.sandbox_linux
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux Landlock sandbox")
+def test_linux_sandbox_is_landlock_and_seccomp(tmp_path, config_home):
+    probe = os_probe(tmp_path)
+    assert probe["mechanism"] == "landlock+seccomp"
+    _assert_confined(probe["read_outside"])
+    _assert_confined(probe["udp"])
+
+
+@pytest.mark.sandbox_macos
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS Seatbelt sandbox")
+def test_macos_sandbox_is_seatbelt(tmp_path, config_home):
+    probe = os_probe(tmp_path)
+    assert probe["mechanism"] == "seatbelt"
+    _assert_confined(probe["read_outside"])
+    _assert_confined(probe["tcp"])
+
+
+@pytest.mark.sandbox_windows
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows AppContainer sandbox")
+def test_windows_sandbox_is_an_appcontainer(tmp_path, config_home):
+    probe = os_probe(tmp_path)
+    assert probe["mechanism"] == "appcontainer+job"
+    _assert_confined(probe["read_outside"])
+    _assert_confined(probe["tcp"])
 
 
 def test_wall_clock_limit_stops_the_script(tmp_path, config_home, monkeypatch):

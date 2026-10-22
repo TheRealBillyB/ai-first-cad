@@ -19,68 +19,33 @@ If you want the full command list, it is in [README.md](README.md).
 
 ## Install on your own computer
 
-You need Python 3.11 or newer. The geometry library is large (a few hundred megabytes). A C++ compiler is only needed if pip cannot find a prebuilt wheel for the sketch solver.
+You need Python 3.11 or newer. On Windows, install 3.11 from [python.org](https://www.python.org/downloads/) and turn on **Add python.exe to PATH**. On a Mac, `python3 --version` should say 3.11 or newer. Use 3.11 on Windows and Mac when you can: the sketch solver has a ready-made package for 3.11, and 3.12 needs a C++ compiler. The geometry library is large (a few hundred megabytes).
 
-### Windows
-
-1. Install Python from [python.org](https://www.python.org/downloads/). On the first installer screen, turn on **Add python.exe to PATH**.
-2. Download this project (the green Code button on GitHub, or `git clone` if you use Git) and open PowerShell in that folder.
-3. Create a virtual environment and install:
-
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -e ".[dev,robot]"
-```
-
-If PowerShell refuses the activate script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then try the activate line again.
-
-4. Check that the command exists:
-
-```powershell
-aicad --help
-```
-
-### Mac
-
-1. Install Python 3.11 or newer from [python.org](https://www.python.org/downloads/) if `python3 --version` is older than 3.11.
-2. Open Terminal in the project folder and run:
+Download this project and open a terminal in that folder. One command installs aicad:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e ".[dev,robot]"
-aicad --help
+python install.py
 ```
 
-### Linux
+On Windows, if `python` is not found, use `py install.py`. On a Mac, if `python` is the wrong version, use `python3 install.py`.
 
-1. Install Python 3.11 or newer. On Ubuntu or Debian the venv module is a separate package, so install it before creating the environment:
+The command creates a `.venv` folder and installs aicad into it, including the robot extra. On Ubuntu or Debian it also installs the system libraries and CalculiX when it is allowed to use `sudo` without a password. When it finishes, it prints how to turn the environment on. Then try `aicad --help`.
 
-```bash
-sudo apt-get update
-sudo apt-get install -y python3-venv
-```
+If PowerShell refuses the activate script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then try the activate line the installer printed.
 
-`python3-venv` is the package name. If that is not available, install the one that matches `python3 --version`, such as `python3.12-venv`. Without it, `python3 -m venv .venv` stops with `ensurepip is not available`.
+### CalculiX
 
-2. Open a terminal in the project folder and run:
+Strength and vibration checks need the CalculiX program `ccx`. Modeling, the app, print prep, and assemblies work without it. `python install.py` tells you if `ccx` is missing and prints the install command for your system. It does not download CalculiX. aicad only starts `ccx` as a separate program.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e ".[dev,robot]"
-aicad --help
-```
+- Ubuntu or Debian: `sudo apt-get install -y calculix-ccx`
+- Mac: `brew install costerwi/homebrew-calculix/calculix-ccx`
+- Windows, Mac, or Linux, if you use conda: `conda install conda-forge::calculix`
+- Windows without conda: install a build from the [CalculiX-Windows releases](https://github.com/calculix/CalculiX-Windows/releases) and add the folder that contains `ccx.exe` to PATH
 
-3. Strength and vibration checks also need CalculiX: `sudo apt-get install -y calculix-ccx`. If pip has to compile the sketch solver, install `build-essential` and `python3-dev` as well.
+Open a new terminal after installing it and run `ccx`. Until that command is found, those two checks say the solver is missing.
 
-### What the extra installs are for
+### What else is optional
 
-- **CalculiX (`ccx`)** runs the strength check and the vibration check. Modeling, print prep, assemblies, and the robot export all work without it. On Ubuntu or Debian: `sudo apt-get install -y calculix-ccx`. On Windows and Mac, install a CalculiX build and make sure `ccx` is on your PATH. Until then, those two checks report that the solver is missing.
 - **PrusaSlicer** adds print time and filament grams. Install it from Prusa's site and make sure the `prusa-slicer` command is on your PATH (on Windows that is `prusa-slicer.exe` in a folder Python can see). If the command is missing, the overhang map and the printer-fit check still run, and the report says the time estimate was skipped.
 - **MuJoCo** is the `robot` extra above. After an export, the program loads the file and takes a few steps so you know the robot file is readable. Without MuJoCo the URDF and MJCF files are still written.
 

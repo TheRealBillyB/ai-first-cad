@@ -8,6 +8,11 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| CI uses Python 3.12 on Ubuntu and 3.11 on Windows and macOS | The sketch solver publishes Windows and Mac wheels for 3.11 and not for 3.12, so 3.12 on those systems has to be compiled. |
+| Windows confinement is an AppContainer plus a Job Object | A restricted token cannot read Python without changing system file permissions; the container blocks the user profile and the network, and the job caps memory, CPU time, and child processes. |
+| macOS confinement is `sandbox-exec` plus `setrlimit` | Apple has deprecated `sandbox-exec`, and it is still the practical file and network profile that does not need a container. |
+| One install command is `python install.py` | It creates the virtual environment and installs aicad on Windows, Mac, and Linux. |
+| CalculiX stays a separate `ccx` program; the installer detects it and prints the command | aicad must not link GPL-2.0-only CalculiX, and the Python install does not download it. |
 | An approval is a receipt on this computer, not the word approved in the project file | A downloaded or hand-edited plan can say approved; modeling stays off until approve-plan on this machine records that revision. |
 | Plans are JSON and PNG in the project `plans/` folder, never scripts in the session | Opening a project must not run planning notes; a design file stays data until someone asks to run code. |
 | A revision is cut only by revise, and it records what changed | Earlier revisions stay, and each one says what changed. |

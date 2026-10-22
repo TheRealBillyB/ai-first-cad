@@ -113,17 +113,22 @@ class ScriptDocument:
 def _probe(workspace: Path, job: Path) -> int:
     import socket
 
+    from aicad.sandbox import denied_probe_label
+
+    spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
+    read_path = str(spec.get("probe_read") or "/etc/passwd")
+    write_path = str(spec.get("probe_write") or "/tmp/aicad-sandbox-outside")
     found: dict[str, str] = {}
     try:
-        open("/etc/passwd", encoding="utf-8").read(1)
+        open(read_path, encoding="utf-8").read(1)
         found["read_outside"] = "opened"
     except OSError as exc:
-        found["read_outside"] = f"denied:{exc.errno}"
+        found["read_outside"] = denied_probe_label(exc)
     try:
-        open("/tmp/aicad-sandbox-outside", "w", encoding="utf-8").write("x")
+        open(write_path, "w", encoding="utf-8").write("x")
         found["write_outside"] = "wrote"
     except OSError as exc:
-        found["write_outside"] = f"denied:{exc.errno}"
+        found["write_outside"] = denied_probe_label(exc)
     inside = workspace / "probe_inside.txt"
     inside.write_text("ok", encoding="utf-8")
     found["write_inside"] = inside.read_text(encoding="utf-8")
@@ -133,13 +138,21 @@ def _probe(workspace: Path, job: Path) -> int:
         stream.connect(("1.1.1.1", 80))
         found["tcp"] = "connected"
     except OSError as exc:
-        found["tcp"] = f"denied:{exc.errno}"
+        found["tcp"] = denied_probe_label(exc)
     try:
         packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         packet.sendto(b"x", ("1.1.1.1", 53))
         found["udp"] = "sent"
     except OSError as exc:
-        found["udp"] = f"denied:{exc.errno}"
+        found["udp"] = denied_probe_label(exc)
+    if sys.platform == "win32":
+        found["mechanism"] = "appcontainer+job"
+    elif sys.platform == "darwin":
+        found["mechanism"] = "seatbelt"
+    elif sys.platform.startswith("linux"):
+        found["mechanism"] = "landlock+seccomp"
+    else:
+        found["mechanism"] = sys.platform
     _write(job, {"ok": True, "probe": found})
     return 0
 

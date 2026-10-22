@@ -41,3 +41,9 @@ aicad = ["py.typed", "app_static/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "sandbox: design-script confinement, run on every operating system",
+    "sandbox_linux: Linux Landlock and seccomp sandbox",
+    "sandbox_macos: macOS Seatbelt sandbox",
+    "sandbox_windows: Windows AppContainer and Job Object sandbox",
+]

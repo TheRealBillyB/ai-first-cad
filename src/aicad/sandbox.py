@@ -1,8 +1,10 @@
 """Run an assistant's Python in a separate process that cannot leave the project.
 
 Linux confines the process with Landlock (files and TCP) and a small seccomp
-filter (every other socket). CPU time, memory, and a wall-clock limit are set
-on that process. If those limits cannot be applied, the script is not run.
+filter (every other socket). macOS uses ``sandbox-exec`` and ``setrlimit``.
+Windows uses an AppContainer and a Job Object. CPU time, memory, and a
+wall-clock limit are set on that process. If those limits cannot be applied,
+the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
@@ -192,6 +194,16 @@ def _libc():
 
 def sandbox_supported() -> tuple[bool, str]:
     """Whether this machine can confine a script. The second value is the reason it cannot."""
+    if sys.platform == "darwin":
+        from aicad.sandbox_macos import availability_error
+
+        reason = availability_error()
+        return (True, "") if reason is None else (False, reason)
+    if sys.platform == "win32":
+        from aicad.sandbox_windows import availability_error
+
+        reason = availability_error(_read_roots())
+        return (True, "") if reason is None else (False, reason)
     if not sys.platform.startswith("linux"):
         return False, (
             "This computer cannot keep a script inside the project folder with the network off, "
@@ -562,11 +574,60 @@ def _block_sockets() -> None:
         raise ScriptError("Could not turn the network off for the script, so the script was not run.")
 
 
+def confined_errno(error: OSError) -> bool:
+    """True when this error is the operating system refusing the sandbox, not a timeout."""
+    winerror = getattr(error, "winerror", None)
+    if winerror in {5, 10013, 10051}:
+        return True
+    return error.errno in {1, 13, 101}
+
+
+def denied_probe_label(error: OSError) -> str:
+    code = error.errno
+    winerror = getattr(error, "winerror", None)
+    if code not in {1, 13, 101} and winerror in {5, 10013, 10051}:
+        code = 13 if winerror == 5 else winerror
+    return f"denied:{code}"
+
+
+def _file_blocked(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            handle.read(1)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        return confined_errno(exc)
+    return False
+
+
+def _network_blocked() -> bool:
+    import socket
+
+    tcp = socket.socket()
+    tcp.settimeout(2)
+    try:
+        tcp.connect(("1.1.1.1", 443))
+    except OSError as exc:
+        tcp_blocked = confined_errno(exc)
+    else:
+        tcp_blocked = False
+    finally:
+        tcp.close()
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        udp.sendto(b"x", ("1.1.1.1", 53))
+    except OSError as exc:
+        udp_blocked = confined_errno(exc)
+    else:
+        udp_blocked = False
+    finally:
+        udp.close()
+    return tcp_blocked and udp_blocked
+
+
 def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     """Confine the current process. Called only in the script's child process."""
-    ok, reason = sandbox_supported()
-    if not ok:
-        raise ScriptError(reason)
     workspace = workspace.resolve()
     temporary = workspace / ".aicad" / "tmp"
     temporary.mkdir(parents=True, exist_ok=True)
@@ -575,6 +636,31 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     os.environ["TEMP"] = str(temporary)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     roots = _read_roots()
+    if sys.platform == "win32":
+        from aicad.sandbox_windows import identity_failures
+
+        failures = identity_failures(memory_bytes())
+        if failures:
+            raise ScriptError(
+                "Windows did not confine the script ("
+                + "; ".join(failures)
+                + "), so the script was not run."
+            )
+        if not network and not _network_blocked():
+            raise ScriptError("Windows did not turn the network off, so the script was not run.")
+        return roots
+    if sys.platform == "darwin":
+        _set_limits()
+        if not _file_blocked("/etc/passwd"):
+            raise ScriptError(
+                "macOS did not confine the script to the project folder, so the script was not run."
+            )
+        if not network and not _network_blocked():
+            raise ScriptError("macOS did not turn the network off, so the script was not run.")
+        return roots
+    ok, reason = sandbox_supported()
+    if not ok:
+        raise ScriptError(reason)
     _set_limits()
     _landlock(workspace, network=network, read_roots=roots)
     if not network:
@@ -603,6 +689,30 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     return env
 
 
+def _make_probe(workspace: Path) -> tuple[Path, str, str]:
+    """A file and a write target outside the project, so the probe cannot mistake a missing path for a block."""
+    candidates = [Path(tempfile.gettempdir()).resolve()]
+    try:
+        candidates.append(Path.home().resolve())
+    except OSError:
+        pass
+    if workspace.parent != workspace:
+        candidates.append(workspace.parent)
+    base = candidates[0]
+    for candidate in candidates:
+        if candidate == workspace or _inside(candidate, workspace):
+            continue
+        if os.access(candidate, os.W_OK):
+            base = candidate
+            break
+    root = Path(tempfile.mkdtemp(prefix="aicad-probe-", dir=base))
+    secret = root / "secret.txt"
+    secret.write_text("aicad-confinement-probe\n", encoding="utf-8")
+    writes = root / "writes"
+    writes.mkdir()
+    return root, str(secret), str(writes / "escaped.txt")
+
+
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
@@ -612,38 +722,100 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     job = workspace / ".aicad" / "jobs" / uuid.uuid4().hex
     job.mkdir(parents=True, exist_ok=True)
     (workspace / ".aicad" / "tmp").mkdir(parents=True, exist_ok=True)
-    (job / "job.json").write_text(json.dumps({"kind": kind, "network": network}) + "\n", encoding="utf-8")
+    spec: dict = {"kind": kind, "network": network}
+    probe_root = None
+    if kind == "probe":
+        probe_root, spec["probe_read"], spec["probe_write"] = _make_probe(workspace)
+    (job / "job.json").write_text(json.dumps(spec) + "\n", encoding="utf-8")
     if script is not None:
         (job / "script.py").write_text(script, encoding="utf-8")
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "aicad.sandbox_run", str(job)],
-        cwd=str(workspace),
-        env=_child_env(workspace, job, network),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    command = [sys.executable, "-m", "aicad.sandbox_run", str(job)]
+    profile_path: Path | None = None
+    if sys.platform == "darwin":
+        from aicad.sandbox_macos import build_profile, command_prefix
+
+        profile = build_profile(
+            [str(path) for path in _read_roots()],
+            [str(workspace)],
+            network=network,
+        )
+        descriptor, name = tempfile.mkstemp(prefix="aicad-seatbelt-", suffix=".sb")
+        os.close(descriptor)
+        profile_path = Path(name)
+        profile_path.write_text(profile, encoding="utf-8")
+        command = [*command_prefix(str(profile_path)), *command]
     wall = wall_seconds()
     try:
-        stdout, stderr = proc.communicate(timeout=wall)
-    except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
-        shutil.rmtree(job, ignore_errors=True)
-        raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.") from None
+        if sys.platform == "win32":
+            from aicad.sandbox_windows import spawn as windows_spawn
+
+            code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
+                command,
+                cwd=str(workspace),
+                env=_child_env(workspace, job, network),
+                read_paths=_read_roots(),
+                workspace=workspace,
+                cpu_seconds=cpu_seconds(),
+                memory_bytes=memory_bytes(),
+                network=network,
+                timeout_seconds=wall,
+                stdout_path=job / "stdout.txt",
+                stderr_path=job / "stderr.txt",
+            )
+            if timed_out:
+                shutil.rmtree(job, ignore_errors=True)
+                raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.")
+            return _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
+        proc = subprocess.Popen(
+            command,
+            cwd=str(workspace),
+            env=_child_env(workspace, job, network),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout_b, stderr_b = proc.communicate(timeout=wall)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            shutil.rmtree(job, ignore_errors=True)
+            raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.") from None
+        return _payload_from_result(
+            job,
+            proc.returncode if proc.returncode is not None else -1,
+            stdout_b.decode("utf-8", "replace"),
+            stderr_b.decode("utf-8", "replace"),
+            memory_killed=False,
+        )
+    finally:
+        if profile_path is not None:
+            profile_path.unlink(missing_ok=True)
+        if probe_root is not None:
+            shutil.rmtree(probe_root, ignore_errors=True)
+
+
+def _payload_from_result(
+    job: Path,
+    code: int,
+    stdout: str,
+    stderr: str,
+    *,
+    memory_killed: bool,
+) -> dict:
     result_path = job / "result.json"
     if not result_path.is_file():
-        tail = stderr.decode("utf-8", errors="replace")[-2000:]
+        tail = stderr[-2000:]
         shutil.rmtree(job, ignore_errors=True)
-        if proc.returncode is not None and proc.returncode < 0:
+        if memory_killed or code < 0:
             raise ScriptError(
                 "The script was stopped because it hit the memory or CPU limit."
                 + (f"\n{tail}" if tail.strip() else "")
             )
-        detail = tail.strip() or stdout.decode("utf-8", errors="replace")[-2000:].strip()
+        detail = tail.strip() or stdout[-2000:].strip()
         raise ScriptError(
             "The script stopped before it could report a result."
-            + (f"\n{detail}" if detail else "")
+            + (f"\n{detail}" if detail else f"\nexit {code}")
         )
     try:
         payload = json.loads(result_path.read_text(encoding="utf-8"))

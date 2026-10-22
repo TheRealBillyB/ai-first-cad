@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import math
 import re
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -109,8 +108,11 @@ _ALIASES = {
 
 def fea_available() -> tuple[bool, str]:
     """Whether this machine can mesh with Gmsh and solve with CalculiX."""
-    if shutil.which("ccx") is None:
-        return False, "CalculiX (the `ccx` executable) is not on PATH. Install the calculix-ccx package."
+    from aicad import prereqs
+
+    status = prereqs.ccx_status()
+    if not status.found:
+        return False, status.message
     try:
         import gmsh  # noqa: F401
     except ImportError:

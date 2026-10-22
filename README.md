@@ -46,24 +46,25 @@ Units are millimeters. Forces are newtons, so a stress from the solver is in meg
 
 ## Install
 
-You need Python 3.11 or newer. The OpenCascade wheel that build123d depends on is large.
+You need Python 3.11 or newer. On Windows and Mac, use 3.11 if you can: the sketch solver has a ready-made package for 3.11, and 3.12 needs a C++ compiler. The OpenCascade wheel that build123d depends on is large. From the project folder, one command creates a virtual environment and installs aicad, including the robot extra:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-pytest
+python install.py
 ```
 
 On Ubuntu or Debian, `python -m venv` needs the `python3-venv` package (`sudo apt-get install -y python3-venv`) before that first command. The package that matches your Python, such as `python3.12-venv`, is the one that provides `ensurepip`.
 
-The sketch solver is [python-solvespace](https://github.com/KmolYuan/solvespace), a wrapper around the SolveSpace geometric constraint solver. That solver is GPL-3.0-or-later. aicad is AGPL-3.0-or-later, and that GPL solver can be combined with it. If pip has no wheel for your Python, it compiles the solver and needs a C++ compiler plus Python headers (`python3-dev` and `g++` on Debian or Ubuntu).
+On Windows, if `python` is not found, use `py install.py`. On a Mac, if `python` is not 3.11 or newer, use `python3 install.py`. The command prints how to turn the environment on. Then `pytest` runs the tests from that environment.
 
-The mechanics solver is [CalculiX](https://www.calculix.de/) (`ccx`), which is GPL-2.0-only and runs as a separate program. Meshing uses [Gmsh](https://gmsh.info/), GPL-2.0-or-later, through the `gmsh` Python module that pip installs with aicad. Install the CalculiX binary separately:
+The sketch solver is [python-solvespace](https://github.com/KmolYuan/solvespace), a wrapper around the SolveSpace geometric constraint solver. That solver is GPL-3.0-or-later. aicad is AGPL-3.0-or-later, and that GPL solver can be combined with it. If pip has no wheel for your Python, it compiles the solver and needs a C++ compiler plus Python headers (`python3-dev` and `g++` on Debian or Ubuntu; `python install.py` installs those when `sudo` works without a password).
 
-```bash
-sudo apt-get install -y calculix-ccx
-```
+The mechanics solver is [CalculiX](https://www.calculix.de/) (`ccx`), which is GPL-2.0-only and runs as a separate program. Meshing uses [Gmsh](https://gmsh.info/), GPL-2.0-or-later, through the `gmsh` Python module that pip installs with aicad. aicad does not download CalculiX. `python install.py` looks for `ccx` and, if it is missing, prints the command for this operating system:
+
+- Ubuntu or Debian: `sudo apt-get install -y calculix-ccx` (the installer runs this itself when `sudo` does not need a password)
+- Fedora: `sudo dnf install -y calculix`
+- Mac: `brew install costerwi/homebrew-calculix/calculix-ccx`
+- Windows, Mac, or Linux with conda: `conda install conda-forge::calculix`
+- Windows without conda: a build from the [CalculiX-Windows releases](https://github.com/calculix/CalculiX-Windows/releases), with the folder that contains `ccx.exe` on PATH
 
 `aicad fea` reports a clear error when `ccx` is missing. The tests skip in that case.
 
@@ -528,7 +529,7 @@ python examples/vibration_arm.py  # modes, resonance, and bolted-joint loosening
 python examples/print_and_robot.py  # overhang map, printer fit, URDF, and MJCF
 ```
 
-GitHub Actions runs `pytest` on every push and pull request (`.github/workflows/tests.yml`). The job installs CalculiX and the package, including MuJoCo. A slicer is optional there: the print tests cover the skip path, and a machine with PrusaSlicer exercises the gcode comments.
+GitHub Actions runs `pytest` on every push and pull request, on Ubuntu, Windows, and macOS (`.github/workflows/tests.yml`). The job is `python install.py`, then the test suite. Ubuntu installs CalculiX that way. Windows and macOS run the same tests; strength checks skip there when `ccx` is not on the runner, and the message says so. Each operating system runs its own script-sandbox tests. A slicer is optional: the print tests cover the skip path, and a machine with PrusaSlicer exercises the gcode comments.
 
 `src/aicad/kernel.py` imports build123d and OpenCascade. `src/aicad/library.py` imports bd_warehouse. `src/aicad/sketch.py` imports the SolveSpace solver. `src/aicad/fea.py` imports Gmsh and runs the `ccx` binary. The rest of aicad talks to plain records.
 
