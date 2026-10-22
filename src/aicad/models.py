@@ -101,6 +101,7 @@ class WallEstimate:
     section_count: int
     thinnest_point_mm: Vec3 | None
     note: str
+    capped: bool = False
 
 
 @dataclass(frozen=True)
@@ -140,7 +141,7 @@ class WallReport:
             what=f"Minimum wall thickness is a rough estimate from {self.method} samples, not a measured caliper reading.",
             limits=[
                 "A thin spot that no ray and no slice crosses is missed.",
-                "Anything thinner than about 0.15 mm is below the ray step.",
+                "A wall thinner than the 0.01 mm probe is an upper bound, and it cannot pass a minimum.",
                 "A pass is evidence to read with the picture, not a guarantee the part will print.",
             ],
         )

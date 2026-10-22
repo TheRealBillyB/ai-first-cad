@@ -304,6 +304,11 @@ def solve_part(
             f"Very coarse mesh: target size {used_size:g} mm, {mesh['element_count']} elements, "
             f"smallest part dimension {smallest:g} mm. Peak stress from a mesh this coarse is a hint, not a measurement."
         )
+    thin_note = _thin_feature_mesh_note(mesh)
+    if thin_note:
+        mesh["thin_feature"] = True
+        if thin_note not in warnings:
+            warnings.append(thin_note)
     fixed_nodes = _nodes_for(mesh, [face["index"] for item in fixes for face in item["faces"]])
     if len(fixed_nodes) == 0:
         warnings.append(
@@ -1058,6 +1063,90 @@ def _von_mises(stress: np.ndarray) -> np.ndarray:
     )
 
 
+def _thin_feature_mesh_note(mesh: dict) -> str | None:
+    """Flag one element through a thin wall, or elements that are very flat.
+
+    The bounding box of a hollow shell is the outside of the shell, so a mesh
+    size check against that box never sees the wall. A tet with the inner and
+    outer faces on its boundary spans that wall by itself.
+    """
+    points = mesh.get("points")
+    elements = mesh.get("elements")
+    if points is None or elements is None or len(elements) == 0:
+        return None
+    corners = np.asarray(elements)[:, :4]
+    pts = np.asarray(points, dtype=np.float64)[corners]
+    pairs = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
+    lengths = np.stack(
+        [np.linalg.norm(pts[:, a] - pts[:, b], axis=1) for a, b in pairs],
+        axis=1,
+    )
+    longest = lengths.max(axis=1)
+    shortest = np.maximum(lengths.min(axis=1), 1e-12)
+    edge_ratio = longest / shortest
+    volumes = _tet_volumes(pts)
+    face_index = ((0, 1, 2), (0, 3, 1), (1, 3, 2), (2, 3, 0))
+    areas = []
+    for a, b, c in face_index:
+        areas.append(0.5 * np.linalg.norm(np.cross(pts[:, b] - pts[:, a], pts[:, c] - pts[:, a]), axis=1))
+    area = np.maximum(np.stack(areas, axis=1), 1e-12)
+    altitude = np.where(volumes[:, None] > 0, 3.0 * volumes[:, None] / area, 1e9)
+    flatness = longest / np.maximum(altitude.min(axis=1), 1e-12)
+
+    owners: dict[tuple[int, int, int], int] = {}
+    face_normal: dict[tuple[int, int, int], np.ndarray] = {}
+    for index, tet in enumerate(corners):
+        for a, b, c in face_index:
+            key = tuple(sorted((int(tet[a]), int(tet[b]), int(tet[c]))))
+            if key in owners:
+                owners[key] = -1
+                continue
+            owners[key] = index
+            pa, pb, pc = pts[index, a], pts[index, b], pts[index, c]
+            normal = np.cross(pb - pa, pc - pa)
+            norm = float(np.linalg.norm(normal))
+            face_normal[key] = normal / norm if norm >= 1e-12 else None
+    spanning: list[int] = []
+    by_tet: dict[int, list[np.ndarray]] = {}
+    for key, owner in owners.items():
+        normal = face_normal.get(key)
+        if owner < 0 or normal is None:
+            continue
+        by_tet.setdefault(owner, []).append(normal)
+    for index, normals in by_tet.items():
+        if len(normals) < 2:
+            continue
+        if any(
+            float(np.dot(normals[i], normals[j])) < -0.7
+            for i in range(len(normals))
+            for j in range(i + 1, len(normals))
+        ):
+            spanning.append(index)
+    if not spanning:
+        worst = float(np.percentile(flatness, 95))
+        if worst > 25:
+            return (
+                f"Coarse mesh for a thin feature: the 95th percentile element aspect ratio is {worst:.0f} "
+                "(longest edge over the through-thickness altitude). "
+                "There are not enough elements through the thickness. "
+                "A safety factor from this mesh is not a pass."
+            )
+        return None
+    span = np.array(spanning, dtype=np.int32)
+    span_flat = flatness[span]
+    span_edge = edge_ratio[span]
+    flat_count = int(np.sum((span_flat > 6.0) | (span_edge > 8.0)))
+    worst = float(max(float(span_flat.max()), float(span_edge.max())))
+    if flat_count < 4 and worst < 20:
+        return None
+    return (
+        f"Coarse mesh for a thin feature: {flat_count} elements run through the wall in a single layer, "
+        f"with aspect ratio up to {worst:.0f} (longest edge over the through-thickness altitude). "
+        "There are not enough elements through the thickness. "
+        "A safety factor from this mesh is not a pass."
+    )
+
+
 def _review(mesh, vm, strength: float, target: float, warnings: list[str], safety: float) -> dict:
     elements = mesh["elements"][:, :4]
     points = mesh["points"]
@@ -1294,6 +1383,7 @@ def _public_mesh(mesh: dict, mesh_size: float) -> dict[str, object]:
         "order": order,
         "kind": "quadratic tetrahedra" if order == 2 else "linear tetrahedra" if order == 1 else None,
         "degraded": bool(mesh.get("degraded")),
+        "thin_feature": bool(mesh.get("thin_feature")),
         "notes": list(mesh.get("mesh_notes") or []),
         "simplifications": list(mesh.get("simplifications") or []),
     }

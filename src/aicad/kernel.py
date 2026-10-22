@@ -7,10 +7,12 @@ aicad talks to plain records and to :class:`Shape`.
 
 from __future__ import annotations
 
+import ctypes
 import io
 import math
 import os
-from contextlib import redirect_stdout
+import sys
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +62,86 @@ from aicad.models import (
 UNITS = "mm"
 _INTERFERENCE_VOLUME = 1e-4
 _NAME_IN_SCRIPT = "part"
+# A kilometer. Ordinary parts are millimeters to a few meters.
+MAX_MM = 1_000_000.0
+_WALL_PROBES_MM = (0.01, 0.002, 0.0004)
+_WALL_HIT_FLOOR_MM = 1e-4
+
+
+def finite_number(
+    value,
+    label: str,
+    *,
+    bound: float | None = MAX_MM,
+    positive: bool = False,
+    unit: str = "mm",
+) -> float:
+    """Reject NaN, infinity, and sizes past ordinary part dimensions."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise GeometryError(f"{label} must be a finite number.") from exc
+    if isinstance(value, bool) or not math.isfinite(number):
+        raise GeometryError(f"{label} is not a finite number.")
+    if positive and number <= 0:
+        raise GeometryError(f"{label} must be a positive number.")
+    if bound is not None and abs(number) > bound:
+        raise GeometryError(
+            f"{label} is {number:g} {unit}, past the {bound:g} {unit} limit. "
+            "Ordinary parts stay within a kilometer."
+        )
+    return number
+
+
+def finite_vec3(
+    value,
+    label: str,
+    *,
+    bound: float | None = MAX_MM,
+    positive: bool = False,
+    unit: str = "mm",
+) -> tuple[float, float, float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise GeometryError(f"{label} must be a list of three numbers.")
+    return tuple(
+        finite_number(component, label, bound=bound, positive=positive, unit=unit) for component in value
+    )
+
+
+def _fflush_c_stdio() -> None:
+    """Flush C and C++ buffers. OpenCascade writes past Python's sys.stdout."""
+    try:
+        ctypes.CDLL(None).fflush(None)
+    except Exception:
+        return
+
+
+@contextmanager
+def divert_native_stdio(*, stderr: bool = False):
+    """Point fd 1 (and, when asked, fd 2) at /dev/null for one native call.
+
+    Python's text buffer is flushed first and the descriptors are put back
+    afterwards, so a later JSON-RPC write still reaches the real stdout.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    _fflush_c_stdio()
+    saved_out = os.dup(1)
+    saved_err = os.dup(2) if stderr else None
+    null_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null_fd, 1)
+        if stderr and saved_err is not None:
+            os.dup2(null_fd, 2)
+        yield
+    finally:
+        _fflush_c_stdio()
+        os.dup2(saved_out, 1)
+        os.close(saved_out)
+        if saved_err is not None:
+            os.dup2(saved_err, 2)
+            os.close(saved_err)
+        os.close(null_fd)
 
 
 @dataclass
@@ -229,12 +311,13 @@ def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEsti
     """Estimate minimum wall thickness from rays and from planar sections.
 
     The reported minimum is the smaller of the two. ``method`` says which one
-    produced it, or ``ray+section`` when they agree within 0.05 mm.
+    produced it, or ``ray+section`` when they agree within 0.05 mm. A reading
+    that could not step into the solid is an upper bound and is marked capped,
+    so a later threshold cannot treat it as a pass.
     """
-    ray_mm, accepted, used, point = _ray_wall_thickness(shape, samples_per_edge)
-    section_mm, section_count = _section_wall_thickness(shape)
-    candidates = [value for value in (ray_mm, section_mm) if value is not None]
-    minimum = min(candidates) if candidates else None
+    ray_mm, accepted, used, point, ray_capped = _ray_wall_thickness(shape, samples_per_edge)
+    section_mm, section_count, section_capped = _section_wall_thickness(shape)
+    minimum, capped = _thinnest(ray_mm, ray_capped, section_mm, section_capped)
     if ray_mm is None and section_mm is None:
         method = "none"
     elif ray_mm is None:
@@ -253,12 +336,17 @@ def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEsti
         f"Minimum came from {method}. "
         f"Ray samples: {_mm(ray_mm)} mm. "
         f"Planar sections ({section_count} slices): {_mm(section_mm)} mm. "
-        "Rays shoot inward from a grid on each face and keep hits on a roughly "
-        "parallel face. Sections slice the part at 25%, 50%, and 75% of its "
+        "Rays start 0.01 mm inside a face and keep a hit only when the segment "
+        "stays in the solid. Sections slice the part at 25%, 50%, and 75% of its "
         "extent along X, Y, and Z and measure the width between roughly parallel "
         "edges in that plane. The smaller number is the estimate. Either method "
         "can miss a thin spot it does not cross."
     )
+    if capped:
+        note += (
+            " The probe could not enter a wall, so this number is an upper bound "
+            "and cannot pass a minimum."
+        )
     return WallEstimate(
         minimum_mm=None if minimum is None else round_mm(minimum),
         ray_mm=None if ray_mm is None else round_mm(ray_mm),
@@ -269,21 +357,47 @@ def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEsti
         section_count=section_count,
         thinnest_point_mm=point,
         note=note,
+        capped=capped,
     )
+
+
+def _thinnest(
+    ray_mm: float | None,
+    ray_capped: bool,
+    section_mm: float | None,
+    section_capped: bool,
+) -> tuple[float | None, bool]:
+    """The smaller reading. An upper bound wins when the other reading is the far side."""
+    pairs = [
+        (ray_mm, ray_capped),
+        (section_mm, section_capped),
+    ]
+    known = [(value, capped) for value, capped in pairs if value is not None]
+    if not known:
+        return None, False
+    value, capped = min(known, key=lambda item: item[0])
+    if capped:
+        return value, True
+    # A large "measurement" next to a capped upper bound is the far wall of a cavity.
+    bounds = [other for other, other_capped in known if other_capped]
+    if bounds and value > 0.5 and min(bounds) < value:
+        return min(bounds), True
+    return value, False
 
 
 def _ray_wall_thickness(
     shape: Shape, samples_per_edge: int
-) -> tuple[float | None, int, int, Vec3 | None]:
+) -> tuple[float | None, int, int, Vec3 | None, bool]:
     impl = shape.impl
     face_count = len(impl.faces())
     n = samples_per_edge
     while n > 1 and face_count * n * n > 8000:
         n -= 1
 
-    epsilon = 0.05
-    thinnest: float | None = None
+    measured: list[float] = []
+    missed: list[float] = []
     thinnest_point: Vec3 | None = None
+    thinnest_measured: float | None = None
     accepted = 0
 
     for face in impl.faces():
@@ -298,19 +412,35 @@ def _ray_wall_thickness(
                     continue
                 if normal.length < 1e-9 or not face.is_inside(point):
                     continue
-                inward = _inward_normal(impl, point, normal, epsilon)
-                if inward is None:
+                inward, probe = _inward_probe(impl, point, normal)
+                if inward is None or probe is None:
+                    missed.append(_WALL_PROBES_MM[-1])
                     continue
-                origin = point + inward * epsilon
-                distance = _first_parallel_hit(impl, origin, inward)
+                origin = point + inward * probe
+                distance = _first_parallel_hit(impl, origin, inward, probe)
                 if distance is None:
                     continue
-                thickness = distance + epsilon
+                thickness = distance + probe
                 accepted += 1
-                if thinnest is None or thickness < thinnest:
-                    thinnest = thickness
+                measured.append(thickness)
+                if thinnest_measured is None or thickness < thinnest_measured:
+                    thinnest_measured = thickness
                     thinnest_point = _vec(point)
-    return thinnest, accepted, n, thinnest_point
+    minimum, capped = _combine_wall_samples(measured, missed)
+    if capped:
+        thinnest_point = None
+    return minimum, accepted, n, thinnest_point, capped
+
+
+def _combine_wall_samples(measured: list[float], missed: list[float]) -> tuple[float | None, bool]:
+    if not measured and not missed:
+        return None, False
+    if not measured:
+        return min(missed), True
+    best = min(measured)
+    if missed and best > 0.5 and min(missed) < best:
+        return min(missed), True
+    return best, False
 
 
 def aabb_separated(a: Shape, b: Shape) -> bool:
@@ -400,7 +530,10 @@ def import_step_file(path: Path) -> Shape:
     if not path.is_file():
         raise GeometryError(f"STEP file not found: {path}")
     try:
-        imported = import_step(path)
+        # The STEP parser logs through C stdout. That descriptor is the MCP
+        # stream when `aicad serve` is running, so the bytes never reach it.
+        with divert_native_stdio(stderr=True):
+            imported = import_step(path)
     except Exception as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
     return Shape(_require_solid(imported))
@@ -601,12 +734,34 @@ def _require_solid(obj: object):
         raise GeometryError(
             "Expected a 3D solid assigned to `part`. A sketch, curve, or other value has no volume."
         )
-    if len(obj.solids()) == 0 or float(obj.volume) <= 0:
+    volume = _volume(obj)
+    if len(obj.solids()) == 0 or not math.isfinite(volume) or volume <= 0:
         raise GeometryError(
             "The result has no solid volume. Assign a closed 3D solid to `part` "
             "(combine bodies with `part = a + b`)."
         )
+    _require_sane_extent(obj)
     return obj
+
+
+def _require_sane_extent(impl) -> None:
+    """Reject a solid whose coordinates are not a mechanical part."""
+    box = impl.bounding_box()
+    values = (
+        float(box.min.X),
+        float(box.min.Y),
+        float(box.min.Z),
+        float(box.max.X),
+        float(box.max.Y),
+        float(box.max.Z),
+    )
+    for value in values:
+        if not math.isfinite(value) or abs(value) > MAX_MM:
+            shown = "not a finite number" if not math.isfinite(value) else f"{value:g} mm"
+            raise GeometryError(
+                f"This solid reaches {shown}, past the {MAX_MM:g} mm limit. "
+                "Ordinary parts are millimeters to a few meters, and a size this large was not stored."
+            )
 
 
 def _volume(obj) -> float:
@@ -653,24 +808,22 @@ def _format_script_error(code: str, exc: BaseException) -> str:
 
 def _primitive(op: dict, index: int):
     kind = op.get("shape")
-    center = _vec3_field(op.get("center", [0, 0, 0]), f"operation {index} center")
+    center = finite_vec3(op.get("center", [0, 0, 0]), f"operation {index} center")
     if kind == "box":
         if "axis" in op:
             raise GeometryError(
                 f"Operation {index}: box is axis-aligned. Use a cylinder to pick an axis, "
                 "or place a rotated box in a script."
             )
-        size = _vec3_field(op.get("size"), f"operation {index} size")
-        if any(component <= 0 for component in size):
-            raise GeometryError(f"Operation {index}: box size must be positive.")
+        size = finite_vec3(op.get("size"), f"operation {index} size", positive=True)
         solid = Box(size[0], size[1], size[2])
         if center != (0.0, 0.0, 0.0):
             solid = Pos(*center) * solid
         return solid
     if kind == "cylinder":
-        radius = _positive(op.get("radius"), f"operation {index} radius")
-        height = _positive(op.get("height"), f"operation {index} height")
-        axis = _vec3_field(op.get("axis", [0, 0, 1]), f"operation {index} axis")
+        radius = finite_number(op.get("radius"), f"operation {index} radius", positive=True)
+        height = finite_number(op.get("height"), f"operation {index} height", positive=True)
+        axis = finite_vec3(op.get("axis", [0, 0, 1]), f"operation {index} axis")
         length = math.sqrt(sum(component * component for component in axis))
         if length < 1e-9:
             raise GeometryError(f"Operation {index}: cylinder axis must be non-zero.")
@@ -683,59 +836,57 @@ def _primitive(op: dict, index: int):
 
 
 def _vec3_field(value, label: str) -> tuple[float, float, float]:
-    if not isinstance(value, (list, tuple)) or len(value) != 3:
-        raise GeometryError(f"{label} must be a list of three numbers.")
-    try:
-        return (float(value[0]), float(value[1]), float(value[2]))
-    except (TypeError, ValueError) as exc:
-        raise GeometryError(f"{label} must be a list of three numbers.") from exc
+    return finite_vec3(value, label)
 
 
 def _positive(value, label: str) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError) as exc:
-        raise GeometryError(f"{label} must be a positive number.") from exc
-    if number <= 0:
-        raise GeometryError(f"{label} must be a positive number.")
-    return number
+    return finite_number(value, label, positive=True)
 
 
-def _inward_normal(impl, point, normal, epsilon):
+def _inward_probe(impl, point, normal):
+    """Direction into the solid, and how far that step stayed inside.
+
+    The step is small enough to enter a 0.05 mm wall. A larger step used to
+    start in the cavity and report the far side as the wall.
+    """
     normal = normal.normalized()
-    into_negative = impl.is_inside(point - normal * epsilon) and not impl.is_inside(
-        point + normal * epsilon
-    )
-    into_positive = impl.is_inside(point + normal * epsilon) and not impl.is_inside(
-        point - normal * epsilon
-    )
-    if into_negative:
-        return -normal
-    if into_positive:
-        return normal
-    return None
+    for probe in _WALL_PROBES_MM:
+        into_negative = impl.is_inside(point - normal * probe) and not impl.is_inside(
+            point + normal * probe
+        )
+        into_positive = impl.is_inside(point + normal * probe) and not impl.is_inside(
+            point - normal * probe
+        )
+        if into_negative:
+            return -normal, probe
+        if into_positive:
+            return normal, probe
+    return None, None
 
 
-def _first_parallel_hit(impl, origin, direction) -> float | None:
-    """Distance along ``direction`` to the first opposing face, or None."""
+def _first_parallel_hit(impl, origin, direction, probe: float) -> float | None:
+    """Distance along ``direction`` to the first opposing face that stays in the solid."""
+    floor = max(_WALL_HIT_FLOOR_MM, probe * 0.05)
     line = gp_Lin(
         gp_Pnt(origin.X, origin.Y, origin.Z),
         gp_Dir(direction.X, direction.Y, direction.Z),
     )
     intersector = BRepIntCurveSurface_Inter()
-    intersector.Init(impl.wrapped, line, 1e-6)
+    intersector.Init(impl.wrapped, line, 1e-7)
     best: float | None = None
     while intersector.More():
         parameter = float(intersector.W())
-        if parameter > 0.02:
+        if parameter > floor:
             hit = Face(intersector.Face())
             try:
                 hit_normal = hit.normal_at(Vector(intersector.Pnt()))
                 aligned = abs(hit_normal.normalized().dot(direction))
             except Exception:
                 aligned = 0.0
-            if aligned > 0.7 and (best is None or parameter < best):
-                best = parameter
+            if aligned > 0.7:
+                midpoint = origin + direction * (parameter * 0.5)
+                if _strictly_inside(impl, midpoint) and (best is None or parameter < best):
+                    best = parameter
         intersector.Next()
     return best
 
@@ -874,8 +1025,8 @@ def place(shape: Shape, position: tuple[float, float, float], rotation_deg: tupl
     """Move a solid. Rotation is degrees about X, then Y, then Z, then the translation."""
     from build123d import Pos, Rot
 
-    px, py, pz = position
-    rx, ry, rz = rotation_deg
+    px, py, pz = finite_vec3(position, "position")
+    rx, ry, rz = finite_vec3(rotation_deg, "rotation_deg", unit="deg")
     if all(abs(value) < 1e-12 for value in (px, py, pz, rx, ry, rz)):
         return shape
     moved = Pos(px, py, pz) * Rot(rx, ry, rz) * shape.impl
@@ -1135,7 +1286,7 @@ def section_geometry(
     else:
         width = 0.0
         height = 0.0
-    thickness = _sketch_thickness(sketch) if faces else None
+    thickness, _section_capped = _sketch_thickness(sketch, solid=shape.impl) if faces else (None, False)
     area = float(sketch.area) if faces else 0.0
     if not faces:
         note = "The plane misses the part. Area is 0."
@@ -1162,7 +1313,7 @@ def section_geometry(
     )
 
 
-def _section_wall_thickness(shape: Shape) -> tuple[float | None, int]:
+def _section_wall_thickness(shape: Shape) -> tuple[float | None, int, bool]:
     impl = shape.impl
     bbox = impl.bounding_box()
     axes = (
@@ -1170,7 +1321,8 @@ def _section_wall_thickness(shape: Shape) -> tuple[float | None, int]:
         ((0.0, 1.0, 0.0), float(bbox.min.Y), float(bbox.max.Y)),
         ((0.0, 0.0, 1.0), float(bbox.min.Z), float(bbox.max.Z)),
     )
-    best: float | None = None
+    measured: list[float] = []
+    missed: list[float] = []
     count = 0
     for normal, low, high in axes:
         span = high - low
@@ -1186,10 +1338,15 @@ def _section_wall_thickness(shape: Shape) -> tuple[float | None, int]:
             count += 1
             if not sketch.faces():
                 continue
-            thickness = _sketch_thickness(sketch)
-            if thickness is not None and (best is None or thickness < best):
-                best = thickness
-    return best, count
+            thickness, capped = _sketch_thickness(sketch, solid=impl)
+            if thickness is None:
+                continue
+            if capped:
+                missed.append(thickness)
+            else:
+                measured.append(thickness)
+    minimum, capped = _combine_wall_samples(measured, missed)
+    return minimum, count, capped
 
 
 def _sketch_at(impl, origin, normal):
@@ -1221,12 +1378,22 @@ def _loop_points(wire, plane, limit: int = 160) -> list[tuple[float, float]]:
     return points
 
 
-def _sketch_thickness(sketch, samples: int = 3) -> float | None:
+def _strictly_inside(impl, point) -> bool:
+    """True only in the material. A point on a face is not a wall reading."""
+    classifier = BRepClass3d_SolidClassifier(
+        impl.wrapped,
+        gp_Pnt(float(point.X), float(point.Y), float(point.Z)),
+        1e-7,
+    )
+    return classifier.State() == TopAbs_IN
+
+
+def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | None, bool]:
     """Minimum width between roughly parallel edges of a planar section."""
     from build123d import Axis, Vector
 
-    best: float | None = None
-    epsilon = 0.05
+    measured: list[float] = []
+    missed: list[float] = []
     for face in sketch.faces():
         try:
             face_normal = face.normal_at().normalized()
@@ -1251,14 +1418,22 @@ def _sketch_thickness(sketch, samples: int = 3) -> float | None:
                     continue
                 side = side.normalized()
                 inward = None
-                if face.is_inside(point + side * epsilon) and not face.is_inside(point - side * epsilon):
-                    inward = side
-                elif face.is_inside(point - side * epsilon) and not face.is_inside(point + side * epsilon):
-                    inward = -side
-                if inward is None:
+                probe = None
+                for candidate in _WALL_PROBES_MM:
+                    if face.is_inside(point + side * candidate) and not face.is_inside(point - side * candidate):
+                        inward = side
+                        probe = candidate
+                        break
+                    if face.is_inside(point - side * candidate) and not face.is_inside(point + side * candidate):
+                        inward = -side
+                        probe = candidate
+                        break
+                if inward is None or probe is None:
+                    missed.append(_WALL_PROBES_MM[-1])
                     continue
-                origin = point + inward * epsilon
+                origin = point + inward * probe
                 axis = Axis(origin, inward)
+                floor = max(_WALL_HIT_FLOOR_MM, probe * 0.05)
                 nearest: float | None = None
                 for other in edges:
                     try:
@@ -1274,14 +1449,20 @@ def _sketch_thickness(sketch, samples: int = 3) -> float | None:
                         continue
                     for hit in hits:
                         distance = (Vector(hit) - origin).dot(inward)
-                        if distance > 0.02 and (nearest is None or distance < nearest):
+                        if distance <= floor:
+                            continue
+                        midpoint = origin + inward * (distance * 0.5)
+                        if solid is not None:
+                            if not _strictly_inside(solid, midpoint):
+                                continue
+                        elif not face.is_inside(midpoint):
+                            continue
+                        if nearest is None or distance < nearest:
                             nearest = distance
                 if nearest is None:
                     continue
-                thickness = nearest + epsilon
-                if best is None or thickness < best:
-                    best = thickness
-    return best
+                measured.append(nearest + probe)
+    return _combine_wall_samples(measured, missed)
 
 
 def _mm(value: float | None) -> str:

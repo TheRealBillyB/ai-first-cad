@@ -276,7 +276,7 @@ _CLAIM = {
         "Wall thickness is a sampled estimate. A pass can miss a thin spot between the samples.",
         [
             "Rays and a few planar slices produce the number.",
-            "Anything thinner than about 0.15 mm is below the ray step.",
+            "A wall thinner than the 0.01 mm probe is an upper bound, and it cannot pass a minimum.",
         ],
     ),
     "min_safety_factor": (
@@ -284,7 +284,7 @@ _CLAIM = {
         "The safety factor is a linear static estimate. A coarse or simplified mesh is not a pass.",
         [
             "No plasticity, contact, buckling, or fatigue.",
-            "A mesh that was simplified, or that is coarse or linear, stays inconclusive.",
+            "A mesh that was simplified, or that is coarse, linear, or one element through a thin wall, stays inconclusive.",
         ],
     ),
 }
