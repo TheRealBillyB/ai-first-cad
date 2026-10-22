@@ -51,6 +51,22 @@ CLI_TOOLS = {
     "export-drawing": "export_drawing",
     "bill-of-materials": "bill_of_materials",
     "exploded-view": "exploded_view",
+    "start-plan": "start_plan",
+    "list-plans": "list_plans",
+    "get-plan": "get_plan",
+    "add-plan-research": "add_plan_research",
+    "add-plan-assumption": "add_plan_assumption",
+    "add-plan-question": "add_plan_question",
+    "put-plan-sheet": "put_plan_sheet",
+    "set-plan-dimensions": "set_plan_dimensions",
+    "comment-on-plan": "comment_on_plan",
+    "answer-plan-question": "answer_plan_question",
+    "mark-plan-item": "mark_plan_item",
+    "submit-plan": "submit_plan",
+    "revise-plan": "revise_plan",
+    "approve-plan": "approve_plan",
+    "start-model-from-plan": "start_model_from_plan",
+    "start-simulation-from-plan": "start_simulation_from_plan",
 }
 
 # Public Document methods a design script may call. This is an explicit list
