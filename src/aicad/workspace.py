@@ -74,7 +74,11 @@ class Workspace:
         return unsubscribe
 
     def execute(self, name: str, arguments: dict | None = None, source: str = "api") -> dict:
-        """Run one command. ``source`` is ``ui``, ``chat``, ``mcp``, or ``api``."""
+        """Run one command. ``source`` is ``ui``, ``agent``, ``chat``, or ``api``.
+
+        The workspace server sets this from the connection. A browser session
+        is ``ui``. MCP is ``agent``. The request body cannot choose it.
+        """
         if name == "undo":
             return self.undo(source)
         if name == "redo":

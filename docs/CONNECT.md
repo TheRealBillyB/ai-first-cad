@@ -64,6 +64,8 @@ aicad serve --connect http://127.0.0.1:8765
 
 Use that as the MCP command. Leave out `--workspace`. One process owns the project, so the picture in the browser updates when the assistant edits.
 
+That connection is the assistant, not the person. The app labels it that way, and the assistant cannot relabel itself by putting a `source` field in the command. Another website cannot send commands as you either. A program with a shell on this same computer still can: it can read the page and act as you. An approval step in front of the assistant is a guardrail, not a boundary against that program.
+
 ## What the assistant can do
 
 The tools match the `aicad` command line and the buttons in the app: create and edit parts and assemblies, run the checks, render pictures, and export STEP, STL, URDF, and MJCF. It can also read the project (`get_state`, `session_payload`, and the `aicad://` resources), save, open another folder, and undo.

@@ -31,11 +31,22 @@ const ui = {
   shapeTimer: 0,
 };
 
+function sessionToken() {
+  const meta = document.querySelector('meta[name="aicad-token"]');
+  return meta ? meta.getAttribute("content") || "" : "";
+}
+
+function apiFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  headers.set("X-Aicad-Token", sessionToken());
+  return fetch(url, { ...options, headers });
+}
+
 async function command(name, args = {}) {
-  const response = await fetch("/api/command", {
+  const response = await apiFetch("/api/command", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, arguments: args, source: "ui" }),
+    body: JSON.stringify({ name, arguments: args }),
   });
   const body = await response.json();
   if (!body.ok) throw new Error(body.error || "Command failed");
@@ -44,7 +55,9 @@ async function command(name, args = {}) {
 
 function fileUrl(path) {
   if (!path) return "";
-  return "/api/file?path=" + encodeURIComponent(path);
+  // An image tag cannot set a header, so the picture request carries the same
+  // session token in the query. Every other call sends it as a header.
+  return "/api/file?path=" + encodeURIComponent(path) + "&token=" + encodeURIComponent(sessionToken());
 }
 
 let refreshChain = Promise.resolve();
@@ -58,7 +71,7 @@ async function refresh(options = {}) {
 }
 
 async function applyRefresh(options = {}) {
-  const response = await fetch("/api/state");
+  const response = await apiFetch("/api/state");
   const body = await response.json();
   if (!body.ok) throw new Error(body.error);
   ui.state = body.result;
@@ -129,7 +142,7 @@ function renderScriptWarning() {
     text.textContent = (scripts.warning || "Design scripts run code the assistant wrote.") + " Design scripts are off for this project.";
     button.textContent = "Allow design scripts";
     button.addEventListener("click", async () => {
-      const response = await fetch("/api/allow-scripts", {
+      const response = await apiFetch("/api/allow-scripts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
@@ -143,7 +156,7 @@ function renderScriptWarning() {
     text.textContent = "Design scripts are on for this project. Network is " + (scripts.network || "off") + ".";
     button.textContent = "Allow network on the next script";
     button.addEventListener("click", async () => {
-      const response = await fetch("/api/script-network-once", {
+      const response = await apiFetch("/api/script-network-once", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
@@ -167,7 +180,7 @@ async function loadMesh(options = {}) {
   const query = ui.viewAssembly
     ? "assembly=" + encodeURIComponent(ui.viewAssembly)
     : "scene=1";
-  const response = await fetch("/api/mesh?" + query);
+  const response = await apiFetch("/api/mesh?" + query);
   const body = await response.json();
   if (!body.ok) {
     ui.mesh = null;
@@ -2091,20 +2104,8 @@ async function boot() {
       command(event.shiftKey ? "redo" : "undo").then(refresh).catch(showError);
     }
   });
-  const events = new EventSource("/api/events");
-  events.onmessage = (message) => {
-    const event = JSON.parse(message.data);
-    if (!event || event.source === "ui") return;
-    if (event.summary) $("who").textContent = event.summary;
-    const focus = ui.live && event.follow && event.frame === "part" ? (event.parts || [])[0] : null;
-    refresh({
-      applySelection: true,
-      focus,
-      fit: ui.live && event.follow ? (focus ? "part" : "scene") : null,
-      solid: Boolean(ui.live && event.follow && event.frame),
-    }).catch(showError);
-  };
-  const settings = await (await fetch("/api/settings")).json();
+  listenForEvents().catch(showError);
+  const settings = await (await apiFetch("/api/settings")).json();
   if (settings.ok) $("chat-key").textContent = settings.result.has_key ? `${settings.result.provider} ${settings.result.key_hint}` : "No API key";
   await refresh();
   setStage();
@@ -2119,7 +2120,7 @@ async function sendChat() {
   input.value = "";
   chatMessages.push({ role: "user", content: text });
   appendBubble("user", text);
-  const response = await fetch("/api/chat", {
+  const response = await apiFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages: chatMessages }),
@@ -2161,7 +2162,7 @@ function appendBubble(role, text) {
 }
 
 async function editSettings() {
-  const current = (await (await fetch("/api/settings")).json()).result;
+  const current = (await (await apiFetch("/api/settings")).json()).result;
   const answer = await ask("Assistant API", [
     { name: "provider", label: "openai, anthropic, or compatible", value: current.provider },
     { name: "base_url", label: "Base URL", value: current.base_url },
@@ -2170,7 +2171,7 @@ async function editSettings() {
   ]);
   if (!answer) return;
   if (!answer.api_key) delete answer.api_key;
-  const saved = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(answer) });
+  const saved = await apiFetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(answer) });
   const body = await saved.json();
   if (!body.ok) throw new Error(body.error);
   $("chat-key").textContent = body.result.has_key ? `${body.result.provider} ${body.result.key_hint}` : "No API key";
@@ -2178,6 +2179,41 @@ async function editSettings() {
 
 function showError(error) {
   appendBubble("tool", error.message || String(error));
+}
+
+function handleLiveEvent(event) {
+  if (!event || event.source === "ui") return;
+  if (event.summary) $("who").textContent = event.summary;
+  const focus = ui.live && event.follow && event.frame === "part" ? (event.parts || [])[0] : null;
+  refresh({
+    applySelection: true,
+    focus,
+    fit: ui.live && event.follow ? (focus ? "part" : "scene") : null,
+    solid: Boolean(ui.live && event.follow && event.frame),
+  }).catch(showError);
+}
+
+async function listenForEvents() {
+  const response = await apiFetch("/api/events");
+  if (!response.ok || !response.body) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || "The live connection stopped.");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop();
+    frames.forEach((frame) => {
+      const line = frame.split("\n").find((item) => item.startsWith("data: "));
+      if (!line) return;
+      handleLiveEvent(JSON.parse(line.slice(6)));
+    });
+  }
 }
 
 function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }

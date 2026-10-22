@@ -353,6 +353,7 @@ def test_commands_are_on_the_shared_list():
 
 def test_page_offers_open_measure_and_live(tmp_path, monkeypatch):
     monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    monkeypatch.setenv("AICAD_SERVER_TOKENS", str(tmp_path / "tokens"))
     server = make_server(tmp_path / "project", "127.0.0.1", 0)
     host, port = server.server_address
     import threading
@@ -366,6 +367,9 @@ def test_page_offers_open_measure_and_live(tmp_path, monkeypatch):
         html = page.read().decode("utf-8")
         connection.close()
         assert page.status == 200
+        assert page.getheader("Cache-Control") == "no-store"
+        assert server.page_token in html
+        assert "__AICAD_TOKEN__" not in html
         for marker in ("open-project", "save-as", 'id="live"', 'data-mode="measure"', 'id="plan-mount"', 'id="plan-body"', 'rel="icon"'):
             assert marker in html
         connection = HTTPConnection(host, port, timeout=30)
@@ -376,6 +380,10 @@ def test_page_offers_open_measure_and_live(tmp_path, monkeypatch):
         assert icon.status == 200
         assert icon.getheader("Content-Type") == "image/png"
         assert icon_bytes.startswith(b"\x89PNG")
+        session = {
+            "Origin": f"http://127.0.0.1:{port}",
+            "X-Aicad-Token": server.agent_token,
+        }
         connection = HTTPConnection(host, port, timeout=30)
         connection.request(
             "POST",
@@ -384,25 +392,25 @@ def test_page_offers_open_measure_and_live(tmp_path, monkeypatch):
                 {
                     "name": "create_part_from_ops",
                     "arguments": {"name": "block", "ops": [{"op": "add", "shape": "box", "size": [4, 4, 4]}]},
-                    "source": "mcp",
+                    "source": "ui",
                 }
             ),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **session},
         )
         created = json.loads(connection.getresponse().read().decode("utf-8"))
         connection.close()
         assert created["ok"] is True
         connection = HTTPConnection(host, port, timeout=30)
-        connection.request("GET", "/api/mesh?scene=1")
+        connection.request("GET", "/api/mesh?scene=1", headers=session)
         scene = json.loads(connection.getresponse().read().decode("utf-8"))
         connection.close()
         assert scene["result"]["parts"] == ["block"]
         assert scene["result"]["triangle_face"]
         connection = HTTPConnection(host, port, timeout=30)
-        connection.request("GET", "/api/state")
+        connection.request("GET", "/api/state", headers=session)
         state = json.loads(connection.getresponse().read().decode("utf-8"))
         connection.close()
-        assert state["result"]["activity"][0]["source"] == "mcp"
+        assert state["result"]["activity"][0]["source"] == "agent"
         assert state["result"]["parts"][0]["placement"]["position"] == [0.0, 0.0, 0.0]
     finally:
         server.shutdown()
