@@ -7,6 +7,7 @@ probe with its own sandbox. A missing file does not count as confined.
 import asyncio
 import json
 import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -271,6 +272,60 @@ def test_windows_script_cannot_open_its_parent(tmp_path, config_home):
     )
     run_part_script(script, tmp_path)
     assert (tmp_path / "open.txt").read_text(encoding="utf-8").startswith("denied")
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux cgroup pids controller")
+def test_linux_process_cap_is_a_cgroup_when_this_user_can_make_one():
+    """The cap has to be a sibling cgroup. The user-wide limit counts other programs."""
+    from aicad.sandbox import _PROCESS_CAP, _prepare_pids_cgroup, _release_pids_cgroup
+
+    path = _prepare_pids_cgroup()
+    if path is None:
+        pytest.skip("this user cannot create a cgroup pids.max without root")
+    try:
+        assert (path / "pids.max").read_text(encoding="utf-8").strip() == str(_PROCESS_CAP)
+        assert path.name not in Path("/proc/self/cgroup").read_text(encoding="utf-8")
+    finally:
+        _release_pids_cgroup(path)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux counts every user thread toward RLIMIT_NPROC")
+def test_script_finishes_while_the_user_already_has_many_threads(tmp_path):
+    """A desktop with a browser open is already past 256 threads. Geometry still has to finish."""
+    from aicad.kernel import measure
+
+    stop = threading.Event()
+    threads: list[threading.Thread] = []
+
+    def park() -> None:
+        stop.wait()
+
+    try:
+        for _ in range(300):
+            thread = threading.Thread(target=park, daemon=True)
+            try:
+                thread.start()
+            except RuntimeError:
+                pytest.skip("this user cannot start 300 extra threads")
+            threads.append(thread)
+        shape = run_part_script(
+            "text = open('/proc/self/limits', encoding='utf-8').read()\n"
+            "open('limits.txt', 'w', encoding='utf-8').write(text)\n"
+            "part = Box(1, 1, 1)\n",
+            tmp_path,
+        )
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=1)
+    assert measure(shape).volume_mm3 == pytest.approx(1)
+    soft = None
+    for line in (tmp_path / "limits.txt").read_text(encoding="utf-8").splitlines():
+        if line.startswith("Max processes"):
+            soft = line.split()[2]
+            break
+    assert soft is not None
+    assert soft == "unlimited" or int(soft) > 256
 
 
 def test_wall_clock_limit_stops_the_script(tmp_path, config_home, monkeypatch):

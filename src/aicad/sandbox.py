@@ -1,13 +1,16 @@
 """Run an assistant's Python in a separate process that cannot leave the project.
 
 Linux confines the process with Landlock (files, TCP, and signals) and a small
-seccomp filter (every other socket, and starting a new session). macOS uses
-``sandbox-exec`` and ``setrlimit`` for CPU time. The parent watches the
-script's resident memory and stops it above the memory cap, because the
-address-space cap counts a system library cache and was stopping every script.
-Windows uses an AppContainer and a Job Object. CPU time, memory, and a
-wall-clock limit are set on that process. If those limits cannot be applied,
-the script is not run.
+seccomp filter (every other socket, and starting a new session). The process
+cap counts only that script's threads: a cgroup ``pids.max`` when this user can
+create one, and otherwise the parent stops the script's process tree. It is
+not the user-wide process limit, which also counts a browser and was stalling
+geometry. macOS uses ``sandbox-exec`` and ``setrlimit`` for CPU time. The
+parent watches the script's resident memory and stops it above the memory cap,
+because the address-space cap counts a system library cache and was stopping
+every script. Windows uses an AppContainer and a Job Object. CPU time, memory,
+and a wall-clock limit are set on that process. If those limits cannot be
+applied, the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
@@ -110,7 +113,9 @@ _NET_SYSCALLS = {
     "aarch64": (198, 199, 200, 201, 202, 203, 206, 207, 211, 212, 242),
 }
 # setsid and setpgid. A grandchild that starts a new session leaves the group
-# the parent kills when the tool returns.
+# the parent kills when the tool returns. Classic seccomp BPF has no counter,
+# so this filter cannot limit how often clone or fork is called. The process
+# cap is the cgroup pids controller, or the parent counting this tree's threads.
 _ESCAPE_SYSCALLS = {
     "x86_64": (112, 109),
     "aarch64": (157, 154),
@@ -118,6 +123,11 @@ _ESCAPE_SYSCALLS = {
 # How often the macOS parent checks the script's resident memory.
 _MEMORY_POLL_SECONDS = 0.25
 _LANDLOCK_SCOPE_SIGNAL = 1 << 1
+# Threads in this script only. RLIMIT_NPROC counts every thread of the user,
+# so a fixed 256 was stopping geometry on a desktop that already had a browser open.
+_PROCESS_CAP = 256
+_PR_SET_CHILD_SUBREAPER = 36
+_PROCESS_LIMIT = "The script was stopped because it started too many processes."
 
 _SECRET_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
 _SAFE_BUILTINS = (
@@ -542,6 +552,137 @@ def _read_roots() -> list[Path]:
     return found
 
 
+def _cgroup_words(path: Path) -> set[str]:
+    try:
+        return set(path.read_text(encoding="utf-8").split())
+    except OSError:
+        return set()
+
+
+def _own_cgroup() -> Path | None:
+    """This process's cgroup v2 directory, or None when cgroup v2 is not in use."""
+    try:
+        text = Path("/proc/self/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3 or parts[0] != "0" or parts[1] != "":
+            continue
+        relative = parts[2].strip()
+        if not relative.startswith("/"):
+            return None
+        if relative == "/":
+            return Path("/sys/fs/cgroup")
+        return Path("/sys/fs/cgroup") / relative.lstrip("/")
+    return None
+
+
+def _delegate_pids(parent: Path) -> bool:
+    """Turn on the pids controller for children of ``parent``. No limit is set here."""
+    if "pids" not in _cgroup_words(parent / "cgroup.controllers"):
+        return False
+    if "pids" in _cgroup_words(parent / "cgroup.subtree_control"):
+        return True
+    try:
+        with open(parent / "cgroup.subtree_control", "a", encoding="utf-8") as handle:
+            handle.write("+pids")
+    except OSError:
+        return "pids" in _cgroup_words(parent / "cgroup.subtree_control")
+    return "pids" in _cgroup_words(parent / "cgroup.subtree_control")
+
+
+def _prepare_pids_cgroup() -> Path | None:
+    """A sibling cgroup with ``pids.max``, or None when that needs root.
+
+    The limit has to be a sibling. Setting it on this process's own cgroup
+    would cap the whole program, and a child of a cgroup that still holds
+    processes cannot take the pids controller.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    own = _own_cgroup()
+    if own is None or own == Path("/sys/fs/cgroup"):
+        return None
+    parent = own.parent
+    if not _delegate_pids(parent):
+        return None
+    target = parent / f"aicad-{uuid.uuid4().hex}"
+    try:
+        target.mkdir(mode=0o755)
+    except OSError:
+        return None
+    try:
+        (target / "pids.max").write_text(f"{_PROCESS_CAP}\n", encoding="utf-8")
+    except OSError:
+        _release_pids_cgroup(target)
+        return None
+    if not os.access(target / "cgroup.procs", os.W_OK):
+        _release_pids_cgroup(target)
+        return None
+    return target
+
+
+def _move_into_pids_cgroup(cgroup: Path, pid: int) -> bool:
+    try:
+        (cgroup / "cgroup.procs").write_text(f"{pid}\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def _join_pids_cgroup() -> None:
+    """Move this process into the cgroup the parent prepared, before Landlock."""
+    raw = os.environ.get("AICAD_PIDS_CGROUP")
+    if not raw:
+        return
+    _move_into_pids_cgroup(Path(raw), os.getpid())
+
+
+def _release_pids_cgroup(path: Path | None) -> None:
+    if path is None:
+        return
+    procs = path / "cgroup.procs"
+    for _ in range(25):
+        try:
+            text = procs.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        for line in text.split():
+            try:
+                _kill_pid(int(line))
+            except ValueError:
+                continue
+        try:
+            path.rmdir()
+            return
+        except OSError:
+            time.sleep(0.04)
+
+
+def _adopt_orphans() -> None:
+    """Keep a grandchild whose parent exited inside this sandbox, so it can be killed with it."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        libc = _libc()
+        if hasattr(libc, "prctl"):
+            libc.prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+    except (OSError, AttributeError):
+        return
+
+
+def _task_count(pids: set[int]) -> int:
+    """Threads in these processes. A missing /proc entry counts as nothing."""
+    total = 0
+    for pid in pids:
+        try:
+            total += len(os.listdir(f"/proc/{pid}/task"))
+        except OSError:
+            continue
+    return total
+
+
 def _set_limits() -> None:
     import resource
 
@@ -560,17 +701,6 @@ def _set_limits() -> None:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (OSError, ValueError) as exc:
         raise ScriptError("Could not set the CPU or file limit, so the script was not run.") from exc
-    if sys.platform.startswith("linux") and hasattr(resource, "RLIMIT_NPROC"):
-        # Linux counts every thread of this user toward the cap. 256 is low
-        # enough that the script cannot raise it to the system default, and
-        # high enough that the geometry libraries can still start.
-        cap = 256
-        try:
-            _soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
-            if hard == resource.RLIM_INFINITY or hard > cap:
-                resource.setrlimit(resource.RLIMIT_NPROC, (cap, cap))
-        except (OSError, ValueError):
-            pass
 
 
 def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
@@ -766,6 +896,8 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     ok, reason = sandbox_supported()
     if not ok:
         raise ScriptError(reason)
+    _adopt_orphans()
+    _join_pids_cgroup()
     _set_limits()
     _landlock(workspace, network=network, read_roots=roots)
     _block_sockets(network=network)
@@ -936,8 +1068,10 @@ def _watch_descendants(
     stop: threading.Event,
     memory_cap: int | None = None,
     memory_hit: threading.Event | None = None,
+    process_cap: int | None = None,
+    process_hit: threading.Event | None = None,
 ) -> None:
-    """Remember children, kill any that leave the group, and enforce the macOS memory cap."""
+    """Remember children, kill any that leave the group, and enforce the memory and process caps."""
     next_sample = 0.0
     while not stop.is_set():
         try:
@@ -955,6 +1089,11 @@ def _watch_descendants(
             seen.update(found)
         for pid in escaped:
             _kill_pid(pid)
+        if process_cap is not None and _task_count({leader, *found}) > process_cap:
+            if process_hit is not None:
+                process_hit.set()
+            _kill_process_tree(leader, seen, lock)
+            return
         if memory_cap is not None and time.monotonic() >= next_sample:
             next_sample = time.monotonic() + _MEMORY_POLL_SECONDS
             used = _tree_resident_bytes(leader, found)
@@ -1027,6 +1166,9 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     seen_lock = threading.Lock()
     memory_hit = threading.Event()
     memory_cap = memory_bytes() if sys.platform == "darwin" else None
+    process_hit = threading.Event()
+    process_cap = _PROCESS_CAP if sys.platform.startswith("linux") else None
+    pids_cgroup: Path | None = None
     try:
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
@@ -1048,18 +1190,35 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 shutil.rmtree(job, ignore_errors=True)
                 raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.")
             return _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
+        if sys.platform.startswith("linux"):
+            pids_cgroup = _prepare_pids_cgroup()
+        env = _child_env(workspace, job, network)
+        env.pop("AICAD_PIDS_CGROUP", None)
+        if pids_cgroup is not None:
+            env["AICAD_PIDS_CGROUP"] = str(pids_cgroup)
         proc = subprocess.Popen(
             command,
             cwd=str(workspace),
-            env=_child_env(workspace, job, network),
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
+        if pids_cgroup is not None:
+            _move_into_pids_cgroup(pids_cgroup, proc.pid)
         stop_watch = threading.Event()
         watcher = threading.Thread(
             target=_watch_descendants,
-            args=(proc.pid, seen, seen_lock, stop_watch, memory_cap, memory_hit),
+            args=(
+                proc.pid,
+                seen,
+                seen_lock,
+                stop_watch,
+                memory_cap,
+                memory_hit,
+                process_cap,
+                process_hit,
+            ),
             name="aicad-sandbox-reap",
             daemon=True,
         )
@@ -1078,12 +1237,14 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             stdout_b.decode("utf-8", "replace"),
             stderr_b.decode("utf-8", "replace"),
             memory_killed=memory_hit.is_set(),
+            process_killed=process_hit.is_set(),
         )
     finally:
         if stop_watch is not None:
             stop_watch.set()
         if watcher is not None:
             watcher.join(timeout=1)
+        _release_pids_cgroup(pids_cgroup)
         if profile_path is not None:
             profile_path.unlink(missing_ok=True)
         if probe_root is not None:
@@ -1097,7 +1258,11 @@ def _payload_from_result(
     stderr: str,
     *,
     memory_killed: bool,
+    process_killed: bool = False,
 ) -> dict:
+    if process_killed:
+        shutil.rmtree(job, ignore_errors=True)
+        raise ScriptError(_PROCESS_LIMIT)
     if memory_killed:
         shutil.rmtree(job, ignore_errors=True)
         raise ScriptError("The script was stopped because it hit the memory or CPU limit.")
