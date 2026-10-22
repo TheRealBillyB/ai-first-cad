@@ -920,6 +920,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 )
             )
         )
+    @mcp.tool()
     def start_plan(
         name: str,
         title: str | None = None,
