@@ -416,6 +416,54 @@ def grant_workspace(path: Path, sid: str) -> None:
     _grant_traverse(path, sid)
 
 
+_user_sid: str | None = None
+_user_sid_checked = False
+
+
+def _current_user_sid() -> str | None:
+    """SID of the person running aicad, so files the container creates stay readable."""
+
+    global _user_sid, _user_sid_checked
+    if _user_sid_checked:
+        return _user_sid
+    _user_sid_checked = True
+    completed = subprocess.run(
+        ["whoami", "/user", "/fo", "csv", "/nh"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    line = (completed.stdout or "").strip()
+    if completed.returncode == 0 and "," in line:
+        sid = line.rsplit(",", 1)[-1].strip().strip('"')
+        if sid.startswith("S-"):
+            _user_sid = sid
+    return _user_sid
+
+
+def _reclaim_for_user(path: Path) -> None:
+    """Grant the current user access to a tree the AppContainer wrote."""
+
+    if not path.exists():
+        return
+    sid = _current_user_sid()
+    if sid:
+        try:
+            _icacls(path, sid, "(OI)(CI)F", recurse=True)
+            return
+        except OSError:
+            pass
+    user = os.environ.get("USERNAME", "").strip()
+    if not user:
+        return
+    subprocess.run(
+        ["icacls", str(path), "/grant", f"{user}:(OI)(CI)F", "/T", "/C", "/Q"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _create_job(cpu_seconds: int, memory_bytes: int) -> wintypes.HANDLE:
     kernel32 = _kernel32()
     job = kernel32.CreateJobObjectW(None, None)
@@ -731,6 +779,12 @@ def spawn(
             and exit_code != 0
             and (_job_limit_violated(job) or _job_memory_killed(job, memory_bytes))
         )
+        # Files the container creates can omit this user's inherited access.
+        # Give it back before the parent reads the result.
+        _reclaim_for_user(stdout_path.parent)
+        cache_home = env.get("XDG_CACHE_HOME", "").strip()
+        if cache_home:
+            _reclaim_for_user(Path(cache_home))
         mechanism = "lpac+job" if mode == "lpac" else "appcontainer+job"
         return (
             exit_code,

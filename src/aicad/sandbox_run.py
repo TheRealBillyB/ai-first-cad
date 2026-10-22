@@ -260,27 +260,40 @@ def main(argv: list[str] | None = None) -> int:
         pass
     os.environ["AICAD_SANDBOX_CHILD"] = "1"
     os.chdir(workspace)
-    from aicad.sandbox import apply_sandbox, install_python_guard
+    try:
+        from aicad.sandbox import apply_sandbox, install_python_guard
 
-    try:
-        roots = apply_sandbox(workspace, network=bool(spec.get("network")))
+        try:
+            roots = apply_sandbox(workspace, network=bool(spec.get("network")))
+        except Exception as exc:
+            _write(job, {"ok": False, "error": f"{exc}\n{traceback.format_exc()}"})
+            return 0
+        kind = spec.get("kind")
+        try:
+            if kind == "probe":
+                return _probe(workspace, job)
+            install_python_guard(workspace, roots)
+            if kind == "part":
+                return _part(workspace, job)
+            if kind == "design":
+                return _design(workspace, job)
+            _write(job, {"ok": False, "error": f"Unknown script job {kind!r}."})
+            return 0
+        except Exception as exc:
+            _write(job, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            return 0
     except Exception as exc:
-        _write(job, {"ok": False, "error": f"{exc}\n{traceback.format_exc()}"})
-        return 0
-    kind = spec.get("kind")
-    try:
-        if kind == "probe":
-            return _probe(workspace, job)
-        install_python_guard(workspace, roots)
-        if kind == "part":
-            return _part(workspace, job)
-        if kind == "design":
-            return _design(workspace, job)
-        _write(job, {"ok": False, "error": f"Unknown script job {kind!r}."})
-        return 0
-    except Exception as exc:
-        _write(job, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-        return 0
+        # Importing the geometry stack can fail before the handlers above run.
+        # A partial native import then hangs while the process shuts down, and
+        # the parent waits out the wall-clock limit. Record the error and leave.
+        try:
+            _write(
+                job,
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"},
+            )
+        except Exception:
+            traceback.print_exc()
+        os._exit(1)
 
 
 if __name__ == "__main__":

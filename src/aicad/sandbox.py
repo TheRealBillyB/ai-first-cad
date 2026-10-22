@@ -43,6 +43,28 @@ WARNING = (
     "project does not turn it on."
 )
 
+# Windows starts the child through this snippet. ``python -m`` imports aicad
+# before main() runs, so an import error never reaches the child's handler.
+# A partial native import can then hang until the wall-clock limit.
+_WINDOWS_CHILD_BOOT = r"""
+import json, os, sys, traceback
+from pathlib import Path
+job = Path(sys.argv[1])
+try:
+    from aicad.sandbox_run import main
+except Exception as exc:
+    try:
+        detail = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+        (job / "result.json").write_text(
+            json.dumps({"ok": False, "error": detail}) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        traceback.print_exc()
+    os._exit(1)
+raise SystemExit(main([str(job)]))
+"""
+
 # Defaults. A test may set a lower value. Nothing can set a higher one.
 WALL_SECONDS = 120
 CPU_SECONDS = 60
@@ -768,6 +790,16 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     env["TMPDIR"] = tmp
     env["TMP"] = tmp
     env["TEMP"] = tmp
+    if sys.platform == "win32":
+        # ezdxf and matplotlib otherwise stat the real user profile. An
+        # AppContainer is denied that path, and the import then hangs while
+        # Python shuts down. Do not redirect USERPROFILE: that made every
+        # script fail with STATUS_INVALID_HANDLE.
+        cache = str(workspace / ".aicad" / "cache")
+        env["XDG_CACHE_HOME"] = cache
+        env["XDG_CONFIG_HOME"] = cache
+        env["XDG_DATA_HOME"] = cache
+        env["MPLCONFIGDIR"] = cache
     return env
 
 
@@ -937,6 +969,9 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     job = workspace / ".aicad" / "jobs" / uuid.uuid4().hex
     job.mkdir(parents=True, exist_ok=True)
     (workspace / ".aicad" / "tmp").mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        # Created before the AppContainer grant so the container can write it.
+        (workspace / ".aicad" / "cache").mkdir(parents=True, exist_ok=True)
     spec: dict = {"kind": kind, "network": network}
     probe_root = None
     if kind == "probe":
@@ -944,7 +979,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     (job / "job.json").write_text(json.dumps(spec) + "\n", encoding="utf-8")
     if script is not None:
         (job / "script.py").write_text(script, encoding="utf-8")
-    command = [sys.executable, "-m", "aicad.sandbox_run", str(job)]
+    if sys.platform == "win32":
+        command = [sys.executable, "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job)]
+    else:
+        command = [sys.executable, "-m", "aicad.sandbox_run", str(job)]
     profile_path: Path | None = None
     if sys.platform == "darwin":
         from aicad.sandbox_macos import build_profile, command_prefix

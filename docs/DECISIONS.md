@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A Windows script keeps drawing-font and matplotlib caches in the project | The AppContainer cannot read the user-profile cache, and that import was stopping every script. |
 | macOS must be allowed to read the `/` directory | Without that read, a sandboxed script aborts instead of starting. The files inside other directories stay denied. |
 | Windows does not rewrite this process's access list | An AppContainer cannot open a process that does not grant it, and adding a deny entry stopped later scripts from finishing. |
 | The macOS profile does not name pipe or socket vnode types | `sandbox-exec` treats those names as unset variables and then refuses to start the script. |

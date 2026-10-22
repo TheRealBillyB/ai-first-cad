@@ -26,6 +26,22 @@ def config_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_windows_script_keeps_library_caches_in_the_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    from aicad import sandbox as sandbox_mod
+
+    env = sandbox_mod._child_env(tmp_path, tmp_path / "job", False)
+    cache = str(tmp_path / ".aicad" / "cache")
+    assert env["XDG_CACHE_HOME"] == cache
+    assert env["XDG_CONFIG_HOME"] == cache
+    assert env["XDG_DATA_HOME"] == cache
+    assert env["MPLCONFIGDIR"] == cache
+    assert env.get("USERPROFILE") != cache
+    assert env.get("APPDATA") != cache
+    assert env.get("LOCALAPPDATA") != cache
+    assert env.get("HOME") != cache
+
+
 def test_opening_a_session_does_not_run_its_script(tmp_path, config_home):
     session = {
         "units": "mm",
