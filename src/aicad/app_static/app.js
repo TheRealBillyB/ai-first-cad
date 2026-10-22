@@ -924,6 +924,7 @@ const view = {
   gl: null,
   program: null,
   edgeProgram: null,
+  buffers: new Map(),
 };
 
 function initView() {
@@ -1028,10 +1029,16 @@ function drawSolid() {
 }
 
 function bindAttr(gl, program, name, data, size) {
-  const buffer = gl.createBuffer();
+  const key = (program === view.edgeProgram ? "edge:" : "solid:") + name;
+  let buffer = view.buffers.get(key);
+  if (!buffer) {
+    buffer = gl.createBuffer();
+    view.buffers.set(key, buffer);
+  }
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, data instanceof Float32Array ? data : new Float32Array(data), gl.DYNAMIC_DRAW);
   const loc = gl.getAttribLocation(program, name);
+  if (loc < 0) return;
   gl.enableVertexAttribArray(loc);
   gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
 }

@@ -99,6 +99,8 @@ def _handler(session: Workspace):
             try:
                 if path in ("/", "/index.html"):
                     self._bytes(_STATIC / "index.html", "text/html; charset=utf-8")
+                elif path == "/favicon.ico":
+                    self._bytes(_STATIC / "favicon.png", "image/png")
                 elif path.startswith("/static/"):
                     self._static(path[len("/static/") :])
                 elif path == "/api/state":

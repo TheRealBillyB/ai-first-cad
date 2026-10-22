@@ -252,8 +252,16 @@ def test_page_offers_open_measure_and_live(tmp_path, monkeypatch):
         html = page.read().decode("utf-8")
         connection.close()
         assert page.status == 200
-        for marker in ("open-project", "save-as", 'id="live"', 'data-mode="measure"', 'id="plan-mount"', 'id="plan-body"'):
+        for marker in ("open-project", "save-as", 'id="live"', 'data-mode="measure"', 'id="plan-mount"', 'id="plan-body"', 'rel="icon"'):
             assert marker in html
+        connection = HTTPConnection(host, port, timeout=30)
+        connection.request("GET", "/favicon.ico")
+        icon = connection.getresponse()
+        icon_bytes = icon.read()
+        connection.close()
+        assert icon.status == 200
+        assert icon.getheader("Content-Type") == "image/png"
+        assert icon_bytes.startswith(b"\x89PNG")
         connection = HTTPConnection(host, port, timeout=30)
         connection.request(
             "POST",
