@@ -8,7 +8,7 @@ jobs:
   pytest:
     name: pytest (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 70
+    timeout-minutes: ${{ matrix.job-timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -16,12 +16,16 @@ jobs:
           # Ubuntu stays on 3.12, which is what the Linux suite was written against.
           # Windows and macOS use 3.11 because the sketch solver publishes wheels
           # for 3.11 and not for 3.12. 3.12 on those systems would have to compile it.
+          # The job clock is a backstop. A single test is stopped sooner by pytest-timeout.
           - os: ubuntu-latest
             python: "3.12"
+            job-timeout: 25
           - os: windows-latest
             python: "3.11"
+            job-timeout: 40
           - os: macos-latest
             python: "3.11"
+            job-timeout: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -35,6 +39,19 @@ jobs:
       - name: Check the install and CalculiX
         run: python install.py --check
 
+      - name: Run the Windows sandbox tests
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 15
+        shell: bash
+        env:
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          # These run on their own first. A confinement failure shows up here,
+          # and this step stops after 15 minutes instead of holding the whole job.
+          exec .venv/Scripts/pytest.exe -ra --tb=short --durations=15 --timeout=180 \
+            tests/test_sandbox.py tests/test_sandbox_findings.py
+
       - name: Run the test suite
         shell: bash
         env:
@@ -44,6 +61,12 @@ jobs:
           # -s and a line-buffered interpreter so a failure is in the log
           # even when the job is stopped before pytest prints its summary.
           if [ -x .venv/bin/pytest ]; then
-            exec .venv/bin/pytest -ra --tb=short --durations=15
+            PY=.venv/bin/pytest
+          else
+            PY=.venv/Scripts/pytest.exe
           fi
-          exec .venv/Scripts/pytest.exe -ra --tb=short --durations=15
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            exec "$PY" -ra --tb=short --durations=15 \
+              --ignore=tests/test_sandbox.py --ignore=tests/test_sandbox_findings.py
+          fi
+          exec "$PY" -ra --tb=short --durations=15

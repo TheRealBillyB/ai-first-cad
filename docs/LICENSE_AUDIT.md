@@ -131,6 +131,7 @@ IPython 9.17.1 also installs these, all permissive:
 | Package | Version | Extra | SPDX | How aicad uses it | AGPL-3.0 compatible |
 | --- | --- | --- | --- | --- | --- |
 | pytest | 9.1.1 | dev | MIT | Tests only | Yes |
+| pytest-timeout | 2.4.0 | dev | MIT | Stops a test that runs longer than its limit | Yes |
 | iniconfig | 2.3.1 | via pytest | MIT | | Yes |
 | packaging | 26.3 | via pytest | Apache-2.0 OR BSD-2-Clause | | Yes |
 | pluggy | 1.7.0 | via pytest | MIT | | Yes |

@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| CI stops one test after 5 minutes, and the Windows job after 40 | A hung script was using the whole hour, so the log never reached the later tests. |
 | Windows builds the drawing-font list once, in the Python install | The container cannot read the user-profile copy, and building that list inside every script is slow. |
 | A Windows script keeps matplotlib's cache in the project | The AppContainer cannot read the user-profile cache, and that import was stopping every script. |
 | macOS must be allowed to read the `/` directory | Without that read, a sandboxed script aborts instead of starting. The files inside other directories stay denied. |
