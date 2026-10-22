@@ -33,19 +33,17 @@ A Python library, a command-line tool (`aicad`), and an MCP server (`aicad serve
 - **A parts library.** Socket-head screws, hex nuts, plain washers, and deep-groove ball bearings, built from published sizes by [bd_warehouse](https://github.com/gumyr/bd_warehouse). A STEP file from somewhere else (a McMaster-Carr download, a motor, a plate) can be imported and placed. Clearance works against any of these. Bought parts outside that set come in as STEP files.
 - **The bracket, redrawn.** The current example uses three gussets with a blunt toe. The feature report does not flag them. The buried-rib version remains so the check still has a failure to show.
 
-## Queued
-
 ### Sketches driven by constraints
 
-Two-dimensional sketches whose lines and arcs are held by constraints (a length, a right angle, two lines that must stay parallel), solved by a real constraint solver. SolveSpace is the likely engine.
+Two-dimensional sketches whose lines and arcs are held by constraints (a length, a right angle, two lines that must stay parallel), solved by SolveSpace.
 
 The sketch says when it is under-constrained (it can still wiggle; a dimension is missing) and when it is over-constrained (the dimensions disagree). Changing a dimension rebuilds the solid. This is also the groundwork for tolerances: how far a size is allowed to drift and still count as correct.
 
 ### A first strength check
 
-Linear static FEA: a numerical estimate of stress under a steady load. Gmsh is the likely mesher (it splits the solid into small elements) and CalculiX, or something in that family, is the likely solver.
+Linear static FEA: a numerical estimate of stress under a steady load. Gmsh meshes the solid and CalculiX solves it.
 
-A run has a material, loads, and a safety factor (how much stronger the part needs to be than the load). The result includes a stress map and the assumptions, written out: what was held still, what was pushed, and what this kind of analysis leaves out. A design-review helper reads that result and says what passed, what failed, and why, so the next edit is aimed at the failure.
+A run has a material, loads, and a safety factor (how much stronger the part needs to be than the load). The result includes a stress map and the assumptions, written out: what was held still, what was pushed, and what this kind of analysis leaves out. A design review reads that result and says what passed, what failed, and why, so the next edit is aimed at the failure.
 
 ## Next
 
