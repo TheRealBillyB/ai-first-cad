@@ -8,6 +8,15 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| Design scripts and part scripts run in a Linux child with Landlock and seccomp | The file and network limits have to be real, and this kernel can apply them; if it cannot, the script does not run. |
+| Opening a project loads script text and a saved STEP solid | A downloaded session must not execute Python just because it was opened. |
+| The import allowlist is a clear error; Landlock is the boundary | build123d can reach past a Python import list, so the operating system is what confines the process. |
+| Design-script permission lives outside the project | A script can write the project folder, so it must not be able to allow itself. |
+| Network stays off unless the person turns it on | The assistant has no switch for this; the app button or `--script-network` does. |
+| Limits are 120 seconds, 60 seconds of CPU, and 4 GiB | A test can lower them. Nothing can raise them. The parent kills the child at the wall-clock limit. |
+| Part scripts are sandboxed but not opt-in | Making one solid is the normal path. A multi-step design script is the one the person agrees to, and the one that is logged. |
+| MCP stays on stdio for this version | Cursor, Claude Desktop, and a generic stdio client can connect. HTTP and SSE wait. |
+| `save_project` rewrites session.json; `open_project` switches folders | Edits are already saved. Opening does not run scripts. The CLI still takes `--workspace` per command. |
 | AGPL-3.0-or-later | A service for humanity, so improvements stay shared: no paid license, and contributions use a DCO. |
 
 ## 2026-10-19

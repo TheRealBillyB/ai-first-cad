@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -55,6 +56,8 @@ class Workspace:
         self._requirements: list[dict] = []
         self._sketch_cache: list[dict] = []
         self._sketch_cache_revision = -1
+        self._script_network_once = False
+        self._script_network_all = os.environ.get("AICAD_SCRIPT_NETWORK") == "1"
         self._ensure_project_files()
 
     def listen(self, callback: Callable[[dict], None]) -> Callable[[], None]:
@@ -188,7 +191,68 @@ class Workspace:
                 "panels": {key: value["payload"] for key, value in self.panels.items()},
                 "panel_revision": {key: value["revision"] for key, value in self.panels.items()},
                 "materials": self.document.list_materials(),
+                "design_scripts": self.script_status(),
             }
+
+    def script_status(self) -> dict:
+        """Whether design scripts may run, and whether the next one may use the network."""
+        from aicad.sandbox import design_script_status
+
+        with self._lock:
+            return design_script_status(
+                self.root,
+                network_once=self._script_network_once,
+                network_all=self._script_network_all,
+            )
+
+    def allow_script_network_once(self) -> dict:
+        """Let the next design script use the network. The app button calls this.
+
+        This is not a command, so an assistant connected over MCP cannot call it.
+        """
+        with self._lock:
+            self._script_network_once = True
+            once = self._script_network_once
+            all_runs = self._script_network_all
+            root = self.root
+        from aicad.sandbox import design_script_status
+
+        return design_script_status(root, network_once=once, network_all=all_runs)
+
+    def consume_script_network(self) -> bool:
+        """True when the design script about to run may use the network."""
+        with self._lock:
+            if self._script_network_all:
+                return True
+            if self._script_network_once:
+                self._script_network_once = False
+                return True
+            return False
+
+    def open_project(self, path: str | Path) -> dict:
+        """Switch this process to another project folder. Scripts in that folder are not run."""
+        root = Path(path).expanduser().resolve()
+        if not root.is_dir():
+            raise GeometryError(f"{root} is not a folder, so it cannot be opened as a project.")
+        with self._lock:
+            self.document = Document(root)
+            self.root = self.document.workspace
+            self.documents = self.root / "documents"
+            self.requirements_path = self.root / "requirements.json"
+            self._undo.clear()
+            self._redo.clear()
+            self.selection = {"part": None, "faces": [], "edges": []}
+            self.panels.clear()
+            self._mesh_cache.clear()
+            self._requirement_cache.clear()
+            self._sketch_cache = []
+            self._sketch_cache_revision = -1
+            self._requirements = []
+            self.geometry_revision += 1
+            self._ensure_project_files()
+            parts = [part.to_dict() for part in self.document.list_parts()]
+            workspace = str(self.root)
+        return {"workspace": workspace, "parts": parts}
 
     def mesh(self, name: str) -> dict:
         with self._lock:
@@ -732,6 +796,75 @@ def _cmd_state(workspace: Workspace, _arguments: dict) -> dict:
     return workspace.state()
 
 
+def _cmd_list_sketches(workspace: Workspace, _arguments: dict) -> dict:
+    return {"sketches": workspace.document.list_sketches()}
+
+
+def _cmd_assembly_mesh(workspace: Workspace, arguments: dict) -> dict:
+    mesh = workspace.assembly_mesh(arguments["name"])
+    if arguments.get("full"):
+        return mesh
+    positions = mesh.get("positions") or []
+    return {
+        "assembly": mesh.get("assembly"),
+        "units": mesh.get("units"),
+        "triangles": len(mesh.get("triangle_face") or []),
+        "vertices": len(positions) // 3,
+        "faces": mesh.get("faces"),
+        "instances": mesh.get("instances"),
+        "bounding_box": mesh.get("bounding_box"),
+        "note": "Pass full true for the vertex arrays. The app already draws this mesh.",
+    }
+
+
+def _cmd_session_payload(workspace: Workspace, _arguments: dict) -> dict:
+    return workspace.document.session_payload()
+
+
+def _cmd_replace_session(workspace: Workspace, arguments: dict) -> dict:
+    payload = arguments.get("session")
+    if not isinstance(payload, dict):
+        raise GeometryError("replace_session needs the object that session_payload returned, under session.")
+    workspace.document.replace_session(payload)
+    return {"replaced": True, "parts": [part.name for part in workspace.document.list_parts()]}
+
+
+def _cmd_save_project(workspace: Workspace, _arguments: dict) -> dict:
+    workspace.document._save()  # noqa: SLF001 — save is the session file the person already has
+    path = workspace.root / "session.json"
+    return {"saved": True, "path": str(path)}
+
+
+def _cmd_open_project(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.open_project(arguments["path"])
+
+
+def _cmd_design_script_status(workspace: Workspace, _arguments: dict) -> dict:
+    return workspace.script_status()
+
+
+def _cmd_run_design_script(workspace: Workspace, arguments: dict) -> dict:
+    script = arguments.get("script")
+    if not isinstance(script, str) or not script.strip():
+        raise GeometryError("run_design_script needs a script.")
+    from aicad.sandbox import design_scripts_enabled, run_design_script
+
+    # Leave the one-shot network switch unused when the script is not allowed to start.
+    if not design_scripts_enabled(workspace.root):
+        network = False
+    else:
+        network = workspace.consume_script_network()
+    try:
+        payload = run_design_script(workspace.root, script, network=network)
+    except Exception:
+        # A killed script may have written session.json. Put the previous document back.
+        workspace.document._save()  # noqa: SLF001
+        raise
+    workspace.document._reload()  # noqa: SLF001 — the child wrote session.json
+    payload.pop("_job", None)
+    return payload
+
+
 _PART = _obj({"name": _string("Part name.")}, ["name"])
 
 
@@ -1100,6 +1233,53 @@ _add(Command(
     _cmd_render_assembly,
 ))
 _add(Command("get_state", "Parts, assemblies, sketches, selection, requirement checks, and the latest panels.", _obj({}, []), _cmd_state))
+_add(Command("list_sketches", "Names of the sketches stored in this project.", _obj({}, []), _cmd_list_sketches))
+_add(Command(
+    "assembly_mesh",
+    "Viewport mesh of an assembly. The default is a short summary. full true includes the vertex arrays.",
+    _obj({"name": _string("Assembly name."), "full": {"type": "boolean", "description": "Include vertex arrays."}}, ["name"]),
+    _cmd_assembly_mesh,
+))
+_add(Command(
+    "session_payload",
+    "The saved document: parts, sketches, and assemblies. Opening this does not run scripts.",
+    _obj({}, []),
+    _cmd_session_payload,
+))
+_add(Command(
+    "replace_session",
+    "Replace the document with a payload from session_payload. Script parts load their saved solid and do not run.",
+    _obj({"session": {"type": "object", "description": "Object returned by session_payload."}}, ["session"]),
+    _cmd_replace_session,
+    undo=True,
+))
+_add(Command(
+    "save_project",
+    "Write session.json again. Edits are already saved; this confirms the file.",
+    _obj({}, []),
+    _cmd_save_project,
+    undo=False,
+))
+_add(Command(
+    "open_project",
+    "Switch this server to another project folder. Scripts in that folder are not run.",
+    _obj({"path": _string("Existing project folder.")}, ["path"]),
+    _cmd_open_project,
+    undo=False,
+))
+_add(Command(
+    "design_script_status",
+    "Whether the person has allowed design scripts in this project, and whether the network is off.",
+    _obj({}, []),
+    _cmd_design_script_status,
+))
+_add(Command(
+    "run_design_script",
+    "Run one Python script against this project. The person must allow it first. The reply lists changed parts, checks, errors, and pictures.",
+    _obj({"script": _string("Python. document is the project. workspace is the project folder.")}, ["script"]),
+    _cmd_run_design_script,
+    undo=True,
+))
 
 
 __all__ = ["COMMANDS", "Command", "Workspace"]

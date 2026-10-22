@@ -170,6 +170,7 @@ class PartInfo:
     valid: bool
     watertight: bool
     bounding_box: BoundingBox
+    built: bool = True
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -180,6 +181,7 @@ class PartInfo:
             "valid": self.valid,
             "watertight": self.watertight,
             "bounding_box": self.bounding_box.to_dict(),
+            "built": self.built,
         }
 
 
@@ -231,6 +233,50 @@ class FeatureReport:
             "warning": self.warning,
             "note": self.note,
         }
+
+
+def feature_report_from_dict(payload: dict | None) -> FeatureReport:
+    """Rebuild a feature report that was stored next to a script part."""
+    if not isinstance(payload, dict):
+        return untracked_features()
+    if not payload.get("tracked"):
+        note = payload.get("note")
+        if isinstance(note, str) and note:
+            return FeatureReport(
+                tracked=False,
+                steps=[],
+                redundant_features=[],
+                warning=payload.get("warning") if isinstance(payload.get("warning"), str) else None,
+                note=note,
+            )
+        return untracked_features()
+    steps: list[FeatureStep] = []
+    for row in payload.get("steps") or []:
+        if not isinstance(row, dict):
+            continue
+        steps.append(
+            FeatureStep(
+                name=str(row.get("name") or ""),
+                op=str(row.get("op") or ""),
+                tool_volume_mm3=float(row.get("tool_volume_mm3") or 0),
+                result_volume_mm3=float(row.get("result_volume_mm3") or 0),
+                new_material_mm3=row.get("new_material_mm3"),
+                buried_mm3=row.get("buried_mm3"),
+                buried_fraction=row.get("buried_fraction"),
+                removed_mm3=row.get("removed_mm3"),
+                removed_fraction=row.get("removed_fraction"),
+                redundant=bool(row.get("redundant")),
+                note=str(row.get("note") or ""),
+            )
+        )
+    redundant = payload.get("redundant_features") or [step.name for step in steps if step.redundant]
+    return FeatureReport(
+        tracked=True,
+        steps=steps,
+        redundant_features=[str(name) for name in redundant],
+        warning=payload.get("warning") if isinstance(payload.get("warning"), str) else None,
+        note=str(payload.get("note") or ""),
+    )
 
 
 def untracked_features() -> FeatureReport:

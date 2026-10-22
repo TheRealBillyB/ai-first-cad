@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,23 +88,46 @@ class TriangleMesh:
     colors: np.ndarray | None = None
 
 
-def make_from_script(code: str) -> Shape:
-    """Execute a build123d script and return the solid assigned to ``part``."""
+def make_from_script(code: str, workspace: str | Path | None = None) -> Shape:
+    """Run a build123d script and return the solid assigned to ``part``.
+
+    Outside the sandbox child this starts a confined process. The child calls
+    :func:`_execute_part_script` directly so it does not confine itself twice.
+    """
+    if os.environ.get("AICAD_SANDBOX_CHILD") == "1":
+        return _execute_part_script(code)
+    from aicad.sandbox import run_part_script
+
+    root = Path(workspace) if workspace is not None else None
+    return run_part_script(code, root)
+
+
+def _execute_part_script(code: str) -> Shape:
+    """Run a part script in the current process. Only the sandbox child calls this."""
     if not isinstance(code, str) or not code.strip():
         raise ScriptError("The script is empty. Assign the finished solid to `part`.")
     if len(code) > 200_000:
         raise ScriptError("The script is longer than 200000 characters.")
 
+    from aicad.sandbox import script_builtins
+
     log = FeatureLog()
+    prelude: dict[str, object] = {"__builtins__": __builtins__, "__name__": "aicad_script"}
+    try:
+        with redirect_stdout(io.StringIO()):
+            exec("from build123d import *\nimport math", prelude)  # noqa: S102
+    except Exception as exc:
+        raise ScriptError(_format_script_error(code, exc)) from exc
     namespace: dict[str, object] = {
-        "__builtins__": __builtins__,
+        "__builtins__": script_builtins(),
         "__name__": "aicad_script",
         "feature": log,
     }
+    for key, value in prelude.items():
+        if key not in ("__builtins__", "__name__"):
+            namespace[key] = value
     try:
-        # Discard prints. A script that writes to stdout would break an MCP stdio session.
         with redirect_stdout(io.StringIO()):
-            exec("from build123d import *\nimport math", namespace)  # noqa: S102
             compiled = compile(code, "<aicad-script>", "exec")
             exec(compiled, namespace)  # noqa: S102
     except ScriptError:

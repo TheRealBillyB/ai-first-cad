@@ -319,7 +319,7 @@ When MuJoCo is installed (`pip install -e ".[robot]"`), the export loads the MJC
 
 ## Connect an assistant
 
-`aicad serve` speaks [MCP](https://modelcontextprotocol.io) over stdio. The tools are the same operations as the CLI.
+`aicad serve` speaks [MCP](https://modelcontextprotocol.io) over stdio. The tools are the same operations as the CLI and the workspace app. The short connect guide, including a generic MCP client, is [docs/CONNECT.md](docs/CONNECT.md). One worked session is [docs/EXAMPLE_SESSION.md](docs/EXAMPLE_SESSION.md).
 
 Cursor (`~/.cursor/mcp.json`, or the project's `.cursor/mcp.json`):
 
@@ -385,6 +385,15 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `set_selection` / `get_state` | The current face and edge selection, plus parts, sketches, checks, and the latest panels. |
 | `list_documents` / `read_document` / `write_document` | The project's markdown notes. |
 | `get_requirements` / `set_requirements` / `check_requirements` | Structured requirements and their pass, fail, or unchecked state. |
+| `create_assembly` / `update_assembly` / `get_assembly` / `list_assemblies` | Place parts, replace a spec (a spec that does not solve leaves the previous assembly), and read joint values. |
+| `set_joint` / `set_pose` / `run_motion` / `render_assembly` | Move an assembly, sweep a motion, and render the pose. Motion and the assembly render return pictures. |
+| `check_cables` / `estimate_power` | Cable length and strain, and a quasi-static power estimate. Read the assumptions. |
+| `list_sketches` / `update_sketch` / `update_part_from_sketch` | Sketch names, a replaced sketch spec, and a solid rebuilt from it. |
+| `session_payload` / `replace_session` / `save_project` / `open_project` | Read or replace the saved document, confirm `session.json`, or switch project folder. Opening does not run scripts. |
+| `undo` / `redo` / `delete_document` / `mesh_part` | The same history and notes as the app. `mesh_part` is a summary of face and edge refs, not the vertex arrays. |
+| `assembly_mesh` | A short mesh summary. `full` true includes the vertex arrays. |
+| `run_design_script` / `design_script_status` | One Python program against the project, after you allow it. The status tool does not turn it on. |
+| `aicad://parts`, `aicad://assemblies`, `aicad://sketches`, `aicad://results`, `aicad://session` | The same project, as resources. `aicad://parts/{name}` and `aicad://assemblies/{name}` open one of them. |
 
 `render_part` and `inspect_part` return PNG image blocks plus a JSON report. The assistant should look at the contact sheet, not only the numbers.
 
@@ -494,7 +503,7 @@ GitHub Actions runs `pytest` on every push and pull request (`.github/workflows/
 
 ## Limitations
 
-- Scripts are trusted Python, not a sandbox. The server runs code the assistant sends. Point it at a workspace you are willing to let it write.
+- On Linux, assistant scripts run in a confined process: the project folder only, no network unless you turn it on, and a time and memory limit. A design script stays off until you allow it. Opening a project does not run scripts stored in it. See [SECURITY.md](SECURITY.md). Windows and macOS do not run those scripts until they have their own confinement. The script can still change or delete files inside the project, so point it at a project you are willing to let it edit.
 - Sketch dimensions are the parametric hook. Changing `bolt_circle` rebuilds parts made from that sketch. There is still no 3D feature tree: a fillet, a gusset length, or an extrude height is a number in the step list or the script, not a feature you edit in place. A failed dimension change or a failed script replacement leaves the previous solid.
 - Structured operations are only axis-aligned boxes and cylinders. Fillets, chamfers, and rotated boxes belong in a script.
 - Wall thickness can still miss a thin spot that no ray and no slice crosses. A passing check is evidence, not a guarantee. Anything thinner than about 0.15 mm is below the ray step. A knife-edge gusset reads as a very thin wall, which is why the example gussets end in a 2.4 mm toe.

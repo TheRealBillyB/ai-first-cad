@@ -12,6 +12,18 @@ from aicad.errors import AICADError
 
 
 def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "script_network", False):
+        os.environ["AICAD_SCRIPT_NETWORK"] = "1"
+    try:
+        return _dispatch(args)
+    except AICADError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aicad",
         description="AI-first CAD for hard-body parts. Units are millimeters.",
@@ -32,11 +44,27 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Forward every tool to a running workspace app, for example http://127.0.0.1:8765.",
     )
+    serve_cmd.add_argument(
+        "--script-network",
+        action="store_true",
+        help="Let design scripts use the network for this process. Off unless you pass this.",
+    )
 
     app_cmd = commands.add_parser("app", parents=[common], help="Open the workspace app in a browser.")
     app_cmd.add_argument("--host", default="127.0.0.1")
     app_cmd.add_argument("--port", type=int, default=8765)
     app_cmd.add_argument("--no-browser", action="store_true", help="Serve without opening a browser.")
+    app_cmd.add_argument(
+        "--script-network",
+        action="store_true",
+        help="Let design scripts use the network for this process. Off unless you pass this.",
+    )
+
+    commands.add_parser(
+        "allow-scripts",
+        parents=[common],
+        help="Allow design scripts in this project. The assistant cannot do this.",
+    )
 
     run = commands.add_parser("run", parents=[common], help="Create or replace a part from a script.")
     run.add_argument("script", type=Path, help="Python file that assigns a solid to `part`.")
@@ -229,12 +257,7 @@ def main(argv: list[str] | None = None) -> int:
     robot.add_argument("name")
     robot.add_argument("--out", type=Path, default=None, help="Directory for the robot files.")
 
-    args = parser.parse_args(argv)
-    try:
-        return _dispatch(args)
-    except AICADError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+    return parser
 
 
 def _dispatch(args: argparse.Namespace) -> int:
@@ -248,6 +271,10 @@ def _dispatch(args: argparse.Namespace) -> int:
 
         serve_app(args.workspace, host=args.host, port=args.port, open_browser=not args.no_browser)
         return 0
+    if args.command == "allow-scripts":
+        from aicad.sandbox import allow_design_scripts
+
+        return _emit(allow_design_scripts(args.workspace))
 
     from aicad.document import Document
 

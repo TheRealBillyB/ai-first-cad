@@ -123,6 +123,8 @@ aicad serve --connect http://127.0.0.1:8765
 
 Use that command as the MCP command, with no `--workspace` argument. One process owns the files.
 
+The same steps for Claude Desktop, Cursor, and any other MCP client that speaks stdio are in [docs/CONNECT.md](docs/CONNECT.md). That page also says how to allow a design script. One short session, a shelf that failed a wall check and was thickened, is in [docs/EXAMPLE_SESSION.md](docs/EXAMPLE_SESSION.md).
+
 ## A ten-minute tour
 
 Stay in the project folder with the virtual environment activated.

@@ -40,6 +40,11 @@ right of the directed line.
 
 Do not invent a geometry kernel. Use the tools. Keep replies short and say
 what changed and what the checks say.
+
+run_design_script runs Python you write against this project. It stays off
+until the person allows it in the app or with aicad allow-scripts. You cannot
+turn that on, and the script cannot turn it on either. One solid is still
+create_part_from_script. Opening a project does not run a script stored in it.
 """.strip()
 
 

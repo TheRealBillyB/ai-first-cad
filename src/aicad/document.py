@@ -1,13 +1,16 @@
 """A document is the session an assistant works in.
 
-Parts live in memory and are rebuilt from their source (a script, a list of
-operations, a solved sketch, or a copied STEP file) when the workspace is
-opened again. Geometry is millimeters.
+Parts live in memory. Operations, sketches, catalog parts, and copied STEP
+files are data, so opening the project rebuilds those. A part stored as a
+Python script is not run on open: the solid is the STEP file written the last
+time the script ran, and the script text is kept so it can be read. Geometry
+is millimeters.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import shutil
@@ -26,6 +29,7 @@ from aicad.kinematics import normalize as normalize_assembly
 from aicad.kinematics import solve as solve_assembly
 from aicad.power import actuators_for
 from aicad.models import (
+    BoundingBox,
     ClearanceReport,
     FeatureReport,
     FeaReport,
@@ -37,6 +41,7 @@ from aicad.models import (
     SketchReport,
     Vec3,
     WallReport,
+    feature_report_from_dict,
 )
 from aicad.render import render_motion_frames, render_section, render_sketch, render_views
 from aicad.sketch import Sketch, set_spec_dimension, solve_sketch
@@ -58,7 +63,7 @@ class _Part:
         self,
         name: str,
         source: str,
-        shape: kernel.Shape,
+        shape: kernel.Shape | None,
         script: str | None = None,
         ops: list[dict] | None = None,
         step_file: str | None = None,
@@ -67,11 +72,14 @@ class _Part:
         library_spec: dict | None = None,
         sketch_name: str | None = None,
         sketch_steps: list[dict] | None = None,
+        geometry_file: str | None = None,
+        script_sha256: str | None = None,
+        script_pending: bool = False,
     ):
         self.name = name
         self.source = source
-        self.shape = shape
-        self.base = base if base is not None else shape
+        self._shape = shape
+        self._base = base if base is not None else shape
         self.script = script
         self.ops = ops
         self.step_file = step_file
@@ -79,6 +87,29 @@ class _Part:
         self.library_spec = library_spec
         self.sketch_name = sketch_name
         self.sketch_steps = sketch_steps
+        self.geometry_file = geometry_file
+        self.script_sha256 = script_sha256
+        self.script_pending = script_pending
+
+    @property
+    def shape(self) -> kernel.Shape:
+        if self._shape is None:
+            raise DocumentError(_unbuilt_message(self.name))
+        return self._shape
+
+    @shape.setter
+    def shape(self, value: kernel.Shape | None) -> None:
+        self._shape = value
+
+    @property
+    def base(self) -> kernel.Shape:
+        if self._base is None:
+            raise DocumentError(_unbuilt_message(self.name))
+        return self._base
+
+    @base.setter
+    def base(self, value: kernel.Shape | None) -> None:
+        self._base = value
 
 
 class _Sketch:
@@ -102,8 +133,16 @@ class Document:
     def create_part_from_script(self, name: str, script: str) -> PartInfo:
         with self._lock:
             self._require_new_name(name)
-            shape = kernel.make_from_script(script)
-            self._parts[name] = _Part(name, "script", shape, script=script)
+            shape = kernel.make_from_script(script, workspace=self.workspace)
+            relative = self._store_script_geometry(name, script, shape)
+            self._parts[name] = _Part(
+                name,
+                "script",
+                shape,
+                script=script,
+                geometry_file=relative,
+                script_sha256=_script_hash(script),
+            )
             self._save()
             return self._info(self._parts[name])
 
@@ -118,6 +157,9 @@ class Document:
     def import_step(self, name: str, path: str | Path) -> PartInfo:
         with self._lock:
             self._require_new_name(name)
+            from aicad.sandbox import require_in_project
+
+            require_in_project(path, self.workspace, writing=False)
             source = Path(path).resolve()
             shape = kernel.import_step_file(source)
             relative = f"imports/{name}.step"
@@ -133,7 +175,7 @@ class Document:
         """Replace a part's source. A failed script leaves the previous solid in place."""
         with self._lock:
             part = self._get(name)
-            shape = kernel.make_from_script(script)
+            shape = kernel.make_from_script(script, workspace=self.workspace)
             part.shape = shape
             part.base = shape
             part.source = "script"
@@ -144,6 +186,9 @@ class Document:
             part.sketch_name = None
             part.sketch_steps = None
             part.placement = _identity_placement()
+            part.geometry_file = self._store_script_geometry(name, script, shape)
+            part.script_sha256 = _script_hash(script)
+            part.script_pending = False
             self._save()
             return self._info(part)
 
@@ -161,6 +206,9 @@ class Document:
             part.sketch_name = None
             part.sketch_steps = None
             part.placement = _identity_placement()
+            part.geometry_file = None
+            part.script_sha256 = None
+            part.script_pending = False
             self._save()
             return self._info(part)
 
@@ -191,6 +239,9 @@ class Document:
                 "placement": part.placement,
                 "sketch": part.sketch_name,
                 "steps": part.sketch_steps,
+                "built": part._shape is not None,
+                "script_pending": part.script_pending,
+                "geometry_file": part.geometry_file,
             }
 
     def measure(self, name: str) -> Measurement:
@@ -268,6 +319,9 @@ class Document:
 
     def export(self, name: str, path: str | Path, kind: str) -> Path:
         with self._lock:
+            from aicad.sandbox import require_in_project
+
+            require_in_project(path, self.workspace, writing=True)
             part = self._get(name)
             destination = Path(path)
             if not destination.is_absolute():
@@ -512,6 +566,18 @@ class Document:
             return self._info(part)
 
     def _info(self, part: _Part) -> PartInfo:
+        if part._shape is None:
+            zero = Vec3(0.0, 0.0, 0.0)
+            return PartInfo(
+                name=part.name,
+                source=part.source,
+                units=kernel.UNITS,
+                volume_mm3=0.0,
+                valid=False,
+                watertight=False,
+                bounding_box=BoundingBox(zero, zero, zero),
+                built=False,
+            )
         measured = kernel.measure(part.shape)
         return PartInfo(
             name=part.name,
@@ -521,6 +587,7 @@ class Document:
             valid=measured.valid,
             watertight=measured.watertight,
             bounding_box=measured.bounding_box,
+            built=True,
         )
 
     def _get(self, name: str) -> _Part:
@@ -792,6 +859,10 @@ class Document:
         """Write URDF and MJCF for an assembly, then try to load and step the result."""
         with self._lock:
             spec = self._get_assembly(name)
+            if out_dir:
+                from aicad.sandbox import require_in_project
+
+                require_in_project(out_dir, self.workspace, writing=True)
             destination = Path(out_dir) if out_dir else self.workspace / "exports" / "robot" / spec["name"]
             return export_robot(spec, self._assembly_shapes(spec), destination)
 
@@ -893,6 +964,9 @@ class Document:
                     "placement": copy.deepcopy(part.placement),
                     "sketch": part.sketch_name,
                     "steps": copy.deepcopy(part.sketch_steps) if part.sketch_steps is not None else None,
+                    "geometry_file": part.geometry_file,
+                    "script_sha256": part.script_sha256,
+                    "features": part._shape.feature_report().to_dict() if part.source == "script" and part._shape is not None else None,
                 }
                 for part in self._parts.values()
             ],
@@ -905,6 +979,21 @@ class Document:
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         temporary.replace(path)
+
+    def _reload(self) -> None:
+        """Read ``session.json`` again. Script text is loaded and not executed."""
+        with self._lock:
+            self._parts.clear()
+            self._sketches.clear()
+            self._assemblies.clear()
+            self._load()
+
+    def _store_script_geometry(self, name: str, script: str, shape: kernel.Shape) -> str:
+        relative = f".aicad/geometry/{name}-{_script_hash(script)[:16]}.step"
+        path = self.workspace / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        kernel.export_step_file(shape, path)
+        return relative
 
     def _load(self) -> None:
         path = self._session_path()
@@ -923,6 +1012,8 @@ class Document:
             name = record["name"]
             source = record.get("source", "script")
             placement = record.get("placement") or _identity_placement()
+            script_text = record.get("script") or ""
+            script_pending = False
             try:
                 if source == "ops":
                     base = kernel.make_from_ops(record["ops"])
@@ -950,12 +1041,27 @@ class Document:
                         raise DocumentError(f"Could not rebuild part {name!r}: {solved.note}")
                     base = kernel.solid_from_sketch(solved.geometry, record.get("steps") or [])
                 else:
-                    base = kernel.make_from_script(record.get("script") or "")
-                shape = kernel.place(
-                    base,
-                    tuple(placement["position"]),
-                    tuple(placement["rotation_deg"]),
-                )
+                    source = "script"
+                    script_pending = _script_hash(script_text) != record.get("script_sha256")
+                    geometry = record.get("geometry_file")
+                    geometry_path = self.workspace / geometry if geometry else None
+                    if geometry_path is not None and geometry_path.is_file():
+                        base = kernel.import_step_file(geometry_path)
+                        base.features = feature_report_from_dict(record.get("features"))
+                    else:
+                        # A downloaded script is shown, not run.
+                        base = None
+                        script_pending = True
+                if base is None:
+                    shape = None
+                else:
+                    shape = kernel.place(
+                        base,
+                        tuple(placement["position"]),
+                        tuple(placement["rotation_deg"]),
+                    )
+                    if source == "script":
+                        shape.features = base.features
             except Exception as exc:
                 raise DocumentError(
                     f"Could not rebuild part {name!r} from the session: {exc}"
@@ -972,12 +1078,26 @@ class Document:
                 library_spec=record.get("library"),
                 sketch_name=record.get("sketch") if source == "sketch" else None,
                 sketch_steps=record.get("steps") if source == "sketch" else None,
+                geometry_file=record.get("geometry_file") if source == "script" else None,
+                script_sha256=record.get("script_sha256") if source == "script" else None,
+                script_pending=script_pending,
             )
         self._assemblies.clear()
         for record in payload.get("assemblies", []):
             cleaned = normalize_assembly(record)
             self._require_assembly_parts(cleaned)
             self._assemblies[cleaned["name"]] = cleaned
+
+
+def _unbuilt_message(name: str) -> str:
+    return (
+        f"Part {name!r} has a script that has not been run. Opening a project does not run scripts. "
+        "Run the script when you want the solid."
+    )
+
+
+def _script_hash(script: str) -> str:
+    return hashlib.sha256(script.encode("utf-8")).hexdigest()
 
 
 def _assembly_name(spec: dict) -> str:
