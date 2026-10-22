@@ -78,6 +78,20 @@ drill, pump, or engine rpm or Hz). A natural frequency within 10% of that
 line or its harmonics is a resonance risk. `solve_assembly_modal` ties the
 joints, so a revolute does not flex. `check_bolts` is the loosening check:
 slip margin first, then yield and thread stripping. Read the assumptions.
+
+A design script is `run_design_script`: one Python program that may call
+`document` and import build123d. It runs in a separate process, inside this
+project folder, with the network off. The person turns it on with
+`aicad allow-scripts` or the button in the app. You cannot turn it on, and
+the script cannot turn it on. Opening a project loads script text and does
+not run it. A part script that assigns `part` is still the ordinary way to
+make one solid.
+
+Read the project with `get_state`, `session_payload`, `list_sketches`, and
+the resources `aicad://parts`, `aicad://parts/{name}`, `aicad://assemblies`,
+`aicad://assemblies/{name}`, `aicad://sketches`, `aicad://results`, and
+`aicad://session`. `save_project` writes session.json. `open_project` switches
+the folder. `undo` and `redo` step the same history the app uses.
 """.strip()
 
 _GUIDE = """
@@ -261,6 +275,10 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 
 
 def serve(workspace: str | Path, connect: str | None = None) -> None:
+    if not connect:
+        from aicad.sandbox import warn_design_scripts
+
+        warn_design_scripts(workspace)
     server = build_server(workspace, connect=connect)
     server.run(transport="stdio")
 
@@ -287,8 +305,12 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def guard(fn):
         try:
             return fn()
+        except ToolError:
+            raise
         except AICADError as exc:
             raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            raise ToolError(f"{type(exc).__name__}: {exc}") from exc
 
     @mcp.tool()
     def list_parts() -> dict:
@@ -648,7 +670,13 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def update_assembly(spec: dict[str, Any]) -> dict:
-        """Replace an assembly spec."""
+        """Replace an assembly with a new spec.
+
+        The spec is the same object create_assembly takes: name, instances,
+        joints, relations, poses, motions, cables, and actuators. Parts it
+        names must already be in the document. If the spec does not solve,
+        the previous assembly is left as it was.
+        """
         return guard(lambda: run("update_assembly", spec=spec))
 
     @mcp.tool()
@@ -800,10 +828,138 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """Parts, assemblies, sketches, the current selection, requirement checks, and the latest panels."""
         return guard(lambda: run("get_state"))
 
+    @mcp.tool()
+    def undo() -> dict:
+        """Restore the document, notes, and requirements to the previous state."""
+        return guard(lambda: run("undo"))
+
+    @mcp.tool()
+    def redo() -> dict:
+        """Reapply the last undone command."""
+        return guard(lambda: run("redo"))
+
+    @mcp.tool()
+    def delete_document(name: str) -> dict:
+        """Delete a markdown note in the project documents folder."""
+        return guard(lambda: run("delete_document", name=name))
+
+    @mcp.tool()
+    def mesh_part(name: str) -> dict:
+        """Summary of the viewport mesh: triangle count and the face and edge refs.
+
+        The app already draws the mesh. Use a ref from this list in set_selection
+        or a load. This summary does not include the vertex arrays.
+        """
+        return guard(lambda: run("mesh_part", name=name))
+
+    @mcp.tool()
+    def list_sketches() -> dict:
+        """Names of the sketches stored in this project."""
+        return guard(lambda: run("list_sketches"))
+
+    @mcp.tool()
+    def assembly_mesh(name: str, full: bool = False) -> dict:
+        """Viewport mesh of an assembly.
+
+        The default reply is a short summary: counts, instances, and the bounding
+        box. Pass full true when you need the vertex arrays. The design script
+        can call document.assembly_mesh for the full mesh directly.
+        """
+        return guard(lambda: run("assembly_mesh", name=name, full=full))
+
+    @mcp.tool()
+    def session_payload() -> dict:
+        """The saved document: parts, sketches, and assemblies. Reading it does not run scripts."""
+        return guard(lambda: run("session_payload"))
+
+    @mcp.tool()
+    def replace_session(session: dict[str, Any]) -> dict:
+        """Replace the document with an object previously returned by session_payload.
+
+        Script parts load their saved solid. The script text is not run.
+        """
+        return guard(lambda: run("replace_session", session=session))
+
+    @mcp.tool()
+    def save_project() -> dict:
+        """Write session.json again. Edits are already saved after each command."""
+        return guard(lambda: run("save_project"))
+
+    @mcp.tool()
+    def open_project(path: str) -> dict:
+        """Switch this server to another project folder. Scripts in that folder are not run."""
+        return guard(lambda: run("open_project", path=path))
+
+    @mcp.tool()
+    def design_script_status() -> dict:
+        """Whether the person has allowed design scripts, and whether the network is off.
+
+        You cannot turn design scripts on. The person uses aicad allow-scripts
+        or the button in the app.
+        """
+        return guard(lambda: run("design_script_status"))
+
+    @mcp.tool()
+    def run_design_script(script: str) -> dict | list[str | Image]:
+        """Run one Python script against this project.
+
+        The person must have allowed design scripts first. The script sees
+        `document` (the project API) and `workspace` (the project folder path).
+        It may import build123d. It cannot use the network, and it cannot read
+        or write files outside the project. The reply lists changed parts, the
+        checks the script called, errors, printed text, and pictures of the
+        parts that changed. A script that fails returns that report. It does
+        not turn the tool on, and it cannot grant itself the network.
+        """
+
+        def go():
+            payload = run("run_design_script", script=script)
+            if payload.get("views"):
+                return _images(payload)
+            return payload
+
+        return guard(go)
+
     @mcp.resource("aicad://guide", mime_type="text/markdown")
     def guide() -> str:
         """How to write a script or an operation list, and what to check afterwards."""
         return _GUIDE
+
+    @mcp.resource("aicad://parts", mime_type="application/json")
+    def parts_resource() -> str:
+        """Parts in the open project, with volume and bounding box."""
+        return json.dumps(client.execute("list_parts", {}, source="mcp"), indent=2)
+
+    @mcp.resource("aicad://assemblies", mime_type="application/json")
+    def assemblies_resource() -> str:
+        """Assemblies in the open project."""
+        return json.dumps(client.execute("list_assemblies", {}, source="mcp"), indent=2)
+
+    @mcp.resource("aicad://sketches", mime_type="application/json")
+    def sketches_resource() -> str:
+        """Sketch names in the open project."""
+        return json.dumps(client.execute("list_sketches", {}, source="mcp"), indent=2)
+
+    @mcp.resource("aicad://results", mime_type="application/json")
+    def results_resource() -> str:
+        """Requirement checks and the latest panel reports."""
+        state = client.execute("get_state", {}, source="mcp")
+        return json.dumps({"requirements": state.get("requirements"), "panels": state.get("panels")}, indent=2)
+
+    @mcp.resource("aicad://session", mime_type="application/json")
+    def session_resource() -> str:
+        """The saved document. Reading it does not run scripts."""
+        return json.dumps(client.execute("session_payload", {}, source="mcp"), indent=2)
+
+    @mcp.resource("aicad://parts/{name}", mime_type="application/json")
+    def part_resource(name: str) -> str:
+        """One part's source: script, operations, sketch, or STEP note."""
+        return json.dumps(client.execute("get_part_source", {"name": name}, source="mcp"), indent=2)
+
+    @mcp.resource("aicad://assemblies/{name}", mime_type="application/json")
+    def assembly_resource(name: str) -> str:
+        """One assembly spec and its solved joint values."""
+        return json.dumps(client.execute("get_assembly", {"name": name}, source="mcp"), indent=2)
 
     return mcp
 

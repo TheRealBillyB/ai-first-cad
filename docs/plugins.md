@@ -7,6 +7,7 @@ This is a door, not a framework. Version 1 has one call, `register(host)`, and t
 ## What will not happen
 
 - Opening a design does not load a plugin. A plugin is not stored in the design.
+- A design script cannot allow, revoke, or load a plugin. Plugin consent is a separate switch from design scripts. Allow a plugin yourself with `aicad plugins allow`.
 - Installing a plugin does not run it. aicad can list it first.
 - aicad reads `aicad.plugin.json` as text. It does not import the plugin to learn the publisher or the permissions.
 - The warning is written by aicad. The plugin does not get a hook to replace it.
@@ -127,7 +128,7 @@ def build_pin(options) -> str:
 aicad plugins insert my-parts dowel --kind pin --set size=6
 ```
 
-aicad saves that script as an ordinary part. The next time the design opens, aicad rebuilds the script. It does not import the plugin again. Part scripts saved in the design follow the session-open rule, which is separate from this door.
+aicad saves that script as an ordinary part. Opening the design later shows the saved solid and the script text. It does not run the script, and it does not import the plugin again. Part scripts saved in the design follow the session-open rule, which is separate from this door.
 
 `host.workspace` during `build` is the project folder only if you declared `project_files`.
 

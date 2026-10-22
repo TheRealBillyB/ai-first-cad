@@ -58,6 +58,9 @@ class HttpCommandClient:
 
 
 def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+    from aicad.sandbox import warn_design_scripts
+
+    warn_design_scripts(workspace)
     server = make_server(workspace, host, port)
     url = f"http://{host}:{port}/"
     print(f"aicad workspace at {url}", flush=True)
@@ -137,6 +140,12 @@ def _handler(session: Workspace):
                     self._json({"ok": True, "result": save_settings(body)})
                 elif parsed.path == "/api/chat":
                     self._chat(body)
+                elif parsed.path == "/api/allow-scripts":
+                    from aicad.sandbox import allow_design_scripts
+
+                    self._json({"ok": True, "result": allow_design_scripts(self.workspace.root)})
+                elif parsed.path == "/api/script-network-once":
+                    self._json({"ok": True, "result": self.workspace.allow_script_network_once()})
                 else:
                     self._error(404, "Not found.")
             except AICADError as exc:

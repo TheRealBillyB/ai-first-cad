@@ -54,10 +54,52 @@ async function refresh() {
   renderDocs();
   renderAssemblies();
   renderDimensions();
+  renderScriptWarning();
   $("undo").disabled = !ui.state.can_undo;
   $("redo").disabled = !ui.state.can_redo;
   if (ui.page === "model" && ui.stage === "solid" && (ui.viewAssembly || ui.part)) await loadMesh();
   else if (ui.page === "model" && ui.stage === "sketch") drawSketch();
+}
+
+function renderScriptWarning() {
+  const box = $("script-warning");
+  const scripts = (ui.state && ui.state.design_scripts) || {};
+  box.replaceChildren();
+  box.hidden = false;
+  const text = document.createElement("p");
+  const button = document.createElement("button");
+  button.type = "button";
+  if (!scripts.enabled) {
+    box.className = "script-warning";
+    text.textContent = (scripts.warning || "Design scripts run code the assistant wrote.") + " Design scripts are off for this project.";
+    button.textContent = "Allow design scripts";
+    button.addEventListener("click", async () => {
+      const response = await fetch("/api/allow-scripts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const body = await response.json();
+      if (!body.ok) throw new Error(body.error || "Could not allow design scripts");
+      await refresh();
+    });
+  } else {
+    box.className = "script-warning quiet";
+    text.textContent = "Design scripts are on for this project. Network is " + (scripts.network || "off") + ".";
+    button.textContent = "Allow network on the next script";
+    button.addEventListener("click", async () => {
+      const response = await fetch("/api/script-network-once", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const body = await response.json();
+      if (!body.ok) throw new Error(body.error || "Could not allow the network");
+      await refresh();
+    });
+  }
+  box.append(text, button);
+  document.documentElement.style.setProperty("--banner", box.offsetHeight + "px");
 }
 
 async function loadMesh() {

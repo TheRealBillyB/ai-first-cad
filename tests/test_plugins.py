@@ -255,7 +255,16 @@ def test_opening_a_design_does_not_import_a_plugin(tmp_path, monkeypatch):
     from aicad.document import Document
 
     document = Document(workspace)
-    assert document.measure("box").volume_mm3 == pytest.approx(1)
+    assert not marker.exists()
+    assert "evil_plugin" not in sys.modules
+    info = document.list_parts()[0]
+    assert info.name == "box"
+    assert info.built is False
+    source = document.get_source("box")
+    assert source["script_pending"] is True
+    assert "Box" in source["script"]
+    with pytest.raises(Exception, match="has not been run"):
+        document.measure("box")
     plugins.discover()
     plugins.warning_text(plugins.get("evil"))
     assert not marker.exists()

@@ -25,6 +25,12 @@ The local tool: the MCP server, the workspace app, the command line, and the Pyt
 
 ## What this version does
 
-The design-script controls are not built yet. On the current code, a part script runs in-process with the full Python builtins, and opening a project runs the scripts stored in `session.json`. Treat a project from someone else as code you are about to run.
+On Linux, a script the assistant sends runs in a separate process. That process can read and write the project folder. It cannot use the network unless you turn that on yourself (`aicad app --script-network`, or **Allow network on the next script** in the app). It stops if it runs too long or uses too much memory. If this computer cannot apply those limits, the script is not run.
 
-Plugins are separate. Installed packs are listed from entry points without importing them. A third-party pack runs only after you allow the publisher, the version, and the permissions it declared. Opening a design does not allow or load a plugin. The warning is written by aicad, and the permission list is a declaration, not a sandbox. See [docs/plugins.md](docs/plugins.md).
+A design script, one program that calls several steps, stays off until you allow it with `aicad allow-scripts` or the button in the app. The app shows a warning before you do. Each of those runs is appended to `.aicad/script_log.jsonl` in the project. That log sits in the project folder, so a later script can edit it. It is a record you can read, not a lock. A script that only builds one solid (`part = ...`) uses the same confined process. It does not need the allow step.
+
+Opening a project does not run Python stored in it. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data.
+
+Plugins are separate. Installed packs are listed from entry points without importing them. A third-party pack runs only after you allow the publisher, the version, and the permissions it declared. Opening a design does not allow or load a plugin. A design script cannot allow or load a plugin either. The warning is written by aicad, and the permission list is a declaration, not a sandbox. See [docs/plugins.md](docs/plugins.md).
+
+This sandbox is for one person on their own Linux machine. It is not a boundary between tenants. Windows and macOS refuse to run assistant scripts until they grow their own confinement. The choices are recorded in [docs/DECISIONS.md](docs/DECISIONS.md).

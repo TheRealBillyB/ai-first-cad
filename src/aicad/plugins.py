@@ -7,9 +7,9 @@ showing its warning, does not import it.
 
 A third-party plugin's code runs only after ``allow(..., accept=True)`` for
 that package version and those declared permissions. Opening a design file
-does not allow or load a plugin. The permission names are a declaration the
-warning shows. They are not a sandbox: once allowed, the package runs in this
-process.
+does not allow or load a plugin. A design script cannot allow, revoke, or
+load one either. The permission names are a declaration the warning shows.
+They are not a sandbox: once allowed, the package runs in this process.
 
 A plugin cannot replace a built-in check, the standard-part catalog, or STEP
 and STL export. Reports and files it produces are marked as coming from the
@@ -332,6 +332,18 @@ def warning_text(offer: PluginOffer) -> str:
     return "\n".join(lines)
 
 
+def _refuse_if_sandboxed(action: str) -> None:
+    """A design script must not grant or use plugin consent."""
+    import os
+
+    if os.environ.get("AICAD_SANDBOX_CHILD") == "1":
+        raise PluginConsentError(
+            f"A design script cannot {action} a plugin. "
+            "Plugin consent is a separate switch from design scripts. "
+            "Allow a plugin yourself with aicad plugins allow, outside the script."
+        )
+
+
 def consent_file() -> Path:
     """Where an allow is recorded. This is user config, never the design folder."""
     import os
@@ -351,6 +363,7 @@ def allow(name: str, *, accept: bool, consent_path: Path | None = None) -> Plugi
     tied to the package version, the entry point, and the manifest. A later
     change to any of those requires a new allow.
     """
+    _refuse_if_sandboxed("allow")
     offer = get(name)
     if offer.problem:
         raise PluginError(offer.problem + " Nothing was allowed.")
@@ -371,6 +384,7 @@ def allow(name: str, *, accept: bool, consent_path: Path | None = None) -> Plugi
 
 def revoke(name: str, *, consent_path: Path | None = None) -> None:
     """Forget an allow. This does not import the plugin."""
+    _refuse_if_sandboxed("revoke")
     path = Path(consent_path) if consent_path is not None else consent_file()
     data = _read_consent(path)
     data.setdefault("allowed", {}).pop(name, None)
@@ -383,6 +397,7 @@ def load(name: str, *, consent_path: Path | None = None) -> LoadedPlugin:
     A third-party plugin is imported only when a matching allow exists.
     Refusing consent happens before the import.
     """
+    _refuse_if_sandboxed("load")
     offer = get(name)
     if offer.problem:
         raise PluginError(offer.problem + " Nothing was imported.")
@@ -493,7 +508,8 @@ def insert_part(
 ):
     """Build a part from a plugin and save it as an ordinary part script.
 
-    Reopening the design rebuilds that script. It does not import the plugin again.
+    Reopening the design shows the saved solid and the script text. It does not
+    run the script, and it does not import the plugin again.
     """
     loaded = load(plugin, consent_path=consent_path)
     spec = loaded._part(kind)
