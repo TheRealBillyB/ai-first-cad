@@ -11,6 +11,10 @@ aicad is AGPL-3.0-or-later. Improvements stay shared. There is no paid license a
 
 Discussion and review follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
+## Plugins
+
+A plugin that is loaded into aicad, or that imports aicad, is combined with this program. Distributing that plugin means the AGPL-3.0-or-later obligations apply to it as well. You keep the copyright in the plugin. The guide is [docs/plugins.md](docs/plugins.md).
+
 ## Developer Certificate of Origin
 
 Every commit must include a `Signed-off-by` line. That line means you agree to the Developer Certificate of Origin, version 1.1, for that commit.

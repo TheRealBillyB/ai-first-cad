@@ -535,10 +535,18 @@ GitHub Actions runs `pytest` on every push and pull request (`.github/workflows/
 - A slicer profile you choose (nozzle, layer height, infill) instead of the slicer's default, and print orientations beyond the six axis poses.
 - Gear and linkage relations enforced in the robot file, and joint effort taken from the power estimate.
 
+## Plugins
+
+An analysis, a part library, or an exporter can be added without editing aicad. Version 1 of the door is the `aicad.plugins` entry-point group. aicad reads a small `aicad.plugin.json` declaration and can list what is installed without running it. A third-party plugin runs only after `aicad plugins allow <name> --yes`. Opening a design does not load a plugin.
+
+The walkthrough is [Write your first plugin](docs/plugins.md). The example is `examples/hello_plugin`. A plugin that is loaded into aicad, or that imports aicad, is combined with this program and falls under the AGPL obligations below.
+
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE).
 
 Decided on 2026-10-21. aicad is meant as a service for humanity, so an improvement from anyone, including a company, stays shared. There is no paid license and no dual license. You keep the copyright in what you write. Contributions use a Developer Certificate of Origin (`git commit -s`), not a contributor license agreement, and no relicensing grant is required. See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
+A plugin that is loaded into aicad, or that imports it, is combined with this program. Distributing that plugin carries the same AGPL-3.0-or-later obligations. You keep the copyright in the plugin.
 
 A dependency-by-dependency check is in [docs/LICENSE_AUDIT.md](docs/LICENSE_AUDIT.md).
