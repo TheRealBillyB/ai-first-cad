@@ -136,6 +136,7 @@ class Document:
         self._assemblies: dict[str, dict] = {}
         self.problems: list[str] = []
         self._lock = threading.RLock()
+        self.actor = "user"
         self._load()
 
     def create_part_from_script(self, name: str, script: str) -> PartInfo:
@@ -1139,6 +1140,90 @@ class Document:
                     "library": copy.deepcopy(part.library_spec) if part.library_spec else None,
                 }
         return facts
+    def start_plan(self, name: str, title: str | None = None, summary: str = "", bundle: dict | None = None) -> dict:
+        """Start a plan. Research, sheets, and questions are data, not a solid."""
+        with self._lock:
+            return self._plan_store().start(name, title, summary=summary, bundle=bundle)
+
+    def list_plans(self) -> dict:
+        """Names, status, and revision of every plan in this project."""
+        with self._lock:
+            return {"units": "mm", "plans": self._plan_store().summaries()}
+
+    def get_plan(self, name: str) -> dict:
+        """One plan, including every revision and the current blueprint sheets."""
+        with self._lock:
+            return self._plan_store().get(name)
+
+    def add_plan_research(self, name: str, note: str, source: str, title: str = "") -> dict:
+        """Add a research note. A source is required. The current revision must be a draft."""
+        with self._lock:
+            return self._plan_store().add_research(name, note, source, title=title)
+
+    def add_plan_assumption(self, name: str, text: str) -> dict:
+        """Add an assumption for the person to accept or reject."""
+        with self._lock:
+            return self._plan_store().add_assumption(name, text)
+
+    def add_plan_question(self, name: str, text: str) -> dict:
+        """Add an open question for the person to answer."""
+        with self._lock:
+            return self._plan_store().add_question(name, text)
+
+    def put_plan_sheet(self, name: str, spec: dict) -> dict:
+        """Draw or replace one blueprint sheet of blocks, dimensions, and labels."""
+        with self._lock:
+            return self._plan_store().put_sheet(name, spec)
+
+    def set_plan_dimensions(self, name: str, dimensions: list[dict]) -> dict:
+        """Set the named millimeters the modeling step will use after approval."""
+        with self._lock:
+            return self._plan_store().set_dimensions(name, dimensions)
+
+    def comment_on_plan(self, name: str, item: str, text: str) -> dict:
+        """Comment on the plan or on one assumption, question, or sheet."""
+        with self._lock:
+            return self._plan_store().comment(name, item, text)
+
+    def answer_plan_question(self, name: str, item: str, text: str) -> dict:
+        """Answer a question. Only the person can do this, never the agent."""
+        with self._lock:
+            return self._plan_store().answer(name, item, text)
+
+    def mark_plan_item(self, name: str, item: str, mark: str) -> dict:
+        """Accept or reject an assumption, or waive a question. Only the person can do this."""
+        with self._lock:
+            return self._plan_store().mark(name, item, mark)
+
+    def submit_plan(self, name: str) -> dict:
+        """Move a draft to in review. Approval is a separate step, and only the person can take it."""
+        with self._lock:
+            return self._plan_store().submit(name)
+
+    def revise_plan(self, name: str, changed: str, bundle: dict | None = None) -> dict:
+        """Keep the current revision and open the next one. Say what changed."""
+        with self._lock:
+            return self._plan_store().revise(name, changed, bundle=bundle)
+
+    def approve_plan(self, name: str) -> dict:
+        """Approve the current revision. Only the person can do this, never the agent."""
+        with self._lock:
+            return self._plan_store().approve(name)
+
+    def start_model_from_plan(self, name: str) -> dict:
+        """Hand the approved dimensions and assumptions to modeling. Refuses until the person approves."""
+        with self._lock:
+            return self._plan_store().start_work(name, "model")
+
+    def start_simulation_from_plan(self, name: str) -> dict:
+        """Hand the approved plan to simulation. Refuses until the person approves."""
+        with self._lock:
+            return self._plan_store().start_work(name, "simulation")
+
+    def _plan_store(self):
+        from aicad.plan import PlanStore
+
+        return PlanStore(self.workspace, actor=self.actor)
 
     def session_payload(self) -> dict:
         """The serializable document. Undo stores this and restores it."""

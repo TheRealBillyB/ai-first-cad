@@ -1,0 +1,953 @@
+"""Plan & Sketch. Research, blueprint sheets, and a review stop before modeling.
+
+A plan is data in the project folder: one JSON file and the PNG sheets it
+describes. Opening a project reads that JSON only when a plan command asks
+for it, and nothing in the file is executed.
+
+The person approves a plan. The agent does not. Modeling and simulation that
+start from the plan stay off until that approval, then the approved
+dimensions and assumptions are what the modeling step receives.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import math
+import re
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from aicad.errors import PlanError
+from aicad.plan_sheet import FILLS, render_plan_sheet
+
+_PLAN_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,40}$")
+_ITEM_ID = re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
+_STATUSES = {"draft", "in_review", "approved"}
+_USER_ACTORS = {"user"}
+_FORMAT = 1
+_MAX_BYTES = 2_000_000
+_MAX_TEXT = 4000
+_MAX_SHEETS = 8
+_MAX_BLOCKS = 80
+_MAX_DIMS = 40
+
+_ASSUMPTION_MARKS = {"open", "accepted", "rejected"}
+_QUESTION_MARKS = {"open", "waived"}
+
+_FOOTER = "Blocks and dimensions for review. This sheet is not a solid and not a shop drawing."
+
+
+def status_phrase(status: str) -> str:
+    if status == "in_review":
+        return "in review"
+    return status
+
+
+def approval_refusal(plan: dict) -> str:
+    version = plan["current_revision"]
+    return (
+        f"Only you can approve {plan['title']!r} (revision v{version}). "
+        "The agent cannot approve a plan. "
+        "Open the Plan panel in the workspace and approve it there, "
+        "or run approve-plan yourself. Nothing was approved."
+    )
+
+
+def answer_refusal() -> str:
+    return (
+        "Only you can answer this question. The agent cannot answer for you. "
+        "Type the answer in the Plan panel, or run answer-plan-question yourself."
+    )
+
+
+def mark_refusal() -> str:
+    return (
+        "Only you can mark this item. The agent cannot accept, reject, or waive it for you. "
+        "Use the Plan panel, or run mark-plan-item yourself."
+    )
+
+
+def work_refusal(plan: dict, kind: str) -> str:
+    action = "Heavy modeling" if kind == "model" else "Simulation"
+    done = "modeled" if kind == "model" else "simulated"
+    revision = _current(plan)
+    open_questions = sum(1 for item in revision["questions"] if item["status"] == "open")
+    waiting = f" {open_questions} question(s) are still open." if open_questions else ""
+    return (
+        f"{action} stays off. Plan {plan['title']!r} ({plan['id']}) is {status_phrase(plan['status'])}, "
+        f"revision v{plan['current_revision']}.{waiting} "
+        "It has to be approved first. The agent cannot approve it. "
+        "Review the sheets, the assumptions, and the open questions in the Plan panel, then approve. "
+        f"Nothing was {done}."
+    )
+
+
+class PlanStore:
+    """Plans for one project folder. ``actor`` is ``user`` or ``agent``."""
+
+    def __init__(self, root: str | Path, actor: str = "user"):
+        self.root = Path(root).resolve()
+        self.actor = actor if actor in {"user", "agent"} else "agent"
+        self.directory = self.root / "plans"
+
+    def start(
+        self,
+        name: str,
+        title: str | None = None,
+        summary: str = "",
+        bundle: dict | None = None,
+    ) -> dict:
+        self._check_id(name)
+        if bundle is not None and not isinstance(bundle, dict):
+            raise PlanError("A plan bundle has to be a JSON object of research, sheets, assumptions, and questions.")
+        title = _text(title or (bundle or {}).get("title") or "", "title", required=True, limit=120)
+        summary = _text(summary or (bundle or {}).get("summary") or "", "summary", limit=2000)
+        if self._path(name).is_file():
+            raise PlanError(
+                f"A plan named {name!r} is already in this project. "
+                "Revise that plan, or start a new one under another name."
+            )
+        now = _now()
+        plan = {
+            "format": _FORMAT,
+            "units": "mm",
+            "id": name,
+            "title": title,
+            "summary": summary,
+            "status": "draft",
+            "current_revision": 1,
+            "approved_revision": None,
+            "approved_at": None,
+            "created_at": now,
+            "updated_at": now,
+            "revisions": [
+                _empty_revision(1, now, "Started the plan."),
+            ],
+        }
+        plan["revisions"][0]["activity"][0]["actor"] = self.actor
+        if bundle:
+            _apply_bundle(plan["revisions"][0], bundle)
+        self._write(plan)
+        return self._public(plan)
+
+    def summaries(self) -> list[dict]:
+        if not self.directory.is_dir():
+            return []
+        found = []
+        for path in sorted(self.directory.glob("*.json")):
+            plan = self._read(path)
+            revision = _current(plan)
+            found.append(
+                {
+                    "id": plan["id"],
+                    "title": plan["title"],
+                    "status": plan["status"],
+                    "current_revision": plan["current_revision"],
+                    "approved_revision": plan["approved_revision"],
+                    "open_questions": sum(1 for item in revision["questions"] if item["status"] == "open"),
+                    "open_assumptions": sum(1 for item in revision["assumptions"] if item["status"] == "open"),
+                    "sheet_count": len(revision["sheets"]),
+                    "updated_at": plan["updated_at"],
+                }
+            )
+        return found
+
+    def get(self, name: str) -> dict:
+        return self._public(self._load(name))
+
+    def add_research(self, name: str, note: str, source: str, title: str = "") -> dict:
+        plan = self._load(name)
+        self._require_draft(plan)
+        revision = _current(plan)
+        item = {
+            "id": _next_id(revision, "r"),
+            "title": _text(title, "title", limit=160),
+            "note": _text(note, "note", required=True),
+            "source": _text(source, "source", required=True, limit=500),
+        }
+        revision["research"].append(item)
+        _activity(revision, self.actor, "research", item["id"], item["note"])
+        self._touch(plan)
+        return self._public(plan)
+
+    def add_assumption(self, name: str, text: str) -> dict:
+        plan = self._load(name)
+        self._require_draft(plan)
+        revision = _current(plan)
+        item = {
+            "id": _next_id(revision, "a"),
+            "text": _text(text, "assumption", required=True),
+            "status": "open",
+            "comment": "",
+        }
+        revision["assumptions"].append(item)
+        _activity(revision, self.actor, "assumption", item["id"], item["text"])
+        self._touch(plan)
+        return self._public(plan)
+
+    def add_question(self, name: str, text: str) -> dict:
+        plan = self._load(name)
+        self._require_draft(plan)
+        revision = _current(plan)
+        item = {
+            "id": _next_id(revision, "q"),
+            "text": _text(text, "question", required=True),
+            "status": "open",
+            "answer": "",
+            "comment": "",
+        }
+        revision["questions"].append(item)
+        _activity(revision, self.actor, "question", item["id"], item["text"])
+        self._touch(plan)
+        return self._public(plan)
+
+    def put_sheet(self, name: str, spec: dict) -> dict:
+        plan = self._load(name)
+        self._require_draft(plan)
+        if not isinstance(spec, dict):
+            raise PlanError("A sheet is a JSON object with blocks, dimensions, and labels.")
+        revision = _current(plan)
+        stored = _normalize_sheet(spec, revision)
+        replaced = False
+        for index, existing in enumerate(revision["sheets"]):
+            if existing["id"] == stored["id"]:
+                revision["sheets"][index] = stored
+                replaced = True
+                break
+        if not replaced:
+            if len(revision["sheets"]) >= _MAX_SHEETS:
+                raise PlanError(f"A revision holds up to {_MAX_SHEETS} sheets.")
+            revision["sheets"].append(stored)
+        _activity(revision, self.actor, "sheet", stored["id"], stored["title"])
+        self._touch(plan)
+        return self._public(plan)
+
+    def set_dimensions(self, name: str, dimensions: list[dict]) -> dict:
+        plan = self._load(name)
+        self._require_draft(plan)
+        revision = _current(plan)
+        revision["dimensions"] = _normalize_dimensions(dimensions)
+        _activity(revision, self.actor, "dimensions", "plan", _dimension_sentence(revision["dimensions"]))
+        self._touch(plan)
+        return self._public(plan)
+
+    def comment(self, name: str, item: str, text: str) -> dict:
+        plan = self._load(name)
+        if plan["status"] == "approved":
+            raise PlanError(_frozen(plan))
+        revision = _current(plan)
+        target = _find_item(revision, item) if item != "plan" else None
+        if item != "plan" and target is None:
+            raise PlanError(f"No assumption, question, or sheet named {item!r} on revision v{revision['version']}.")
+        note = _text(text, "comment", required=True)
+        if target is not None and "comment" in target:
+            target["comment"] = note
+        _activity(revision, self.actor, "comment", item, note)
+        self._touch(plan)
+        return self._public(plan)
+
+    def answer(self, name: str, item: str, text: str) -> dict:
+        self._require_user(answer_refusal())
+        plan = self._load(name)
+        if plan["status"] == "approved":
+            raise PlanError(_frozen(plan))
+        revision = _current(plan)
+        question = _find_kind(revision, "questions", item)
+        if question is None:
+            raise PlanError(f"No question named {item!r} on revision v{revision['version']}.")
+        question["answer"] = _text(text, "answer", required=True)
+        question["status"] = "answered"
+        _activity(revision, "user", "answer", item, question["answer"])
+        self._touch(plan)
+        return self._public(plan)
+
+    def mark(self, name: str, item: str, mark: str) -> dict:
+        self._require_user(mark_refusal())
+        plan = self._load(name)
+        if plan["status"] == "approved":
+            raise PlanError(_frozen(plan))
+        revision = _current(plan)
+        assumption = _find_kind(revision, "assumptions", item)
+        question = _find_kind(revision, "questions", item)
+        if assumption is None and question is None:
+            raise PlanError(f"No assumption or question named {item!r} on revision v{revision['version']}.")
+        choice = str(mark or "").strip().lower()
+        if assumption is not None:
+            if choice not in _ASSUMPTION_MARKS:
+                raise PlanError("Mark an assumption open, accepted, or rejected.")
+            assumption["status"] = choice
+        else:
+            if choice not in _QUESTION_MARKS:
+                raise PlanError("Mark a question open or waived. An answer uses answer-plan-question.")
+            question["status"] = choice
+            if choice == "open":
+                question["answer"] = ""
+        _activity(revision, "user", "mark", item, choice)
+        self._touch(plan)
+        return self._public(plan)
+
+    def submit(self, name: str) -> dict:
+        plan = self._load(name)
+        if plan["status"] == "approved":
+            raise PlanError(
+                f"{plan['title']!r} is already approved at revision v{plan['approved_revision']}. "
+                "Revise it if the design changed. That clears the approval."
+            )
+        if plan["status"] == "in_review":
+            raise PlanError(f"{plan['title']!r} is already in review at revision v{plan['current_revision']}.")
+        revision = _current(plan)
+        missing = []
+        if not revision["research"]:
+            missing.append("one research note with a source")
+        if not revision["sheets"]:
+            missing.append("one blueprint sheet")
+        if not revision["assumptions"] and not revision["questions"]:
+            missing.append("one assumption or one open question")
+        if missing:
+            raise PlanError(
+                "This draft is not ready for review. It still needs " + ", ".join(missing) + "."
+            )
+        plan["status"] = "in_review"
+        _activity(revision, self.actor, "submit", "plan", "Submitted for review.")
+        self._touch(plan)
+        return self._public(plan)
+
+    def revise(self, name: str, changed: str, bundle: dict | None = None) -> dict:
+        plan = self._load(name)
+        note = _text(changed, "what changed", required=True, limit=2000)
+        if bundle is not None and not isinstance(bundle, dict):
+            raise PlanError("A revision bundle has to be a JSON object.")
+        previous = plan["status"]
+        source = _current(plan)
+        revision = copy.deepcopy(source)
+        now = _now()
+        revision["version"] = source["version"] + 1
+        revision["created_at"] = now
+        revision["changed"] = note
+        revision["activity"] = []
+        if bundle:
+            _apply_bundle(revision, bundle)
+        _activity(revision, self.actor, "revise", "plan", note)
+        plan["revisions"].append(revision)
+        plan["current_revision"] = revision["version"]
+        plan["status"] = "draft"
+        self._touch(plan)
+        public = self._public(plan)
+        if previous == "approved":
+            public["note"] = (
+                f"Revision v{revision['version']} is a draft. "
+                "Approval of the previous revision no longer covers it. "
+                "Modeling and simulation from this plan stay off until you approve v"
+                f"{revision['version']}."
+            )
+        return public
+
+    def approve(self, name: str) -> dict:
+        plan = self._load(name) if self._path(name).is_file() else {"title": name, "current_revision": 1, "id": name}
+        if self.actor != "user":
+            raise PlanError(approval_refusal(plan if "status" in plan else {**plan, "title": name, "current_revision": 1}))
+        plan = self._load(name)
+        if plan["status"] == "approved":
+            raise PlanError(
+                f"{plan['title']!r} is already approved at revision v{plan['approved_revision']}."
+            )
+        if plan["status"] != "in_review":
+            raise PlanError(
+                f"{plan['title']!r} is still a draft at revision v{plan['current_revision']}. "
+                "Submit it for review before you approve it. The agent cannot approve it either."
+            )
+        now = _now()
+        plan["status"] = "approved"
+        plan["approved_revision"] = plan["current_revision"]
+        plan["approved_at"] = now
+        revision = _current(plan)
+        _activity(revision, "user", "approve", "plan", f"Approved revision v{revision['version']}.")
+        self._touch(plan)
+        public = self._public(plan)
+        open_questions = sum(1 for item in revision["questions"] if item["status"] == "open")
+        leftover = f" {open_questions} question(s) were still open." if open_questions else ""
+        public["note"] = (
+            f"Approved revision v{revision['version']}. "
+            "The dimensions and assumptions below are what the modeling step should use. "
+            f"They are not a solid yet.{leftover}"
+        )
+        return public
+
+    def start_work(self, name: str, kind: str) -> dict:
+        if kind not in {"model", "simulation"}:
+            raise PlanError("Work from a plan is either model or simulation.")
+        plan = self._load(name)
+        if plan["status"] != "approved" or plan["approved_revision"] != plan["current_revision"]:
+            raise PlanError(work_refusal(plan, kind))
+        revision = _current(plan)
+        word = "Modeling" if kind == "model" else "Simulation"
+        return {
+            "plan": plan["id"],
+            "title": plan["title"],
+            "revision": revision["version"],
+            "status": "approved",
+            "released": kind,
+            "units": "mm",
+            "dimensions": copy.deepcopy(revision["dimensions"]),
+            "assumptions": copy.deepcopy(revision["assumptions"]),
+            "research": copy.deepcopy(revision["research"]),
+            "questions": copy.deepcopy(revision["questions"]),
+            "views": _views(self.root, revision),
+            "ready": True,
+            "note": (
+                f"{word} may start from {plan['title']!r} revision v{revision['version']}. "
+                "Use these dimensions and assumptions. They are the approved plan, not a solid. "
+                "A later revise clears this approval."
+            ),
+        }
+
+    def _require_user(self, message: str) -> None:
+        if self.actor != "user":
+            raise PlanError(message)
+
+    def _require_draft(self, plan: dict) -> None:
+        if plan["status"] == "draft":
+            return
+        revision = plan["current_revision"]
+        nxt = revision + 1
+        raise PlanError(
+            f"Plan {plan['title']!r} is {status_phrase(plan['status'])}, revision v{revision}. "
+            f"The sheets and the lists stay as they are until you revise. "
+            f"Call revise_plan and say what changed. That opens v{nxt} as a draft. "
+            "Approval, if there was one, no longer covers the new revision."
+        )
+
+    def _check_id(self, name: str) -> None:
+        if not isinstance(name, str) or not _PLAN_ID.match(name):
+            raise PlanError(
+                "A plan name starts with a letter and uses letters, numbers, underscore, or hyphen. "
+                f"{name!r} does not."
+            )
+
+    def _path(self, name: str) -> Path:
+        self._check_id(name)
+        return self.directory / f"{name}.json"
+
+    def _load(self, name: str) -> dict:
+        path = self._path(name)
+        if not path.is_file():
+            known = ", ".join(item["id"] for item in self.summaries()) or "none yet"
+            raise PlanError(f"No plan named {name!r}. Plans in this project: {known}.")
+        return self._read(path)
+
+    def _read(self, path: Path) -> dict:
+        if path.stat().st_size > _MAX_BYTES:
+            raise PlanError(f"{path.name} is larger than a plan file should be.")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise PlanError(f"Could not read {path.name}: {exc}") from exc
+        if not isinstance(payload, dict) or payload.get("format") != _FORMAT:
+            raise PlanError(f"{path.name} is not a plan file this version can read.")
+        if payload.get("id") != path.stem:
+            raise PlanError(f"{path.name} does not match the plan id inside it.")
+        return payload
+
+    def _write(self, plan: dict) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path = self._path(plan["id"])
+        _render_revision(self.root, plan, _current(plan))
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+        _drop_orphan_sheets(self.root, plan)
+
+    def _touch(self, plan: dict) -> None:
+        plan["updated_at"] = _now()
+        self._write(plan)
+
+    def _public(self, plan: dict) -> dict:
+        current = _current(plan)
+        revisions = []
+        for revision in plan["revisions"]:
+            revisions.append(
+                {
+                    "version": revision["version"],
+                    "created_at": revision["created_at"],
+                    "changed": revision["changed"],
+                    "research": revision["research"],
+                    "assumptions": revision["assumptions"],
+                    "questions": revision["questions"],
+                    "dimensions": revision["dimensions"],
+                    "sheets": [
+                        {
+                            "id": sheet["id"],
+                            "title": sheet["title"],
+                            "subtitle": sheet.get("subtitle") or "",
+                            "file": sheet["path"],
+                            "path": str(_abs(self.root, sheet["path"])),
+                            "panels": sheet.get("panels") or [],
+                        }
+                        for sheet in revision["sheets"]
+                    ],
+                    "activity": revision["activity"],
+                }
+            )
+        open_questions = [item["id"] for item in current["questions"] if item["status"] == "open"]
+        modeling = "open" if plan["status"] == "approved" else "closed"
+        return {
+            "id": plan["id"],
+            "title": plan["title"],
+            "summary": plan["summary"],
+            "units": "mm",
+            "status": plan["status"],
+            "status_text": status_phrase(plan["status"]),
+            "current_revision": plan["current_revision"],
+            "approved_revision": plan["approved_revision"],
+            "approved_at": plan["approved_at"],
+            "updated_at": plan["updated_at"],
+            "modeling": modeling,
+            "modeling_note": (
+                "This revision is approved. start_model_from_plan and start_simulation_from_plan can use it."
+                if modeling == "open"
+                else "Modeling and simulation from this plan stay off until you approve the current revision."
+            ),
+            "open_questions": open_questions,
+            "revision": revisions[-1],
+            "revisions": revisions,
+            "views": _views(self.root, current),
+        }
+
+
+def plan_files(root: str | Path) -> dict[str, str]:
+    """JSON text of every plan, for undo. Sheet PNGs are redrawn on restore."""
+    directory = Path(root) / "plans"
+    if not directory.is_dir():
+        return {}
+    files = {}
+    for path in sorted(directory.glob("*.json")):
+        files[path.name] = path.read_text(encoding="utf-8")
+    return files
+
+
+def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
+    """Put plan JSON back and redraw the sheets those revisions name."""
+    root_path = Path(root)
+    directory = root_path / "plans"
+    if not files and not directory.is_dir():
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    keep = set(files)
+    for path in directory.glob("*.json"):
+        if path.name not in keep:
+            folder = directory / path.stem
+            path.unlink()
+            if folder.is_dir():
+                shutil.rmtree(folder)
+    for name, text in files.items():
+        if Path(name).name != name or not name.endswith(".json"):
+            continue
+        target = directory / name
+        target.write_text(text, encoding="utf-8")
+        try:
+            plan = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(plan, dict) and plan.get("format") == _FORMAT:
+            for revision in plan.get("revisions") or []:
+                _render_revision(root_path, plan, revision)
+            _drop_orphan_sheets(root_path, plan)
+
+
+def _empty_revision(version: int, now: str, changed: str) -> dict:
+    return {
+        "version": version,
+        "created_at": now,
+        "changed": changed,
+        "research": [],
+        "assumptions": [],
+        "questions": [],
+        "dimensions": [],
+        "sheets": [],
+        "activity": [
+            {"at": now, "actor": "user", "action": "start", "item": "plan", "text": changed},
+        ],
+    }
+
+
+def _apply_bundle(revision: dict, bundle: dict) -> None:
+    for item in bundle.get("research") or []:
+        if not isinstance(item, dict):
+            raise PlanError("Each research note is an object with a note and a source.")
+        revision["research"].append(
+            {
+                "id": _take_id(revision, item.get("id"), "r"),
+                "title": _text(item.get("title") or "", "title", limit=160),
+                "note": _text(item.get("note") or "", "note", required=True),
+                "source": _text(item.get("source") or "", "source", required=True, limit=500),
+            }
+        )
+    for item in bundle.get("assumptions") or []:
+        if not isinstance(item, dict):
+            raise PlanError("Each assumption is an object with text.")
+        revision["assumptions"].append(
+            {
+                "id": _take_id(revision, item.get("id"), "a"),
+                "text": _text(item.get("text") or "", "assumption", required=True),
+                "status": "open",
+                "comment": "",
+            }
+        )
+    for item in bundle.get("questions") or []:
+        if not isinstance(item, dict):
+            raise PlanError("Each question is an object with text.")
+        revision["questions"].append(
+            {
+                "id": _take_id(revision, item.get("id"), "q"),
+                "text": _text(item.get("text") or "", "question", required=True),
+                "status": "open",
+                "answer": "",
+                "comment": "",
+            }
+        )
+    if "dimensions" in bundle:
+        revision["dimensions"] = _normalize_dimensions(bundle.get("dimensions") or [])
+    incoming = bundle.get("sheets") or []
+    if not isinstance(incoming, list):
+        raise PlanError("sheets is a list of sheet objects.")
+    for spec in incoming:
+        stored = _normalize_sheet(spec, revision)
+        for index, existing in enumerate(revision["sheets"]):
+            if existing["id"] == stored["id"]:
+                revision["sheets"][index] = stored
+                break
+        else:
+            if len(revision["sheets"]) >= _MAX_SHEETS:
+                raise PlanError(f"A revision holds up to {_MAX_SHEETS} sheets.")
+            revision["sheets"].append(stored)
+
+
+def _normalize_dimensions(dimensions: list) -> list[dict]:
+    if not isinstance(dimensions, list):
+        raise PlanError("Dimensions are a list of {name, value_mm, note}.")
+    cleaned = []
+    seen = set()
+    for item in dimensions:
+        if not isinstance(item, dict):
+            raise PlanError("Each dimension is an object with name and value_mm.")
+        key = _text(item.get("name") or "", "dimension name", required=True, limit=80)
+        if key in seen:
+            raise PlanError(f"Dimension {key!r} is listed twice.")
+        seen.add(key)
+        value = _number(item.get("value_mm"), "value_mm")
+        cleaned.append(
+            {
+                "name": key,
+                "value_mm": value,
+                "note": _text(item.get("note") or "", "note", limit=500),
+            }
+        )
+    return cleaned
+
+
+def _normalize_sheet(spec: dict, revision: dict) -> dict:
+    if not isinstance(spec, dict):
+        raise PlanError("A sheet is a JSON object.")
+    title = _text(spec.get("title") or "Sheet", "sheet title", required=True, limit=120)
+    sheet_id = spec.get("id") or _slug(title) or _next_id(revision, "s")
+    if not isinstance(sheet_id, str) or not _ITEM_ID.match(sheet_id):
+        raise PlanError(
+            "A sheet id is short lowercase letters, numbers, and underscores, such as 01_top. "
+            f"{sheet_id!r} is not."
+        )
+    owns_sheet = any(sheet["id"] == sheet_id for sheet in revision["sheets"])
+    if not owns_sheet and sheet_id in _ids(revision):
+        raise PlanError(f"Id {sheet_id!r} is already used on this revision.")
+    panels = spec.get("panels")
+    if panels is None:
+        panels = [spec]
+    if not isinstance(panels, list) or not panels or len(panels) > 4:
+        raise PlanError("A sheet has one to four panels.")
+    cleaned_panels = [_normalize_panel(panel) for panel in panels]
+    if not any(_panel_has_body(panel) for panel in cleaned_panels):
+        raise PlanError("A sheet needs a block, a dimension, a label, or a note.")
+    return {
+        "id": sheet_id,
+        "title": title,
+        "subtitle": _text(spec.get("subtitle") or "", "subtitle", limit=200),
+        "footer": _text(spec.get("footer") or _FOOTER, "footer", limit=500),
+        "panels": cleaned_panels,
+        "path": "",
+    }
+
+
+def _normalize_panel(panel: dict) -> dict:
+    if not isinstance(panel, dict):
+        raise PlanError("Each panel is an object.")
+    blocks = []
+    for block in panel.get("blocks") or []:
+        if not isinstance(block, dict):
+            raise PlanError("Each block is an object with x, y, w, h, and a label.")
+        width = _number(block.get("w"), "w")
+        height = _number(block.get("h"), "h")
+        if width <= 0 or height <= 0:
+            raise PlanError("A block width and height have to be greater than zero.")
+        blocks.append(
+            {
+                "x": _number(block.get("x"), "x"),
+                "y": _number(block.get("y"), "y"),
+                "w": width,
+                "h": height,
+                "label": _text(block.get("label") or "", "label", limit=80),
+                "fill": _fill(block.get("fill") or "blue"),
+            }
+        )
+    if len(blocks) > _MAX_BLOCKS:
+        raise PlanError(f"A panel holds up to {_MAX_BLOCKS} blocks.")
+    dimensions = []
+    for dim in panel.get("dimensions") or []:
+        if not isinstance(dim, dict):
+            raise PlanError("Each dimension callout is an object.")
+        x0, y0 = _number(dim.get("x0"), "x0"), _number(dim.get("y0"), "y0")
+        x1, y1 = _number(dim.get("x1"), "x1"), _number(dim.get("y1"), "y1")
+        span = math.hypot(x1 - x0, y1 - y0)
+        text = _text(dim.get("text") or "", "dimension text", limit=80)
+        if not text:
+            text = _mm(span)
+        dimensions.append(
+            {
+                "x0": x0,
+                "y0": y0,
+                "x1": x1,
+                "y1": y1,
+                "text": text,
+                "offset": _number(dim.get("offset") if dim.get("offset") is not None else 40, "offset"),
+            }
+        )
+    if len(dimensions) > _MAX_DIMS:
+        raise PlanError(f"A panel holds up to {_MAX_DIMS} dimensions.")
+    labels = []
+    for label in panel.get("labels") or []:
+        if not isinstance(label, dict):
+            raise PlanError("Each label is an object with x, y, and text.")
+        labels.append(
+            {
+                "x": _number(label.get("x"), "x"),
+                "y": _number(label.get("y"), "y"),
+                "text": _text(label.get("text") or "", "label", required=True, limit=80),
+            }
+        )
+    notes = []
+    for line in panel.get("notes") or []:
+        notes.append(_text(line, "note", required=True, limit=240))
+    grid = panel.get("grid_mm")
+    return {
+        "title": _text(panel.get("title") or "View", "panel title", limit=80),
+        "blocks": blocks,
+        "dimensions": dimensions,
+        "labels": labels,
+        "notes": notes,
+        "grid_mm": _auto_grid(blocks, dimensions, labels) if grid is None else _number(grid, "grid_mm"),
+    }
+
+
+def _panel_has_body(panel: dict) -> bool:
+    return bool(panel["blocks"] or panel["dimensions"] or panel["labels"] or panel["notes"])
+
+
+def _auto_grid(blocks: list[dict], dimensions: list[dict], labels: list[dict]) -> float:
+    xs = [0.0]
+    ys = [0.0]
+    for block in blocks:
+        xs.extend((block["x"], block["x"] + block["w"]))
+        ys.extend((block["y"], block["y"] + block["h"]))
+    for dim in dimensions:
+        xs.extend((dim["x0"], dim["x1"]))
+        ys.extend((dim["y0"], dim["y1"]))
+    for label in labels:
+        xs.append(label["x"])
+        ys.append(label["y"])
+    span = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+    raw = span / 8.0
+    for step in (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000):
+        if step >= raw:
+            return float(step)
+    return 5000.0
+
+
+def _fill(value) -> str:
+    if isinstance(value, str) and value in FILLS:
+        return value
+    raise PlanError("A block fill is one of: " + ", ".join(FILLS) + ".")
+
+
+def _render_revision(root: Path, plan: dict, revision: dict) -> None:
+    folder = root / "plans" / plan["id"] / f"v{revision['version']}"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = plan.get("status") or "draft"
+    if revision.get("version") != plan.get("current_revision"):
+        stamp = "recorded"
+    for sheet in revision.get("sheets") or []:
+        relative = f"plans/{plan['id']}/v{revision['version']}/{sheet['id']}.png"
+        sheet["path"] = relative
+        panels = []
+        for panel in sheet["panels"]:
+            drawn = copy.deepcopy(panel)
+            for block in drawn["blocks"]:
+                block["_fill"] = FILLS[block["fill"]]
+            panels.append(drawn)
+        render_plan_sheet(
+            root / relative,
+            title=sheet["title"],
+            subtitle=sheet.get("subtitle") or "",
+            revision=int(revision["version"]),
+            status=stamp,
+            panels=panels,
+            footer=sheet.get("footer") or _FOOTER,
+        )
+
+
+def _drop_orphan_sheets(root: Path, plan: dict) -> None:
+    folder = root / "plans" / plan["id"]
+    if not folder.is_dir():
+        return
+    referenced = set()
+    for revision in plan.get("revisions") or []:
+        for sheet in revision.get("sheets") or []:
+            if sheet.get("path"):
+                referenced.add((root / sheet["path"]).resolve())
+    for png in folder.rglob("*.png"):
+        if png.resolve() not in referenced:
+            png.unlink()
+    for child in sorted(folder.rglob("*"), reverse=True):
+        if child.is_dir() and not any(child.iterdir()):
+            child.rmdir()
+
+
+def _views(root: Path, revision: dict) -> list[dict]:
+    views = []
+    for sheet in revision.get("sheets") or []:
+        if not sheet.get("path"):
+            continue
+        views.append(
+            {
+                "name": sheet["id"],
+                "title": sheet["title"],
+                "file": sheet["path"],
+                "path": str(_abs(root, sheet["path"])),
+            }
+        )
+    return views
+
+
+def _abs(root: Path, relative: str) -> Path:
+    path = (root / relative).resolve()
+    root_resolved = root.resolve()
+    if path != root_resolved and root_resolved not in path.parents:
+        raise PlanError("A plan sheet has to stay inside the project.")
+    return path
+
+
+def _current(plan: dict) -> dict:
+    version = plan["current_revision"]
+    for revision in plan["revisions"]:
+        if revision["version"] == version:
+            return revision
+    raise PlanError(f"Revision v{version} is missing from the plan file.")
+
+
+def _find_kind(revision: dict, kind: str, item_id: str) -> dict | None:
+    for item in revision[kind]:
+        if item["id"] == item_id:
+            return item
+    return None
+
+
+def _find_item(revision: dict, item_id: str) -> dict | None:
+    for kind in ("assumptions", "questions", "research", "sheets"):
+        found = _find_kind(revision, kind, item_id)
+        if found is not None:
+            return found
+    return None
+
+
+def _next_id(revision: dict, prefix: str) -> str:
+    existing = _ids(revision)
+    number = 1
+    while f"{prefix}{number}" in existing:
+        number += 1
+    return f"{prefix}{number}"
+
+
+def _take_id(revision: dict, requested, prefix: str) -> str:
+    if requested in (None, ""):
+        return _next_id(revision, prefix)
+    if not isinstance(requested, str) or not _ITEM_ID.match(requested):
+        raise PlanError(f"Id {requested!r} should be short lowercase letters, numbers, and underscores.")
+    if requested in _ids(revision):
+        raise PlanError(f"Id {requested!r} is already used on this revision.")
+    return requested
+
+
+def _ids(revision: dict) -> set[str]:
+    found = set()
+    for kind in ("research", "assumptions", "questions", "sheets"):
+        for item in revision[kind]:
+            found.add(item["id"])
+    return found
+
+
+def _activity(revision: dict, actor: str, action: str, item: str, text: str) -> None:
+    revision["activity"].append(
+        {"at": _now(), "actor": actor, "action": action, "item": item, "text": text}
+    )
+
+
+def _frozen(plan: dict) -> str:
+    return (
+        f"{plan['title']!r} is approved at revision v{plan['approved_revision']}. "
+        "Revise it to change the questions or the sheets. "
+        "That opens a new draft, and modeling stays off until you approve the new revision."
+    )
+
+
+def _dimension_sentence(dimensions: list[dict]) -> str:
+    if not dimensions:
+        return "Cleared the dimensions."
+    parts = [f"{item['name']} { _mm(item['value_mm']) }" for item in dimensions]
+    return "Dimensions: " + ", ".join(parts)
+
+
+def _slug(title: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+    return cleaned[:24]
+
+
+def _text(value: Any, label: str, required: bool = False, limit: int = _MAX_TEXT) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise PlanError(f"{label} has to be text.")
+    value = value.strip()
+    if required and not value:
+        raise PlanError(f"{label} is required.")
+    if len(value) > limit:
+        raise PlanError(f"{label} is longer than {limit} characters.")
+    return value
+
+
+def _number(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PlanError(f"{label} has to be a number, in millimeters.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise PlanError(f"{label} has to be a finite number.")
+    return number
+
+
+def _mm(value: float) -> str:
+    if abs(value - round(value)) < 1e-6:
+        return f"{int(round(value))} mm"
+    return f"{value:.1f} mm"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()

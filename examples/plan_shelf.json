@@ -1,0 +1,98 @@
+{
+  "title": "Wall shelf bracket",
+  "summary": "A plywood shelf on two arms, drawn as blocks before any solid. The numbers are estimates until you accept them.",
+  "research": [
+    {
+      "id": "r1",
+      "title": "How deep a wall shelf usually is",
+      "note": "A kitchen wall cabinet is commonly 305 mm (12 in) deep. This shelf is 280 mm, a little shallower, so a plate can sit on it without sticking past the front.",
+      "source": "NKBA Kitchen Planning Guidelines treat 12 in as a standard wall-cabinet depth. National Kitchen & Bath Association."
+    },
+    {
+      "id": "r2",
+      "title": "Sheet thickness",
+      "note": "Cabinet boxes in the 32 mm system are usually built from 18 mm or 19 mm sheet. This plan uses 18 mm for the arms, the wall plate, and the shelf.",
+      "source": "The 32 mm cabinet system, described in the Woodweb knowledge base (woodweb.com), sizes cases around 18 mm or 3/4 in sheet."
+    },
+    {
+      "id": "r3",
+      "title": "What this shelf is not",
+      "note": "A 280 mm shelf of 18 mm plywood, about 320 mm clear between the arms, is a light household shelf. A row of books would be a different plan. No span calculation has been run.",
+      "source": "APA, The Engineered Wood Association, plywood design specifications. Shelf span depends on thickness, span, and load. This note does not apply those tables."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "a1",
+      "text": "The wall plate is screwed into studs. The drawing uses 400 mm centers. That spacing is a guess until you say otherwise."
+    },
+    {
+      "id": "a2",
+      "text": "The shelf carries 12 kg spread across the board, not a point load at the front edge. Estimate, not a measured load."
+    }
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Are the studs 400 mm apart, or 600 mm?"
+    },
+    {
+      "id": "q2",
+      "text": "Is this for light things, or does it have to hold a row of books?"
+    }
+  ],
+  "dimensions": [
+    {"name": "plate_length_mm", "value_mm": 480, "note": "Along the wall. Estimate from a 400 mm stud guess plus end margins."},
+    {"name": "shelf_width_mm", "value_mm": 400, "note": "Board width between the outside faces of the arms."},
+    {"name": "shelf_depth_mm", "value_mm": 280, "note": "Out from the wall plate."},
+    {"name": "stock_mm", "value_mm": 18, "note": "Plywood thickness for the plate, the arms, and the shelf."},
+    {"name": "underside_mm", "value_mm": 140, "note": "Arm underside above the reference line on the side view. Estimate."}
+  ],
+  "sheets": [
+    {
+      "id": "01_layout",
+      "title": "Wall shelf, blocks",
+      "subtitle": "Top and side. Not a solid.",
+      "footer": "Yellow is the bracket. Blue is the board. White is the wall plate. Blocks for review, not a shop drawing.",
+      "panels": [
+        {
+          "title": "Top",
+          "blocks": [
+            {"x": 40, "y": 18, "w": 400, "h": 280, "label": "shelf\n18 mm", "fill": "blue"},
+            {"x": 40, "y": 18, "w": 40, "h": 280, "label": "arm", "fill": "yellow"},
+            {"x": 400, "y": 18, "w": 40, "h": 280, "label": "arm", "fill": "yellow"},
+            {"x": 0, "y": 0, "w": 480, "h": 18, "label": "wall plate", "fill": "white"}
+          ],
+          "dimensions": [
+            {"x0": 0, "y0": 0, "x1": 480, "y1": 0, "text": "480 mm", "offset": -46},
+            {"x0": 40, "y0": 18, "x1": 40, "y1": 298, "text": "280 mm", "offset": -56},
+            {"x0": 80, "y0": 298, "x1": 400, "y1": 298, "text": "320 mm clear", "offset": 36}
+          ],
+          "labels": [
+            {"x": 240, "y": 330, "text": "room"}
+          ],
+          "notes": [
+            "Looking down. Y runs out from the wall."
+          ]
+        },
+        {
+          "title": "Side",
+          "blocks": [
+            {"x": 0, "y": 0, "w": 18, "h": 220, "label": "wall", "fill": "white"},
+            {"x": 18, "y": 140, "w": 280, "h": 28, "label": "arm", "fill": "yellow"},
+            {"x": 18, "y": 168, "w": 280, "h": 18, "label": "shelf", "fill": "blue"}
+          ],
+          "dimensions": [
+            {"x0": 18, "y0": 168, "x1": 298, "y1": 168, "text": "280 mm", "offset": -40},
+            {"x0": 0, "y0": 0, "x1": 0, "y1": 140, "text": "140 mm", "offset": -36},
+            {"x0": 298, "y0": 168, "x1": 298, "y1": 186, "text": "18 mm", "offset": 28}
+          ],
+          "labels": [],
+          "notes": [
+            "140 mm to the underside is an estimate, not a measured room."
+          ]
+        }
+      ]
+    }
+  ]
+}

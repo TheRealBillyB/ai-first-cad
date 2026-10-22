@@ -24,6 +24,7 @@ Report a vulnerability in private. The steps are in [SECURITY.md](SECURITY.md).
 
 ## What you can do
 
+- Plan a design before modeling it. Research with sources, a rough dimensioned blueprint of blocks, assumptions, and open questions stay with the project. You approve the plan in the Plan panel. The assistant cannot approve it, and modeling or simulation started from that plan waits until you do. See [Plan & Sketch](docs/PLAN_AND_SKETCH.md).
 - Describe a 2D profile the way a sketcher does: points, lines, arcs, and circles, plus geometric and dimensional constraints. SolveSpace solves it and reports whether it is fully constrained, still free, or conflicting. Extrude, revolve, or cut the solved profile into a solid. Change a named dimension and the solid rebuilds.
 - Create or replace a part by running a build123d script, or with a short list of `add` / `cut` boxes and cylinders.
 - Optionally record each boolean step with `feature.add` / `feature.cut`, and see how much of an added solid was already buried inside the part.
