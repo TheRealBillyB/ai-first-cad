@@ -695,18 +695,9 @@ def _fence_note(result: dict) -> dict:
 
 def _path_inside_project(root: Path, raw: str | Path, label: str) -> Path:
     """Resolve a path and refuse one that leaves the open project."""
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    resolved = candidate.resolve()
-    root_resolved = root.resolve()
-    try:
-        resolved.relative_to(root_resolved)
-    except ValueError as exc:
-        raise GeometryError(
-            f"{label} {raw} is outside the project folder {root_resolved}."
-        ) from exc
-    return resolved
+    from aicad.paths import require_export_path
+
+    return require_export_path(root, raw, label, GeometryError)
 
 
 def _read_requirements_file(path: Path) -> list:

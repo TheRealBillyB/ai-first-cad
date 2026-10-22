@@ -109,39 +109,66 @@ def finite_vec3(
 
 
 def _fflush_c_stdio() -> None:
-    """Flush C and C++ buffers. OpenCascade writes past Python's sys.stdout."""
-    try:
-        ctypes.CDLL(None).fflush(None)
-    except Exception:
-        return
+    """Flush C stdio. OpenCascade writes past Python's ``sys.stdout``.
+
+    ``ctypes.CDLL(None)`` is the process C library on POSIX. On Windows the
+    geometry library is linked to the Universal CRT, and ``CDLL(None)`` does
+    not load one, so the flush has to name that runtime. A buffered error
+    flushed after the descriptor is restored would land on the real stdout.
+    """
+    names: tuple[str | None, ...]
+    if os.name == "nt":
+        names = ("ucrtbase", "api-ms-win-crt-stdio-l1-1-0", "msvcrt")
+    else:
+        names = (None,)
+    for name in names:
+        try:
+            ctypes.CDLL(name).fflush(None)
+        except Exception:
+            continue
 
 
 @contextmanager
 def divert_native_stdio(*, stderr: bool = False):
-    """Point fd 1 (and, when asked, fd 2) at /dev/null for one native call.
+    """Point fd 1 (and, when asked, fd 2) at ``os.devnull`` for one native call.
 
-    Python's text buffer is flushed first and the descriptors are put back
-    afterwards, so a later JSON-RPC write still reaches the real stdout.
+    The null device is ``os.devnull`` (``nul`` on Windows). The original
+    descriptors are duplicated and put back afterwards, on Windows the same
+    way as on POSIX, so a later JSON-RPC write still reaches the real stdout.
     """
     sys.stdout.flush()
     sys.stderr.flush()
     _fflush_c_stdio()
+    flags = os.O_WRONLY
+    if hasattr(os, "O_BINARY"):
+        # A text-mode nul handle cannot replace a binary stdout on Windows.
+        flags |= os.O_BINARY
     saved_out = os.dup(1)
-    saved_err = os.dup(2) if stderr else None
-    null_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_err: int | None = None
+    null_fd: int | None = None
     try:
+        if stderr:
+            saved_err = os.dup(2)
+        null_fd = os.open(os.devnull, flags)
         os.dup2(null_fd, 1)
-        if stderr and saved_err is not None:
+        if saved_err is not None:
             os.dup2(null_fd, 2)
         yield
     finally:
-        _fflush_c_stdio()
-        os.dup2(saved_out, 1)
-        os.close(saved_out)
+        # Flush while fd 1 still points at the null device, then put the
+        # original descriptor back. Restoring first would emit the buffered
+        # native text onto the protocol stream. This runs even when the
+        # second dup2 fails, so a Windows handle error cannot leave fd 1
+        # pointed at the null device.
+        if null_fd is not None:
+            _fflush_c_stdio()
+            os.dup2(saved_out, 1)
+            if saved_err is not None:
+                os.dup2(saved_err, 2)
+            os.close(null_fd)
         if saved_err is not None:
-            os.dup2(saved_err, 2)
             os.close(saved_err)
-        os.close(null_fd)
+        os.close(saved_out)
 
 
 @dataclass

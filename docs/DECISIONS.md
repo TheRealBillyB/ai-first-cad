@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A STEP path and an assistant export are judged with Windows and POSIX rules, and native stdout goes to `os.devnull` | A drive letter, a UNC path, or a backslash `..` has to be outside the project on every machine, and the descriptor restore has to work where the null device is `nul`. |
 | A mesh with one element through a thin wall, or with very flat elements, cannot pass a strength check | The shell's bounding box looked solid, and a coarse mesh reported a safety factor that was not real. |
 | A wall ray starts 0.01 mm inside the face, and a hit that has left the solid is discarded | A 0.05 mm shell was reported as the far side of the cavity and passed a 1 mm check. |
 | A number that is not finite, or a size past 1 km, is rejected before the session changes | A NaN placement was saved by the next command, and a 1e15 mm box was stored as a solid. |

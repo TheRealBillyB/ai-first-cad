@@ -1173,19 +1173,10 @@ def _vec3(value, label: str) -> tuple[float, float, float]:
 
 
 def _project_file(root: Path, raw: object, label: str) -> Path:
-    """A session path that stays inside the project. Absolute and `..` are not read."""
-    if not isinstance(raw, str) or not raw.strip():
-        raise DocumentError(f"{label} is missing.")
-    candidate = Path(raw)
-    if candidate.is_absolute() or ".." in candidate.parts:
-        raise DocumentError(f"{label} {raw!r} is outside the project. It was not read.")
-    root_resolved = root.resolve()
-    full = (root_resolved / candidate).resolve()
-    try:
-        full.relative_to(root_resolved)
-    except ValueError as exc:
-        raise DocumentError(f"{label} {raw!r} is outside the project. It was not read.") from exc
-    return full
+    """A session path that stays inside the project. Absolute and ``..`` are not read."""
+    from aicad.paths import require_session_file
+
+    return require_session_file(root, raw, label, DocumentError)
 
 
 def _parse_plane(plane: dict) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
