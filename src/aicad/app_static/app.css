@@ -133,7 +133,13 @@ nav { display: flex; gap: 4px; }
 .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
 .chip.pass { background: #d9efe3; color: var(--pass); }
 .chip.fail { background: #f8d9d6; color: var(--fail); }
-.chip.unchecked, .chip.error { background: #f3e6cc; color: var(--warn); }
+.chip.unchecked, .chip.error, .chip.inconclusive, .chip.estimate { background: #f3e6cc; color: var(--warn); }
+.chip.verified { background: #d9efe3; color: var(--pass); }
+.honesty { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.honesty.estimate { border-left: 4px solid var(--warn); }
+.honesty.verified { border-left: 4px solid var(--pass); }
+.honesty p, .honesty li { margin: 4px 0; }
+.honesty ul { margin: 4px 0 0; padding-left: 18px; }
 .warn { color: var(--warn); font-size: 12px; }
 
 .chat { grid-column: 1 / -1; border-top: 1px solid var(--line); background: var(--paper); display: flex; flex-direction: column; min-height: 0; }

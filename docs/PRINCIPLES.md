@@ -21,7 +21,7 @@ An assistant that only writes a script is guessing. After a change it needs some
 
 ## Say what was assumed
 
-Every analysis states its assumptions in plain language, in the result, every time.
+Every analysis states its assumptions in plain language, in the result, every time. The result also names whether it is a verified check of the model or a rough estimate.
 
 A wall-thickness number says that it came from samples, and which samples. A stress result says which material, which loads, which supports, and what was left out. A first strength check, for example, is a linear static one: it estimates stress under a steady load, and it does not cover buckling, fatigue, or parts pushing on each other. A pass under unstated assumptions is not a pass.
 

@@ -15,6 +15,7 @@ from xml.sax.saxutils import escape
 
 from aicad import fea, kernel
 from aicad.errors import GeometryError
+from aicad.honesty import ROUGH_ESTIMATE, finish
 from aicad.kinematics import matrix_from_placement
 
 _EFFORT = 10.0
@@ -50,7 +51,7 @@ def export_robot(spec: dict, shapes: dict, out_dir: Path) -> dict:
     mjcf_path.write_text(_mjcf(name, links, joints, spec), encoding="utf-8")
     validation = validate_robot(urdf_path, mjcf_path)
     loaded = validation["mujoco"]["status"] == "loaded" or validation["pybullet"]["status"] == "loaded"
-    return {
+    report = {
         "assembly": name,
         "urdf": str(urdf_path.resolve()),
         "mjcf": str(mjcf_path.resolve()),
@@ -83,6 +84,17 @@ def export_robot(spec: dict, shapes: dict, out_dir: Path) -> dict:
         "assumptions": _assumptions(spec),
         "note": _note(name, links, joints, validation, loaded),
     }
+    return finish(
+        report,
+        kind=ROUGH_ESTIMATE,
+        name="Robot export",
+        what="Mass and inertia use the model volume and a handbook density. Joint effort and velocity in the file are placeholders.",
+        limits=[
+            "Gear, linkage, and cylinder relations are comments. A simulator will not enforce them.",
+            "Effort and velocity are not the power estimate.",
+            "A missing MuJoCo or PyBullet install still writes the files and says they were not stepped.",
+        ],
+    )
 
 
 def validate_robot(urdf_path: Path, mjcf_path: Path) -> dict:

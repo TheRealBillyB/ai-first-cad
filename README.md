@@ -477,6 +477,8 @@ Views use Z up. The label on each picture says which way the camera is looking (
 
 ## How the checks work
 
+A result is either a **verified check** or a **rough estimate**. A verified check is something the geometry kernel computes on the CAD model: volume, a gap, a collision at a sampled pose, the degrees of freedom of a sketch. A rough estimate samples the solid, meshes it, or multiplies by a handbook number: wall thickness, mass, stress, a frequency, a bolt torque, a print time. A report that mixes the two is labeled by the weaker one. The label, what it means, and the limits travel with the JSON, the Workspace panel, and a blueprint sheet under `renders/sheets`. A mesh that was simplified, or that dropped to linear tetrahedra, cannot be a pass, and a frequency from that mesh is not a clear and not a confirmed resonance. CalculiX is started as the separate `ccx` program. It is not linked into aicad.
+
 **Watertight.** A part is watertight when build123d reports it valid and manifold: every edge belongs to exactly two faces, the solid has volume, and the OpenCascade shape check passes. That is the right meaning for a single closed body. `solid_count` tells you when the result is more than one body.
 
 **Wall thickness.** Two estimates are computed. Rays start on a grid on each face and measure the distance to the next roughly parallel face. Sections slice the part at 25%, 50%, and 75% of its extent along X, Y, and Z and measure the width between roughly parallel edges in that plane. The smaller number is the estimate. `method` is `ray`, `section`, or `ray+section` when they agree within 0.05 mm. Both numbers are in the report. A requested `section_part` also reports the minimum width in that one plane, which is how you look inside a boss.
@@ -542,10 +544,18 @@ GitHub Actions runs `pytest` on every push and pull request (`.github/workflows/
 - A slicer profile you choose (nozzle, layer height, infill) instead of the slicer's default, and print orientations beyond the six axis poses.
 - Gear and linkage relations enforced in the robot file, and joint effort taken from the power estimate.
 
+## Plugins
+
+An analysis, a part library, or an exporter can be added without editing aicad. Version 1 of the door is the `aicad.plugins` entry-point group. aicad reads a small `aicad.plugin.json` declaration and can list what is installed without running it. A third-party plugin runs only after `aicad plugins allow <name> --yes`. Opening a design does not load a plugin.
+
+The walkthrough is [Write your first plugin](docs/plugins.md). The example is `examples/hello_plugin`. A plugin that is loaded into aicad, or that imports aicad, is combined with this program and falls under the AGPL obligations below.
+
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE).
 
 Decided on 2026-10-21. aicad is meant as a service for humanity, so an improvement from anyone, including a company, stays shared. There is no paid license and no dual license. You keep the copyright in what you write. Contributions use a Developer Certificate of Origin (`git commit -s`), not a contributor license agreement, and no relicensing grant is required. See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
+A plugin that is loaded into aicad, or that imports it, is combined with this program. Distributing that plugin carries the same AGPL-3.0-or-later obligations. You keep the copyright in the plugin.
 
 A dependency-by-dependency check is in [docs/LICENSE_AUDIT.md](docs/LICENSE_AUDIT.md).

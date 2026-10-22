@@ -15,6 +15,7 @@ from aicad import cable as cable_mod
 from aicad import kernel
 from aicad.errors import GeometryError
 from aicad.fea import lookup_material
+from aicad.honesty import ROUGH_ESTIMATE, VERIFIED_CHECK, finish
 from aicad.kinematics import apply_pose, expand_motion, normalize, solve, transform_point
 from aicad.power import actuators_for, estimate_sequence, joint_loads, reflect
 from aicad.render import render_motion_frames
@@ -158,7 +159,7 @@ def run_motion(spec: dict, shapes: dict[str, kernel.Shape], motion: dict, out_di
             for frame in frames
         ]
         pictures = render_motion_frames(meshes, out_dir, str(motion.get("name") or "motion"), titles)
-    return {
+    report = {
         "motion": motion.get("name") or "motion",
         "duration_s": samples[0]["duration_s"] if samples else 0,
         "duration_assumed": bool(samples and samples[0]["duration_assumed"]),
@@ -171,7 +172,23 @@ def run_motion(spec: dict, shapes: dict[str, kernel.Shape], motion: dict, out_di
             "Collisions are boolean intersections between instances that are not joined to each other "
             "and are not listed in ignore_collisions. The joint pair itself is allowed to touch."
         ),
+        "assumptions": [
+            "Each frame is a posed copy of the CAD solids.",
+            "The intersection volume is the kernel boolean. It is not a contact force.",
+        ],
     }
+    return finish(
+        report,
+        kind=VERIFIED_CHECK,
+        name="Motion",
+        what="Collisions are a verified check of the modeled solids at the sampled frames.",
+        limits=[
+            "Only the frames in the motion are checked. A hit between frames is not seen.",
+            "Parts joined to each other are allowed to touch.",
+            "A room drawn as lines is not a solid, so the check cannot see it.",
+            "This is not a contact force.",
+        ],
+    )
 
 
 def check_cables(
@@ -220,11 +237,21 @@ def check_cables(
                 "frames": rows,
             }
         )
-    return {
-        "cables": summaries,
-        "status": "fail" if any(item["status"] == "fail" for item in summaries) else "pass",
-        "assumptions": cable_mod.assumptions(),
-    }
+    return finish(
+        {
+            "cables": summaries,
+            "status": "fail" if any(item["status"] == "fail" for item in summaries) else "pass",
+            "assumptions": cable_mod.assumptions(),
+        },
+        kind=ROUGH_ESTIMATE,
+        name="Cables",
+        what="Length, bend, and pinch are a rough estimate of a polyline through fixed clips. The line does not sag.",
+        limits=[
+            "Bend radius is the circumradius of three waypoints, which is harsher than a filleted route.",
+            "Clips do not slip, and the line does not stretch except as a single strain number.",
+            "A pinch is a centerline sample, not a swept volume of the hose.",
+        ],
+    )
 
 
 def estimate_power(
@@ -265,7 +292,17 @@ def estimate_power(
             "duration_s was omitted, so rates use 1 second.",
             *report["assumptions"],
         ]
-    return report
+    return finish(
+        report,
+        kind=ROUGH_ESTIMATE,
+        name="Power",
+        what="Joint torque and pump or motor power are a quasi-static estimate. Inertia and friction are left out.",
+        limits=[
+            "Gravity and the stated payload are included. Inertia, seal drag, and line loss are not.",
+            "A hydraulic moment arm is a number you supply, not a cylinder found in the assembly.",
+            "Electric braking energy is counted as spent.",
+        ],
+    )
 
 
 def preview_mesh(spec: dict, shapes: dict[str, kernel.Shape], overrides: dict | None = None) -> dict:

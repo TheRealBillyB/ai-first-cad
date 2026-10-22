@@ -257,6 +257,9 @@ def build_parser() -> argparse.ArgumentParser:
     robot.add_argument("name")
     robot.add_argument("--out", type=Path, default=None, help="Directory for the robot files.")
 
+    from aicad.plugins import add_cli
+
+    add_cli(commands, common)
     return parser
 
 
@@ -275,50 +278,69 @@ def _dispatch(args: argparse.Namespace) -> int:
         from aicad.sandbox import allow_design_scripts
 
         return _emit(allow_design_scripts(args.workspace))
+    # Listing or allowing a plugin must not open the design. Opening a file is not consent.
+    if args.command == "plugins":
+        from aicad.plugins import dispatch_cli
+
+        return dispatch_cli(args)
 
     from aicad.document import Document
 
     document = Document(args.workspace)
+
+    def emit(payload: dict) -> int:
+        from aicad.honesty import attach_sheet
+
+        stamped = payload
+        if isinstance(payload, dict):
+            stamped = attach_sheet(
+                payload,
+                document.workspace / "renders" / "sheets",
+                args.command,
+                root=document.workspace,
+            )
+        return _emit(stamped)
+
     if args.command == "run":
         script = args.script.read_text(encoding="utf-8")
         info = _create_or_update_script(document, args.name, script)
-        return _emit(info.to_dict())
+        return emit(info.to_dict())
     if args.command == "ops":
         ops = json.loads(args.file.read_text(encoding="utf-8"))
         info = _create_or_update_ops(document, args.name, ops)
-        return _emit(info.to_dict())
+        return emit(info.to_dict())
     if args.command == "list":
-        return _emit({"units": "mm", "parts": [part.to_dict() for part in document.list_parts()]})
+        return emit({"units": "mm", "parts": [part.to_dict() for part in document.list_parts()]})
     if args.command == "measure":
-        return _emit(document.measure(args.name).to_dict())
+        return emit(document.measure(args.name).to_dict())
     if args.command == "render":
         views = document.render(args.name)
-        return _emit({"views": [view.to_dict() for view in views]})
+        return emit({"views": [view.to_dict() for view in views]})
     if args.command == "export":
         destination = args.out
         if destination is None:
             destination = document.workspace / "exports" / f"{args.name}.{args.format}"
         path = document.export(args.name, destination, args.format)
-        return _emit({"format": args.format, "path": str(path), "bytes": path.stat().st_size})
+        return emit({"format": args.format, "path": str(path), "bytes": path.stat().st_size})
     if args.command == "check-wall":
         report = document.check_wall_thickness(args.name, args.min_wall, args.samples)
-        return _emit(report.to_dict())
+        return emit(report.to_dict())
     if args.command == "check-clearance":
         report = document.check_clearance(args.part_a, args.part_b, args.min_clearance)
-        return _emit(report.to_dict())
+        return emit(report.to_dict())
     if args.command == "inspect":
         report = document.inspect(args.name, args.min_wall, args.samples)
-        return _emit(report.to_dict())
+        return emit(report.to_dict())
     if args.command == "import-step":
         info = document.import_step(args.name, args.file)
-        return _emit(info.to_dict())
+        return emit(info.to_dict())
     if args.command == "features":
-        return _emit(document.feature_report(args.name).to_dict())
+        return emit(document.feature_report(args.name).to_dict())
     if args.command == "section":
         report = document.section(args.name, _plane_from_args(args))
-        return _emit(report.to_dict())
+        return emit(report.to_dict())
     if args.command == "catalog":
-        return _emit(document.search_parts(args.query))
+        return emit(document.search_parts(args.query))
     if args.command == "insert":
         info = document.insert_standard_part(
             args.name,
@@ -328,10 +350,10 @@ def _dispatch(args: argparse.Namespace) -> int:
             position=_triple(args.at, "--at"),
             rotation_deg=_triple(args.rot, "--rot"),
         )
-        return _emit(info.to_dict())
+        return emit(info.to_dict())
     if args.command == "place":
         info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
-        return _emit(info.to_dict())
+        return emit(info.to_dict())
     if args.command == "sketch":
         if args.file is not None:
             spec = json.loads(args.file.read_text(encoding="utf-8"))
@@ -341,7 +363,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 report = document.create_sketch(args.name, spec)
         else:
             report = document.get_sketch(args.name)
-        return _emit(report.to_dict())
+        return emit(report.to_dict())
     if args.command == "dimension":
         report = document.set_dimension(args.sketch, args.dimension, args.value)
         payload = report.to_dict()
@@ -350,49 +372,49 @@ def _dispatch(args: argparse.Namespace) -> int:
             for part in document.list_parts()
             if document.get_source(part.name).get("sketch") == args.sketch
         ]
-        return _emit(payload)
+        return emit(payload)
     if args.command == "sketch-part":
         steps = json.loads(args.steps.read_text(encoding="utf-8"))
         info = _create_or_update_sketch_part(document, args.name, args.sketch, steps)
-        return _emit(info.to_dict())
+        return emit(info.to_dict())
     if args.command == "materials":
-        return _emit(document.list_materials())
+        return emit(document.list_materials())
     if args.command == "faces":
-        return _emit(document.describe_faces(args.name))
+        return emit(document.describe_faces(args.name))
     if args.command == "assemble":
         spec = json.loads(args.file.read_text(encoding="utf-8"))
         spec["name"] = args.name
         names = {item["name"] for item in document.list_assemblies()}
         if args.name in names:
-            return _emit(document.update_assembly(spec))
-        return _emit(document.create_assembly(spec))
+            return emit(document.update_assembly(spec))
+        return emit(document.create_assembly(spec))
     if args.command == "joint":
-        return _emit(document.set_joint(args.name, args.joint, args.value, args.slide))
+        return emit(document.set_joint(args.name, args.joint, args.value, args.slide))
     if args.command == "pose":
-        return _emit(document.set_pose(args.name, args.pose))
+        return emit(document.set_pose(args.name, args.pose))
     if args.command == "motion":
         inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
-        return _emit(document.run_motion(args.name, sequence=args.sequence, motion=inline))
+        return emit(document.run_motion(args.name, sequence=args.sequence, motion=inline))
     if args.command == "cables":
-        return _emit(document.check_cables(args.name, sequence=args.sequence))
+        return emit(document.check_cables(args.name, sequence=args.sequence))
     if args.command == "power":
-        return _emit(document.estimate_power(args.name, sequence=args.sequence))
+        return emit(document.estimate_power(args.name, sequence=args.sequence))
     if args.command == "fea":
         setup = json.loads(args.file.read_text(encoding="utf-8"))
-        return _emit(document.solve_mechanics(args.name, setup).to_dict())
+        return emit(document.solve_mechanics(args.name, setup).to_dict())
     if args.command == "modal":
         setup = json.loads(args.file.read_text(encoding="utf-8"))
-        return _emit(document.solve_modal(args.name, setup))
+        return emit(document.solve_modal(args.name, setup))
     if args.command == "modal-assembly":
         setup = json.loads(args.file.read_text(encoding="utf-8")) if args.file else {}
-        return _emit(document.solve_assembly_modal(args.name, setup))
+        return emit(document.solve_assembly_modal(args.name, setup))
     if args.command == "bolts":
         spec = json.loads(args.file.read_text(encoding="utf-8"))
         if args.name:
             spec["part"] = args.name
-        return _emit(document.check_bolts(spec))
+        return emit(document.check_bolts(spec))
     if args.command == "fatigue":
-        return _emit(document.check_fatigue(json.loads(args.file.read_text(encoding="utf-8"))))
+        return emit(document.check_fatigue(json.loads(args.file.read_text(encoding="utf-8"))))
     if args.command == "print":
         setup = {
             "orientation": args.orientation,
@@ -403,9 +425,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             setup["printer"] = args.printer
         if args.price_per_kg is not None:
             setup["price_per_kg"] = args.price_per_kg
-        return _emit(document.check_print(args.name, setup))
+        return emit(document.check_print(args.name, setup))
     if args.command == "robot":
-        return _emit(document.export_robot(args.name, args.out))
+        return emit(document.export_robot(args.name, args.out))
     raise AICADError(f"Unknown command {args.command!r}.")
 
 

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 # Consent switches. They are not design tools, and the assistant must not be
 # able to flip them. `serve` and `app` start a process. `allow-scripts` is the
-# person agreeing that design scripts may run in one project.
-CLI_EXEMPT = frozenset({"serve", "app", "allow-scripts"})
+# person agreeing that design scripts may run in one project. `plugins` is the
+# plugin door: list, show, allow, and run. It is not a modeling command.
+# Parity does not need an MCP tool for these consent switches.
+CLI_EXEMPT = frozenset({"serve", "app", "allow-scripts", "plugins"})
 
 # CLI subcommand -> MCP tool that does the same work.
 CLI_TOOLS = {

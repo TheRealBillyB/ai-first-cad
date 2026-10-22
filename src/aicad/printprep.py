@@ -19,6 +19,7 @@ import numpy as np
 
 from aicad import kernel
 from aicad.errors import GeometryError
+from aicad.honesty import ROUGH_ESTIMATE, finish
 from aicad.render import render_scalar_views
 
 # Build volumes in millimeters, X Y Z, from the maker's published numbers.
@@ -139,7 +140,7 @@ def analyze_print(
         status = "fail"
     elif chosen["support_fraction"] > 0.25:
         status = "review"
-    return {
+    report = {
         "part": part_name,
         "status": status,
         "orientation": chosen_name,
@@ -159,6 +160,17 @@ def analyze_print(
         "assumptions": _assumptions(threshold),
         "note": _headline(chosen, automatic, focus, slicer),
     }
+    return finish(
+        report,
+        kind=ROUGH_ESTIMATE,
+        name="Print",
+        what="Overhang, support area, and printer fit are rough estimates. A slicer time, when present, uses that slicer's default profile.",
+        limits=[
+            "Only the six axis-up orientations are tried. A diagonal pose is not searched.",
+            "The bed face, within 0.4 mm of the lowest point, is not counted as support.",
+            "Time and grams follow the slicer's default profile. A missing slicer skips those numbers.",
+        ],
+    )
 
 
 def orientation_size(shape: kernel.Shape, orientation: str) -> dict:

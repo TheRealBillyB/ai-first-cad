@@ -54,6 +54,7 @@ class Workspace:
         self._mesh_cache: dict[tuple, dict] = {}
         self._requirement_cache: dict[str, dict] = {}
         self._requirements: list[dict] = []
+        self.requirements_sheet: dict | None = None
         self._sketch_cache: list[dict] = []
         self._sketch_cache_revision = -1
         self._script_network_once = False
@@ -93,6 +94,12 @@ class Workspace:
                 self._redo.clear()
             try:
                 result = command.handler(self, arguments)
+                if isinstance(result, dict):
+                    from aicad.honesty import attach_sheet
+
+                    result = attach_sheet(result, self.root / "renders" / "sheets", name, root=self.root)
+                    if name in {"check_requirements", "get_requirements", "set_requirements"} and result.get("sheet"):
+                        self.requirements_sheet = result["sheet"]
             except Exception:
                 if command.undo:
                     self._undo.pop()
@@ -188,6 +195,7 @@ class Workspace:
                 "selection": copy.deepcopy(self.selection),
                 "documents": self._document_names(),
                 "requirements": checks,
+                "requirements_sheet": self.requirements_sheet,
                 "panels": {key: value["payload"] for key, value in self.panels.items()},
                 "panel_revision": {key: value["revision"] for key, value in self.panels.items()},
                 "materials": self.document.list_materials(),
@@ -363,6 +371,9 @@ class Workspace:
         return self.documents / name
 
     def _remember_panel(self, key: str, payload: dict) -> dict:
+        from aicad.honesty import attach_sheet
+
+        payload = attach_sheet(payload, self.root / "renders" / "sheets", key, root=self.root)
         self.panels[key] = {"revision": self.geometry_revision, "payload": payload}
         return payload
 

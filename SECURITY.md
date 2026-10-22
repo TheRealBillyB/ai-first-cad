@@ -31,6 +31,6 @@ A design script, one program that calls several steps, stays off until you allow
 
 Opening a project does not run Python stored in it. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data.
 
-There is no plugin loader.
+Plugins are separate. Installed packs are listed from entry points without importing them. A third-party pack runs only after you allow the publisher, the version, and the permissions it declared. Opening a design does not allow or load a plugin. A design script cannot allow or load a plugin either. The warning is written by aicad, and the permission list is a declaration, not a sandbox. See [docs/plugins.md](docs/plugins.md).
 
 This sandbox is for one person on their own Linux machine. It is not a boundary between tenants. Windows and macOS refuse to run assistant scripts until they grow their own confinement. The choices are recorded in [docs/DECISIONS.md](docs/DECISIONS.md).

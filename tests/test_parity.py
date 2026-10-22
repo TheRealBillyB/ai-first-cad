@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import inspect
+import json
 from pathlib import Path
 
 from aicad.cli import build_parser
@@ -58,4 +59,26 @@ def test_mcp_covers_the_cli_the_app_and_the_document(tmp_path: Path):
 
     assert "allow-scripts" not in names
     assert "allow_design_scripts" not in names
+    assert "plugins" not in names
+    assert "plugins" in CLI_EXEMPT
     assert "previous assembly" in descriptions["update_assembly"]
+
+
+def test_mcp_check_reports_carry_the_labels(tmp_path: Path):
+    from aicad.workspace import Workspace
+
+    workspace = Workspace(tmp_path)
+    workspace.execute(
+        "create_part_from_ops",
+        {"name": "box", "ops": [{"op": "add", "shape": "box", "size": [2, 3, 4]}]},
+    )
+    server = build_server(tmp_path)
+    measured = asyncio.run(server.call_tool("measure_part", {"name": "box"}))
+    body = json.loads(measured.content[0].text)
+    assert body["result_kind"] == "verified_check"
+    assert body["result_label"] == "Verified check"
+    wall = asyncio.run(server.call_tool("check_wall_thickness", {"name": "box", "min_wall_mm": 0.5, "samples": 1}))
+    report = json.loads(wall.content[0].text)
+    assert report["result_kind"] == "rough_estimate"
+    assert report["result_label"] == "Rough estimate"
+    assert report["sheet"]["path"]

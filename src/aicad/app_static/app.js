@@ -186,6 +186,7 @@ function renderPanel() {
         <button type="button" id="run-section" class="primary">Cut</button>
       </div>
       ${report ? `<p>Area ${report.area_mm2} mm². Thickness ${report.min_thickness_mm ?? "n/a"} mm.</p>
+        ${claimBlock(report)}
         ${report.view ? `<img alt="section" src="${fileUrl(report.view.path)}" />` : ""}
         <p class="muted">${report.note || ""}</p>` : `<p class="muted">A cut through the solid. Use it to see a rib inside a boss.</p>`}`;
     $("run-section").onclick = () => runSection();
@@ -308,7 +309,8 @@ function renderPanel() {
   root.innerHTML = `
     <h3>Requirements</h3>
     <div class="row"><button type="button" id="checks-run" class="primary">Check now</button></div>
-    ${checks.map(checkHtml).join("") || `<p class="muted">Add a max mass, a build volume, or a safety factor on the Documents page.</p>`}`;
+    ${checks.map(checkHtml).join("") || `<p class="muted">Add a max mass, a build volume, or a safety factor on the Documents page.</p>`}
+    ${state.requirements_sheet && state.requirements_sheet.path ? `<img alt="requirements sheet" src="${fileUrl(state.requirements_sheet.path)}" />` : ""}`;
   $("checks-run").onclick = () => runChecks();
 }
 
@@ -317,43 +319,54 @@ function inspectHtml(report, stale) {
   const wall = report.wall || {};
   const box = m.bounding_box && m.bounding_box.size;
   const contact = (report.views || []).find((view) => view.name === "contact");
-  return `<div class="kv">
+  return `${claimBlock(report)}<div class="kv">
       <span>Volume</span><b>${m.volume_mm3} mm³</b>
       <span>Size</span><b>${box ? `${box.x} × ${box.y} × ${box.z}` : ""}</b>
       <span>Watertight</span><b>${m.watertight ? "yes" : "no"}</b>
       <span>Wall</span><b>${wall.estimated_min_mm ?? "n/a"} mm ${wall.passed === false ? "(under the rule)" : ""}</b>
     </div>
     ${stale ? `<p class="warn">This inspection is from an older revision.</p>` : ""}
-    <p class="muted">${wall.note || ""}</p>
+    <p class="muted">${claimText(wall.note || "")}</p>
     ${contact ? `<img alt="contact sheet" src="${fileUrl(contact.path)}" />` : ""}`;
 }
 
 function featureHtml(report) {
-  if (!report.tracked) return `<p>${report.note}</p>`;
-  const rows = (report.steps || []).map((step) => `<li><span>${step.name} · ${step.op}</span>${step.redundant ? `<span class="flag">flagged</span>` : ""}</li>`).join("");
-  return `<p>${report.note}</p><ul>${rows}</ul>${report.warning ? `<p class="warn">${report.warning}</p>` : ""}`;
+  const label = claimBlock(report);
+  if (!report.tracked) return `${label}<p>${claimText(report.note)}</p>`;
+  const rows = (report.steps || []).map((step) => `<li><span>${claimText(step.name)} · ${claimText(step.op)}</span>${step.redundant ? `<span class="flag">flagged</span>` : ""}</li>`).join("");
+  return `${label}<p>${claimText(report.note)}</p><ul>${rows}</ul>${report.warning ? `<p class="warn">${claimText(report.warning)}</p>` : ""}`;
 }
 
 function feaHtml(report, stale) {
   const contact = (report.views || []).find((view) => view.name === "stress_contact");
   const review = report.review || {};
-  return `<div class="kv">
-      <span>Status</span><b>${report.status}</b>
+  const mesh = report.mesh || {};
+  const warned = new Set(report.warnings || []);
+  const meshLines = [];
+  (mesh.simplifications || []).forEach((line) => { if (!meshLines.includes(line) && !warned.has(line)) meshLines.push(line); });
+  (mesh.notes || []).forEach((line) => { if (!meshLines.includes(line) && !warned.has(line)) meshLines.push(line); });
+  return `${claimBlock(report)}<div class="kv">
+      <span>Status</span><b>${claimText(report.status)}</b>
       <span>von Mises</span><b>${report.max_von_mises_mpa ?? "n/a"} MPa</b>
       <span>Safety factor</span><b>${report.min_safety_factor ?? "n/a"}</b>
       <span>Displacement</span><b>${report.max_displacement_mm ?? "n/a"} mm</b>
-      <span>Review</span><b><span class="chip ${review.status || "unchecked"}">${review.status || "n/a"}</span></b>
+      <span>Review</span><b><span class="chip ${review.status || "unchecked"}">${claimText(review.status || "n/a")}</span></b>
     </div>
     ${stale ? `<p class="warn">This solve is from an older revision.</p>` : ""}
-    ${(report.warnings || []).map((line) => `<p class="warn">${line}</p>`).join("")}
-    <p>${report.note || ""}</p>
-    ${(report.assumptions || []).map((line) => `<p class="muted">${line}</p>`).join("")}
+    ${(report.warnings || []).map((line) => `<p class="warn">${claimText(line)}</p>`).join("")}
+    ${meshLines.map((line) => `<p class="warn">${claimText(line)}</p>`).join("")}
+    <p>${claimText(report.note || "")}</p>
     ${contact ? `<img alt="von Mises" src="${fileUrl(contact.path)}" />` : ""}`;
 }
 
 function checkHtml(item) {
-  return `<div class="row" style="align-items:flex-start"><span class="chip ${item.status}">${item.status}</span>
-    <div><strong>${item.title}</strong><div class="muted">${item.detail || ""}</div></div></div>`;
+  const kind = item.result_kind === "verified_check" ? "verified" : "estimate";
+  const label = item.result_label
+    ? `<span class="chip ${kind}">${claimText(item.result_label)}</span>`
+    : "";
+  const limits = (item.limits || []).map((line) => `<div class="muted">Limit: ${claimText(line)}</div>`).join("");
+  return `<div class="row" style="align-items:flex-start"><span class="chip ${item.status}">${claimText(item.status)}</span>
+    <div><strong>${claimText(item.title)}</strong> ${label}<div class="muted">${claimText(item.detail || "")}</div>${limits}</div></div>`;
 }
 
 const feaPlan = { fixes: [], loads: [] };
@@ -414,8 +427,8 @@ function printHtml(report) {
   const sliceLine = slicer.status === "sliced"
     ? `${escapeHtml(slicer.time || "")}, ${slicer.grams} g${slicer.cost != null ? `, cost ${slicer.cost}` : ""}`
     : escapeHtml(slicer.note || slicer.status || "");
-  return `<div class="kv">
-      <span>Status</span><b>${report.status}</b>
+  return `${claimBlock(report)}<div class="kv">
+      <span>Status</span><b>${claimText(report.status)}</b>
       <span>Orientation</span><b>${escapeHtml(report.orientation || "")}</b>
       <span>Support</span><b>${report.support_area_mm2} mm²</b>
       <span>Height</span><b>${report.height_mm} mm</b>
@@ -446,20 +459,21 @@ async function runBolts() {
 function modalHtml(report) {
   const contact = (report.views || []).find((view) => String(view.name).endsWith("_contact")) || (report.views || [])[0];
   const rows = (report.modes || []).map((mode) => `<li>mode ${mode.index}: ${mode.frequency_hz} Hz${mode.rigid_body ? " (rigid body)" : ""}</li>`).join("");
-  const flags = ((report.resonance && report.resonance.flags) || []).map((flag) =>
+  const resonance = report.resonance || {};
+  const flags = (resonance.flags || []).map((flag) =>
     `<li>mode ${flag.mode} near ${escapeHtml(flag.source)} harmonic ${flag.harmonic} (${flag.excitation_hz} Hz)</li>`
   ).join("");
-  const suggestions = ((report.resonance && report.resonance.suggestions) || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
-  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
-  return `<div class="kv">
-      <span>Status</span><b>${report.resonance ? report.resonance.status : ""}</b>
+  const suggestions = (resonance.suggestions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  const heading = resonance.reliable === false ? "Not a result on this mesh" : (resonance.status || "");
+  return `${claimBlock(report)}<div class="kv">
+      <span>Status</span><b>${claimText(heading)}</b>
       <span>First flexible</span><b>${(report.modes || []).filter((mode) => !mode.rigid_body).map((mode) => mode.frequency_hz)[0] ?? "n/a"} Hz</b>
     </div>
+    ${(report.warnings || []).map((line) => `<p class="warn">${claimText(line)}</p>`).join("")}
     <p>${escapeHtml(report.note || "")}</p>
     <ul>${rows}</ul>
     ${flags ? `<h3>Resonance</h3><ul>${flags}</ul>` : ""}
     ${suggestions ? `<h3>Suggestions</h3><ul>${suggestions}</ul>` : ""}
-    <h3>Assumptions</h3><ul>${assumptions}</ul>
     ${contact ? `<img alt="mode shape" src="${fileUrl(contact.path)}" />` : ""}`;
 }
 
@@ -469,19 +483,17 @@ function boltHtml(report) {
   const counters = (loosening.countermeasures || []).filter((item) => item.recommended).map((item) =>
     `<li><strong>${escapeHtml(item.name)}</strong> — ${escapeHtml(item.effect)}</li>`
   ).join("");
-  const assumptions = (report.assumptions || row.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
-  return `<div class="kv">
-      <span>Status</span><b>${row.status || report.worst || ""}</b>
-      <span>Loosening</span><b>${loosening.rating || report.worst || ""}</b>
+  return `${claimBlock(report)}<div class="kv">
+      <span>Status</span><b>${claimText(row.status || report.worst || "")}</b>
+      <span>Loosening</span><b>${claimText(loosening.rating || report.worst || "")}</b>
       <span>Preload</span><b>${row.preload_n} N</b>
       <span>Torque</span><b>${row.tightening_torque_nm} N·m</b>
-      <span>Slip margin</span><b>${row.slip_margin ?? "n/a"} (${row.slip_status || ""})</b>
+      <span>Slip margin</span><b>${row.slip_margin ?? "n/a"} (${claimText(row.slip_status || "")})</b>
       <span>Yield margin</span><b>${row.yield_margin ?? "n/a"}</b>
     </div>
     <p>${escapeHtml(loosening.summary || report.note || "")}</p>
     ${(loosening.reasons || []).map((line) => `<p class="warn">${escapeHtml(line)}</p>`).join("")}
-    ${counters ? `<h3>Countermeasures</h3><ul>${counters}</ul>` : ""}
-    <h3>Assumptions</h3><ul>${assumptions}</ul>`;
+    ${counters ? `<h3>Countermeasures</h3><ul>${counters}</ul>` : ""}`;
 }
 
 function rememberLoad(kind) {
@@ -1107,7 +1119,11 @@ function renderDocs() {
   $("doc-list").querySelectorAll("[data-doc]").forEach((node) => { node.onclick = () => loadDoc(node.dataset.doc); });
   const checks = ui.state.requirements || [];
   $("req-list").innerHTML = checks.length
-    ? checks.map((item) => `<li><div><strong>${item.title}</strong><div class="muted">${item.detail || ""}</div></div><span class="chip ${item.status}">${item.status}</span></li>`).join("")
+    ? checks.map((item) => {
+      const kind = item.result_kind === "verified_check" ? "verified" : "estimate";
+      const label = item.result_label ? `<span class="chip ${kind}">${claimText(item.result_label)}</span>` : "";
+      return `<li><div><strong>${claimText(item.title)}</strong> ${label}<div class="muted">${claimText(item.detail || "")}</div></div><span class="chip ${item.status}">${claimText(item.status)}</span></li>`;
+    }).join("")
     : `<li class="meta">No requirements yet</li>`;
   if (ui.part) $("req-part").value = $("req-part").value || ui.part;
 }
@@ -1131,7 +1147,41 @@ function markdown(text) {
 }
 
 function escapeHtml(text) {
-  return text.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]));
+  return String(text == null ? "" : text).replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]));
+}
+
+function claimText(value) {
+  return escapeHtml(value == null ? "" : value);
+}
+
+function claimChip(report) {
+  if (!report || !report.result_label) return "";
+  const kind = report.result_kind === "verified_check" ? "verified" : "estimate";
+  const limits = (report.limits || []).map((line) => `<li>${claimText(line)}</li>`).join("");
+  const assumptions = report.assumptions || [];
+  const assumptionHtml = assumptions.length
+    ? (assumptions.length > 4
+      ? `<details><summary>Assumptions (${assumptions.length})</summary><ul>${assumptions.map((line) => `<li>${claimText(line)}</li>`).join("")}</ul></details>`
+      : `<ul>${assumptions.map((line) => `<li>${claimText(line)}</li>`).join("")}</ul>`)
+    : "";
+  return `<section class="honesty ${kind}">
+    <span class="chip ${kind}">${claimText(report.result_label)}</span>
+    ${report.result_name ? `<strong> ${claimText(report.result_name)}</strong>` : ""}
+    <p>${claimText(report.result_what || "")}</p>
+    ${limits ? `<ul>${limits}</ul>` : ""}
+    ${assumptionHtml}
+  </section>`;
+}
+
+function claimBlock(report) {
+  if (!report) return "";
+  const nested = report.results && report.results.length ? report.results : null;
+  const rows = nested || (report.result_label ? [report] : []);
+  const intro = nested && report.result_what ? `<p class="muted">${claimText(report.result_what)}</p>` : "";
+  const sheet = report.sheet && report.sheet.path
+    ? `<img alt="blueprint sheet" src="${fileUrl(report.sheet.path)}" />`
+    : "";
+  return intro + rows.map(claimChip).join("") + sheet;
 }
 
 function ask(title, fields) {
@@ -1250,7 +1300,7 @@ function showMotionReport() {
     const pairs = (frame.collisions || []).map((hit) => `${hit.a} × ${hit.b}`).join(", ");
     return `<li>t=${Number(frame.time_s).toFixed(2)}s ${pairs || "clear"}</li>`;
   }).join("");
-  $("assembly-report").innerHTML = `<h3>${escapeHtml(motion.motion || motion.name || "Assembly")}</h3><ul>${frames}</ul>`;
+  $("assembly-report").innerHTML = `${claimBlock(motion)}<h3>${escapeHtml(motion.motion || motion.name || "Assembly")}</h3><ul>${frames}</ul>`;
 }
 
 function showCableReport(report) {
@@ -1258,8 +1308,7 @@ function showCableReport(report) {
   const rows = (report.cables || []).map((cable) =>
     `<li><strong>${escapeHtml(cable.name)}</strong> ${cable.status} · length ${cable.length_mm.map((value) => Number(value).toFixed(1)).join(" → ")} mm · strain ${cable.max_strain} · bend ${cable.min_bend_radius_mm == null ? "straight" : cable.min_bend_radius_mm + " mm"} · pinches ${cable.pinch_count}</li>`
   ).join("");
-  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
-  $("assembly-report").innerHTML = `<h3>Cables</h3><ul>${rows}</ul><h3>Assumptions</h3><ul>${assumptions}</ul>`;
+  $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Cables</h3><ul>${rows}</ul>`;
 }
 
 function showPowerReport(report) {
@@ -1268,9 +1317,8 @@ function showPowerReport(report) {
   ).join("");
   const pump = report.pump ? `<p>Pump mean ${report.pump.mean_power_w} W, displaced ${report.pump.displaced_volume_mm3} mm³ over ${report.duration_s} s.</p>` : "";
   const battery = report.battery ? `<p>Battery ${report.battery.energy_wh} Wh at ${report.battery.voltage} V (${report.battery.charge_ah} Ah).</p>` : "";
-  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
   $("assembly-status").textContent = "Power";
-  $("assembly-report").innerHTML = `<h3>Power</h3><ul>${rows}</ul>${pump}${battery}<h3>Assumptions</h3><ul>${assumptions}</ul>`;
+  $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Power</h3><ul>${rows}</ul>${pump}${battery}`;
 }
 
 function showModalReport(report) {
@@ -1280,12 +1328,13 @@ function showModalReport(report) {
     $("assembly-picture").src = fileUrl(contact.path);
   }
   const resonance = report.resonance || {};
-  $("assembly-status").textContent = `Modes ${resonance.status || ""}`;
+  const heading = resonance.reliable === false ? "Not a result on this mesh" : (resonance.status || "");
+  $("assembly-status").textContent = `Modes ${heading}`;
   const rows = (report.modes || []).map((mode) => `<li>mode ${mode.index}: ${mode.frequency_hz} Hz${mode.rigid_body ? " rigid" : ""}</li>`).join("");
   const flags = (resonance.flags || []).map((flag) => `<li>mode ${flag.mode} near ${escapeHtml(flag.source)} harmonic ${flag.harmonic} at ${flag.excitation_hz} Hz</li>`).join("");
   const suggestions = (resonance.suggestions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
-  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
-  $("assembly-report").innerHTML = `<h3>Modes</h3><p>${escapeHtml(report.note || "")}</p><ul>${rows}</ul>${flags ? `<h3>Resonance</h3><ul>${flags}</ul>` : ""}<h3>Suggestions</h3><ul>${suggestions}</ul><p class="muted">${escapeHtml((report.support && report.support.description) || "")}</p><h3>Assumptions</h3><ul>${assumptions}</ul>`;
+  const warnings = (report.warnings || []).map((line) => `<p class="warn">${claimText(line)}</p>`).join("");
+  $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Modes</h3><p>${escapeHtml(report.note || "")}</p>${warnings}<ul>${rows}</ul>${flags ? `<h3>Resonance</h3><ul>${flags}</ul>` : ""}<h3>Suggestions</h3><ul>${suggestions}</ul><p class="muted">${escapeHtml((report.support && report.support.description) || "")}</p>`;
 }
 
 function showRobotReport(report) {
@@ -1295,12 +1344,11 @@ function showRobotReport(report) {
   const rows = (report.joints || []).map((joint) =>
     `<li>${escapeHtml(joint.name)} ${escapeHtml(joint.type)} · ${escapeHtml(joint.parent)} → ${escapeHtml(joint.child)}</li>`
   ).join("");
-  const assumptions = (report.assumptions || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
   $("assembly-status").textContent = "Robot export";
-  $("assembly-report").innerHTML = `<h3>Robot</h3><p>${escapeHtml(report.note || "")}</p>
+  $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Robot</h3><p>${escapeHtml(report.note || "")}</p>
     <p>MuJoCo ${escapeHtml(mujoco.status || "")}. PyBullet ${escapeHtml(bullet.status || "")}.</p>
     <p class="muted">${escapeHtml(report.urdf || "")}</p>
-    <ul>${rows}</ul><h3>Assumptions</h3><ul>${assumptions}</ul>`;
+    <ul>${rows}</ul>`;
 }
 
 function showBoltReport(report) {
@@ -1313,9 +1361,8 @@ function showBoltReport(report) {
   const counters = (((lead.loosening || {}).countermeasures) || []).filter((item) => item.recommended).map((item) =>
     `<li><strong>${escapeHtml(item.name)}</strong> — ${escapeHtml(item.effect)}</li>`
   ).join("");
-  const assumptions = (report.assumptions || (lead.assumptions || [])).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
   $("assembly-status").textContent = "Bolts " + (report.worst || (row && row.loosening && row.loosening.rating) || "");
-  $("assembly-report").innerHTML = `<h3>Bolts</h3><ul>${rows}</ul><h3>Countermeasures</h3><ul>${counters}</ul><h3>Assumptions</h3><ul>${assumptions}</ul>`;
+  $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Bolts</h3><ul>${rows}</ul><h3>Countermeasures</h3><ul>${counters}</ul>`;
 }
 
 async function showAssemblyPicture() {

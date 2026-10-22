@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 
 from aicad.errors import GeometryError
+from aicad.honesty import ROUGH_ESTIMATE, finish
 
 # Coarse pitches, mm. A size written M8-1.25 uses the explicit pitch.
 _COARSE_PITCH = {
@@ -70,12 +71,22 @@ def check_joint(spec: dict) -> dict:
         checked.append(_one(merged))
     order = {name: index for index, name in enumerate(_RATINGS)}
     worst = max(checked, key=lambda item: order[item["loosening"]["rating"]])
-    return {
-        "bolts": checked,
-        "worst": worst["loosening"]["rating"],
-        "assumptions": checked[0]["assumptions"],
-        "note": f"{len(checked)} fasteners. The joint is rated by the highest loosening risk.",
-    }
+    return finish(
+        {
+            "bolts": checked,
+            "worst": worst["loosening"]["rating"],
+            "assumptions": checked[0]["assumptions"],
+            "note": f"{len(checked)} fasteners. The joint is rated by the highest loosening risk.",
+        },
+        kind=ROUGH_ESTIMATE,
+        name="Bolted joint",
+        what="Preload, torque, and slip are handbook estimates. The worst loosening rating leads.",
+        limits=[
+            "The nut factor is not a measured torque-tension test.",
+            "A locking feature resists turning. It does not create clamp force.",
+            "Slip below a margin of 1 is the loosening case, even when the bolt is below yield.",
+        ],
+    )
 
 
 def _one(spec: dict) -> dict:
@@ -159,7 +170,7 @@ def _one(spec: dict) -> dict:
     status = "fail" if loosening["rating"] == "high" or (yield_margin is not None and yield_margin < 1.0) else (
         "marginal" if loosening["rating"] == "moderate" else "pass"
     )
-    return {
+    report = {
         "size": size,
         "pitch_mm": pitch,
         "grade": spec.get("grade") or "8.8",
@@ -198,6 +209,17 @@ def _one(spec: dict) -> dict:
         "assumptions": _assumptions(condition, fraction, nut_factor, friction),
         "note": loosening["summary"],
     }
+    return finish(
+        report,
+        kind=ROUGH_ESTIMATE,
+        name="Bolted joint",
+        what="Preload, torque, slip, and thread strength are handbook estimates, not a measured joint.",
+        limits=[
+            "The nut factor is not a measured torque-tension test.",
+            "Member stiffness is a stand-in cylinder, not the real clamped parts.",
+            "A locking nut, wedge washer, threadlocker, or safety wire resists turning and does not create clamp force.",
+        ],
+    )
 
 
 def _loosening(

@@ -13,6 +13,7 @@ from typing import Any
 
 from aicad import fea
 from aicad.errors import GeometryError
+from aicad.honesty import ROUGH_ESTIMATE, VERIFIED_CHECK, finish
 from aicad.printprep import fits_printer, orientation_size
 
 _KINDS = ("max_mass", "fits_build_volume", "fits_printer", "min_wall", "min_safety_factor")
@@ -179,13 +180,18 @@ def _one(document, item: dict, cache: dict[str, dict], run: bool) -> dict:
                     "unit": "safety factor",
                 }
             else:
+                review_status = report.review.get("status") if report.review else None
+                status = safety_requirement_status(report.min_safety_factor, limit, review_status, solved=True)
+                detail = report.note
+                if status == "inconclusive":
+                    detail += " The mesh is coarse or simplified, so this is not a pass."
                 cache[key] = {
-                    "status": "pass" if report.min_safety_factor + 1e-9 >= limit and report.review and report.review.get("status") != "fail" else "fail",
+                    "status": status,
                     "measured": report.min_safety_factor,
                     "limit": limit,
-                    "detail": report.note,
+                    "detail": detail,
                     "unit": "safety factor",
-                    "review": report.review.get("status") if report.review else None,
+                    "review": review_status,
                 }
         return _row(item, **cache[key])
     raise GeometryError(f"Unknown requirement kind {kind!r}.")
@@ -209,6 +215,17 @@ def _number(value: Any, label: str) -> float:
     return number
 
 
+def safety_requirement_status(measured, limit: float, review_status: str | None, solved: bool = True) -> str:
+    """A coarse or simplified mesh cannot satisfy a safety-factor requirement."""
+    if not solved or measured is None:
+        return "fail"
+    if review_status == "inconclusive":
+        return "inconclusive"
+    if review_status == "pass" and float(measured) + 1e-9 >= float(limit):
+        return "pass"
+    return "fail"
+
+
 def _row(item: dict, status: str, measured, limit, detail: str, unit: str | None = None, **extra) -> dict:
     payload = {
         "id": item.get("id"),
@@ -222,4 +239,52 @@ def _row(item: dict, status: str, measured, limit, detail: str, unit: str | None
         "detail": detail,
     }
     payload.update(extra)
-    return payload
+    claim = _CLAIM.get(str(item.get("kind") or ""))
+    if claim is None:
+        claim = (ROUGH_ESTIMATE, "This check did not finish.", ["Read the detail for what went wrong."])
+    kind, what, limits = claim
+    return finish(payload, kind=kind, name=str(payload["title"] or payload["kind"]), what=what, limits=limits)
+
+
+_CLAIM = {
+    "max_mass": (
+        ROUGH_ESTIMATE,
+        "Mass is the model volume times a handbook density. It is a rough estimate, not a weighed part.",
+        [
+            "The density is a library number. Pigment, infill, and moisture change a real part.",
+            "The volume is the CAD solid, including any modeled holes and excluding a slicer's infill.",
+        ],
+    ),
+    "fits_build_volume": (
+        VERIFIED_CHECK,
+        "The sorted bounding box of the model is compared with the sorted build volume.",
+        [
+            "Sorting lets the part be turned so its axes line up with the box.",
+            "This is the model size, not the usable area of a printer after clips and a purge line.",
+        ],
+    ),
+    "fits_printer": (
+        ROUGH_ESTIMATE,
+        "Printer fit uses one of six axis-up poses. The oriented size comes from the triangle mesh.",
+        [
+            "A diagonal pose is not tried.",
+            "Height is the oriented Z. The footprint may swap X and Y.",
+        ],
+    ),
+    "min_wall": (
+        ROUGH_ESTIMATE,
+        "Wall thickness is a sampled estimate. A pass can miss a thin spot between the samples.",
+        [
+            "Rays and a few planar slices produce the number.",
+            "Anything thinner than about 0.15 mm is below the ray step.",
+        ],
+    ),
+    "min_safety_factor": (
+        ROUGH_ESTIMATE,
+        "The safety factor is a linear static estimate. A coarse or simplified mesh is not a pass.",
+        [
+            "No plasticity, contact, buckling, or fatigue.",
+            "A mesh that was simplified, or that is coarse or linear, stays inconclusive.",
+        ],
+    ),
+}

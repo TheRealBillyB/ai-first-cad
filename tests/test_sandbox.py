@@ -87,6 +87,45 @@ def test_open_project_loads_script_text_and_does_not_run_it(tmp_path, config_hom
     assert workspace.execute("design_script_status", {})["enabled"] is False
 
 
+def test_design_script_cannot_allow_a_plugin(tmp_path, config_home, monkeypatch):
+    consent = tmp_path / "consent" / "plugins.json"
+    monkeypatch.setenv("AICAD_PLUGIN_CONSENT", str(consent))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    allow_design_scripts(tmp_path)
+    script = """
+import aicad.plugins as plugins
+print("consent_path", plugins.consent_file())
+try:
+    plugins.allow("anything", accept=True)
+    print("allow ran")
+except Exception as exc:
+    print("allow", type(exc).__name__)
+    print(exc)
+try:
+    plugins.load("anything")
+    print("load ran")
+except Exception as exc:
+    print("load", type(exc).__name__)
+    print(exc)
+try:
+    plugins.revoke("anything")
+    print("revoke ran")
+except Exception as exc:
+    print("revoke", type(exc).__name__)
+    print(exc)
+"""
+    payload = run_design_script(tmp_path, script)
+    assert payload["ok"] is True, payload.get("error")
+    text = payload["stdout"]
+    assert "consent_path" in text
+    assert str(tmp_path) not in text.split("consent_path", 1)[1].splitlines()[0]
+    for name in ("allow", "load", "revoke"):
+        assert f"{name} PluginConsentError" in text
+    assert "cannot" in text
+    assert not consent.exists()
+    assert not (tmp_path / "xdg" / "aicad" / "plugins.json").exists()
+
+
 def test_design_script_requires_opt_in(tmp_path, config_home):
     with pytest.raises(ScriptError, match="allow-scripts"):
         run_design_script(tmp_path, "print('no')\n")

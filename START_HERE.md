@@ -198,6 +198,7 @@ A 3 m HQ rod held only at one end rings at 9.5 Hz, which is a 570 rpm drill. Wit
 
 ## Where the checks can mislead you
 
+- Each result says whether it is a verified check of the CAD model or a rough estimate, and a simplified mesh is not allowed to look like a pass.
 - The strength check is linear and elastic. It will not show a dent, a buckle, or two parts pressing on each other.
 - Vibration pictures are exaggerated shapes so you can see the pattern. They are not how far the part moves at that speed. An assembly vibration check locks the hinges, so the frequencies come out higher than a real pin joint.
 - The bolt number uses a handbook friction factor. It is not a measured torque test. A locking nut resists turning. It does not create clamping force.

@@ -588,7 +588,7 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
         upper = key.upper()
         if any(part in upper for part in _SECRET_PARTS):
             continue
-        if key in ("AICAD_CONFIG", "AICAD_SETTINGS"):
+        if key in ("AICAD_CONFIG", "AICAD_SETTINGS", "AICAD_PLUGIN_CONSENT", "XDG_CONFIG_HOME"):
             continue
         env[key] = value
     env["AICAD_SANDBOX_CHILD"] = "1"
