@@ -1,0 +1,25 @@
+name: docs
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  allowlist:
+    name: Documentation allowlist
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Reject documents outside the allowlist
+        run: |
+          python -m pip install pytest
+          pytest tests/test_docs_allowlist.py

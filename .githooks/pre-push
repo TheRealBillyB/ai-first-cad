@@ -1,0 +1,6 @@
+#!/bin/sh
+# Optional. Enable with: git config core.hooksPath .githooks
+set -eu
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+exec python3 tools/check_docs.py

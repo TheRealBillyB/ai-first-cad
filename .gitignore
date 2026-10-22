@@ -227,3 +227,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local planning. Do not commit business or personal notes.
+/private/
+/notes/

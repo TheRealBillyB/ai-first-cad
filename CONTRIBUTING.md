@@ -2,6 +2,16 @@
 
 aicad is AGPL-3.0-or-later. Improvements stay shared. There is no paid license and no dual license. You keep the copyright in what you contribute. There is no contributor license agreement and no relicensing grant.
 
+Business documents and personal planning notes do not belong in this repository. That includes notes written by people and notes written by AI agents. Keep them on your own computer under `private/` or `notes/`. Those folders are gitignored. This repository accepts software documentation and the roadmap only. `tools/check_docs.py` enforces that list.
+
+To run the same check on your machine before a commit or a push, once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+That setting is optional. `.github/workflows/docs.yml` still runs the check on every push and pull request.
+
 ## How to contribute
 
 1. Open an issue or a pull request against `main`.
