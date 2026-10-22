@@ -119,6 +119,15 @@ def test_plate_and_tube_wall_thickness(tmp_path):
     assert tube.passed is True
 
 
+def test_a_wall_the_same_size_as_the_first_probe_is_measured(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_script("shell", "part = Box(10, 10, 10) - Box(9.98, 9.98, 9.98)\n")
+    wall = document.check_wall_thickness("shell", min_wall_mm=1.0, samples=4)
+    assert wall.estimated_min_mm == pytest.approx(0.01, abs=0.002)
+    assert wall.passed is False
+    assert wall.method == "ray+section"
+
+
 def test_interference_and_clearance(tmp_path):
     document = Document(tmp_path)
     document.create_part_from_script("left", "part = Box(10, 10, 10)\n")

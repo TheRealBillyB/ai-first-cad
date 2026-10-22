@@ -141,7 +141,7 @@ class WallReport:
             what=f"Minimum wall thickness is a rough estimate from {self.method} samples, not a measured caliper reading.",
             limits=[
                 "A thin spot that no ray and no slice crosses is missed.",
-                "A wall thinner than the 0.01 mm probe is an upper bound, and it cannot pass a minimum.",
+                "A wall thinner than the smallest probe, 0.0004 mm, is an upper bound and cannot pass a minimum.",
                 "A pass is evidence to read with the picture, not a guarantee the part will print.",
             ],
         )

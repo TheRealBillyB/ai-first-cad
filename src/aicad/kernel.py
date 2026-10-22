@@ -40,6 +40,7 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
 from OCP.GeomAbs import GeomAbs_SurfaceType
+from OCP.BRepClass import BRepClass_FaceClassifier
 from OCP.BRepClass3d import BRepClass3d_SolidClassifier
 from OCP.TopAbs import TopAbs_IN, TopAbs_ON
 from OCP.TopLoc import TopLoc_Location
@@ -563,7 +564,11 @@ def import_step_file(path: Path) -> Shape:
             imported = import_step(path)
     except Exception as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
-    return Shape(_require_solid(imported))
+    try:
+        solid = _require_solid(imported)
+    except GeometryError as exc:
+        raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
+    return Shape(solid)
 
 
 def tessellate(shape: Shape) -> TriangleMesh:
@@ -878,11 +883,13 @@ def _inward_probe(impl, point, normal):
     """
     normal = normal.normalized()
     for probe in _WALL_PROBES_MM:
-        into_negative = impl.is_inside(point - normal * probe) and not impl.is_inside(
-            point + normal * probe
+        # is_inside is true on the face itself. A step that only reaches the
+        # opposite face has not entered the wall, so a thinner step is tried.
+        into_negative = _strictly_inside(impl, point - normal * probe) and not _strictly_inside(
+            impl, point + normal * probe
         )
-        into_positive = impl.is_inside(point + normal * probe) and not impl.is_inside(
-            point - normal * probe
+        into_positive = _strictly_inside(impl, point + normal * probe) and not _strictly_inside(
+            impl, point - normal * probe
         )
         if into_negative:
             return -normal, probe
@@ -1415,6 +1422,17 @@ def _strictly_inside(impl, point) -> bool:
     return classifier.State() == TopAbs_IN
 
 
+def _strictly_on_face(face, point) -> bool:
+    """True in the interior of a section face. A point on an edge is not inside."""
+    classifier = BRepClass_FaceClassifier()
+    classifier.Perform(
+        face.wrapped,
+        gp_Pnt(float(point.X), float(point.Y), float(point.Z)),
+        1e-7,
+    )
+    return classifier.State() == TopAbs_IN
+
+
 def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | None, bool]:
     """Minimum width between roughly parallel edges of a planar section."""
     from build123d import Axis, Vector
@@ -1447,11 +1465,16 @@ def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | Non
                 inward = None
                 probe = None
                 for candidate in _WALL_PROBES_MM:
-                    if face.is_inside(point + side * candidate) and not face.is_inside(point - side * candidate):
+                    # A step that only reaches the opposite edge is not inside the section.
+                    if _strictly_on_face(face, point + side * candidate) and not _strictly_on_face(
+                        face, point - side * candidate
+                    ):
                         inward = side
                         probe = candidate
                         break
-                    if face.is_inside(point - side * candidate) and not face.is_inside(point + side * candidate):
+                    if _strictly_on_face(face, point - side * candidate) and not _strictly_on_face(
+                        face, point + side * candidate
+                    ):
                         inward = -side
                         probe = candidate
                         break

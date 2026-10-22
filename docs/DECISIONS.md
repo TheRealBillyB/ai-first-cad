@@ -8,6 +8,8 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A thin region is coarse when its elements are thinner than a third of the mesh size | Aspect ratio alone still passed a 0.05 mm foil at 0.4 mm and a 0.3 mm rib. The 2.4 mm gusset at 1.5 mm stays measurable. |
+| A wall probe that only lands on the opposite face is not used; a smaller step is tried | A step of exactly 0.01 mm sits on the inner face of a 0.01 mm wall, so that wall was reported as unmeasurable. |
 | A STEP path and an assistant export are judged with Windows and POSIX rules, and native stdout goes to `os.devnull` | A drive letter, a UNC path, or a backslash `..` has to be outside the project on every machine, and the descriptor restore has to work where the null device is `nul`. |
 | A mesh with one element through a thin wall, or with very flat elements, cannot pass a strength check | The shell's bounding box looked solid, and a coarse mesh reported a safety factor that was not real. |
 | A wall ray starts 0.01 mm inside the face, and a hit that has left the solid is discarded | A 0.05 mm shell was reported as the far side of the cavity and passed a 1 mm check. |

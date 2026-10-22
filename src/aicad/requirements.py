@@ -276,7 +276,7 @@ _CLAIM = {
         "Wall thickness is a sampled estimate. A pass can miss a thin spot between the samples.",
         [
             "Rays and a few planar slices produce the number.",
-            "A wall thinner than the 0.01 mm probe is an upper bound, and it cannot pass a minimum.",
+            "A wall thinner than the smallest probe, 0.0004 mm, is an upper bound and cannot pass a minimum.",
         ],
     ),
     "min_safety_factor": (

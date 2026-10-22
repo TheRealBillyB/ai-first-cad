@@ -1064,11 +1064,12 @@ def _von_mises(stress: np.ndarray) -> np.ndarray:
 
 
 def _thin_feature_mesh_note(mesh: dict) -> str | None:
-    """Flag one element through a thin wall, or elements that are very flat.
+    """Flag a mesh that does not resolve a thin region.
 
     The bounding box of a hollow shell is the outside of the shell, so a mesh
-    size check against that box never sees the wall. A tet with the inner and
-    outer faces on its boundary spans that wall by itself.
+    size check against that box never sees the wall. A tet's smallest altitude
+    is the thickness of that element. When the thin end of the mesh is much
+    thinner than the element size, that region is one element through.
     """
     points = mesh.get("points")
     elements = mesh.get("elements")
@@ -1082,8 +1083,6 @@ def _thin_feature_mesh_note(mesh: dict) -> str | None:
         axis=1,
     )
     longest = lengths.max(axis=1)
-    shortest = np.maximum(lengths.min(axis=1), 1e-12)
-    edge_ratio = longest / shortest
     volumes = _tet_volumes(pts)
     face_index = ((0, 1, 2), (0, 3, 1), (1, 3, 2), (2, 3, 0))
     areas = []
@@ -1091,60 +1090,32 @@ def _thin_feature_mesh_note(mesh: dict) -> str | None:
         areas.append(0.5 * np.linalg.norm(np.cross(pts[:, b] - pts[:, a], pts[:, c] - pts[:, a]), axis=1))
     area = np.maximum(np.stack(areas, axis=1), 1e-12)
     altitude = np.where(volumes[:, None] > 0, 3.0 * volumes[:, None] / area, 1e9)
-    flatness = longest / np.maximum(altitude.min(axis=1), 1e-12)
+    min_altitude = altitude.min(axis=1)
+    flatness = longest / np.maximum(min_altitude, 1e-12)
 
-    owners: dict[tuple[int, int, int], int] = {}
-    face_normal: dict[tuple[int, int, int], np.ndarray] = {}
-    for index, tet in enumerate(corners):
-        for a, b, c in face_index:
-            key = tuple(sorted((int(tet[a]), int(tet[b]), int(tet[c]))))
-            if key in owners:
-                owners[key] = -1
-                continue
-            owners[key] = index
-            pa, pb, pc = pts[index, a], pts[index, b], pts[index, c]
-            normal = np.cross(pb - pa, pc - pa)
-            norm = float(np.linalg.norm(normal))
-            face_normal[key] = normal / norm if norm >= 1e-12 else None
-    spanning: list[int] = []
-    by_tet: dict[int, list[np.ndarray]] = {}
-    for key, owner in owners.items():
-        normal = face_normal.get(key)
-        if owner < 0 or normal is None:
-            continue
-        by_tet.setdefault(owner, []).append(normal)
-    for index, normals in by_tet.items():
-        if len(normals) < 2:
-            continue
-        if any(
-            float(np.dot(normals[i], normals[j])) < -0.7
-            for i in range(len(normals))
-            for j in range(i + 1, len(normals))
-        ):
-            spanning.append(index)
-    if not spanning:
-        worst = float(np.percentile(flatness, 95))
-        if worst > 25:
+    # The 5th percentile is a region, not one short tet at a hole. On the
+    # motor-mount mesh at 1.5 mm that percentile is about 0.7 mm, above
+    # 1.5/3, so the 2.4 mm gusset still passes. A 0.05 mm foil and a 0.3 mm
+    # rib sit under a third of the mesh size asked for.
+    used = float(mesh.get("mesh_size_mm") or 0.0)
+    if used > 0:
+        thin = float(np.percentile(min_altitude, 5))
+        if thin < used / 3.0:
             return (
-                f"Coarse mesh for a thin feature: the 95th percentile element aspect ratio is {worst:.0f} "
-                "(longest edge over the through-thickness altitude). "
+                f"Coarse mesh for a thin feature: the thinner elements are {thin:.3g} mm through, "
+                f"less than a third of the {used:g} mm mesh size. "
                 "There are not enough elements through the thickness. "
                 "A safety factor from this mesh is not a pass."
             )
-        return None
-    span = np.array(spanning, dtype=np.int32)
-    span_flat = flatness[span]
-    span_edge = edge_ratio[span]
-    flat_count = int(np.sum((span_flat > 6.0) | (span_edge > 8.0)))
-    worst = float(max(float(span_flat.max()), float(span_edge.max())))
-    if flat_count < 4 and worst < 20:
-        return None
-    return (
-        f"Coarse mesh for a thin feature: {flat_count} elements run through the wall in a single layer, "
-        f"with aspect ratio up to {worst:.0f} (longest edge over the through-thickness altitude). "
-        "There are not enough elements through the thickness. "
-        "A safety factor from this mesh is not a pass."
-    )
+    worst = float(np.percentile(flatness, 95))
+    if worst > 25:
+        return (
+            f"Coarse mesh for a thin feature: the 95th percentile element aspect ratio is {worst:.0f} "
+            "(longest edge over the through-thickness altitude). "
+            "There are not enough elements through the thickness. "
+            "A safety factor from this mesh is not a pass."
+        )
+    return None
 
 
 def _review(mesh, vm, strength: float, target: float, warnings: list[str], safety: float) -> dict:
