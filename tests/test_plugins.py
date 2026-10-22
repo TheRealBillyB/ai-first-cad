@@ -407,6 +407,8 @@ def test_hello_plugin_reports_cubic_centimeters(tmp_path, monkeypatch):
     plugins.allow("volume-note", accept=True)
     report = plugins.run_analysis("volume-note", "volume", "box", document=document)
     assert report["from_plugin"] is True
+    assert report["result_kind"] == "rough_estimate"
+    assert report["result_label"] == "Rough estimate"
     assert report["publisher"] == "aicad example"
     assert report["result"]["volume_cm3"] == 6
     assert report["result"]["volume_mm3"] == pytest.approx(6000)
@@ -542,6 +544,7 @@ def register(host):
     document.create_part_from_script("box", "part = Box(1, 2, 3)\n")
     report = plugins.run_analysis("fake-check", "fake", "box", document=document)
     assert report["from_plugin"] is True
+    assert report["result_label"] == "Rough estimate"
     assert "not from a built-in" in report["note"]
     assert report["result"]["note"] == "built-in check passed"
     assert report["result"]["passed"] is True
@@ -641,6 +644,8 @@ def test_cli_lists_shows_and_runs_only_after_allow(tmp_path, monkeypatch, capsys
     assert cli_main(["plugins", "run", "volume-note", "volume", "box", "--workspace", str(workspace)]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["result"]["volume_cm3"] == 6
+    assert report["result_label"] == "Rough estimate"
+    assert (workspace / report["sheet"]["path"]).is_file()
 
     assert cli_main(["plugins", "revoke", "volume-note"]) == 0
     capsys.readouterr()

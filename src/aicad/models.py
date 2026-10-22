@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from aicad.honesty import ROUGH_ESTIMATE, VERIFIED_CHECK, finish, slim, weakest
+
 
 def round_mm(value: float, digits: int = 6) -> float:
     """Round a measured length, area, or volume."""
@@ -56,19 +58,34 @@ class Measurement:
     bounding_box: BoundingBox
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "units": self.units,
-            "valid": self.valid,
-            "watertight": self.watertight,
-            "solid_count": self.solid_count,
-            "face_count": self.face_count,
-            "edge_count": self.edge_count,
-            "vertex_count": self.vertex_count,
-            "volume_mm3": self.volume_mm3,
-            "area_mm2": self.area_mm2,
-            "center_of_mass_mm": self.center_of_mass_mm.to_dict(),
-            "bounding_box": self.bounding_box.to_dict(),
-        }
+        return finish(
+            {
+                "units": self.units,
+                "valid": self.valid,
+                "watertight": self.watertight,
+                "solid_count": self.solid_count,
+                "face_count": self.face_count,
+                "edge_count": self.edge_count,
+                "vertex_count": self.vertex_count,
+                "volume_mm3": self.volume_mm3,
+                "area_mm2": self.area_mm2,
+                "center_of_mass_mm": self.center_of_mass_mm.to_dict(),
+                "bounding_box": self.bounding_box.to_dict(),
+                "assumptions": [
+                    "Units are millimeters.",
+                    "Volume, area, and the center of mass come from the geometry kernel.",
+                    "Watertight means the kernel reports a valid solid whose edges each belong to two faces.",
+                ],
+            },
+            kind=VERIFIED_CHECK,
+            name="Model measurement",
+            what="Volume, area, center of mass, the bounding box, and the watertight check are properties of the CAD model.",
+            limits=[
+                "This is the model, not a part weighed or measured with calipers.",
+                "Mass is not included. Mass is this volume times a handbook density, and that number is a rough estimate.",
+                "The kernel's own tolerance applies.",
+            ],
+        )
 
 
 @dataclass(frozen=True)
@@ -101,21 +118,32 @@ class WallReport:
     section_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "estimated_min_mm": self.estimated_min_mm,
-            "threshold_mm": self.threshold_mm,
-            "passed": self.passed,
-            "sample_count": self.sample_count,
-            "samples_per_edge": self.samples_per_edge,
-            "thinnest_point_mm": None
-            if self.thinnest_point_mm is None
-            else self.thinnest_point_mm.to_dict(),
-            "method": self.method,
-            "ray_estimate_mm": self.ray_estimate_mm,
-            "section_estimate_mm": self.section_estimate_mm,
-            "section_count": self.section_count,
-            "note": self.note,
-        }
+        return finish(
+            {
+                "estimated_min_mm": self.estimated_min_mm,
+                "threshold_mm": self.threshold_mm,
+                "passed": self.passed,
+                "sample_count": self.sample_count,
+                "samples_per_edge": self.samples_per_edge,
+                "thinnest_point_mm": None
+                if self.thinnest_point_mm is None
+                else self.thinnest_point_mm.to_dict(),
+                "method": self.method,
+                "ray_estimate_mm": self.ray_estimate_mm,
+                "section_estimate_mm": self.section_estimate_mm,
+                "section_count": self.section_count,
+                "note": self.note,
+                "assumptions": [self.note],
+            },
+            kind=ROUGH_ESTIMATE,
+            name="Wall thickness",
+            what=f"Minimum wall thickness is a rough estimate from {self.method} samples, not a measured caliper reading.",
+            limits=[
+                "A thin spot that no ray and no slice crosses is missed.",
+                "Anything thinner than about 0.15 mm is below the ray step.",
+                "A pass is evidence to read with the picture, not a guarantee the part will print.",
+            ],
+        )
 
 
 @dataclass(frozen=True)
@@ -132,22 +160,37 @@ class ClearanceReport:
     note: str
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "part_a": self.part_a,
-            "part_b": self.part_b,
-            "intersecting": self.intersecting,
-            "interference_volume_mm3": self.interference_volume_mm3,
-            "min_distance_mm": self.min_distance_mm,
-            "closest_point_a_mm": None
-            if self.closest_point_a_mm is None
-            else self.closest_point_a_mm.to_dict(),
-            "closest_point_b_mm": None
-            if self.closest_point_b_mm is None
-            else self.closest_point_b_mm.to_dict(),
-            "threshold_mm": self.threshold_mm,
-            "passed": self.passed,
-            "note": self.note,
-        }
+        return finish(
+            {
+                "part_a": self.part_a,
+                "part_b": self.part_b,
+                "intersecting": self.intersecting,
+                "interference_volume_mm3": self.interference_volume_mm3,
+                "min_distance_mm": self.min_distance_mm,
+                "closest_point_a_mm": None
+                if self.closest_point_a_mm is None
+                else self.closest_point_a_mm.to_dict(),
+                "closest_point_b_mm": None
+                if self.closest_point_b_mm is None
+                else self.closest_point_b_mm.to_dict(),
+                "threshold_mm": self.threshold_mm,
+                "passed": self.passed,
+                "note": self.note,
+                "assumptions": [
+                    "The interference volume is the boolean intersection of the two modeled solids.",
+                    "The gap is the kernel distance between the surfaces. It is zero when the solids overlap.",
+                ],
+            },
+            kind=VERIFIED_CHECK,
+            name="Clearance",
+            what="The gap or the overlap is a verified check of these two CAD solids.",
+            limits=[
+                "This is the model, not a manufactured clearance.",
+                "The overlap volume is not a penetration depth.",
+                "Catalog screws are simple shanks, without threads.",
+                "The kernel's own tolerance applies.",
+            ],
+        )
 
 
 @dataclass(frozen=True)
@@ -224,13 +267,31 @@ class FeatureReport:
     note: str
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "tracked": self.tracked,
-            "steps": [step.to_dict() for step in self.steps],
-            "redundant_features": list(self.redundant_features),
-            "warning": self.warning,
-            "note": self.note,
-        }
+        if self.tracked:
+            what = "Each recorded boolean step reports how much material was new, already inside, or actually removed."
+            limits = [
+                "Only steps recorded with feature.add or feature.cut are in this list.",
+                "The volumes are the model before and after that step, not a stress result.",
+            ]
+        else:
+            what = "This part has no recorded boolean steps, so there is no contribution number."
+            limits = [
+                "A plain script is not a failed check. Call feature.add and feature.cut to record steps.",
+            ]
+        return finish(
+            {
+                "tracked": self.tracked,
+                "steps": [step.to_dict() for step in self.steps],
+                "redundant_features": list(self.redundant_features),
+                "warning": self.warning,
+                "note": self.note,
+                "assumptions": [self.note],
+            },
+            kind=VERIFIED_CHECK,
+            name="Feature contribution",
+            what=what,
+            limits=limits,
+        )
 
 
 def untracked_features() -> FeatureReport:
@@ -277,20 +338,52 @@ class SectionReport:
     note: str
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "area_mm2": self.area_mm2,
-            "face_count": self.face_count,
-            "plane_origin_mm": self.plane_origin_mm.to_dict(),
-            "plane_normal": self.plane_normal.to_dict(),
-            "plane_x_mm": self.plane_x_mm.to_dict(),
-            "plane_y_mm": self.plane_y_mm.to_dict(),
-            "width_mm": self.width_mm,
-            "height_mm": self.height_mm,
-            "min_thickness_mm": self.min_thickness_mm,
-            "loops": [loop.to_dict() for loop in self.loops],
-            "view": None if self.view is None else self.view.to_dict(),
-            "note": self.note,
+        area = {
+            "result_name": "Cut area",
+            "result_kind": VERIFIED_CHECK,
+            "result_label": "Verified check",
+            "result_what": "The cut area and the outline size are the kernel's section of this plane.",
+            "limits": ["The cut shows only this plane. Material between planes is not in the picture."],
+            "assumptions": ["Loop coordinates are millimeters in the cutting plane."],
         }
+        thickness = {
+            "result_name": "Section thickness",
+            "result_kind": ROUGH_ESTIMATE,
+            "result_label": "Rough estimate",
+            "result_what": "The minimum thickness is the narrowest width between roughly parallel edges in this one plane.",
+            "limits": [
+                "A neck that those edges do not catch is missed.",
+                "A null thickness means no parallel pair was measured, not that the part is solid through.",
+            ],
+            "assumptions": [self.note],
+        }
+        sampled = self.face_count > 0
+        return finish(
+            {
+                "area_mm2": self.area_mm2,
+                "face_count": self.face_count,
+                "plane_origin_mm": self.plane_origin_mm.to_dict(),
+                "plane_normal": self.plane_normal.to_dict(),
+                "plane_x_mm": self.plane_x_mm.to_dict(),
+                "plane_y_mm": self.plane_y_mm.to_dict(),
+                "width_mm": self.width_mm,
+                "height_mm": self.height_mm,
+                "min_thickness_mm": self.min_thickness_mm,
+                "loops": [loop.to_dict() for loop in self.loops],
+                "view": None if self.view is None else self.view.to_dict(),
+                "note": self.note,
+                "assumptions": [self.note],
+            },
+            kind=ROUGH_ESTIMATE if sampled else VERIFIED_CHECK,
+            name="Section",
+            what=(
+                "The cut area is a verified check of this plane. The minimum thickness is a rough estimate from parallel edges."
+                if sampled
+                else "The plane misses the part. The area of zero is a verified check of that miss."
+            ),
+            limits=area["limits"] if not sampled else area["limits"] + thickness["limits"],
+            results=[area, thickness] if sampled else [area],
+        )
 
 
 @dataclass(frozen=True)
@@ -309,19 +402,31 @@ class SketchReport:
     view: RenderedView | None = None
 
     def to_dict(self) -> dict[str, object]:
-        payload = {
-            "name": self.name,
-            "status": self.status,
-            "dof": self.dof,
-            "solver": self.solver,
-            "free": self.free,
-            "conflicts": self.conflicts,
-            "dimensions": self.dimensions,
-            "geometry": self.geometry,
-            "note": self.note,
-            "view": None if self.view is None else self.view.to_dict(),
-        }
-        return payload
+        return finish(
+            {
+                "name": self.name,
+                "status": self.status,
+                "dof": self.dof,
+                "solver": self.solver,
+                "free": self.free,
+                "conflicts": self.conflicts,
+                "dimensions": self.dimensions,
+                "geometry": self.geometry,
+                "note": self.note,
+                "view": None if self.view is None else self.view.to_dict(),
+                "assumptions": [
+                    "SolveSpace reports the degrees of freedom and the constraints that conflict.",
+                    self.note,
+                ],
+            },
+            kind=VERIFIED_CHECK,
+            name="Sketch",
+            what="Fully constrained, under-constrained, or over-constrained is a verified check of this sketch.",
+            limits=[
+                "A tolerance on a dimension is stored and printed. It does not move the geometry.",
+                "The sketch is on the XY plane. The initial guess has to be near a shape that satisfies the constraints.",
+            ],
+        )
 
 
 @dataclass(frozen=True)
@@ -352,27 +457,57 @@ class FeaReport:
         def _point(value: Vec3 | None) -> dict[str, float] | None:
             return None if value is None else value.to_dict()
 
-        return {
-            "part": self.part,
-            "status": self.status,
-            "solver": self.solver,
-            "material": self.material,
-            "mesh": self.mesh,
-            "fixes": self.fixes,
-            "loads": self.loads,
-            "max_von_mises_mpa": self.max_von_mises_mpa,
-            "max_von_mises_at_mm": _point(self.max_von_mises_at_mm),
-            "max_displacement_mm": self.max_displacement_mm,
-            "max_displacement_vector_mm": _point(self.max_displacement_vector_mm),
-            "max_displacement_at_mm": _point(self.max_displacement_at_mm),
-            "min_safety_factor": self.min_safety_factor,
-            "min_safety_factor_at_mm": _point(self.min_safety_factor_at_mm),
-            "warnings": self.warnings,
-            "assumptions": self.assumptions,
-            "review": self.review,
-            "views": [view.to_dict() for view in self.views],
-            "note": self.note,
-        }
+        degraded = bool((self.mesh or {}).get("degraded"))
+        if self.status != "solved":
+            what = "No stress was computed. " + self.note
+        elif degraded:
+            what = (
+                "Linear static stress on a simplified or linear mesh. "
+                "The safety factor is a rough estimate and is not a pass."
+            )
+        else:
+            what = (
+                "Linear static stress from a Gmsh mesh and a CalculiX solve. "
+                "A rough estimate of this load on the CAD model, not a certified allowable."
+            )
+        limits = [
+            "No plasticity, contact, buckling, or fatigue.",
+            "A printed material is not given a weaker across-layer strength in the solve.",
+            "A force is shared by the nodes on the selected faces. A bolt load is an axial force, not a thread.",
+            "CalculiX runs as a separate program. It is not linked into aicad.",
+        ]
+        if degraded:
+            limits.insert(
+                0,
+                "A coarse, linear, or defeatured mesh cannot be read as a pass even when the safety factor is high.",
+            )
+        return finish(
+            {
+                "part": self.part,
+                "status": self.status,
+                "solver": self.solver,
+                "material": self.material,
+                "mesh": self.mesh,
+                "fixes": self.fixes,
+                "loads": self.loads,
+                "max_von_mises_mpa": self.max_von_mises_mpa,
+                "max_von_mises_at_mm": _point(self.max_von_mises_at_mm),
+                "max_displacement_mm": self.max_displacement_mm,
+                "max_displacement_vector_mm": _point(self.max_displacement_vector_mm),
+                "max_displacement_at_mm": _point(self.max_displacement_at_mm),
+                "min_safety_factor": self.min_safety_factor,
+                "min_safety_factor_at_mm": _point(self.min_safety_factor_at_mm),
+                "warnings": self.warnings,
+                "assumptions": self.assumptions,
+                "review": self.review,
+                "views": [view.to_dict() for view in self.views],
+                "note": self.note,
+            },
+            kind=ROUGH_ESTIMATE,
+            name="Strength",
+            what=what,
+            limits=limits,
+        )
 
 
 @dataclass(frozen=True)
@@ -385,13 +520,27 @@ class InspectReport:
     sketch: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
+        measurement = self.measurement.to_dict()
+        wall = self.wall.to_dict()
+        features = self.features.to_dict()
+        blocks = [slim(measurement, "Model measurement"), slim(wall, "Wall thickness"), slim(features, "Feature contribution")]
         payload = {
             "part": self.part.to_dict(),
-            "measurement": self.measurement.to_dict(),
-            "wall": self.wall.to_dict(),
-            "features": self.features.to_dict(),
+            "measurement": measurement,
+            "wall": wall,
+            "features": features,
             "views": [view.to_dict() for view in self.views],
+            "assumptions": ["Read the label on the measurement, the wall estimate, and the feature report. They are not the same kind of result."],
         }
         if self.sketch is not None:
             payload["sketch"] = self.sketch
-        return payload
+            if isinstance(self.sketch, dict) and self.sketch.get("result_label"):
+                blocks.append(slim(self.sketch, "Sketch"))
+        return finish(
+            payload,
+            kind=weakest([block.get("result_kind") or "" for block in blocks]),
+            name="Inspect",
+            what="Inspection mixes a verified model check with a rough wall-thickness estimate. Read each label.",
+            limits=["A pass on the wall estimate does not verify the strength, the mass, or the print."],
+            results=blocks,
+        )

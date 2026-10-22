@@ -468,6 +468,8 @@ Views use Z up. The label on each picture says which way the camera is looking (
 
 ## How the checks work
 
+A result is either a **verified check** or a **rough estimate**. A verified check is something the geometry kernel computes on the CAD model: volume, a gap, a collision at a sampled pose, the degrees of freedom of a sketch. A rough estimate samples the solid, meshes it, or multiplies by a handbook number: wall thickness, mass, stress, a frequency, a bolt torque, a print time. A report that mixes the two is labeled by the weaker one. The label, what it means, and the limits travel with the JSON, the Workspace panel, and a blueprint sheet under `renders/sheets`. A mesh that was simplified, or that dropped to linear tetrahedra, cannot be a pass, and a frequency from that mesh is not a clear and not a confirmed resonance. CalculiX is started as the separate `ccx` program. It is not linked into aicad.
+
 **Watertight.** A part is watertight when build123d reports it valid and manifold: every edge belongs to exactly two faces, the solid has volume, and the OpenCascade shape check passes. That is the right meaning for a single closed body. `solid_count` tells you when the result is more than one body.
 
 **Wall thickness.** Two estimates are computed. Rays start on a grid on each face and measure the distance to the next roughly parallel face. Sections slice the part at 25%, 50%, and 75% of its extent along X, Y, and Z and measure the width between roughly parallel edges in that plane. The smaller number is the estimate. `method` is `ray`, `section`, or `ray+section` when they agree within 0.05 mm. Both numbers are in the report. A requested `section_part` also reports the minimum width in that one plane, which is how you look inside a boss.

@@ -77,7 +77,7 @@ def volume_cm3(part, options) -> dict:
 
 `part` is a snapshot: `name`, `volume_mm3`, `area_mm2`, `center_mm`, `size_mm`, `valid`, and `watertight`. For an analysis, `step_file` is `None`. `workspace` is the project folder only if you declared `project_files`. The same value is on `host.workspace`, and it is `None` while `register` itself is running.
 
-Return a dict. aicad wraps it and says the report came from the plugin, not from a built-in check. Putting `"passed": true` inside your dict does not turn it into a built-in check.
+Return a dict. aicad wraps it, labels it a rough estimate, and says the report came from the plugin, not from a built-in check. Putting `"passed": true` inside your dict does not turn it into a built-in check.
 
 While `register` runs, the top of the module runs too. Allowing a plugin allows that code, not only the function you named.
 

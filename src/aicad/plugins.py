@@ -452,18 +452,34 @@ def run_analysis(
         raise PluginError(
             f"Analysis {analysis!r} must return a dict. The part was not given a plugin result to store."
         )
-    return {
-        "plugin": loaded.name,
-        "publisher": loaded.publisher,
-        "analysis": analysis,
-        "part": part,
-        "from_plugin": True,
-        "result": dict(result),
-        "note": (
-            f"This report came from plugin {loaded.name!r}, not from a built-in aicad check. "
-            "It does not change the part or any built-in check."
+    from aicad.honesty import ROUGH_ESTIMATE, finish
+
+    note = (
+        f"This report came from plugin {loaded.name!r}, not from a built-in aicad check. "
+        "It does not change the part or any built-in check."
+    )
+    return finish(
+        {
+            "plugin": loaded.name,
+            "publisher": loaded.publisher,
+            "analysis": analysis,
+            "part": part,
+            "from_plugin": True,
+            "result": dict(result),
+            "note": note,
+            "assumptions": [note],
+        },
+        kind=ROUGH_ESTIMATE,
+        name=analysis,
+        what=(
+            "A plugin analysis is a rough estimate. aicad did not compute it, "
+            "and it is not a verified check of the model."
         ),
-    }
+        limits=[
+            "The plugin's own numbers stay under result. aicad does not recompute them.",
+            "Allowing the plugin does not turn this report into a pass from a built-in check.",
+        ],
+    )
 
 
 def insert_part(
@@ -652,15 +668,22 @@ def dispatch_cli(args) -> int:
         document = Document(args.workspace)
         options = _parse_sets(args.sets)
         if command == "run":
-            return _emit(
-                run_analysis(
-                    args.plugin_name,
-                    args.analysis,
-                    args.part,
-                    options,
-                    document=document,
-                )
+            from aicad.honesty import attach_sheet
+
+            report = run_analysis(
+                args.plugin_name,
+                args.analysis,
+                args.part,
+                options,
+                document=document,
             )
+            report = attach_sheet(
+                report,
+                document.workspace / "renders" / "sheets",
+                f"plugin_{args.plugin_name}_{args.analysis}",
+                root=document.workspace,
+            )
+            return _emit(report)
         if command == "insert":
             info = insert_part(
                 args.plugin_name,

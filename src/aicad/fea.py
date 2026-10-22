@@ -291,9 +291,17 @@ def solve_part(
 
     order = 2
     mesh = _mesh_solid(shape, mesh_size, order)
-    if mesh["element_count"] < 80 or mesh_size > smallest / 2.0:
+    for note in mesh.get("mesh_notes") or []:
+        if note not in warnings:
+            warnings.append(note)
+    if mesh.get("degraded"):
         warnings.append(
-            f"Very coarse mesh: target size {mesh_size:g} mm, {mesh['element_count']} elements, "
+            "The mesh was simplified or dropped to linear elements. A safety factor from it is not a pass."
+        )
+    used_size = float(mesh.get("mesh_size_mm") or mesh_size)
+    if mesh["element_count"] < 80 or used_size > smallest / 2.0:
+        warnings.append(
+            f"Very coarse mesh: target size {used_size:g} mm, {mesh['element_count']} elements, "
             f"smallest part dimension {smallest:g} mm. Peak stress from a mesh this coarse is a hint, not a measurement."
         )
     fixed_nodes = _nodes_for(mesh, [face["index"] for item in fixes for face in item["faces"]])
@@ -342,6 +350,11 @@ def solve_part(
             "Linear tets are too stiff: expect the displacement to be low and the stress to be rough."
         )
         mesh["order"] = 1
+        mesh["degraded"] = True
+        mesh.setdefault("simplifications", []).append(
+            "Quadratic tetrahedra had a nonpositive Jacobian. Linear tetrahedra were solved instead. "
+            "Linear elements are too stiff, so this stress is not a pass."
+        )
     if solve_warning:
         warnings.append(solve_warning)
     if not solved:
@@ -478,35 +491,273 @@ def _allow_gmsh_from_worker() -> None:
 
 
 def _mesh_solid(shape: kernel.Shape, mesh_size: float, order: int) -> dict:
-    import gmsh
+    """Mesh the solid. A Gmsh failure is retried, not raised raw."""
+    prepared, mesh = _mesh_ladder(shape, mesh_size, order)
+    if mesh.get("points") is None:
+        return mesh
+    catalog = kernel.describe_faces(shape)
+    surfaces = mesh["surface_of_face"]["surfaces"]
+    _assign_surface_faces(shape, catalog, surfaces, mesh["points"], float(mesh["mesh_size_mm"]))
+    mesh["surface_of_face"]["catalog"] = catalog
+    mesh["surface_of_face"]["shape"] = shape
+    if prepared is not shape:
+        from aicad.mesh import face_count
+
+        if face_count(prepared) != len(catalog):
+            mesh.setdefault("mesh_notes", []).append(
+                "The simplified solid does not have the same faces as the model. "
+                "A load or a support picked on the original part may miss."
+            )
+    return mesh
+
+
+def _mesh_ladder(shape: kernel.Shape, mesh_size: float, order: int):
+    """Try the requested mesh, then safer settings, then a simplified solid.
+
+    The first attempt is the mesh the caller asked for. Later attempts use a
+    different mesher, a finer size, a sewed solid, small-face removal, and
+    finally linear tetrahedra. The notes say which attempt was used.
+    """
+    from aicad.mesh import defeature, face_count, heal, volume_mm3
 
     _allow_gmsh_from_worker()
+    attempts = _mesh_attempts(shape, mesh_size, order)
+    notes: list[str] = []
+    tried: set[tuple] = set()
+    last = "Gmsh did not mesh this solid."
     with _LOCK:
-        with tempfile.TemporaryDirectory() as directory:
-            step_path = Path(directory) / "part.step"
-            kernel.export_step_file(shape, step_path)
-            gmsh.initialize()
+        for attempt in attempts:
+            current = shape
+            prep_notes: list[str] = []
+            geometry_changed = False
             try:
-                gmsh.option.setNumber("General.Terminal", 0)
-                gmsh.model.add("part")
-                gmsh.model.occ.importShapes(str(step_path))
-                gmsh.model.occ.synchronize()
-                gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
-                gmsh.option.setNumber("Mesh.ElementOrder", order)
-                gmsh.option.setNumber("Mesh.Optimize", 1)
+                if attempt["heal"]:
+                    current, heal_note, healed_changed = heal(current, float(attempt["sew_mm"]))
+                    prep_notes.append(heal_note)
+                    geometry_changed = geometry_changed or healed_changed
+                if attempt["defeature"]:
+                    current, drop_note, removed = defeature(current, float(attempt["min_face_mm2"]))
+                    prep_notes.append(drop_note)
+                    geometry_changed = geometry_changed or removed > 0
+            except GeometryError as exc:
+                notes.append(f"{attempt['label']} was not prepared: {exc}")
+                last = str(exc)
+                continue
+            signature = (
+                round(float(attempt["size"]), 4),
+                int(attempt["order"]),
+                round(volume_mm3(current), 3),
+                face_count(current),
+                int(attempt["algorithm"]),
+            )
+            if signature in tried:
+                notes.append(f"Skipped {attempt['label']}: those settings were already tried on this solid.")
+                continue
+            tried.add(signature)
+            try:
+                mesh = _mesh_attempt(
+                    current,
+                    float(attempt["size"]),
+                    int(attempt["order"]),
+                    algorithm=int(attempt["algorithm"]),
+                    optimize=int(attempt["optimize"]),
+                    occ_fix=bool(attempt["occ_fix"]),
+                )
+            except GeometryError as exc:
+                notes.append(f"{attempt['label']} failed: {exc}")
+                last = str(exc)
+                continue
+            except Exception as exc:
+                detail = " ".join(str(exc).split())[:400] or exc.__class__.__name__
+                notes.append(f"{attempt['label']} failed: {detail}")
+                last = detail
+                continue
+            simplifications: list[str] = []
+            if geometry_changed:
+                simplifications.extend(prep_notes)
+            if int(mesh["order"]) < order or int(attempt["order"]) < order:
+                simplifications.append(
+                    "Linear tetrahedra were used. They are too stiff: displacement comes out low and a frequency comes out high."
+                )
+            degraded = bool(simplifications)
+            success = attempt["success"]
+            if attempt["defeature"] and not any(str(line).startswith("Removed ") for line in prep_notes):
+                success = "No face was small enough to remove. The mesh used the prepared solid."
+            mesh_notes = list(notes)
+            if prep_notes and not geometry_changed:
+                mesh_notes.extend(prep_notes)
+            if success:
+                mesh_notes.append(success)
+            mesh["mesh_notes"] = [line for line in mesh_notes if line]
+            mesh["simplifications"] = simplifications
+            mesh["degraded"] = degraded
+            mesh["requested_size_mm"] = mesh_size
+            mesh["requested_order"] = order
+            return current, mesh
+    detail = " ".join(notes[-6:])
+    raise GeometryError(
+        "Gmsh could not mesh this solid after safer settings and a simplified shape. " + (detail or last)
+    )
+
+
+def _mesh_attempts(shape: kernel.Shape, mesh_size: float, order: int) -> list[dict]:
+    box = shape.impl.bounding_box().size
+    diagonal = math.sqrt(float(box.X) ** 2 + float(box.Y) ** 2 + float(box.Z) ** 2)
+    finest = max(0.4, min(mesh_size / 4.0, diagonal / 25.0 if diagonal else mesh_size))
+    sizes = [mesh_size]
+    half = mesh_size / 2.0
+    if half >= finest and half < mesh_size - 1e-6:
+        sizes.append(half)
+    quarter = mesh_size / 4.0
+    if quarter > finest and quarter < sizes[-1] - 1e-6:
+        sizes.append(quarter)
+    if sizes[-1] > finest * 1.15:
+        sizes.append(finest)
+    fine = sizes[-1]
+    sew = 0.05
+    min_face = min(1.0, max(0.02, mesh_size * mesh_size * 0.02))
+    attempts = [
+        {
+            "label": "requested mesh",
+            "size": mesh_size,
+            "order": order,
+            "algorithm": 1,
+            "optimize": 1,
+            "occ_fix": False,
+            "heal": False,
+            "defeature": False,
+            "sew_mm": sew,
+            "min_face_mm2": min_face,
+            "success": "",
+        }
+    ]
+    if order >= 1:
+        attempts.append(
+            {
+                "label": "frontal mesher",
+                "size": mesh_size,
+                "order": order,
+                "algorithm": 4,
+                "optimize": 0,
+                "occ_fix": True,
+                "heal": False,
+                "defeature": False,
+                "sew_mm": sew,
+                "min_face_mm2": min_face,
+                "success": (
+                    "Gmsh's first mesh failed. The frontal mesher was used on the same solid, "
+                    "with optimization off and OpenCascade's small-edge repair on."
+                ),
+            }
+        )
+    for size in sizes[1:]:
+        attempts.append(
+            {
+                "label": f"finer mesh at {size:.3g} mm",
+                "size": size,
+                "order": order,
+                "algorithm": 1,
+                "optimize": 0,
+                "occ_fix": True,
+                "heal": False,
+                "defeature": False,
+                "sew_mm": sew,
+                "min_face_mm2": min_face,
+                "success": (
+                    f"Gmsh failed at {mesh_size:g} mm. The same solid was meshed at {size:.3g} mm "
+                    "so a thin wall could be split."
+                ),
+            }
+        )
+    attempts.append(
+        {
+            "label": "healed solid",
+            "size": fine,
+            "order": order,
+            "algorithm": 1,
+            "optimize": 0,
+            "occ_fix": True,
+            "heal": True,
+            "defeature": False,
+            "sew_mm": sew,
+            "min_face_mm2": min_face,
+            "success": "The solid was sewed and fixed, then meshed.",
+        }
+    )
+    attempts.append(
+        {
+            "label": "defeatured solid",
+            "size": fine,
+            "order": order,
+            "algorithm": 4,
+            "optimize": 0,
+            "occ_fix": True,
+            "heal": True,
+            "defeature": True,
+            "sew_mm": sew,
+            "min_face_mm2": min_face,
+            "success": "Small faces were removed so the solid could mesh. The report lists what was removed.",
+        }
+    )
+    if order != 1:
+        attempts.append(
+            {
+                "label": "linear tetrahedra",
+                "size": fine,
+                "order": 1,
+                "algorithm": 1,
+                "optimize": 0,
+                "occ_fix": True,
+                "heal": True,
+                "defeature": True,
+                "sew_mm": sew,
+                "min_face_mm2": min_face,
+                "success": "Quadratic tetrahedra would not mesh. Linear tetrahedra were used.",
+            }
+        )
+    return attempts
+
+
+def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorithm: int, optimize: int, occ_fix: bool) -> dict:
+    import gmsh
+
+    with tempfile.TemporaryDirectory() as directory:
+        step_path = Path(directory) / "part.step"
+        kernel.export_step_file(shape, step_path)
+        gmsh.initialize()
+        try:
+            _gmsh_option(gmsh, "General.Terminal", 0)
+            _gmsh_option(gmsh, "General.Verbosity", 0)
+            gmsh.model.add("part")
+            gmsh.model.occ.importShapes(str(step_path))
+            gmsh.model.occ.synchronize()
+            gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
+            _gmsh_option(gmsh, "Mesh.ElementOrder", order)
+            _gmsh_option(gmsh, "Mesh.Optimize", optimize)
+            _gmsh_option(gmsh, "Mesh.Algorithm3D", algorithm)
+            if occ_fix:
+                for name in (
+                    "Geometry.OCCFixDegenerated",
+                    "Geometry.OCCSewFaces",
+                    "Geometry.OCCFixSmallEdges",
+                    "Geometry.OCCFixSmallFaces",
+                ):
+                    _gmsh_option(gmsh, name, 1)
+            try:
                 gmsh.model.mesh.generate(3)
-                surfaces = _surface_centroids(gmsh)
-                points, elements, gmsh_order, tag_to_index = _volume_elements(gmsh)
-            finally:
+            except Exception as exc:
+                raise GeometryError(_gmsh_failure(exc)) from exc
+            surfaces = _surface_centroids(gmsh)
+            points, elements, gmsh_order, tag_to_index = _volume_elements(gmsh)
+        finally:
+            try:
                 gmsh.finalize()
+            except Exception:
+                pass
     if len(elements) == 0:
         raise GeometryError("Gmsh produced no volume elements. The solid may be too thin for this mesh size.")
     for surface in surfaces:
-        surface["point_indices"] = {
-            tag_to_index[tag] for tag in surface["nodes"] if tag in tag_to_index
-        }
-    catalog = kernel.describe_faces(shape)
-    _assign_surface_faces(shape, catalog, surfaces, points, mesh_size)
+        surface["point_indices"] = {tag_to_index[tag] for tag in surface["nodes"] if tag in tag_to_index}
     surface_triangles, surface_nodes = _boundary_triangles(elements, gmsh_order)
     return {
         "points": points,
@@ -514,10 +765,24 @@ def _mesh_solid(shape: kernel.Shape, mesh_size: float, order: int) -> dict:
         "order": gmsh_order,
         "element_count": len(elements),
         "node_count": len(points),
-        "surface_of_face": {"surfaces": surfaces, "catalog": catalog, "shape": shape},
+        "surface_of_face": {"surfaces": surfaces, "catalog": None, "shape": shape},
         "surface": (surface_triangles, surface_nodes),
         "mesh_size_mm": mesh_size,
     }
+
+
+def _gmsh_option(gmsh, name: str, value: float) -> None:
+    try:
+        gmsh.option.setNumber(name, value)
+    except Exception:
+        return
+
+
+def _gmsh_failure(exc: Exception) -> str:
+    text = " ".join(str(exc).split())
+    if not text:
+        text = exc.__class__.__name__
+    return text[:500]
 
 
 def _surface_centroids(gmsh) -> list[dict]:
@@ -658,6 +923,7 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
                 lines.append(f"{base}, 3, {fz:.8g}")
         lines += ["*NODE FILE", "U", "*EL FILE", "S", "*END STEP"]
         (path / "job.inp").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # ccx is GPL-2.0-only. It stays a separate process and is not linked.
         completed = subprocess.run(
             ["ccx", "-i", "job"],
             cwd=directory,
@@ -803,7 +1069,10 @@ def _review(mesh, vm, strength: float, target: float, warnings: list[str], safet
     total = float(volumes.sum())
     allowable = strength / target
     peak = float(vm.max()) if len(vm) else 0.0
-    coarse = any("coarse mesh" in item.lower() or "linear tetrahedra" in item.lower() for item in warnings)
+    coarse = bool(mesh.get("degraded")) or any(
+        "coarse mesh" in item.lower() or "linear tetrahedra" in item.lower() or "simplified" in item.lower()
+        for item in warnings
+    )
     if safety >= target and not coarse:
         status = "pass"
     elif safety >= target and coarse:
@@ -844,7 +1113,10 @@ def _review(mesh, vm, strength: float, target: float, warnings: list[str], safet
             "candidates for removed material only after the hot spot is fixed."
         )
     elif status == "inconclusive":
-        quiet = "The safety factor clears the target, but the mesh is coarse or linear, so this is not a pass."
+        quiet = (
+            "The safety factor clears the target, but the mesh is coarse, linear, or simplified, "
+            "so this is not a pass."
+        )
     else:
         quiet = "The hot spot is inside the target safety factor. Quiet regions could lose material."
     return {
@@ -942,6 +1214,12 @@ def _assumptions(material, mesh, fixes, loads, target, mesh_size) -> list[str]:
     if loads:
         described = ", ".join(f"{item['name']} ({item['kind']})" for item in loads)
         lines.append(f"Loads: {described}.")
+    for note in mesh.get("simplifications") or []:
+        lines.append(note)
+    for note in mesh.get("mesh_notes") or []:
+        if note not in lines:
+            lines.append(note)
+    lines.append("CalculiX is run as a separate program. It is not linked into aicad.")
     return lines
 
 
@@ -1007,12 +1285,17 @@ def _public_material(material: dict) -> dict[str, object]:
 
 def _public_mesh(mesh: dict, mesh_size: float) -> dict[str, object]:
     order = mesh.get("order")
+    used = mesh.get("mesh_size_mm", mesh_size)
     return {
-        "size_mm": mesh_size,
+        "size_mm": used,
+        "requested_size_mm": mesh.get("requested_size_mm", mesh_size),
         "elements": int(mesh.get("element_count", 0)),
         "nodes": int(mesh.get("node_count", 0)),
         "order": order,
         "kind": "quadratic tetrahedra" if order == 2 else "linear tetrahedra" if order == 1 else None,
+        "degraded": bool(mesh.get("degraded")),
+        "notes": list(mesh.get("mesh_notes") or []),
+        "simplifications": list(mesh.get("simplifications") or []),
     }
 
 
