@@ -13,10 +13,25 @@
     }[ch]));
   }
 
+  // The workspace page that requires a session puts it in this meta tag.
+  // With no tag, this page sends no token. An empty header is refused once
+  // that server is the one answering.
+  function sessionToken() {
+    const meta = document.querySelector('meta[name="aicad-token"]');
+    return meta ? meta.getAttribute("content") || "" : "";
+  }
+
+  function sessionHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    const token = sessionToken();
+    if (token) headers["X-Aicad-Token"] = token;
+    return headers;
+  }
+
   async function planCommand(name, args) {
     const response = await fetch("/api/command", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ name, arguments: args || {}, source: "ui" }),
     });
     const body = await response.json();
@@ -25,7 +40,9 @@
   }
 
   function fileUrl(path) {
-    return "/api/file?path=" + encodeURIComponent(path);
+    const token = sessionToken();
+    const suffix = token ? "&token=" + encodeURIComponent(token) : "";
+    return "/api/file?path=" + encodeURIComponent(path) + suffix;
   }
 
   function page() {
@@ -102,7 +119,7 @@
   }
 
   async function refreshSummaries(force) {
-    const response = await fetch("/api/state");
+    const response = await fetch("/api/state", { headers: sessionHeaders() });
     const body = await response.json();
     if (!body.ok) throw new Error(body.error || "Could not read the project.");
     const summaries = body.result.plans || [];
