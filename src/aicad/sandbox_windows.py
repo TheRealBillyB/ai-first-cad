@@ -419,6 +419,7 @@ def _create_job(cpu_seconds: int, memory_bytes: int) -> wintypes.HANDLE:
     if not job:
         raise OSError(_win_error("Could not create a Job Object"))
     info = _JobExtendedLimit()
+    # Breakaway is not set, so a child cannot leave this job.
     info.BasicLimitInformation.LimitFlags = (
         _JOB_OBJECT_LIMIT_PROCESS_TIME
         | _JOB_OBJECT_LIMIT_ACTIVE_PROCESS
@@ -679,6 +680,10 @@ def spawn(
             mechanism,
         )
     finally:
+        # Terminate the job on the way out, not only on the wall-clock timeout,
+        # so a child the script started does not keep running after the tool returns.
+        if job is not None:
+            _kernel32().TerminateJobObject(job, 1)
         if process is not None:
             _kernel32().CloseHandle(process.hThread)
             _kernel32().CloseHandle(process.hProcess)

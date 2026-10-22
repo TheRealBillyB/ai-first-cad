@@ -2,7 +2,9 @@
 
 ``sandbox-exec`` applies a Seatbelt profile: the script may read the system
 locations Python needs, and it may read and write only the project folder.
-The network is denied. CPU time and address space come from ``setrlimit``.
+The network is denied. CPU time comes from ``setrlimit``. The address-space
+cap is not applied: macOS maps a system library cache larger than that cap
+into every process, and setting the cap stops the script before it runs.
 Apple has deprecated ``sandbox-exec``. It is still the practical per-process
 profile that does not need a container or an extra install. If it is missing,
 or the limits cannot be set, the script is not run.
@@ -57,6 +59,9 @@ def build_profile(read_paths: Sequence[str], write_paths: Sequence[str], *, netw
         "(allow mach-lookup)",
         "(allow ipc-posix-shm*)",
         "(allow system-socket)",
+        "(allow mach-register)",
+        "(allow dynamic-code-generation)",
+        "(allow file-read-data file-write-data file-ioctl (vnode-type PIPE) (vnode-type SOCKET))",
         "(allow file-read-metadata (subpath \"/\"))",
         "(allow file-ioctl (literal \"/dev/null\") (literal \"/dev/zero\") "
         "(literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/dev/dtracehelper\"))",
@@ -87,7 +92,6 @@ def apply_limits(*, cpu_seconds: int, memory_bytes: int) -> None:
 
     try:
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
-        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
     except (OSError, ValueError) as exc:
         os.write(2, f"Could not set CPU or memory limits: {exc}\n".encode())
         os._exit(127)
@@ -116,13 +120,12 @@ def command_prefix(profile_path: str) -> list[str]:
 
 
 def identity_failures(cpu_seconds: int, memory_bytes: int) -> list[str]:
+    """CPU limit only. ``memory_bytes`` is the cap other systems apply; macOS does not set it."""
+    _ = memory_bytes
     failures = []
     _cpu_soft, cpu_hard = resource.getrlimit(resource.RLIMIT_CPU)
     if cpu_hard == resource.RLIM_INFINITY or cpu_hard > cpu_seconds:
         failures.append("the CPU time limit is not in effect")
-    _as_soft, as_hard = resource.getrlimit(resource.RLIMIT_AS)
-    if as_hard == resource.RLIM_INFINITY or as_hard > memory_bytes:
-        failures.append("the memory limit is not in effect")
     return failures
 
 

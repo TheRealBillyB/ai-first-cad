@@ -241,6 +241,14 @@ def test_cpu_or_memory_limit_stops_the_script(tmp_path, config_home, monkeypatch
         run_part_script("while True:\n    pass\n", tmp_path)
 
 
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason=(
+        "macOS maps a system library cache larger than the memory cap into every "
+        "process, so the address-space limit is not applied. CPU time and the "
+        "wall clock still stop a script."
+    ),
+)
 def test_memory_limit_stops_a_huge_allocation(tmp_path, config_home, monkeypatch):
     monkeypatch.setenv("AICAD_SCRIPT_MEMORY_MB", "256")
     monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "60")

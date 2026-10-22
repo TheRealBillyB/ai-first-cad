@@ -8,6 +8,12 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A failed design script keeps the one-shot network grant | The grant is spent only when that script finishes without an error. |
+| Linux does not hide another process's `/proc` command line | Remounting `/proc` from the sandbox is refused, and Python still needs `/proc` for itself. |
+| macOS does not set the 4 GiB address cap | The system library cache is already larger, and the cap was stopping every script. |
+| The script's process tree is killed when the tool returns | Linux blocks a new session and kills the group; macOS kills a child that leaves the group; Windows terminates the job. |
+| A script cannot signal its parent | Linux Landlock scope blocks signals leaving the sandbox; macOS and Windows refuse `os.kill` of another process in the child. |
+| The sandbox flag is not an environment variable | A script can clear `AICAD_SANDBOX_CHILD`; plugin allow, load, and revoke stay refused anyway. |
 | CI uses Python 3.12 on Ubuntu and 3.11 on Windows and macOS | The sketch solver publishes Windows and Mac wheels for 3.11 and not for 3.12, so 3.12 on those systems has to be compiled. |
 | Windows confinement is an AppContainer plus a Job Object | A restricted token cannot read Python without changing system file permissions; the container blocks the user profile and the network, and the job caps memory, CPU time, and child processes. |
 | macOS confinement is `sandbox-exec` plus `setrlimit` | Apple has deprecated `sandbox-exec`, and it is still the practical file and network profile that does not need a container. |

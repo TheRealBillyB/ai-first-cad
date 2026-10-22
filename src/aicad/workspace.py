@@ -246,6 +246,12 @@ class Workspace:
                 return True
             return False
 
+    def restore_script_network_once(self) -> None:
+        """Put a one-shot network grant back. Used when that script did not finish."""
+        with self._lock:
+            if not self._script_network_all:
+                self._script_network_once = True
+
     def open_project(self, path: str | Path) -> dict:
         """Switch this process to another project folder. Scripts in that folder are not run.
 
@@ -977,16 +983,27 @@ def _cmd_run_design_script(workspace: Workspace, arguments: dict) -> dict:
     from aicad.sandbox import design_scripts_enabled, run_design_script
 
     # Leave the one-shot network switch unused when the script is not allowed to start.
+    consumed_once = False
     if not design_scripts_enabled(workspace.root):
         network = False
     else:
+        with workspace._lock:
+            consumed_once = workspace._script_network_once and not workspace._script_network_all
         network = workspace.consume_script_network()
+
+    def _give_back() -> None:
+        if consumed_once:
+            workspace.restore_script_network_once()
+
     try:
         payload = run_design_script(workspace.root, script, network=network)
     except Exception:
         # A killed script may have written session.json. Put the previous document back.
+        _give_back()
         workspace.document._save()  # noqa: SLF001
         raise
+    if not payload.get("ok"):
+        _give_back()
     workspace.document._reload()  # noqa: SLF001 — the child wrote session.json
     payload.pop("_job", None)
     return payload

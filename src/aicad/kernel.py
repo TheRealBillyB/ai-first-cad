@@ -221,7 +221,9 @@ def make_from_script(code: str, workspace: str | Path | None = None) -> Shape:
     Outside the sandbox child this starts a confined process. The child calls
     :func:`_execute_part_script` directly so it does not confine itself twice.
     """
-    if os.environ.get("AICAD_SANDBOX_CHILD") == "1":
+    from aicad.sandbox_state import in_sandbox
+
+    if in_sandbox():
         return _execute_part_script(code)
     from aicad.sandbox import run_part_script
 

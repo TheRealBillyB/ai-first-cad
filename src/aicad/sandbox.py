@@ -1,10 +1,12 @@
 """Run an assistant's Python in a separate process that cannot leave the project.
 
-Linux confines the process with Landlock (files and TCP) and a small seccomp
-filter (every other socket). macOS uses ``sandbox-exec`` and ``setrlimit``.
-Windows uses an AppContainer and a Job Object. CPU time, memory, and a
-wall-clock limit are set on that process. If those limits cannot be applied,
-the script is not run.
+Linux confines the process with Landlock (files, TCP, and signals) and a small
+seccomp filter (every other socket, and starting a new session). macOS uses
+``sandbox-exec`` and ``setrlimit`` for CPU time. Windows uses an AppContainer
+and a Job Object. CPU time, memory, and a wall-clock limit are set on that
+process. macOS does not set the address-space cap, because the system library
+cache is already larger than it. If the limits that do apply cannot be
+applied, the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
@@ -23,6 +25,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +85,13 @@ _NET_SYSCALLS = {
     "x86_64": (41, 42, 43, 44, 45, 46, 47, 49, 50, 53, 288),
     "aarch64": (198, 199, 200, 201, 202, 203, 206, 207, 211, 212, 242),
 }
+# setsid and setpgid. A grandchild that starts a new session leaves the group
+# the parent kills when the tool returns.
+_ESCAPE_SYSCALLS = {
+    "x86_64": (112, 109),
+    "aarch64": (157, 154),
+}
+_LANDLOCK_SCOPE_SIGNAL = 1 << 1
 
 _SECRET_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
 _SAFE_BUILTINS = (
@@ -157,6 +167,16 @@ _SAFE_BUILTINS = (
 
 class _RulesetAttr(ctypes.Structure):
     _fields_ = [("handled_access_fs", ctypes.c_uint64), ("handled_access_net", ctypes.c_uint64)]
+
+
+class _RulesetAttrScoped(ctypes.Structure):
+    """Landlock ABI 6 adds a scope so the script cannot signal other processes."""
+
+    _fields_ = [
+        ("handled_access_fs", ctypes.c_uint64),
+        ("handled_access_net", ctypes.c_uint64),
+        ("scoped", ctypes.c_uint64),
+    ]
 
 
 class _PathBeneath(ctypes.Structure):
@@ -326,7 +346,9 @@ def warn_design_scripts(workspace: str | Path) -> None:
 
 def require_in_project(path: str | Path, workspace: str | Path, *, writing: bool) -> None:
     """Refuse a design-script path that leaves the project. No-op outside the sandbox child."""
-    if os.environ.get("AICAD_SANDBOX_CHILD") != "1":
+    from aicad.sandbox_state import in_sandbox
+
+    if not in_sandbox():
         return
     root = Path(workspace).resolve()
     candidate = Path(path)
@@ -499,10 +521,30 @@ def _set_limits() -> None:
 
     memory = memory_bytes()
     cpu = cpu_seconds()
-    resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
-    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (FILE_BYTES, FILE_BYTES))
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    # macOS maps a multi-gigabyte system library cache into every process.
+    # RLIMIT_AS counts that cache, so a 4 GiB cap stops the script before it runs.
+    if sys.platform != "darwin":
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
+        except (OSError, ValueError) as exc:
+            raise ScriptError("Could not set the memory limit, so the script was not run.") from exc
+    try:
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (FILE_BYTES, FILE_BYTES))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (OSError, ValueError) as exc:
+        raise ScriptError("Could not set the CPU or file limit, so the script was not run.") from exc
+    if sys.platform.startswith("linux") and hasattr(resource, "RLIMIT_NPROC"):
+        # Linux counts every thread of this user toward the cap. 256 is low
+        # enough that the script cannot raise it to the system default, and
+        # high enough that the geometry libraries can still start.
+        cap = 256
+        try:
+            _soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+            if hard == resource.RLIM_INFINITY or hard > cap:
+                resource.setrlimit(resource.RLIMIT_NPROC, (cap, cap))
+        except (OSError, ValueError):
+            pass
 
 
 def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
@@ -515,7 +557,11 @@ def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
         if libc.prctl(38, 1, 0, 0, 0) != 0:
             raise ScriptError("Could not lock the script process, so the script was not run.")
     net = 0 if network else (_NET_BIND | _NET_CONNECT)
-    attr = _RulesetAttr(_HANDLED_FS, net)
+    abi = int(libc.syscall(create, None, 0, 1))
+    if abi >= 6:
+        attr = _RulesetAttrScoped(_HANDLED_FS, net, _LANDLOCK_SCOPE_SIGNAL)
+    else:
+        attr = _RulesetAttr(_HANDLED_FS, net)
     ruleset = libc.syscall(create, ctypes.byref(attr), ctypes.sizeof(attr), 0)
     if ruleset < 0:
         raise ScriptError(
@@ -551,11 +597,13 @@ def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
         )
 
 
-def _block_sockets() -> None:
+def _block_sockets(*, network: bool) -> None:
     arch = _arch()
     if arch is None:
         raise ScriptError(sandbox_supported()[1])
-    numbers = _NET_SYSCALLS[arch]
+    numbers = list(_ESCAPE_SYSCALLS[arch])
+    if not network:
+        numbers.extend(_NET_SYSCALLS[arch])
     # Load the syscall number, refuse the network ones, allow everything else.
     bpf_ld = 0x00 | 0x00 | 0x20
     bpf_jeq = 0x05 | 0x10 | 0x00
@@ -571,7 +619,9 @@ def _block_sockets() -> None:
     prog = _SockFprog(len(program), filters)
     libc = _libc()
     if libc.syscall(_SECCOMP[arch], 1, 0, ctypes.byref(prog)) != 0:
-        raise ScriptError("Could not turn the network off for the script, so the script was not run.")
+        raise ScriptError(
+            "Could not apply the script's process limits, so the script was not run."
+        )
 
 
 def confined_errno(error: OSError) -> bool:
@@ -626,8 +676,37 @@ def _network_blocked() -> bool:
     return tcp_blocked and udp_blocked
 
 
+def _refuse_foreign_kill() -> None:
+    """Refuse os.kill of any process except this one.
+
+    Linux blocks those signals in the kernel. macOS and Windows do not always
+    report signal 0 as a denied signal, so the child also refuses it here.
+    """
+    if sys.platform == "linux" or sys.platform.startswith("linux"):
+        return
+    real_kill = os.kill
+
+    def kill(pid, sig):
+        try:
+            target = int(pid)
+        except (TypeError, ValueError):
+            target = -1
+        own = os.getpid()
+        if target not in {own, 0, -own}:
+            raise PermissionError(1, "Operation not permitted")
+        return real_kill(pid, sig)
+
+    os.kill = kill  # type: ignore[method-assign]
+
+
 def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     """Confine the current process. Called only in the script's child process."""
+    from aicad.plugins import seal_sandbox_plugins
+    from aicad.sandbox_state import mark_sandboxed
+
+    mark_sandboxed()
+    seal_sandbox_plugins()
+    _refuse_foreign_kill()
     workspace = workspace.resolve()
     temporary = workspace / ".aicad" / "tmp"
     temporary.mkdir(parents=True, exist_ok=True)
@@ -663,8 +742,7 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
         raise ScriptError(reason)
     _set_limits()
     _landlock(workspace, network=network, read_roots=roots)
-    if not network:
-        _block_sockets()
+    _block_sockets(network=network)
     return roots
 
 
@@ -713,6 +791,108 @@ def _make_probe(workspace: Path) -> tuple[Path, str, str]:
     return root, str(secret), str(writes / "escaped.txt")
 
 
+def _kill_pid(pid: int) -> None:
+    if pid <= 1:
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _descendants(leader: int) -> set[int]:
+    """Pids whose parent is ``leader`` or one of its descendants."""
+    if leader <= 1:
+        return set()
+    parent_of: dict[int, int] = {}
+    if sys.platform.startswith("linux"):
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            return set()
+        for name in names:
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/status", encoding="utf-8", errors="replace") as handle:
+                    for line in handle:
+                        if line.startswith("PPid:"):
+                            parent_of[int(name)] = int(line.split()[1])
+                            break
+            except (OSError, ValueError):
+                continue
+    elif sys.platform == "darwin":
+        try:
+            completed = subprocess.run(
+                ["ps", "-axo", "pid=,ppid="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return set()
+        for line in completed.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            try:
+                parent_of[int(parts[0])] = int(parts[1])
+            except ValueError:
+                continue
+    else:
+        return set()
+    children: dict[int, list[int]] = {}
+    for pid, ppid in parent_of.items():
+        children.setdefault(ppid, []).append(pid)
+    found: set[int] = set()
+    stack = list(children.get(leader, []))
+    while stack:
+        pid = stack.pop()
+        if pid in found or pid <= 1:
+            continue
+        found.add(pid)
+        stack.extend(children.get(pid, []))
+    return found
+
+
+def _watch_descendants(leader: int, seen: set[int], lock: threading.Lock, stop: threading.Event) -> None:
+    """Remember children, and kill any that leave the script's process group."""
+    while not stop.is_set():
+        try:
+            found = _descendants(leader)
+        except OSError:
+            found = set()
+        escaped: list[int] = []
+        for pid in found:
+            try:
+                if os.getpgid(pid) != leader:
+                    escaped.append(pid)
+            except OSError:
+                continue
+        with lock:
+            seen.update(found)
+        for pid in escaped:
+            _kill_pid(pid)
+        stop.wait(0.02)
+
+
+def _kill_process_tree(leader: int, seen: set[int], lock: threading.Lock) -> None:
+    """Kill the script's process group and any child that already left it."""
+    try:
+        os.killpg(leader, signal.SIGKILL)
+    except OSError:
+        pass
+    _kill_pid(leader)
+    with lock:
+        targets = set(seen)
+    try:
+        targets.update(_descendants(leader))
+    except OSError:
+        pass
+    for pid in targets:
+        _kill_pid(pid)
+
+
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
@@ -745,6 +925,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         profile_path.write_text(profile, encoding="utf-8")
         command = [*command_prefix(str(profile_path)), *command]
     wall = wall_seconds()
+    stop_watch: threading.Event | None = None
+    watcher: threading.Thread | None = None
+    seen: set[int] = set()
+    seen_lock = threading.Lock()
     try:
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
@@ -774,13 +958,22 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
+        stop_watch = threading.Event()
+        watcher = threading.Thread(
+            target=_watch_descendants,
+            args=(proc.pid, seen, seen_lock, stop_watch),
+            name="aicad-sandbox-reap",
+            daemon=True,
+        )
+        watcher.start()
         try:
             stdout_b, stderr_b = proc.communicate(timeout=wall)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            _kill_process_tree(proc.pid, seen, seen_lock)
             proc.communicate()
             shutil.rmtree(job, ignore_errors=True)
             raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.") from None
+        _kill_process_tree(proc.pid, seen, seen_lock)
         return _payload_from_result(
             job,
             proc.returncode if proc.returncode is not None else -1,
@@ -789,6 +982,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             memory_killed=False,
         )
     finally:
+        if stop_watch is not None:
+            stop_watch.set()
+        if watcher is not None:
+            watcher.join(timeout=1)
         if profile_path is not None:
             profile_path.unlink(missing_ok=True)
         if probe_root is not None:
@@ -808,9 +1005,16 @@ def _payload_from_result(
         tail = stderr[-2000:]
         shutil.rmtree(job, ignore_errors=True)
         if memory_killed or code < 0:
+            detail = tail.strip()
+            if code < 0:
+                try:
+                    signame = signal.strsignal(-code) or str(-code)
+                except (ValueError, OSError):
+                    signame = str(-code)
+                detail = (detail + f"\nstopped by signal {-code} ({signame})").strip()
             raise ScriptError(
                 "The script was stopped because it hit the memory or CPU limit."
-                + (f"\n{tail}" if tail.strip() else "")
+                + (f"\n{detail}" if detail else "")
             )
         detail = tail.strip() or stdout[-2000:].strip()
         raise ScriptError(
