@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 from aicad.errors import AICADError, GeometryError
 from aicad.llm import load_settings, public_settings, run_turn, save_settings
+from aicad.studio import remember_project
 from aicad.workspace import Workspace
 
 _STATIC = Path(__file__).resolve().parent / "app_static"
@@ -77,6 +78,7 @@ def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, 
 
 def make_server(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
     session = Workspace(workspace)
+    remember_project(session.root)
     handler = _handler(session)
     server = ThreadingHTTPServer((host, port), handler)
     server.workspace = session  # type: ignore[attr-defined]
@@ -105,8 +107,11 @@ def _handler(session: Workspace):
                     self._json({"ok": True, "result": self.workspace.commands()})
                 elif path == "/api/mesh":
                     query = parse_qs(parsed.query)
+                    scene = query.get("scene", [""])[0]
                     assembly_name = query.get("assembly", [""])[0]
-                    if assembly_name:
+                    if scene in ("1", "true"):
+                        self._json({"ok": True, "result": self.workspace.scene_mesh()})
+                    elif assembly_name:
                         self._json({"ok": True, "result": self.workspace.assembly_mesh(assembly_name)})
                     else:
                         name = query.get("part", [""])[0]

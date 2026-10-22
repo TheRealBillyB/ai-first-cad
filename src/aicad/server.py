@@ -969,16 +969,6 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("replace_session", session=session))
 
     @mcp.tool()
-    def save_project() -> dict:
-        """Write session.json again. Edits are already saved after each command."""
-        return guard(lambda: run("save_project"))
-
-    @mcp.tool()
-    def open_project(path: str) -> dict:
-        """Switch this server to another project folder. Scripts in that folder are not run."""
-        return guard(lambda: run("open_project", path=path))
-
-    @mcp.tool()
     def design_script_status() -> dict:
         """Whether the person has allowed design scripts, and whether the network is off.
 
@@ -1049,6 +1039,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """One assembly spec and its solved joint values."""
         return json.dumps(client.execute("get_assembly", {"name": name}, source="mcp"), indent=2)
 
+    from aicad.studio import register_mcp
+
+    register_mcp(mcp, run, guard)
     return mcp
 
 

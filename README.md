@@ -35,7 +35,7 @@ Report a vulnerability in private. The steps are in [SECURITY.md](SECURITY.md).
 - Estimate minimum wall thickness from rays and from cross-sections, and compare it with a threshold. The report says which method produced the number.
 - Check interference or clearance between two parts.
 - Run a linear static check. Pick a material (PLA, PETG, ABS, nylon, aluminum 6061, or mild steel), hold faces and apply forces, pressures, or bolt loads by describing the face, and read the peak von Mises stress, the peak displacement, the minimum safety factor, and a pass/fail against a target. Stress and displacement pictures come back from several angles.
-- Open the workspace with `aicad app` and edit the same document in the browser: orbit the solid, pick a face or an edge by the reference an assistant uses, draw a constrained sketch, extrude or revolve or cut it, change a dimension, undo, and read inspection, section, feature, and FEA panels. A chat panel drives those same commands with an API key you keep on the machine. Each project also has markdown notes and structured requirements that pass or fail against the current solid.
+- Open the workspace with `aicad app` and edit the same document in the browser: open and save a project folder, orbit the parts, move one, pick a face or an edge by the reference an assistant uses, measure between two clicks, draw a constrained sketch, extrude or revolve or cut it, change a dimension or another size on the solid, undo, and read inspection, section, feature, and FEA panels. Live mode follows an assistant's edits. A chat panel drives those same commands with an API key you keep on the machine. Each project also has markdown notes and structured requirements that pass or fail against the current solid.
 - Assemble parts you already modeled, including catalog parts, with fixed, revolute, prismatic, and cylindrical joints, plus gear and planar linkage relations. Name poses, sweep a motion, and see where the moving solids collide. Route a cable or a hose through clips and check length, bend radius, and pinching. Estimate the joint torque and the hydraulic or electric power that motion needs.
 - Find natural frequencies, compare them with a motor or a pump, and rate a bolted joint for slip and vibration loosening.
 - Turn a part for printing, see the faces that need support, and check the oriented size against a Bambu A1, P1, X1, Prusa MK4, or Ender 3. A requirement kind `fits_printer` is that check. PrusaSlicer or OrcaSlicer, when installed, adds time and filament grams.
@@ -186,7 +186,13 @@ aicad app --workspace ./aicad_workspace
 
 That starts a local server and opens the browser. `--no-browser` leaves the tab to you, and `--host` / `--port` change the bind address (the default is `http://127.0.0.1:8765`). The page is static HTML, CSS, and JavaScript. The Python process owns the document, so the same server can later sit behind a desktop shell such as Tauri. This version does not package that shell.
 
-Every button, sketch click, dimension edit, and undo goes through `Workspace.execute`, which is the same registry the MCP tools call. An external assistant attaches to the running app and edits the document the browser is showing:
+Open, Save, and Save As use the project folder. Save writes the folder that is open. Save As copies it. Recent projects are remembered on this computer, next to the assistant settings. Undo and Redo remain the history of the open folder.
+
+The model view shows every part. Move drags the selected part, or type X, Y, and Z. A size under Shape is a number the solid was built from: an operation size, a sketch dimension, an extrude height, or a catalog length. Sliding it rebuilds the solid. A script or an imported STEP file can be moved, and it has no size to slide. Measure takes two clicks for a distance and a third click for the angle at the second point.
+
+Live, in the header, follows an assistant. A new or changed part shows up, the camera frames it, the part is highlighted, and a short feed says what the assistant did. Turning Live off leaves the camera where you put it.
+
+Every button, sketch click, dimension edit, move, measurement, and undo goes through `Workspace.execute`, which is the same registry the MCP tools call. An external assistant attaches to the running app and edits the document the browser is showing:
 
 ```bash
 aicad serve --connect http://127.0.0.1:8765

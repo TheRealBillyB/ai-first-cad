@@ -21,6 +21,14 @@ const ui = {
   assembly: null,
   viewAssembly: null,
   assemblySignature: "",
+  measurePoints: [],
+  measure: null,
+  dragOffset: null,
+  live: sessionStorage.getItem("aicad-live") !== "off",
+  livePart: null,
+  parameters: null,
+  parameterKey: "",
+  shapeTimer: 0,
 };
 
 async function command(name, args = {}) {
@@ -39,15 +47,44 @@ function fileUrl(path) {
   return "/api/file?path=" + encodeURIComponent(path);
 }
 
-async function refresh() {
+async function refresh(options = {}) {
   const response = await fetch("/api/state");
   const body = await response.json();
   if (!body.ok) throw new Error(body.error);
   ui.state = body.result;
+  if (options.solid) {
+    ui.viewAssembly = null;
+    if (ui.page !== "model") showPage("model");
+    if (ui.stage !== "solid") {
+      ui.stage = "solid";
+      setStage();
+    }
+  }
+  if (options.applySelection && ui.state.selection && ui.state.selection.part && !options.focus) {
+    ui.part = ui.state.selection.part;
+    ui.selectedFaces = ui.state.selection.faces || [];
+    ui.selectedEdges = ui.state.selection.edges || [];
+  }
+  if (options.focus) {
+    ui.part = options.focus;
+    ui.livePart = options.focus;
+    ui.viewAssembly = null;
+    ui.selectedFaces = [];
+    ui.selectedEdges = [];
+    ui.parameterKey = "";
+  }
+  if (ui.part && !(ui.state.parts || []).some((part) => part.name === ui.part)) {
+    ui.part = null;
+    ui.parameterKey = "";
+  }
   if (!ui.part && ui.state.parts.length) ui.part = ui.state.parts[0].name;
   if (ui.sketchName) {
     const found = (ui.state.sketches || []).find((item) => item.name === ui.sketchName);
     if (found) ui.sketch = found;
+  }
+  if (ui.state.project) {
+    $("project-name").textContent = ui.state.project.name;
+    $("project-name").title = ui.state.project.path;
   }
   renderTree();
   renderPanel();
@@ -55,10 +92,18 @@ async function refresh() {
   renderAssemblies();
   renderDimensions();
   renderScriptWarning();
+  renderActivity();
   $("undo").disabled = !ui.state.can_undo;
   $("redo").disabled = !ui.state.can_redo;
-  if (ui.page === "model" && ui.stage === "solid" && (ui.viewAssembly || ui.part)) await loadMesh();
+  $("live").classList.toggle("on", ui.live);
+  if (ui.page === "model" && ui.stage === "solid" && (ui.viewAssembly || ui.state.parts.length)) await loadMesh(options);
   else if (ui.page === "model" && ui.stage === "sketch") drawSketch();
+  else if (ui.page === "model") {
+    ui.mesh = null;
+    $("empty").hidden = false;
+    drawSolid();
+  }
+  await renderShape();
 }
 
 function renderScriptWarning() {
@@ -102,15 +147,16 @@ function renderScriptWarning() {
   document.documentElement.style.setProperty("--banner", box.offsetHeight + "px");
 }
 
-async function loadMesh() {
-  if (!ui.viewAssembly && !ui.part) {
+async function loadMesh(options = {}) {
+  if (!ui.viewAssembly && !(ui.state && ui.state.parts && ui.state.parts.length)) {
     ui.mesh = null;
+    $("empty").hidden = false;
     drawSolid();
     return;
   }
   const query = ui.viewAssembly
     ? "assembly=" + encodeURIComponent(ui.viewAssembly)
-    : "part=" + encodeURIComponent(ui.part);
+    : "scene=1";
   const response = await fetch("/api/mesh?" + query);
   const body = await response.json();
   if (!body.ok) {
@@ -119,10 +165,18 @@ async function loadMesh() {
     $("empty").textContent = body.error;
     return;
   }
-  const firstLook = !ui.mesh || ui.mesh.part !== body.result.part;
+  const partKey = (body.result.parts || [body.result.part || ""]).join(",");
+  const firstLook = !ui.mesh || ui.mesh._key !== partKey;
   ui.mesh = body.result;
-  $("empty").hidden = true;
-  if (firstLook || ui.viewAssembly) view.fit();
+  ui.mesh._key = partKey;
+  const hasTriangles = ui.mesh.positions && ui.mesh.positions.length;
+  $("empty").hidden = Boolean(hasTriangles);
+  if (!hasTriangles) {
+    drawSolid();
+    return;
+  }
+  if (options.fit === "part" && options.focus) framePart(options.focus);
+  else if (options.fit === "scene" || firstLook || ui.viewAssembly) view.fit();
   drawSolid();
 }
 
@@ -551,6 +605,7 @@ async function runChecks() {
 function setStage() {
   const sketching = ui.stage === "sketch";
   $("view").hidden = sketching;
+  $("overlay").hidden = sketching;
   $("sketch-canvas").hidden = !sketching;
   $("sketch-tools").hidden = !sketching;
   $("sketch-status").hidden = !sketching;
@@ -921,10 +976,12 @@ function drawSolid() {
   gl.clearColor(0.08, 0.09, 0.11, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST);
+  drawOverlay();
   if (!ui.mesh || !ui.mesh.positions.length) return;
   const mvp = cameraMatrix(canvas.width / canvas.height);
+  const positions = shiftedPositions();
   gl.useProgram(view.program);
-  bindAttr(gl, view.program, "aPos", new Float32Array(ui.mesh.positions), 3);
+  bindAttr(gl, view.program, "aPos", positions, 3);
   bindAttr(gl, view.program, "aNormal", new Float32Array(ui.mesh.normals), 3);
   const vertexCount = ui.mesh.positions.length / 3;
   const colors = new Float32Array(vertexCount * 3);
@@ -941,7 +998,11 @@ function drawSolid() {
   bindAttr(gl, view.program, "aColor", colors, 3);
   const selected = new Float32Array(ui.mesh.triangle_face.length * 3);
   ui.mesh.triangle_face.forEach((face, index) => {
-    const on = ui.selectedFaces.includes(ui.mesh.faces[face].ref) ? 1 : 0;
+    const record = ui.mesh.faces[face] || {};
+    const samePart = !record.part || record.part === ui.part;
+    const picked = samePart && ui.selectedFaces.includes(record.ref) ? 1 : 0;
+    const live = ui.live && ui.livePart && record.part === ui.livePart ? 0.55 : 0;
+    const on = Math.max(picked, live);
     selected[index * 3] = on; selected[index * 3 + 1] = on; selected[index * 3 + 2] = on;
   });
   bindAttr(gl, view.program, "aSelect", selected, 1);
@@ -951,9 +1012,10 @@ function drawSolid() {
   const edgePositions = [];
   const edgeSelect = [];
   ui.mesh.edges.forEach((edge) => {
-    const on = ui.selectedEdges.includes(edge.ref) ? 1 : 0;
+    const on = ((!edge.part || edge.part === ui.part) && ui.selectedEdges.includes(edge.ref)) ? 1 : 0;
+    const delta = ui.dragOffset && edge.part === ui.dragOffset.part ? ui.dragOffset.delta : null;
     for (let i = 1; i < edge.points.length; i += 1) {
-      edgePositions.push(...edge.points[i - 1], ...edge.points[i]);
+      edgePositions.push(...shiftPoint(edge.points[i - 1], delta), ...shiftPoint(edge.points[i], delta));
       edgeSelect.push(on, on);
     }
   });
@@ -998,8 +1060,110 @@ view.fit = function fit() {
   view.distance = Math.max(span * 1.4, 10);
 };
 
+function framePart(name) {
+  const part = (ui.state.parts || []).find((item) => item.name === name);
+  if (!part || !part.bounding_box) {
+    view.fit();
+    drawSolid();
+    return;
+  }
+  const box = part.bounding_box;
+  view.target = [
+    (box.min.x + box.max.x) / 2,
+    (box.min.y + box.max.y) / 2,
+    (box.min.z + box.max.z) / 2,
+  ];
+  view.distance = Math.max(Math.hypot(box.size.x, box.size.y, box.size.z) * 1.8, 30);
+  drawSolid();
+}
+
+function viewScale() {
+  const eye = eyePosition();
+  const forward = normalize(sub(view.target, eye));
+  const right = normalize(cross(forward, [0, 0, 1]));
+  const up = cross(right, forward);
+  const rect = $("view").getBoundingClientRect();
+  const worldHeight = 2 * view.distance * Math.tan(0.35);
+  return { right, up, scale: worldHeight / Math.max(rect.height, 1) };
+}
+
+function shiftedPositions() {
+  const positions = new Float32Array(ui.mesh.positions);
+  if (!ui.dragOffset || !ui.mesh.triangle_part) return positions;
+  const delta = ui.dragOffset.delta;
+  ui.mesh.triangle_part.forEach((name, index) => {
+    if (name !== ui.dragOffset.part) return;
+    for (let vertex = 0; vertex < 3; vertex += 1) {
+      const offset = (index * 3 + vertex) * 3;
+      positions[offset] += delta[0];
+      positions[offset + 1] += delta[1];
+      positions[offset + 2] += delta[2];
+    }
+  });
+  return positions;
+}
+
+function shiftPoint(point, delta) {
+  if (!delta) return point;
+  return [point[0] + delta[0], point[1] + delta[1], point[2] + delta[2]];
+}
+
+function drawOverlay() {
+  const canvas = $("overlay");
+  if (!canvas || canvas.hidden) return;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const ctx = canvas.getContext("2d");
+  canvas.width = Math.max(1, rect.width * devicePixelRatio);
+  canvas.height = Math.max(1, rect.height * devicePixelRatio);
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const points = ui.measurePoints.map((point) => project(point, rect)).filter(Boolean);
+  if (!points.length) return;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#e7c07a";
+  ctx.fillStyle = "#e7c07a";
+  if (points.length >= 2) {
+    ctx.beginPath();
+    points.forEach((point, index) => (index ? ctx.lineTo(point[0], point[1]) : ctx.moveTo(point[0], point[1])));
+    ctx.stroke();
+  }
+  points.forEach((point) => {
+    ctx.beginPath();
+    ctx.arc(point[0], point[1], 4, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
 function onPointerDown(event) {
-  view.dragging = { x: event.clientX, y: event.clientY, yaw: view.yaw, pitch: view.pitch, target: view.target.slice(), moved: false, button: event.button };
+  const rect = $("view").getBoundingClientRect();
+  const localX = event.clientX - rect.left;
+  const localY = event.clientY - rect.top;
+  if ((ui.pick === "measure" || ui.pick === "move") && event.button === 0 && !event.shiftKey && ui.mesh) {
+    const hit = pickHit(localX, localY, rect);
+    if (ui.pick === "move" && hit && hit.part) {
+      const part = (ui.state.parts || []).find((item) => item.name === hit.part);
+      const placement = (part && part.placement) || { position: [0, 0, 0], rotation_deg: [0, 0, 0] };
+      ui.part = hit.part;
+      view.dragging = {
+        x: event.clientX,
+        y: event.clientY,
+        moved: false,
+        button: 0,
+        mode: "move",
+        part: hit.part,
+        origin: placement.position.slice(),
+        rotation: (placement.rotation_deg || [0, 0, 0]).slice(),
+      };
+      event.target.setPointerCapture(event.pointerId);
+      return;
+    }
+    if (ui.pick === "measure") {
+      view.dragging = { x: event.clientX, y: event.clientY, moved: false, button: 0, mode: "measure", hit };
+      event.target.setPointerCapture(event.pointerId);
+      return;
+    }
+  }
+  view.dragging = { x: event.clientX, y: event.clientY, yaw: view.yaw, pitch: view.pitch, target: view.target.slice(), moved: false, button: event.button, mode: "orbit" };
   event.target.setPointerCapture(event.pointerId);
 }
 
@@ -1008,6 +1172,16 @@ function onPointerMove(event) {
   const dx = event.clientX - view.dragging.x;
   const dy = event.clientY - view.dragging.y;
   if (Math.hypot(dx, dy) > 3) view.dragging.moved = true;
+  if (view.dragging.mode === "measure") return;
+  if (view.dragging.mode === "move") {
+    const scale = viewScale();
+    ui.dragOffset = {
+      part: view.dragging.part,
+      delta: add(scaleV(scale.right, dx * scale.scale), scaleV(scale.up, -dy * scale.scale)),
+    };
+    drawSolid();
+    return;
+  }
   if (view.dragging.button === 2 || event.shiftKey) {
     const eye = eyePosition();
     const forward = normalize(sub(view.target, eye));
@@ -1025,22 +1199,51 @@ function onPointerMove(event) {
 async function onPointerUp(event) {
   const drag = view.dragging;
   view.dragging = null;
-  if (!drag || drag.moved || !ui.mesh) return;
+  if (!drag || !ui.mesh) return;
+  if (drag.mode === "measure") {
+    if (!drag.moved && drag.hit) await addMeasurePoint(drag.hit);
+    return;
+  }
+  if (drag.mode === "move") {
+    const offset = ui.dragOffset;
+    ui.dragOffset = null;
+    if (drag.moved && offset) {
+      const position = add(drag.origin, offset.delta).map((value) => Math.round(value * 1000) / 1000);
+      try {
+        await command("place_part", { name: drag.part, position, rotation_deg: drag.rotation });
+        ui.parameterKey = "";
+        await refresh();
+      } catch (error) {
+        drawSolid();
+        throw error;
+      }
+    } else {
+      drawSolid();
+    }
+    return;
+  }
+  if (drag.moved) return;
   const rect = $("view").getBoundingClientRect();
-  const hit = ui.pick === "face" ? pickFace(event.clientX - rect.left, event.clientY - rect.top, rect) : pickEdge(event.clientX - rect.left, event.clientY - rect.top, rect);
+  const hit = ui.pick === "edge"
+    ? pickEdge(event.clientX - rect.left, event.clientY - rect.top, rect)
+    : pickHit(event.clientX - rect.left, event.clientY - rect.top, rect);
   if (!hit) {
     ui.selectedFaces = [];
     ui.selectedEdges = [];
-  } else if (ui.pick === "face") {
-    ui.selectedFaces = [hit];
-    ui.selectedEdges = [];
-  } else {
-    ui.selectedEdges = [hit];
+  } else if (ui.pick === "edge") {
+    ui.selectedEdges = [hit.ref];
     ui.selectedFaces = [];
+    if (hit.part) ui.part = hit.part;
+  } else {
+    ui.selectedFaces = [hit.ref];
+    ui.selectedEdges = [];
+    if (hit.part) ui.part = hit.part;
   }
-  $("selection-readout").textContent = hit || "Nothing selected";
+  $("selection-readout").textContent = hit ? hit.ref : "Nothing selected";
   drawSolid();
+  renderTree();
   if (ui.part) await command("set_selection", { part: ui.part, faces: ui.selectedFaces, edges: ui.selectedEdges });
+  await renderShape();
 }
 
 function onWheel(event) {
@@ -1049,7 +1252,7 @@ function onWheel(event) {
   drawSolid();
 }
 
-function pickFace(x, y, rect) {
+function pickHit(x, y, rect) {
   const origin = eyePosition();
   const dir = rayDirection(x, y, rect);
   let best = null;
@@ -1060,8 +1263,19 @@ function pickFace(x, y, rect) {
     const b = pos.slice(index * 9 + 3, index * 9 + 6);
     const c = pos.slice(index * 9 + 6, index * 9 + 9);
     const t = intersect(origin, dir, a, b, c);
-    if (t !== null && t < bestT) { bestT = t; best = ui.mesh.faces[face].ref; }
+    if (t !== null && t < bestT) {
+      bestT = t;
+      const record = ui.mesh.faces[face] || {};
+      best = {
+        ref: record.ref,
+        part: record.part || (ui.mesh.triangle_part || [])[index] || ui.part,
+        point: add(origin, scaleV(dir, t)),
+      };
+    }
   });
+  if (!best) return null;
+  const snapped = snapVertex(x, y, rect, best.part);
+  if (snapped) best.point = snapped;
   return best;
 }
 
@@ -1073,7 +1287,22 @@ function pickEdge(x, y, rect) {
       const screen = project(point, rect);
       if (!screen) return;
       const d = Math.hypot(screen[0] - x, screen[1] - y);
-      if (d < bestD) { bestD = d; best = edge.ref; }
+      if (d < bestD) { bestD = d; best = { ref: edge.ref, part: edge.part || ui.part }; }
+    });
+  });
+  return best;
+}
+
+function snapVertex(x, y, rect, part) {
+  let best = null;
+  let bestD = 14;
+  (ui.mesh.edges || []).forEach((edge) => {
+    if (part && edge.part && edge.part !== part) return;
+    edge.points.forEach((point) => {
+      const screen = project(point, rect);
+      if (!screen) return;
+      const d = Math.hypot(screen[0] - x, screen[1] - y);
+      if (d < bestD) { bestD = d; best = point.slice(); }
     });
   });
   return best;
@@ -1182,6 +1411,10 @@ function claimBlock(report) {
     ? `<img alt="blueprint sheet" src="${fileUrl(report.sheet.path)}" />`
     : "";
   return intro + rows.map(claimChip).join("") + sheet;
+}
+
+function escapeAttr(text) {
+  return escapeHtml(text).replace(/"/g, "&quot;");
 }
 
 function ask(title, fields) {
@@ -1391,6 +1624,205 @@ function showPage(page) {
   else requestAnimationFrame(() => drawSketch());
 }
 
+function renderActivity() {
+  const list = $("activity");
+  if (!list) return;
+  const items = ui.live ? (ui.state.activity || []).filter((item) => item.source && item.source !== "ui") : [];
+  list.hidden = items.length === 0;
+  list.innerHTML = items.slice(-6).map((item) => `<li><span class="meta">${escapeHtml(item.source)}</span>${escapeHtml(item.summary || item.command)}</li>`).join("");
+}
+
+async function renderShape() {
+  const slot = $("shape-editor");
+  if (!slot || !ui.state) return;
+  if (!ui.part) {
+    slot.innerHTML = `<p class="muted">Select a part to move it or change a size.</p>`;
+    ui.parameters = null;
+    ui.parameterKey = "";
+    return;
+  }
+  const key = `${ui.part}:${ui.state.revision}`;
+  if (ui.parameterKey !== key) {
+    ui.parameters = await command("list_parameters", { name: ui.part });
+    ui.parameterKey = key;
+  }
+  const report = ui.parameters;
+  if (!report) return;
+  const placement = report.placement || { position: [0, 0, 0], rotation_deg: [0, 0, 0] };
+  const place = ["X", "Y", "Z"].map((axis, index) => `
+    <label><span>${axis}</span><input data-place="${index}" type="number" step="1" value="${Number(placement.position[index]).toFixed(2)}" /></label>`).join("");
+  const spin = ["Rx", "Ry", "Rz"].map((axis, index) => `
+    <label><span>${axis}</span><input data-spin="${index}" type="number" step="1" value="${Number(placement.rotation_deg[index] || 0).toFixed(1)}" /></label>`).join("");
+  const sizes = (report.parameters || []).map((item) => {
+    const range = rangeFor(item);
+    return `<label><span>${escapeHtml(item.label)}</span>
+      <input data-range="${escapeAttr(item.id)}" type="range" min="${range.min}" max="${range.max}" step="${range.step}" value="${item.value}" />
+      <input data-number="${escapeAttr(item.id)}" type="number" step="${range.step}" value="${item.value}" />
+    </label>`;
+  }).join("");
+  slot.innerHTML = `
+    <p class="muted">Place</p>
+    <div class="place-grid">${place}</div>
+    <div class="place-grid">${spin}</div>
+    <p class="muted">Size</p>
+    ${sizes || `<p class="muted">${escapeHtml(report.note || "")}</p>`}
+    ${sizes ? `<p class="muted">${escapeHtml(report.note || "")}</p>` : ""}`;
+  slot.querySelectorAll("[data-place], [data-spin]").forEach((input) => {
+    input.onchange = () => commitPlacement().catch(showError);
+  });
+  slot.querySelectorAll("[data-range]").forEach((input) => {
+    input.oninput = () => {
+      const number = [...slot.querySelectorAll("[data-number]")].find((item) => item.dataset.number === input.dataset.range);
+      if (number) number.value = input.value;
+      scheduleParameter(input.dataset.range, input.value);
+    };
+  });
+  slot.querySelectorAll("[data-number]").forEach((input) => {
+    input.onchange = () => {
+      clearTimeout(ui.shapeTimer);
+      commitParameter(input.dataset.number, input.value).catch(showError);
+    };
+  });
+}
+
+function rangeFor(item) {
+  const value = Number(item.value) || 0;
+  const key = `${ui.part}:${item.id}`;
+  ui.rangeLock = ui.rangeLock || {};
+  const prior = ui.rangeLock[key];
+  // Keep the first range. Rebuilding after a drag used to widen the max,
+  // so holding the slider at the end made the part grow without a new gesture.
+  if (prior) {
+    return {
+      min: Math.min(prior.min, value),
+      max: Math.max(prior.max, value),
+      step: prior.step,
+    };
+  }
+  let range;
+  if (item.kind === "angle") range = { min: 0, max: 360, step: 1 };
+  else if (item.kind === "offset") {
+    const span = Math.max(40, Math.abs(value) * 2);
+    range = { min: Math.round((value - span) * 10) / 10, max: Math.round((value + span) * 10) / 10, step: 0.5 };
+  } else {
+    const max = Math.max(value * 2, value + 10, 1);
+    const min = Math.min(0.2, Math.max(value, 0.05));
+    range = { min, max: Math.round(max * 10) / 10, step: value > 20 ? 0.5 : 0.1 };
+  }
+  ui.rangeLock[key] = range;
+  return range;
+}
+
+function scheduleParameter(id, value) {
+  clearTimeout(ui.shapeTimer);
+  ui.shapeTimer = setTimeout(() => {
+    commitParameter(id, value).catch(showError);
+  }, 200);
+}
+
+async function commitParameter(id, value) {
+  if (!ui.part) return;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error("Type a number.");
+  await command("set_parameter", { name: ui.part, parameter: id, value: number });
+  ui.parameterKey = "";
+  await refresh();
+}
+
+async function commitPlacement() {
+  if (!ui.part) return;
+  const slot = $("shape-editor");
+  const position = [0, 1, 2].map((index) => Number(slot.querySelector(`[data-place="${index}"]`).value));
+  const rotation = [0, 1, 2].map((index) => Number(slot.querySelector(`[data-spin="${index}"]`).value));
+  if (position.some((value) => !Number.isFinite(value)) || rotation.some((value) => !Number.isFinite(value))) {
+    throw new Error("Placement needs numbers.");
+  }
+  await command("place_part", { name: ui.part, position, rotation_deg: rotation });
+  ui.parameterKey = "";
+  await refresh();
+}
+
+async function addMeasurePoint(hit) {
+  if (ui.measurePoints.length >= 3) ui.measurePoints = [];
+  ui.measurePoints.push(hit.point.map((value) => Math.round(value * 1000) / 1000));
+  $("measure-clear").hidden = false;
+  if (ui.measurePoints.length === 1) {
+    ui.measure = null;
+    $("measure-readout").hidden = false;
+    $("measure-readout").textContent = "Pick the second point";
+    drawOverlay();
+    return;
+  }
+  const args = { a: ui.measurePoints[0], b: ui.measurePoints[1] };
+  if (ui.measurePoints[2]) args.c = ui.measurePoints[2];
+  ui.measure = await command("measure_points", args);
+  $("measure-readout").hidden = false;
+  $("measure-readout").textContent = ui.measure.text;
+  $("selection-readout").textContent = ui.measure.text;
+  drawOverlay();
+}
+
+function clearMeasure() {
+  ui.measurePoints = [];
+  ui.measure = null;
+  $("measure-readout").hidden = true;
+  $("measure-clear").hidden = true;
+  $("selection-readout").textContent = "Nothing selected";
+  drawOverlay();
+}
+
+async function browseProjects(mode) {
+  const dialog = $("modal");
+  let current = ui.state.project ? ui.state.project.path : "";
+  const paint = async () => {
+    const listed = await command("list_folders", current ? { path: current } : {});
+    current = listed.path;
+    const recent = mode === "open" ? await command("list_recent_projects") : { projects: [] };
+    $("modal-title").textContent = mode === "open" ? "Open a project" : "Save project as";
+    const recentHtml = (recent.projects || []).map((item) =>
+      `<button type="button" data-open="${escapeAttr(item.path)}">${escapeHtml(item.name)}</button>`).join("");
+    const folders = (listed.folders || []).map((item) =>
+      `<button type="button" data-go="${escapeAttr(item.path)}">${escapeHtml(item.name)}${item.project ? " · project" : ""}</button>`).join("")
+      || `<p class="muted">No folders in here.</p>`;
+    $("modal-body").innerHTML = `
+      ${mode === "open" ? `<p class="muted">Recent</p><div class="folder-list">${recentHtml || `<p class="muted">No recent projects yet.</p>`}</div>` : ""}
+      <label>Folder <input id="folder-path" value="${escapeAttr(listed.path)}" /></label>
+      <div class="row">${listed.parent ? `<button type="button" id="folder-up">Up</button>` : ""}<button type="button" id="folder-go">Show</button></div>
+      <div class="folder-list">${folders}</div>
+      ${mode === "save" ? `<label>New folder name <input id="save-name" value="${escapeAttr((ui.state.project.name || "project") + "-copy")}" /></label>` : `<p class="muted">Open uses the folder in the box. A folder with no project starts empty.</p>`}`;
+    $("modal-body").querySelectorAll("[data-go]").forEach((button) => {
+      button.onclick = () => { current = button.dataset.go; paint().catch(showError); };
+    });
+    $("modal-body").querySelectorAll("[data-open]").forEach((button) => {
+      button.onclick = () => finish(button.dataset.open);
+    });
+    const up = $("folder-up");
+    if (up) up.onclick = () => { current = listed.parent; paint().catch(showError); };
+    $("folder-go").onclick = () => { current = $("folder-path").value.trim(); paint().catch(showError); };
+  };
+  const finish = async (path, name) => {
+    if (mode === "open") await command("open_project", { path });
+    else await command("save_project_as", name ? { path, name } : { path });
+    dialog.close();
+    ui.part = null;
+    ui.parameterKey = "";
+    ui.livePart = null;
+    ui.rangeLock = {};
+    clearMeasure();
+    await refresh({ fit: "scene", solid: true });
+  };
+  await paint();
+  dialog.showModal();
+  $("modal-cancel").onclick = () => dialog.close();
+  $("modal-form").onsubmit = (event) => {
+    event.preventDefault();
+    const path = $("folder-path").value.trim();
+    const nameField = $("save-name");
+    const name = nameField ? nameField.value.trim() : "";
+    finish(path, mode === "save" ? name : null).catch(showError);
+  };
+}
+
 async function boot() {
   initView();
   $("nav-model").onclick = () => showPage("model");
@@ -1480,9 +1912,23 @@ async function boot() {
       showError(error);
     }
   };
-  $("undo").onclick = async () => { await command("undo"); await refresh(); };
-  $("redo").onclick = async () => { await command("redo"); await refresh(); };
+  $("undo").onclick = async () => { await command("undo"); ui.parameterKey = ""; await refresh({ fit: "scene" }); };
+  $("redo").onclick = async () => { await command("redo"); ui.parameterKey = ""; await refresh({ fit: "scene" }); };
   $("fit").onclick = () => { view.fit(); drawSolid(); };
+  $("open-project").onclick = () => browseProjects("open").catch(showError);
+  $("save-project").onclick = async () => {
+    const result = await command("save_project");
+    $("who").textContent = `Saved ${result.name}`;
+  };
+  $("save-as").onclick = () => browseProjects("save").catch(showError);
+  $("live").onclick = () => {
+    ui.live = !ui.live;
+    sessionStorage.setItem("aicad-live", ui.live ? "on" : "off");
+    $("live").classList.toggle("on", ui.live);
+    renderActivity();
+    drawSolid();
+  };
+  $("measure-clear").onclick = () => clearMeasure();
   $("new-sketch").onclick = async () => {
     const answer = await ask("New sketch", [{ name: "name", label: "Name", value: "sketch" }]);
     if (!answer) return;
@@ -1498,6 +1944,11 @@ async function boot() {
     if (!button) return;
     ui.pick = button.dataset.mode;
     $("pick-mode").querySelectorAll("button").forEach((item) => item.classList.toggle("on", item === button));
+    $("view").style.cursor = ui.pick === "measure" ? "crosshair" : ui.pick === "move" ? "grab" : "default";
+    if ((ui.pick === "move" || ui.pick === "measure") && ui.viewAssembly) {
+      ui.viewAssembly = null;
+      loadMesh().catch(showError);
+    }
   };
   $("stage-mode").onclick = async (event) => {
     const button = event.target.closest("button");
@@ -1586,8 +2037,15 @@ async function boot() {
   const events = new EventSource("/api/events");
   events.onmessage = (message) => {
     const event = JSON.parse(message.data);
-    $("who").textContent = event.source === "ui" ? "" : `Updated by ${event.source}`;
-    if (event.source !== "ui") refresh().catch(showError);
+    if (!event || event.source === "ui") return;
+    if (event.summary) $("who").textContent = event.summary;
+    const focus = ui.live && event.follow && event.frame === "part" ? (event.parts || [])[0] : null;
+    refresh({
+      applySelection: true,
+      focus,
+      fit: ui.live && event.follow ? (focus ? "part" : "scene") : null,
+      solid: Boolean(ui.live && event.follow && event.frame),
+    }).catch(showError);
   };
   const settings = await (await fetch("/api/settings")).json();
   if (settings.ok) $("chat-key").textContent = settings.result.has_key ? `${settings.result.provider} ${settings.result.key_hint}` : "No API key";

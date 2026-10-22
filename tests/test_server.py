@@ -72,6 +72,13 @@ async def _mcp_example(tmp_path: Path) -> None:
                 "list_materials",
                 "describe_faces",
                 "solve_mechanics",
+                "open_project",
+                "save_project",
+                "save_project_as",
+                "list_parameters",
+                "set_parameter",
+                "measure_points",
+                "place_part",
             } <= names
 
             materials = await session.call_tool("list_materials", {})
