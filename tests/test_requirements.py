@@ -125,7 +125,7 @@ def test_safety_factor_requirement_uses_the_same_solve(tmp_path):
                     "minimum": 0.5,
                     "setup": {
                         "material": "steel",
-                        "mesh_size_mm": 2.5,
+                        "mesh_size_mm": 1.5,
                         "fixes": [{"name": "root", "select": {"ref": root}}],
                         "loads": [
                             {
@@ -143,3 +143,13 @@ def test_safety_factor_requirement_uses_the_same_solve(tmp_path):
     check = workspace.execute("check_requirements", {"run": True})["checks"][0]
     assert check["status"] == "pass"
     assert check["measured"] > 0.5
+    assert check["result_kind"] == "rough_estimate"
+
+
+def test_a_simplified_mesh_cannot_pass_a_safety_requirement():
+    from aicad.requirements import safety_requirement_status
+
+    assert safety_requirement_status(3.0, 2.0, "inconclusive") == "inconclusive"
+    assert safety_requirement_status(3.0, 2.0, "pass") == "pass"
+    assert safety_requirement_status(1.0, 2.0, "pass") == "fail"
+    assert safety_requirement_status(None, 2.0, "pass", solved=False) == "fail"

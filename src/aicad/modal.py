@@ -22,6 +22,7 @@ import numpy as np
 
 from aicad import kernel
 from aicad.errors import GeometryError
+from aicad.honesty import ROUGH_ESTIMATE, finish
 from aicad.fea import (
     _ccx_error,
     _mesh_solid,
@@ -84,6 +85,8 @@ def solve_modal(
         raise GeometryError("The support selector did not match a face.")
 
     mesh, used_order, warnings = _mesh_with_fallback(shape, mesh_size, order)
+    degraded = bool(mesh.get("degraded"))
+    simplifications = list(mesh.get("simplifications") or [])
     fixed = _nodes_for(mesh, [face["index"] for face in held])
     if len(fixed) == 0:
         raise GeometryError("The support face has no mesh nodes. Use a finer mesh, or pick a larger face.")
@@ -97,8 +100,15 @@ def solve_modal(
     }
     frequencies, vectors, log = _run_frequency([body], fixed, [], nmodes, _timeout(setup, 180))
     if int(body["order"]) != used_order:
-        warnings.append("Quadratic tetrahedra had a nonpositive Jacobian. Linear tetrahedra were solved instead.")
+        warnings.append(
+            "Quadratic tetrahedra had a nonpositive Jacobian. Linear tetrahedra were solved instead. "
+            "Linear elements are too stiff, so these frequencies are high and are not a clear or a resonance."
+        )
         used_order = int(body["order"])
+        degraded = True
+        simplifications.append(
+            "Quadratic tetrahedra had a nonpositive Jacobian. Linear tetrahedra were solved instead."
+        )
     surface = _surface_mesh([mesh])
     return _report(
         frequencies,
@@ -115,6 +125,8 @@ def solve_modal(
         order=used_order,
         node_count=int(mesh["node_count"]),
         element_count=int(len(mesh["elements"])),
+        degraded=degraded,
+        simplifications=simplifications,
         support={
             "automatic": False,
             "faces": [face["index"] for face in held],
@@ -172,10 +184,15 @@ def solve_modal_assembly(spec: dict, shapes: dict, setup: dict | None, out_dir: 
     local_meshes = []
     offset = 0
     used_order = order
+    degraded = False
+    simplifications: list[str] = []
     for instance in kept:
         shape = shapes[instance["part"]]
         mesh, used_order, mesh_warnings = _mesh_with_fallback(shape, mesh_size, order)
         warnings.extend(f"{instance['name']}: {item}" for item in mesh_warnings)
+        if mesh.get("degraded"):
+            degraded = True
+            simplifications.extend(f"{instance['name']}: {item}" for item in mesh.get("simplifications") or [])
         matrix = np.array(instance["matrix"], dtype=np.float64)
         rotation = matrix[:3, :3]
         origin = matrix[:3, 3]
@@ -219,7 +236,12 @@ def solve_modal_assembly(spec: dict, shapes: dict, setup: dict | None, out_dir: 
         )
     frequencies, vectors, log = _run_frequency(bodies, np.array(sorted(set(fixed)), dtype=np.int32), equations, nmodes, _timeout(setup, 300))
     if int(bodies[0]["order"]) != order:
-        warnings.append("Quadratic tetrahedra had a nonpositive Jacobian. Linear tetrahedra were solved instead.")
+        warnings.append(
+            "Quadratic tetrahedra had a nonpositive Jacobian. Linear tetrahedra were solved instead. "
+            "Linear elements are too stiff, so these frequencies are high and are not a clear or a resonance."
+        )
+        degraded = True
+        simplifications.append("Linear tetrahedra were solved because the quadratic elements were folded.")
     surface = _surface_mesh(local_meshes, bodies)
     materials = sorted({str(body["material"]["name"]) for body in bodies})
     return _report(
@@ -237,6 +259,8 @@ def solve_modal_assembly(spec: dict, shapes: dict, setup: dict | None, out_dir: 
         order=int(bodies[0]["order"]),
         node_count=offset,
         element_count=sum(len(body["elements"]) for body in bodies),
+        degraded=degraded,
+        simplifications=simplifications,
         support=support,
         extra={
             "skipped_instances": skipped,
@@ -305,23 +329,32 @@ def harmonic_response(spec: dict, natural_hz: float, modal_force: float, phi_nor
         stress = float(spec["stress_per_newton"]) * magnitude * amplification
     elif spec.get("static_stress_mpa") is not None:
         stress = float(spec["static_stress_mpa"]) * amplification
-    return {
-        "model": "single-degree-of-freedom",
-        "natural_hz": round(float(natural_hz), 3),
-        "drive_hz": round(drive, 3),
-        "zeta": zeta,
-        "modal_force": round(float(modal_force), 6),
-        "amplification": round(amplification, 3),
-        "displacement_mm": round(displacement, 6),
-        "stress_amplitude_mpa": None if stress is None else round(stress, 4),
-        "assumptions": [
-            "One mode. The eigenvector is mass-normalized, so the modal mass is 1 tonne and the receptance is in mm/N.",
-            f"Damping ratio ζ = {zeta:g} is an assumption. A welded steel frame is often near 0.02. It was not measured.",
-            "The force is applied at one node, along the eigenvector there. A distributed load would use the integral of φ·f.",
-            "Stress is reported only when static_stress_mpa or stress_per_newton is supplied, and it is that static stress times the amplification.",
-            "Modes other than this one are omitted. Close modes would add to the displacement.",
+    return finish(
+        {
+            "model": "single-degree-of-freedom",
+            "natural_hz": round(float(natural_hz), 3),
+            "drive_hz": round(drive, 3),
+            "zeta": zeta,
+            "modal_force": round(float(modal_force), 6),
+            "amplification": round(amplification, 3),
+            "displacement_mm": round(displacement, 6),
+            "stress_amplitude_mpa": None if stress is None else round(stress, 4),
+            "assumptions": [
+                "One mode. The eigenvector is mass-normalized, so the modal mass is 1 tonne and the receptance is in mm/N.",
+                f"Damping ratio ζ = {zeta:g} is an assumption. A welded steel frame is often near 0.02. It was not measured.",
+                "The force is applied at one node, along the eigenvector there. A distributed load would use the integral of φ·f.",
+                "Stress is reported only when static_stress_mpa or stress_per_newton is supplied, and it is that static stress times the amplification.",
+                "Modes other than this one are omitted. Close modes would add to the displacement.",
+            ],
+        },
+        kind=ROUGH_ESTIMATE,
+        name="Harmonic response",
+        what="Harmonic displacement is a single-mode estimate with an assumed damping ratio, not a second finite-element solve.",
+        limits=[
+            "Other modes are left out.",
+            "The damping ratio was not measured on this part.",
         ],
-    }
+    )
 
 
 def random_response(spec: dict, natural_hz: float) -> dict:
@@ -337,21 +370,30 @@ def random_response(spec: dict, natural_hz: float) -> dict:
     stress = None
     if spec.get("stress_per_g") is not None:
         stress = float(spec["stress_per_g"]) * sigma_g
-    return {
-        "model": "Miles",
-        "natural_hz": round(float(natural_hz), 3),
-        "zeta": zeta,
-        "quality_factor": round(quality, 2),
-        "psd_g2_per_hz": psd,
-        "sigma_g": round(sigma_g, 4),
-        "stress_sigma_mpa": None if stress is None else round(stress, 4),
-        "assumptions": [
-            "Miles' equation for a single mode in a white acceleration spectrum: σ_g = sqrt(π/2 · fn · Q · PSD), with Q = 1/(2ζ).",
-            "The PSD is flat across the resonance in g²/Hz. A real spectrum that rolls off changes this number.",
-            "The result is a 1σ acceleration. Peaks of a Gaussian ride near 3σ. This is not a fatigue spectrum yet.",
-            "Stress is σ_g times stress_per_g when that number is supplied. It is not computed from the mesh.",
+    return finish(
+        {
+            "model": "Miles",
+            "natural_hz": round(float(natural_hz), 3),
+            "zeta": zeta,
+            "quality_factor": round(quality, 2),
+            "psd_g2_per_hz": psd,
+            "sigma_g": round(sigma_g, 4),
+            "stress_sigma_mpa": None if stress is None else round(stress, 4),
+            "assumptions": [
+                "Miles' equation for a single mode in a white acceleration spectrum: σ_g = sqrt(π/2 · fn · Q · PSD), with Q = 1/(2ζ).",
+                "The PSD is flat across the resonance in g²/Hz. A real spectrum that rolls off changes this number.",
+                "The result is a 1σ acceleration. Peaks of a Gaussian ride near 3σ. This is not a fatigue spectrum yet.",
+                "Stress is σ_g times stress_per_g when that number is supplied. It is not computed from the mesh.",
+            ],
+        },
+        kind=ROUGH_ESTIMATE,
+        name="Random vibration",
+        what="Random response is Miles' equation on a flat spectrum. It is a rough estimate, not a finite-element solve.",
+        limits=[
+            "The spectrum is flat. A real spectrum that rolls off changes the number.",
+            "This is a 1σ acceleration, not a fatigue life.",
         ],
-    }
+    )
 
 
 def fatigue_check(spec: dict) -> dict:
@@ -409,7 +451,8 @@ def fatigue_check(spec: dict) -> dict:
             life_factor = 1.0 / goodman if goodman > 0 else None
     target = float(spec.get("target_safety_factor") or 2.0)
     status = "pass" if life_factor is not None and life_factor >= target else "fail"
-    return {
+    return finish(
+        {
         "status": status,
         "material": material["name"],
         "stress_amplitude_mpa": round(amplitude, 3),
@@ -440,7 +483,16 @@ def fatigue_check(spec: dict) -> dict:
             if life_factor is not None
             else "The Goodman denominator was zero."
         ),
-    }
+        },
+        kind=ROUGH_ESTIMATE,
+        name="Fatigue",
+        what="The Goodman check is a rough estimate of a stress you type in. It is not a life from the mesh.",
+        limits=[
+            "The stress amplitude is an input. This check does not compute it from a load.",
+            "There is no notch, no reliability factor, and no measured S-N curve.",
+            "A pass against a factor of 2 is not a certified life.",
+        ],
+    )
 
 
 def _report(
@@ -461,6 +513,8 @@ def _report(
     part=None,
     assembly=None,
     extra=None,
+    degraded: bool = False,
+    simplifications: list | None = None,
 ) -> dict:
     modes = []
     for index, (freq, vector) in enumerate(zip(frequencies, vectors), start=1):
@@ -474,7 +528,10 @@ def _report(
             }
         )
     margin = float(setup.get("margin") or 0.10)
-    resonance = classify_resonance(modes, setup.get("excitations") or [], margin)
+    resonance = demote_if_simplified(
+        classify_resonance(modes, setup.get("excitations") or [], margin),
+        degraded,
+    )
     if resonance["rigid_body_modes"]:
         warnings.append(
             "A natural frequency below 1 Hz is a rigid-body mode. A support is missing, or a joint was not tied."
@@ -503,7 +560,29 @@ def _report(
     for mode in modes:
         flat_views.extend(mode.get("views") or [])
     assumptions = _assumptions(assembly is not None)
+    if simplifications:
+        assumptions = [*assumptions, *simplifications]
     note = _headline(modes, resonance)
+    if degraded:
+        what = (
+            "Natural frequencies from a simplified or linear mesh. "
+            "These numbers run high because the mesh is too stiff. This is not a clear and not a confirmed resonance."
+        )
+        limits = [
+            "A simplified solid or linear tetrahedra cannot be read as a clear or as a resonance.",
+            "Remesh the original solid with quadratic elements before treating a frequency as real.",
+            "The pictures are magnified shapes, not how far the part moves.",
+        ]
+    else:
+        what = (
+            "Natural frequencies from a Gmsh mesh and a CalculiX frequency solve. "
+            "A rough estimate. The pictures are magnified shapes, not how far the part moves."
+        )
+        limits = [
+            "Damping is not in the eigenvalue problem.",
+            "No contact, no plasticity, and no joint flexibility on a single part.",
+            "CalculiX runs as a separate program. It is not linked into aicad.",
+        ]
     payload = {
         "solver": _SOLVER,
         "part": part,
@@ -527,7 +606,7 @@ def _report(
     }
     if extra:
         payload.update(extra)
-    return payload
+    return finish(payload, kind=ROUGH_ESTIMATE, name="Vibration", what=what, limits=limits)
 
 
 def _harmonic_from_vector(spec: dict, mode: dict, vector: np.ndarray, points: np.ndarray) -> dict:
@@ -595,15 +674,27 @@ def _render_modes(modes, vectors, surface, setup, out_dir, stem, warnings) -> li
 
 
 def _mesh_with_fallback(shape, mesh_size: float, order: int):
-    warnings = []
-    try:
-        mesh = _mesh_solid(shape, mesh_size, order)
-    except GeometryError:
-        if order == 1:
-            raise
-        mesh = _mesh_solid(shape, mesh_size, 1)
-        warnings.append("The quadratic mesh failed. Linear tetrahedra were used.")
+    """Mesh, including the safer retries inside ``_mesh_solid``. A failure stays a GeometryError."""
+    mesh = _mesh_solid(shape, mesh_size, order)
+    warnings = [str(line) for line in mesh.get("mesh_notes") or []]
     return mesh, int(mesh["order"]), warnings
+
+
+def demote_if_simplified(resonance: dict, degraded: bool) -> dict:
+    """A stiff mesh must not read as a clear or as a confirmed resonance."""
+    if not degraded:
+        return resonance
+    updated = dict(resonance)
+    updated["computed_status"] = resonance.get("status")
+    updated["status"] = "inconclusive"
+    updated["reliable"] = False
+    updated["suggestions"] = [
+        "The mesh was simplified or uses linear tetrahedra, which are too stiff. "
+        "A frequency from this mesh is high. Do not treat a clear or a resonance flag as a result. "
+        "Mesh the original solid with quadratic elements and read that run.",
+        *(resonance.get("suggestions") or []),
+    ]
+    return updated
 
 
 def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
@@ -628,6 +719,7 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory)
         (path / "job.inp").write_text(_frequency_deck(bodies, fixed_nodes, equations, nmodes), encoding="utf-8")
+        # ccx is GPL-2.0-only. Frequency solves launch it as a separate process.
         completed = subprocess.run(
             ["ccx", "-i", "job"],
             cwd=directory,
@@ -1108,6 +1200,11 @@ def _headline(modes, resonance) -> str:
     if not flexible:
         return "Only rigid-body modes were found. Hold a face and solve again."
     first = flexible[0]["frequency_hz"]
+    if resonance["status"] == "inconclusive":
+        return (
+            f"First flexible frequency {first:.2f} Hz. "
+            "The mesh was simplified, so this is not a clear and not a confirmed resonance."
+        )
     if resonance["status"] == "resonance":
         return (
             f"First flexible frequency {first:.2f} Hz. "
