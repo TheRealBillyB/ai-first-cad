@@ -199,9 +199,22 @@ def open_project(workspace, path: str) -> dict:
     folder = Path(path).expanduser().resolve()
     if not folder.is_dir():
         raise GeometryError(f"No folder at {folder}.")
-    switch_project(workspace, folder)
-    names = [part.name for part in workspace.document.list_parts()]
-    return {"path": str(folder), "name": folder.name, "parts": names}
+    # An existing project is only read. A new empty folder gets the note templates.
+    new_folder = not (folder / "session.json").is_file()
+    opened = workspace.open_project(folder)
+    if new_folder:
+        workspace._ensure_project_files()
+    workspace._activity.clear()
+    remember_project(workspace.root)
+    names = []
+    for part in opened.get("parts") or []:
+        names.append(part["name"] if isinstance(part, dict) else part)
+    return {
+        "path": str(workspace.root),
+        "name": workspace.root.name,
+        "parts": names,
+        "problems": list(opened.get("problems") or []),
+    }
 
 
 def list_parameters(workspace, name: str) -> dict:
