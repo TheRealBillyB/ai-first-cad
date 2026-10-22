@@ -393,32 +393,38 @@ def test_a_thin_size_is_not_drawn_as_zero(tmp_path):
 
 
 def test_a_huge_assembly_uses_a_smaller_scale_and_stays_on_the_page(tmp_path):
+    # 900 m stays inside the 1 km part limit and is still too wide for 1:1000.
     document = Document(tmp_path)
-    _box(document, "slab", [2_000_000, 500_000, 100_000], [1_000_000, 0, 50_000])
+    _box(document, "slab", [900_000, 1_000, 1_000], [0, 0, 500])
     document.create_assembly({"name": "slab", "instances": [{"name": "slab", "part": "slab"}], "joints": []})
     report = document.export_drawing("slab")
     assert report["scale"] not in {f"{numer}:{denom}" for numer, denom in _SCALES}
     assert "1:1000" in report["scale_note"]
     assert "Smaller than the usual ratios." in Path(report["files"]["pdf"]).read_bytes().decode("latin-1")
     sizes = {item["axis"]: item["mm"] for item in report["dimensions"]}
-    assert sizes["X"] == pytest.approx(2_000_000, abs=0.5)
-    assert sizes["Y"] == pytest.approx(500_000, abs=0.5)
-    assert sizes["Z"] == pytest.approx(100_000, abs=0.5)
+    assert sizes["X"] == pytest.approx(900_000, abs=0.5)
+    assert sizes["Y"] == pytest.approx(1_000, abs=0.5)
+    assert sizes["Z"] == pytest.approx(1_000, abs=0.5)
     _assert_on_sheet(report["files"]["dxf"])
 
 
-def test_an_automatic_gap_on_a_huge_model_is_capped(tmp_path):
-    document = Document(tmp_path)
-    _box(document, "slab", [6_000_000, 10, 10], [3_000_000, 0, 5])
-    document.create_assembly({"name": "slab", "instances": [{"name": "slab", "part": "slab"}], "joints": []})
-    report = document.exploded_view("slab")
-    assert report["gap_mm"] == 1_000_000
-    assert report["gap_capped"] is True
-    assert "capped" in report["note"].lower()
+def test_an_automatic_gap_is_capped_for_a_span_no_legal_part_can_reach():
+    """The 1 km part limit cannot produce a gap over 1000000 mm. The clamp stays defensive."""
+    from aicad.explode import _gap
+
+    gap, capped = _gap(None, 10_000_000)
+    assert gap == 1_000_000
+    assert capped is True
+    gap, capped = _gap(None, 1_000)
+    assert gap == pytest.approx(180.0, abs=0.05)
+    assert capped is False
+    assert _gap(1_000_000, 10) == (1_000_000.0, False)
     with pytest.raises(GeometryError):
-        document.exploded_view("slab", gap_mm=0)
+        _gap(0, 10)
     with pytest.raises(GeometryError):
-        document.exploded_view("slab", gap_mm=-5)
+        _gap(-5, 10)
+    with pytest.raises(GeometryError):
+        _gap(1_000_000.1, 10)
 
 
 def test_a_reserved_windows_name_is_renamed(tmp_path):
