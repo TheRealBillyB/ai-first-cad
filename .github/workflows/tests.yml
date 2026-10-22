@@ -1,14 +1,26 @@
 name: tests
 
+# Ubuntu runs on every push and pull request. Windows and macOS run on manual
+# dispatch, a weekly schedule, or the cross-platform label to keep CI fast.
 on:
   push:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * 1"
 
 jobs:
   pytest:
     name: pytest (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job-timeout }}
+    if: >-
+      matrix.os == 'ubuntu-latest'
+      || github.event_name == 'workflow_dispatch'
+      || github.event_name == 'schedule'
+      || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'cross-platform'))
     strategy:
       fail-fast: false
       matrix:

@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| Windows and macOS tests are manual, weekly, or the `cross-platform` label | Windows and macOS run on manual dispatch, a weekly schedule, or the cross-platform label to keep CI fast. Ubuntu still runs on every push and pull request. |
 | CI stops one test after 5 minutes, and the Windows job after 40 | A hung script was using the whole hour, so the log never reached the later tests. |
 | Windows builds the drawing-font list once, in the Python install | The container cannot read the user-profile copy, and building that list inside every script is slow. |
 | A Windows script keeps matplotlib's cache in the project | The AppContainer cannot read the user-profile cache, and that import was stopping every script. |
