@@ -265,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         roots = apply_sandbox(workspace, network=bool(spec.get("network")))
     except Exception as exc:
-        _write(job, {"ok": False, "error": str(exc)})
+        _write(job, {"ok": False, "error": f"{exc}\n{traceback.format_exc()}"})
         return 0
     kind = spec.get("kind")
     try:

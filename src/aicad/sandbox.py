@@ -768,13 +768,6 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     env["TMPDIR"] = tmp
     env["TMP"] = tmp
     env["TEMP"] = tmp
-    if sys.platform == "win32":
-        # The container cannot write the real user profile. Point the usual
-        # profile folders at the project temp directory, which it can write.
-        env["HOME"] = tmp
-        env["USERPROFILE"] = tmp
-        env["APPDATA"] = tmp
-        env["LOCALAPPDATA"] = tmp
     return env
 
 
@@ -1051,7 +1044,13 @@ def _payload_from_result(
     if not result_path.is_file():
         tail = stderr[-2000:]
         shutil.rmtree(job, ignore_errors=True)
-        if memory_killed or code < 0:
+        # SIGKILL is the memory cap and the parent's kill. SIGXCPU is the CPU
+        # cap. Other signals, including an abort, are crashes.
+        limit_signal = code < 0 and -code in {
+            signal.SIGKILL,
+            getattr(signal, "SIGXCPU", -1),
+        }
+        if memory_killed or limit_signal:
             detail = tail.strip()
             if code < 0:
                 try:
@@ -1064,6 +1063,12 @@ def _payload_from_result(
                 + (f"\n{detail}" if detail else "")
             )
         detail = tail.strip() or stdout[-2000:].strip()
+        if code < 0:
+            try:
+                signame = signal.strsignal(-code) or str(-code)
+            except (ValueError, OSError):
+                signame = str(-code)
+            detail = (detail + f"\nstopped by signal {-code} ({signame})").strip()
         raise ScriptError(
             "The script stopped before it could report a result."
             + (f"\n{detail}" if detail else f"\nexit {code}")

@@ -61,13 +61,22 @@ def build_profile(read_paths: Sequence[str], write_paths: Sequence[str], *, netw
         # The profile still denies the network below. Mach lookup is a gap: a
         # system service could do work the script is not allowed to do itself.
         "(allow mach-lookup)",
+        "(allow mach-host*)",
         "(allow ipc-posix-shm*)",
+        # Python and the geometry libraries use semaphores. Denying them aborts
+        # the process instead of returning an error.
+        "(allow ipc-posix-sem)",
         "(allow system-socket)",
         "(allow mach-register)",
         "(allow dynamic-code-generation)",
-        # Do not name vnode types here. sandbox-exec treats PIPE and SOCKET as
-        # unset variables and refuses the profile, so the script never starts.
-        # Inherited standard-input and standard-output handles still work.
+        # A pipe is a FIFO. The name PIPE is not a Seatbelt type, and naming it
+        # makes sandbox-exec refuse the profile.
+        "(allow file-read-data file-write-data file-ioctl (vnode-type FIFO))",
+        "(allow file-read-data file-write-data file-ioctl (vnode-type CHARACTER-DEVICE))",
+        # Reading the root directory itself is required. Without it the process
+        # aborts (signal 6) instead of starting. This does not grant the files
+        # inside other directories.
+        "(allow file-read* (literal \"/\"))",
         "(allow file-read-metadata (subpath \"/\"))",
         "(allow file-ioctl (literal \"/dev/null\") (literal \"/dev/zero\") "
         "(literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/dev/dtracehelper\"))",
