@@ -263,6 +263,8 @@ In the workspace app the Assembly page lists joints, poses, and motions. Apply s
 
 The same assembly can be written out as a layout sheet, a parts count, and an exploded picture. These read the posed solids. They do not change a solver.
 
+They are not buttons in the Workspace app yet. Ask your AI. It has the same three tools: `export_drawing`, `bill_of_materials`, and `exploded_view`. Or run the CLI:
+
 ```bash
 aicad export-drawing rod_handler --exploded --workspace examples/rod_handler_workspace
 aicad bill-of-materials rod_handler --workspace examples/rod_handler_workspace
