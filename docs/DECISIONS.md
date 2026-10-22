@@ -8,6 +8,8 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| Windows does not rewrite this process's access list | An AppContainer cannot open a process that does not grant it, and adding a deny entry stopped later scripts from finishing. |
+| The macOS profile does not name pipe or socket vnode types | `sandbox-exec` treats those names as unset variables and then refuses to start the script. |
 | The script cannot open this aicad process on Windows | A job cannot block OpenProcess; the AppContainer is denied that right on this process. |
 | macOS stops a script whose resident memory passes 4 GiB | The parent checks that a few times a second, because the address-space cap was stopping every script. |
 | A failed design script keeps the one-shot network grant | The grant is spent only when that script finishes without an error. |

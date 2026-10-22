@@ -65,7 +65,9 @@ def build_profile(read_paths: Sequence[str], write_paths: Sequence[str], *, netw
         "(allow system-socket)",
         "(allow mach-register)",
         "(allow dynamic-code-generation)",
-        "(allow file-read-data file-write-data file-ioctl (vnode-type PIPE) (vnode-type SOCKET))",
+        # Do not name vnode types here. sandbox-exec treats PIPE and SOCKET as
+        # unset variables and refuses the profile, so the script never starts.
+        # Inherited standard-input and standard-output handles still work.
         "(allow file-read-metadata (subpath \"/\"))",
         "(allow file-ioctl (literal \"/dev/null\") (literal \"/dev/zero\") "
         "(literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/dev/dtracehelper\"))",

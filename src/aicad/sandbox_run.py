@@ -252,6 +252,12 @@ def main(argv: list[str] | None = None) -> int:
     job = Path(args[0])
     spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
     workspace = Path(os.environ["AICAD_WORKSPACE"]).resolve()
+    try:
+        import faulthandler
+
+        faulthandler.enable(all_threads=True)
+    except (OSError, ValueError):
+        pass
     os.environ["AICAD_SANDBOX_CHILD"] = "1"
     os.chdir(workspace)
     from aicad.sandbox import apply_sandbox, install_python_guard

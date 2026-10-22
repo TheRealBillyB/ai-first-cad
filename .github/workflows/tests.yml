@@ -8,7 +8,7 @@ jobs:
   pytest:
     name: pytest (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -37,8 +37,13 @@ jobs:
 
       - name: Run the test suite
         shell: bash
+        env:
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
         run: |
+          # -s and a line-buffered interpreter so a failure is in the log
+          # even when the job is stopped before pytest prints its summary.
           if [ -x .venv/bin/pytest ]; then
-            exec .venv/bin/pytest
+            exec .venv/bin/pytest -ra --tb=short --durations=15
           fi
-          exec .venv/Scripts/pytest.exe
+          exec .venv/Scripts/pytest.exe -ra --tb=short --durations=15

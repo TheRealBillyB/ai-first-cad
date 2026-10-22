@@ -768,6 +768,13 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     env["TMPDIR"] = tmp
     env["TMP"] = tmp
     env["TEMP"] = tmp
+    if sys.platform == "win32":
+        # The container cannot write the real user profile. Point the usual
+        # profile folders at the project temp directory, which it can write.
+        env["HOME"] = tmp
+        env["USERPROFILE"] = tmp
+        env["APPDATA"] = tmp
+        env["LOCALAPPDATA"] = tmp
     return env
 
 
