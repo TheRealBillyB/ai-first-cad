@@ -110,7 +110,7 @@ class Workspace:
                 self.geometry_revision += 1
                 self._mesh_cache.clear()
                 self._requirement_cache.clear()
-                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power", "vibration", "bolts", "fatigue", "print", "robot"):
+                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power", "vibration", "bolts", "fatigue", "print", "robot", "drawing", "bom", "exploded"):
                     self.panels.pop(panel, None)
             self.event_id += 1
             event = {
@@ -839,6 +839,32 @@ def _cmd_render_assembly(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("motion", report)  # noqa: SLF001
 
 
+def _cmd_export_drawing(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.export_drawing(
+        arguments["name"],
+        scale=arguments.get("scale"),
+        exploded=bool(arguments.get("exploded", False)),
+        gap_mm=arguments.get("gap_mm"),
+        out_dir=arguments.get("path"),
+    )
+    return workspace._remember_panel("drawing", report)  # noqa: SLF001
+
+
+def _cmd_bill_of_materials(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.bill_of_materials(arguments["name"], arguments.get("path"))
+    return workspace._remember_panel("bom", report)  # noqa: SLF001
+
+
+def _cmd_exploded_view(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.exploded_view(
+        arguments["name"],
+        gap_mm=arguments.get("gap_mm"),
+        on_drawing=bool(arguments.get("on_drawing", False)),
+        out_dir=arguments.get("path"),
+    )
+    return workspace._remember_panel("exploded", report)  # noqa: SLF001
+
+
 def _with_motion_views(report: dict) -> dict:
     pictures = report.get("pictures") or {}
     views = []
@@ -1290,6 +1316,47 @@ _add(Command(
     "Render the assembly in its current pose.",
     _ASSEMBLY,
     _cmd_render_assembly,
+))
+_add(Command(
+    "export_drawing",
+    "Write a third-angle layout sheet of an assembly as PDF and DXF, with overall dimensions, a title block, and a scale. It is not a shop drawing and it has no GD&T.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "scale": _string("Sheet scale, such as 1:2 or 2:1. Omit to fit the sheet."),
+            "exploded": {"type": "boolean", "description": "Draw the isometric view with the parts pulled apart."},
+            "gap_mm": _number("Millimeters each joint opens when the isometric view is exploded."),
+            "path": _string("Directory for the PDF and DXF."),
+        },
+        ["name"],
+    ),
+    _cmd_export_drawing,
+))
+_add(Command(
+    "bill_of_materials",
+    "Count parts, catalog fasteners, bearings, hoses, and cables, and write a CSV. No prices. Mass is an estimate from volume and handbook density.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "path": _string("CSV path. Omit to write exports/bom/<name>.csv."),
+        },
+        ["name"],
+    ),
+    _cmd_bill_of_materials,
+))
+_add(Command(
+    "exploded_view",
+    "Render the assembly with parts pulled apart along the joints. The grounded part stays. The gap is not a dimension. on_drawing also puts that view on the layout sheet.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "gap_mm": _number("Millimeters each joint opens. Omit to size the gap from the assembly."),
+            "on_drawing": {"type": "boolean", "description": "Also write the dimensioned sheet with the exploded isometric."},
+            "path": _string("Directory for the sheet, used when on_drawing is true."),
+        },
+        ["name"],
+    ),
+    _cmd_exploded_view,
 ))
 _add(Command("get_state", "Parts, assemblies, sketches, selection, requirement checks, and the latest panels.", _obj({}, []), _cmd_state))
 _add(Command("list_sketches", "Names of the sketches stored in this project.", _obj({}, []), _cmd_list_sketches))

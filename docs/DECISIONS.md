@@ -20,6 +20,10 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Native geometry code cannot write on the MCP stdout | The STEP parser's error line was not JSON-RPC, and it landed on the protocol stream. |
 | Opening someone else's project does not create their notes or requirements file | Those files belong to that project. A missing one is not a template to write. |
 | `check-wall` accepts `--min-wall`, the same flag as `inspect` | The two commands were spelling one threshold differently. |
+| A bill of materials is a count, and a mass on it is a handbook estimate | Quantities come from the instances. Volume times a handbook density is not a weighed mass, and the list has no prices. |
+| An exploded view follows the joints | A slide moves on its axis, a hinge comes off its pin, and a catalog fastener lifts out. The gap is not a dimension. |
+| A drawing uses OpenCascade hidden-line removal | The edges come from the kernel already in use, so the sheet does not add a solver. |
+| A dimensioned sheet is a layout drawing, not a shop drawing | Overall sizes are the kernel's axis-aligned box of the posed solids. GD&T and tolerances stay off the sheet. |
 
 ## 2026-10-21
 

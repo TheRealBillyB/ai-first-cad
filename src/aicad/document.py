@@ -18,7 +18,10 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from aicad import assembly, fea, kernel, library
+from aicad import assembly, bom as bom_mod
+from aicad import drawing as drawing_mod
+from aicad import explode as explode_mod
+from aicad import fea, kernel, library
 from aicad.bolts import check_joint
 from aicad.modal import fatigue_check, solve_modal, solve_modal_assembly
 from aicad.printprep import analyze_print
@@ -896,6 +899,142 @@ class Document:
             )
             return {"name": spec["name"], "solved": solved, "pictures": pictures}
 
+    def export_drawing(
+        self,
+        name: str,
+        scale: str | None = None,
+        exploded: bool = False,
+        gap_mm: float | None = None,
+        out_dir: str | Path | None = None,
+    ) -> dict:
+        """Write a third-angle sheet of an assembly as PDF, DXF, and PNG.
+
+        Dimensions are the overall width, depth, and height of the posed
+        solids. The sheet is a layout drawing: it has no GD&T and no
+        tolerances. ``scale`` is a ratio such as ``1:2``. ``exploded`` draws
+        the isometric view with the parts pulled apart.
+        """
+        with self._lock:
+            spec = self._get_assembly(name)
+            shapes = self._assembly_shapes(spec)
+            solved, _placed = assembly.posed_shapes(spec, shapes)
+            offsets = None
+            gap = gap_mm
+            if exploded:
+                planned = explode_mod.plan(spec, solved, shapes, self._library_specs(spec), gap_mm)
+                offsets = planned["offsets"]
+                gap = planned["gap_mm"]
+            if out_dir:
+                from aicad.sandbox import require_in_project
+
+                require_in_project(out_dir, self.workspace, writing=True)
+            destination = Path(out_dir) if out_dir else self.workspace / "exports" / "drawings"
+            png = self.workspace / "renders" / "assemblies" / spec["name"] / "drawing.png"
+            return drawing_mod.make_drawing(
+                spec,
+                solved,
+                shapes,
+                pdf_path=destination / f"{spec['name']}.pdf",
+                dxf_path=destination / f"{spec['name']}.dxf",
+                png_path=png,
+                scale=scale,
+                offsets=offsets,
+                gap_mm=gap,
+            )
+
+    def bill_of_materials(self, name: str, out: str | Path | None = None) -> dict:
+        """Count parts, catalog fasteners, and hoses or cables. Also writes a CSV.
+
+        Quantities come from the instances. There are no prices. A mass is the
+        solid's volume times the handbook density, and the row says so.
+        """
+        with self._lock:
+            spec = self._get_assembly(name)
+            shapes = self._assembly_shapes(spec)
+            report = bom_mod.build_bom(spec, shapes, self._part_facts(spec))
+            if out:
+                from aicad.sandbox import require_in_project
+
+                require_in_project(out, self.workspace, writing=True)
+            csv_path = Path(out) if out else self.workspace / "exports" / "bom" / f"{spec['name']}.csv"
+            png = self.workspace / "renders" / "assemblies" / spec["name"] / "bom.png"
+            bom_mod.write_csv(report, csv_path)
+            view = bom_mod.render_table(report, png)
+            report["csv"] = str(csv_path.resolve())
+            report["views"] = [view]
+            return report
+
+    def exploded_view(
+        self,
+        name: str,
+        gap_mm: float | None = None,
+        on_drawing: bool = False,
+        out_dir: str | Path | None = None,
+    ) -> dict:
+        """Render the assembly pulled apart along its joints.
+
+        The grounded part stays. Each child moves away from its parent by one
+        gap, and the shift adds up along the tree. ``on_drawing`` also writes
+        the layout sheet with that exploded isometric. The gap is not a dimension.
+        """
+        with self._lock:
+            spec = self._get_assembly(name)
+            shapes = self._assembly_shapes(spec)
+            solved, _placed = assembly.posed_shapes(spec, shapes)
+            planned = explode_mod.plan(spec, solved, shapes, self._library_specs(spec), gap_mm)
+            moved = explode_mod.apply_moves(solved, planned["offsets"])
+            mesh = assembly._colored_mesh(shapes, moved)  # noqa: SLF001
+            out = self.workspace / "renders" / "assemblies" / spec["name"]
+            pictures = render_motion_frames(
+                [mesh],
+                out,
+                "exploded",
+                [f"{spec['name']}  exploded"],
+            )
+            frame = pictures["frames"][0]
+            from PIL import Image
+
+            with Image.open(frame["path"]) as image:
+                width, height = image.size
+            report = {key: value for key, value in planned.items() if key != "offsets"}
+            report["views"] = [
+                {"name": "exploded", "path": frame["path"], "width": width, "height": height}
+            ]
+            report["pictures"] = pictures
+            if on_drawing:
+                if out_dir:
+                    from aicad.sandbox import require_in_project
+
+                    require_in_project(out_dir, self.workspace, writing=True)
+                sheet = self.export_drawing(
+                    name,
+                    exploded=True,
+                    gap_mm=planned["gap_mm"],
+                    out_dir=out_dir,
+                )
+                report["drawing"] = {
+                    "pdf": sheet["files"]["pdf"],
+                    "dxf": sheet["files"]["dxf"],
+                    "png": sheet["files"]["png"],
+                    "scale": sheet["scale"],
+                    "result_kind": sheet["result_kind"],
+                    "result_label": sheet["result_label"],
+                }
+                report["views"].extend(sheet["views"])
+            from aicad.honesty import VERIFIED_CHECK, finish
+
+            return finish(
+                report,
+                kind=VERIFIED_CHECK,
+                name="Exploded view",
+                what=(
+                    "This picture moves each part by a stated gap along its joint. "
+                    "The positions are the posed model plus that shift. "
+                    "It is not a disassembly procedure, and the gaps are not dimensions."
+                ),
+                limits=list(report.get("omits") or explode_mod.OMITS),
+            )
+
     def assembly_mesh(self, name: str) -> dict:
         with self._lock:
             spec = self._get_assembly(name)
@@ -943,6 +1082,25 @@ class Document:
             if part_name not in shapes:
                 shapes[part_name] = self._get(part_name).base
         return shapes
+
+    def _library_specs(self, spec: dict) -> dict[str, dict | None]:
+        specs: dict[str, dict | None] = {}
+        for instance in spec["instances"]:
+            part_name = instance["part"]
+            if part_name not in specs:
+                specs[part_name] = copy.deepcopy(self._get(part_name).library_spec)
+        return specs
+
+    def _part_facts(self, spec: dict) -> dict[str, dict]:
+        facts: dict[str, dict] = {}
+        for instance in spec["instances"]:
+            part = self._get(instance["part"])
+            if part.name not in facts:
+                facts[part.name] = {
+                    "source": part.source,
+                    "library": copy.deepcopy(part.library_spec) if part.library_spec else None,
+                }
+        return facts
 
     def session_payload(self) -> dict:
         """The serializable document. Undo stores this and restores it."""

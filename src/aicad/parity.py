@@ -48,6 +48,9 @@ CLI_TOOLS = {
     "fatigue": "check_fatigue",
     "print": "check_print",
     "robot": "export_robot",
+    "export-drawing": "export_drawing",
+    "bill-of-materials": "bill_of_materials",
+    "exploded-view": "exploded_view",
 }
 
 # Public Document methods a design script may call. This is an explicit list
@@ -69,8 +72,11 @@ SCRIPT_METHODS = frozenset(
         "create_sketch",
         "delete_part",
         "describe_faces",
+        "bill_of_materials",
         "estimate_power",
+        "exploded_view",
         "export",
+        "export_drawing",
         "export_robot",
         "feature_report",
         "get_assembly",

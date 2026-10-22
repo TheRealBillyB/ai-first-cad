@@ -267,6 +267,43 @@ def build_parser() -> argparse.ArgumentParser:
     robot.add_argument("name")
     robot.add_argument("--out", type=Path, default=None, help="Directory for the robot files.")
 
+    drawing = commands.add_parser(
+        "export-drawing",
+        parents=[common],
+        help="Write a dimensioned third-angle sheet of an assembly as PDF and DXF.",
+    )
+    drawing.add_argument("name")
+    drawing.add_argument("--scale", default=None, help="Sheet scale, such as 1:2 or 2:1. Omit to fit the sheet.")
+    drawing.add_argument(
+        "--exploded",
+        action="store_true",
+        help="Draw the isometric view with the parts pulled apart.",
+    )
+    drawing.add_argument("--gap", type=float, default=None, help="Millimeters each joint opens in an exploded view.")
+    drawing.add_argument("--out", type=Path, default=None, help="Directory for the PDF and DXF.")
+
+    bom = commands.add_parser(
+        "bill-of-materials",
+        parents=[common],
+        help="Count parts, catalog fasteners, and hoses, and write a CSV.",
+    )
+    bom.add_argument("name")
+    bom.add_argument("--out", type=Path, default=None, help="CSV path. The default is exports/bom/<name>.csv.")
+
+    exploded = commands.add_parser(
+        "exploded-view",
+        parents=[common],
+        help="Render the assembly with parts pulled apart along the joints.",
+    )
+    exploded.add_argument("name")
+    exploded.add_argument("--gap", type=float, default=None, help="Millimeters each joint opens. Omit to size it from the assembly.")
+    exploded.add_argument(
+        "--on-drawing",
+        action="store_true",
+        help="Also put that exploded isometric on the dimensioned sheet.",
+    )
+    exploded.add_argument("--out", type=Path, default=None, help="Directory for the sheet, used with --on-drawing.")
+
     from aicad.plugins import add_cli
 
     add_cli(commands, common)
@@ -438,6 +475,27 @@ def _dispatch(args: argparse.Namespace) -> int:
         return emit(document.check_print(args.name, setup))
     if args.command == "robot":
         return emit(document.export_robot(args.name, args.out))
+    if args.command == "export-drawing":
+        return emit(
+            document.export_drawing(
+                args.name,
+                scale=args.scale,
+                exploded=bool(args.exploded),
+                gap_mm=args.gap,
+                out_dir=args.out,
+            )
+        )
+    if args.command == "bill-of-materials":
+        return emit(document.bill_of_materials(args.name, args.out))
+    if args.command == "exploded-view":
+        return emit(
+            document.exploded_view(
+                args.name,
+                gap_mm=args.gap,
+                on_drawing=bool(args.on_drawing),
+                out_dir=args.out,
+            )
+        )
     raise AICADError(f"Unknown command {args.command!r}.")
 
 
