@@ -72,7 +72,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Decision | Rationale |
 | --- | --- |
 | A design script cannot allow or load a plugin | Plugin consent stays a separate switch the person uses; the sandbox cannot grant it. |
-| Design scripts and part scripts run in a Linux child with Landlock and seccomp | The file and network limits have to be real, and this kernel can apply them; if it cannot, the script does not run. |
+| Design scripts and part scripts run in a Linux child with Landlock and seccomp | The file and network limits have to be real, and this kernel can apply them; if it cannot, the script does not run. Superseded by the Windows and macOS sandbox rows. |
 | Opening a project loads script text and a saved STEP solid | A downloaded session must not execute Python just because it was opened. |
 | The import allowlist is a clear error; Landlock is the boundary | build123d can reach past a Python import list, so the operating system is what confines the process. |
 | Design-script permission lives outside the project | A script can write the project folder, so it must not be able to allow itself. |
