@@ -244,6 +244,17 @@ def _design(workspace: Path, job: Path) -> int:
     return 0
 
 
+def _leave(code: int) -> int:
+    """On Windows, skip interpreter shutdown. A confined process that has loaded
+    the geometry libraries can take more than a minute to exit, and the parent
+    waits for that. The result file is already written.
+    """
+
+    if sys.platform == "win32":
+        os._exit(code)
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
@@ -267,21 +278,21 @@ def main(argv: list[str] | None = None) -> int:
             roots = apply_sandbox(workspace, network=bool(spec.get("network")))
         except Exception as exc:
             _write(job, {"ok": False, "error": f"{exc}\n{traceback.format_exc()}"})
-            return 0
+            return _leave(0)
         kind = spec.get("kind")
         try:
             if kind == "probe":
-                return _probe(workspace, job)
+                return _leave(_probe(workspace, job))
             install_python_guard(workspace, roots)
             if kind == "part":
-                return _part(workspace, job)
+                return _leave(_part(workspace, job))
             if kind == "design":
-                return _design(workspace, job)
+                return _leave(_design(workspace, job))
             _write(job, {"ok": False, "error": f"Unknown script job {kind!r}."})
-            return 0
+            return _leave(0)
         except Exception as exc:
             _write(job, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-            return 0
+            return _leave(0)
     except Exception as exc:
         # Importing the geometry stack can fail before the handlers above run.
         # A partial native import then hangs while the process shuts down, and

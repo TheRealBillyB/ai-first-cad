@@ -30,9 +30,14 @@ def test_windows_script_keeps_library_caches_in_the_project(tmp_path, monkeypatc
     monkeypatch.setattr(sys, "platform", "win32")
     from aicad import sandbox as sandbox_mod
 
+    font_cache = tmp_path / "font-cache"
+    font_file = font_cache / "ezdxf" / "font_manager_cache.json"
+    font_file.parent.mkdir(parents=True)
+    font_file.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(sandbox_mod, "_windows_font_cache_home", lambda: font_cache)
     env = sandbox_mod._child_env(tmp_path, tmp_path / "job", False)
     cache = str(tmp_path / ".aicad" / "cache")
-    assert env["XDG_CACHE_HOME"] == cache
+    assert env["XDG_CACHE_HOME"] == str(font_cache)
     assert env["XDG_CONFIG_HOME"] == cache
     assert env["XDG_DATA_HOME"] == cache
     assert env["MPLCONFIGDIR"] == cache

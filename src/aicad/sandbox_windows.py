@@ -938,26 +938,32 @@ def identity_failures(memory_bytes: int) -> list[str]:
     failures = []
     kernel32 = _kernel32()
     advapi32 = _advapi32()
-    token = wintypes.HANDLE()
-    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), _TOKEN_QUERY, ctypes.byref(token)):
-        return ["could not read the process token"]
+    # GetCurrentProcess() is the pseudo-handle -1, and the process token is -4.
+    # OpenProcessToken(GetCurrentProcess()) inside this AppContainer raises
+    # STATUS_INVALID_HANDLE instead of returning an error. GetTokenInformation
+    # accepts the token pseudo-handle, and that handle must not be closed.
+    # -4 is the process-token pseudo-handle. -1 is the current process.
+    is_container = wintypes.DWORD(0)
+    returned = wintypes.DWORD(0)
     try:
-        is_container = wintypes.DWORD(0)
-        returned = wintypes.DWORD(0)
         ok = advapi32.GetTokenInformation(
-            token,
+            -4,
             _TokenIsAppContainer,
             ctypes.byref(is_container),
             ctypes.sizeof(is_container),
             ctypes.byref(returned),
         )
-        if not ok or is_container.value != 1:
-            failures.append("the process is not an AppContainer")
-    finally:
-        kernel32.CloseHandle(token)
+    except OSError:
+        ok = False
+    if not ok or is_container.value != 1:
+        failures.append("the process is not an AppContainer")
 
     in_job = wintypes.BOOL(False)
-    if not kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, ctypes.byref(in_job)) or not in_job.value:
+    try:
+        in_job_ok = bool(kernel32.IsProcessInJob(-1, None, ctypes.byref(in_job)))
+    except OSError:
+        in_job_ok = False
+    if not in_job_ok or not in_job.value:
         failures.append("the process is not in a Job Object")
         return failures
     info = _JobExtendedLimit()

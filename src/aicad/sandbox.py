@@ -792,15 +792,38 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     env["TEMP"] = tmp
     if sys.platform == "win32":
         # ezdxf and matplotlib otherwise stat the real user profile. An
-        # AppContainer is denied that path, and the import then hangs while
-        # Python shuts down. Do not redirect USERPROFILE: that made every
-        # script fail with STATUS_INVALID_HANDLE.
+        # AppContainer is denied that path. Do not redirect USERPROFILE:
+        # that made every script fail with STATUS_INVALID_HANDLE.
+        # The font list is built once in the Python install. The other
+        # caches stay in the project, which the container can write.
         cache = str(workspace / ".aicad" / "cache")
-        env["XDG_CACHE_HOME"] = cache
+        font_home = _windows_font_cache_home()
+        font_file = font_home / "ezdxf" / "font_manager_cache.json"
+        if font_file.is_file() and font_file.stat().st_size > 0:
+            env["XDG_CACHE_HOME"] = str(font_home)
+        else:
+            env["XDG_CACHE_HOME"] = cache
         env["XDG_CONFIG_HOME"] = cache
         env["XDG_DATA_HOME"] = cache
         env["MPLCONFIGDIR"] = cache
     return env
+
+
+def _windows_font_cache_home() -> Path:
+    """A font list the parent builds once, so each script does not scan fonts."""
+
+    root = Path(sys.prefix) / "aicad-font-cache"
+    target = root / "ezdxf" / "font_manager_cache.json"
+    root.mkdir(parents=True, exist_ok=True)
+    if target.is_file() and target.stat().st_size > 0:
+        return root
+    try:
+        from ezdxf.fonts.fonts import build_font_manager_cache
+
+        build_font_manager_cache(target)
+    except Exception:
+        return root
+    return root
 
 
 def _make_probe(workspace: Path) -> tuple[Path, str, str]:
