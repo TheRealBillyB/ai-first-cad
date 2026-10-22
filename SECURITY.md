@@ -25,4 +25,6 @@ The local tool: the MCP server, the workspace app, the command line, and the Pyt
 
 ## What this version does
 
-On the current code, a part script runs in-process with the full Python builtins, and opening a project runs the scripts stored in `session.json`. There is no plugin loader. Treat a project from someone else as code you are about to run.
+The design-script controls are not built yet. On the current code, a part script runs in-process with the full Python builtins, and opening a project runs the scripts stored in `session.json`. Treat a project from someone else as code you are about to run.
+
+Plugins are separate. Installed packs are listed from entry points without importing them. A third-party pack runs only after you allow the publisher, the version, and the permissions it declared. Opening a design does not allow or load a plugin. The warning is written by aicad, and the permission list is a declaration, not a sandbox. See [docs/plugins.md](docs/plugins.md).

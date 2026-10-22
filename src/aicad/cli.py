@@ -229,6 +229,10 @@ def main(argv: list[str] | None = None) -> int:
     robot.add_argument("name")
     robot.add_argument("--out", type=Path, default=None, help="Directory for the robot files.")
 
+    from aicad.plugins import add_cli
+
+    add_cli(commands, common)
+
     args = parser.parse_args(argv)
     try:
         return _dispatch(args)
@@ -248,6 +252,11 @@ def _dispatch(args: argparse.Namespace) -> int:
 
         serve_app(args.workspace, host=args.host, port=args.port, open_browser=not args.no_browser)
         return 0
+    # Listing or allowing a plugin must not open the design. Opening a file is not consent.
+    if args.command == "plugins":
+        from aicad.plugins import dispatch_cli
+
+        return dispatch_cli(args)
 
     from aicad.document import Document
 

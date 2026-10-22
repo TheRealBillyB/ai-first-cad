@@ -1,0 +1,8 @@
+{
+  "api": 1,
+  "name": "volume-note",
+  "publisher": "aicad example",
+  "summary": "Reports one part's volume in cubic centimeters.",
+  "permissions": ["checks"],
+  "provides": ["analysis"]
+}
