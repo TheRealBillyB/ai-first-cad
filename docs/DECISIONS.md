@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| An approval is a receipt on this computer, not the word approved in the project file | A downloaded or hand-edited plan can say approved; modeling stays off until approve-plan on this machine records that revision. |
 | Plans are JSON and PNG in the project `plans/` folder, never scripts in the session | Opening a project must not run planning notes; a design file stays data until someone asks to run code. |
 | A revision is cut only by revise, and it records what changed | Earlier revisions stay, and each one says what changed. |
 | Approve, answer, and mark exist on every door, and the agent door refuses them | The assistant writes the plan; the person who has to live with it is the one who accepts it. |

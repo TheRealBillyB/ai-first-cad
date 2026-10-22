@@ -20,7 +20,15 @@ The file is `plans/<name>.json` in the project, plus a PNG for each sheet. Openi
 
 The assistant can start a plan, add research (every note needs a source), draw sheets, add assumptions and questions, comment, submit for review, and open a new revision.
 
-You answer questions, accept or reject assumptions, waive a question, and approve. You can do that in the Plan panel, or with the commands below. The assistant's tools refuse those three actions and say so.
+You answer questions, accept or reject assumptions, waive a question, and approve. You can do that in the Plan panel, or with the commands below. The assistant's tools refuse those three actions and say so. There is no flag on those commands that lets the assistant through.
+
+Approval is remembered on your computer, in `~/.config/aicad/plan-approvals.json`, not only as a word in the project file. Changing `plans/<name>.json` so it says approved does not open modeling. A project you received from someone else stays closed until you approve it yourself, even when its file already says approved. Answers typed into the file the same way are shown as not entered on this computer. Opening the project does not rewrite the file.
+
+The project tree can show a short plan status. The full review stays on the Plan page. On a workspace page that already has an empty `#plan-body`, the one line that fills it is:
+
+```html
+<script src="/static/plan.js"></script>
+```
 
 Two commands release the later work:
 

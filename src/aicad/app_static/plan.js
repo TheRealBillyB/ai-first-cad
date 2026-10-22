@@ -34,45 +34,48 @@
 
   function install() {
     const nav = document.querySelector("header nav");
-    if (!nav || document.getElementById("nav-plan")) return;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.id = "nav-plan";
-    button.textContent = "Plan";
-    nav.appendChild(button);
-    const root = document.createElement("div");
-    root.id = "page-plan";
-    root.className = "plan-page";
-    root.hidden = true;
-    root.innerHTML = `
-      <aside class="plan-list">
-        <h2>Plans</h2>
-        <p class="plan-kicker">Before a solid</p>
-        <div id="plan-rows"></div>
-      </aside>
-      <section class="plan-main" id="plan-main"></section>
-      <aside class="plan-side" id="plan-side"></aside>`;
-    document.body.appendChild(root);
-    button.addEventListener("click", () => showPlan());
-    document.querySelector("header").addEventListener("click", (event) => {
-      const hit = event.target.closest("button");
-      if (!hit || hit.id === "nav-plan") return;
-      hidePlan();
-    });
-    root.addEventListener("focusin", (event) => {
-      if (event.target.matches("textarea, input")) ui.editing = true;
-    });
-    root.addEventListener("focusout", () => {
-      setTimeout(() => {
-        const active = document.activeElement;
-        ui.editing = !!(active && root.contains(active) && active.matches("textarea, input"));
-      }, 0);
-    });
-    root.addEventListener("click", onClick);
-    setInterval(() => {
-      if (root.hidden || ui.editing) return;
-      refreshSummaries().catch(() => {});
-    }, 2500);
+    if (nav && !document.getElementById("nav-plan")) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.id = "nav-plan";
+      button.textContent = "Plan";
+      nav.appendChild(button);
+      const root = document.createElement("div");
+      root.id = "page-plan";
+      root.className = "plan-page";
+      root.hidden = true;
+      root.innerHTML = `
+        <aside class="plan-list">
+          <h2>Plans</h2>
+          <p class="plan-kicker">Before a solid</p>
+          <div id="plan-rows"></div>
+        </aside>
+        <section class="plan-main" id="plan-main"></section>
+        <aside class="plan-side" id="plan-side"></aside>`;
+      document.body.appendChild(root);
+      button.addEventListener("click", () => showPlan());
+      document.querySelector("header").addEventListener("click", (event) => {
+        const hit = event.target.closest("button");
+        if (!hit || hit.id === "nav-plan") return;
+        hidePlan();
+      });
+      root.addEventListener("focusin", (event) => {
+        if (event.target.matches("textarea, input")) ui.editing = true;
+      });
+      root.addEventListener("focusout", () => {
+        setTimeout(() => {
+          const active = document.activeElement;
+          ui.editing = !!(active && root.contains(active) && active.matches("textarea, input"));
+        }, 0);
+      });
+      root.addEventListener("click", onClick);
+      setInterval(() => {
+        if (ui.editing) return;
+        const mounted = document.getElementById("plan-body");
+        if ((page() && !page().hidden) || mounted) refreshSummaries().catch(() => {});
+      }, 2500);
+    }
+    refreshSummaries(true).catch(() => {});
   }
 
   function otherPages() {
@@ -88,6 +91,7 @@
   }
 
   function showPlan() {
+    if (!page()) return;
     // Those pages set display in their own CSS, which beats the hidden attribute.
     otherPages().forEach((node) => node.style.setProperty("display", "none", "important"));
     document.querySelectorAll("header nav button").forEach((node) => {
@@ -104,10 +108,17 @@
     const summaries = body.result.plans || [];
     const previous = JSON.stringify(ui.summaries);
     ui.summaries = summaries;
-    if (!ui.id && summaries.length) ui.id = summaries[0].id;
-    if (ui.id && !summaries.some((item) => item.id === ui.id)) {
-      ui.id = summaries.length ? summaries[0].id : null;
+    const readable = summaries.filter((item) => item.status !== "unreadable");
+    if (!ui.id && readable.length) ui.id = readable[0].id;
+    if (ui.id && !readable.some((item) => item.id === ui.id)) {
+      ui.id = readable.length ? readable[0].id : null;
       ui.plan = null;
+    }
+    if (!ui.id) {
+      const broken = summaries.filter((item) => item.status === "unreadable");
+      if (broken.length) {
+        ui.error = broken.map((item) => `${item.title}: ${item.error || "could not be read"}`).join(" ");
+      }
     }
     const stamp = summaries.map((item) => item.id + item.updated_at + item.status).join("|");
     if (force || stamp !== ui.stamp || previous !== JSON.stringify(summaries)) {
@@ -138,6 +149,7 @@
     renderList();
     const main = document.getElementById("plan-main");
     const side = document.getElementById("plan-side");
+    if (!main || !side) return;
     if (!ui.plan) {
       main.innerHTML = `
         <div class="plan-empty">
@@ -153,7 +165,7 @@
     const revision = selectedRevision();
     const current = revision && revision.version === plan.current_revision;
     const sheets = (revision && revision.sheets) || [];
-    const pictures = sheets.map((sheet) => `
+    const pictures = sheets.filter((sheet) => sheet.file || sheet.path).map((sheet) => `
       <figure class="plan-sheet">
         <img alt="${esc(sheet.title)}" src="${fileUrl(sheet.file || sheet.path)}" />
         <figcaption>${esc(sheet.title)} · v${revision.version}</figcaption>
@@ -165,7 +177,7 @@
     main.innerHTML = `
       <h2>${esc(plan.title)}</h2>
       <div class="plan-bar">
-        <span class="plan-pill ${esc(plan.status)}">${esc(plan.status_text)}</span>
+        <span class="plan-pill ${esc(plan.pill || plan.status)}">${esc(plan.status_text)}</span>
         <span>revision v${plan.current_revision}</span>
         <span class="plan-kicker" style="margin:0">${plan.modeling === "open" ? "modeling open" : "modeling closed"}</span>
       </div>
@@ -177,6 +189,7 @@
       ${current ? "" : `<p class="plan-banner">You are looking at v${revision.version}. The current revision is v${plan.current_revision}. Answers and approval apply to the current revision.</p>`}
       <p><strong>What changed.</strong> ${esc(revision.changed || "")}</p>
       ${pictures || "<p>This revision has no sheet yet.</p>"}
+      ${sheets.some((sheet) => sheet.error) ? `<p class="plan-error">${esc(sheets.map((sheet) => sheet.error).filter(Boolean).join(" "))}</p>` : ""}
       <h3>Activity</h3>
       <ul class="plan-activity">${(revision.activity || []).map((item) =>
         `<li>v${revision.version} · ${esc(item.actor)} · ${esc(item.action)}${item.item && item.item !== "plan" ? " · " + esc(item.item) : ""} — ${esc(item.text)}</li>`
@@ -196,6 +209,7 @@
         <header><strong>${esc(item.id)}</strong><span class="plan-pill">${esc(item.status)}</span></header>
         <p>${esc(item.text)}</p>
         ${item.comment ? `<p class="plan-source">Comment: ${esc(item.comment)}</p>` : ""}
+        ${item.trust_note ? `<p class="plan-error">${esc(item.trust_note)}</p>` : ""}
         ${current && plan.status !== "approved" ? `
           <div class="plan-actions">
             <button type="button" data-mark="${esc(item.id)}" data-value="accepted">Accept</button>
@@ -207,6 +221,7 @@
         <header><strong>${esc(item.id)}</strong><span class="plan-pill">${esc(item.status)}</span></header>
         <p>${esc(item.text)}</p>
         ${item.answer ? `<p>Answer: ${esc(item.answer)}</p>` : ""}
+        ${item.trust_note ? `<p class="plan-error">${esc(item.trust_note)}</p>` : ""}
         ${current && plan.status !== "approved" && item.status !== "answered" ? `
           <textarea data-answer="${esc(item.id)}" placeholder="Your answer"></textarea>
           <div class="plan-actions">
@@ -220,7 +235,7 @@
     const actions = !current ? "" : `
       <div class="plan-actions">
         ${plan.status === "draft" ? `<button type="button" id="plan-submit" class="primary">Submit for review</button>` : ""}
-        ${plan.status === "in_review" ? `<button type="button" id="plan-approve" class="primary">Approve</button>` : ""}
+        ${plan.status === "in_review" || plan.approval === "missing" ? `<button type="button" id="plan-approve" class="primary">Approve</button>` : ""}
         <button type="button" id="plan-try-model">Try modeling</button>
         <button type="button" id="plan-try-sim">Try simulation</button>
       </div>
@@ -246,11 +261,54 @@
       rows.innerHTML = "<p class='plan-source'>None in this project.</p>";
       return;
     }
-    rows.innerHTML = ui.summaries.map((item) => `
-      <button type="button" class="plan-row${item.id === ui.id ? " on" : ""}" data-plan="${esc(item.id)}">
-        <span>${esc(item.title)}</span>
+    rows.innerHTML = ui.summaries.map((item) => {
+      if (item.status === "unreadable") {
+        return `<div class="plan-row">
+          <span>${esc(item.title)}</span>
+          <span>unreadable</span>
+          <p class="plan-error">${esc(item.error || "This file could not be read.")}</p>
+        </div>`;
+      }
+      const mark = item.status_text ? ` · ${esc(item.status_text)}` : "";
+      return `<button type="button" class="plan-row${item.id === ui.id ? " on" : ""}" data-plan="${esc(item.id)}">
+        <span>${esc(item.title)}${mark}</span>
         <span>v${item.current_revision}</span>
-      </button>`).join("");
+      </button>`;
+    }).join("");
+    renderMount();
+  }
+
+  function renderMount() {
+    const slot = document.getElementById("plan-body");
+    if (!slot) return;
+    const readable = ui.summaries.filter((item) => item.status !== "unreadable");
+    const broken = ui.summaries.filter((item) => item.status === "unreadable");
+    if (!ui.summaries.length) {
+      slot.innerHTML = `<p class="muted">Nothing planned yet. A plan and a rough sketch will show here before a model starts.</p>`;
+      return;
+    }
+    const current = readable.find((item) => item.id === ui.id) || readable[0];
+    const lines = [];
+    if (current) {
+      const questions = current.open_questions
+        ? `${current.open_questions} question${current.open_questions === 1 ? "" : "s"} still open`
+        : "no open questions";
+      lines.push(`<p><strong>${esc(current.title)}</strong></p>`);
+      lines.push(`<p>${esc(current.status_text || current.status)} · v${current.current_revision} · ${questions}</p>`);
+      lines.push(`<p>${current.modeling === "open"
+        ? "Modeling may start from this revision."
+        : "Modeling stays off until you approve."}</p>`);
+    }
+    if (readable.length > 1) {
+      lines.push(`<p class="muted">${readable.length} plans in this project. The full review lists every one.</p>`);
+    }
+    broken.forEach((item) => {
+      lines.push(`<p class="plan-error">${esc(item.title)} could not be read. ${esc(item.error || "")}</p>`);
+    });
+    lines.push(`<button type="button" id="plan-mount-open">Open the plan</button>`);
+    slot.innerHTML = lines.join("");
+    const opener = document.getElementById("plan-mount-open");
+    if (opener) opener.addEventListener("click", () => showPlan());
   }
 
   function showError(error) {

@@ -4,16 +4,20 @@ A plan is data in the project folder: one JSON file and the PNG sheets it
 describes. Opening a project reads that JSON only when a plan command asks
 for it, and nothing in the file is executed.
 
-The person approves a plan. The agent does not. Modeling and simulation that
-start from the plan stay off until that approval, then the approved
-dimensions and assumptions are what the modeling step receives.
+The person approves a plan. The agent does not. That approval is recorded on
+this computer, outside the project. A plan file that says approved, including
+one copied from someone else or edited by hand, does not open modeling.
+Modeling and simulation that start from the plan stay off until the recorded
+approval matches this revision. They then receive its dimensions and assumptions.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
+import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -75,7 +79,12 @@ def work_refusal(plan: dict, kind: str) -> str:
     done = "modeled" if kind == "model" else "simulated"
     revision = _current(plan)
     open_questions = sum(1 for item in revision["questions"] if item["status"] == "open")
-    waiting = f" {open_questions} question(s) are still open." if open_questions else ""
+    if open_questions == 1:
+        waiting = " 1 question is still open."
+    elif open_questions:
+        waiting = f" {open_questions} questions are still open."
+    else:
+        waiting = ""
     return (
         f"{action} stays off. Plan {plan['title']!r} ({plan['id']}) is {status_phrase(plan['status'])}, "
         f"revision v{plan['current_revision']}.{waiting} "
@@ -83,6 +92,27 @@ def work_refusal(plan: dict, kind: str) -> str:
         "Review the sheets, the assumptions, and the open questions in the Plan panel, then approve. "
         f"Nothing was {done}."
     )
+
+
+def untrusted_refusal(plan: dict, kind: str) -> str:
+    action = "Heavy modeling" if kind == "model" else "Simulation"
+    done = "modeled" if kind == "model" else "simulated"
+    return (
+        f"{action} stays off. The plan file for {plan['title']!r} ({plan['id']}) says "
+        f"{status_phrase(plan['status'])} at revision v{plan['current_revision']}, "
+        "but that does not match an approval recorded on this computer. "
+        "Editing the plan file does not approve it, and the agent cannot approve it. "
+        "Approve it yourself in the Plan panel, or run approve-plan. "
+        f"Nothing was {done}."
+    )
+
+
+def approvals_path() -> Path:
+    """Where this computer remembers approvals. Never inside the project."""
+    override = os.environ.get("AICAD_APPROVALS", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return (Path.home() / ".config" / "aicad" / "plan-approvals.json").resolve()
 
 
 class PlanStore:
@@ -138,17 +168,26 @@ class PlanStore:
             return []
         found = []
         for path in sorted(self.directory.glob("*.json")):
-            plan = self._read(path)
-            revision = _current(plan)
+            try:
+                plan = self._read(path)
+                revision = _current(plan)
+            except (PlanError, OSError) as exc:
+                found.append(_unreadable_summary(path, exc))
+                continue
+            view = self._approval_view(plan)
             found.append(
                 {
                     "id": plan["id"],
                     "title": plan["title"],
                     "status": plan["status"],
+                    "status_text": view["status_text"],
+                    "pill": view["pill"],
+                    "approval": view["approval"],
+                    "modeling": view["modeling"],
                     "current_revision": plan["current_revision"],
                     "approved_revision": plan["approved_revision"],
-                    "open_questions": sum(1 for item in revision["questions"] if item["status"] == "open"),
-                    "open_assumptions": sum(1 for item in revision["assumptions"] if item["status"] == "open"),
+                    "open_questions": _open_question_count(self.root, plan, revision),
+                    "open_assumptions": _open_assumption_count(self.root, plan, revision),
                     "sheet_count": len(revision["sheets"]),
                     "updated_at": plan["updated_at"],
                 }
@@ -262,6 +301,7 @@ class PlanStore:
         question["status"] = "answered"
         _activity(revision, "user", "answer", item, question["answer"])
         self._touch(plan)
+        _record_entry(self.root, plan["id"], revision["version"], "answer", item, question["answer"])
         return self._public(plan)
 
     def mark(self, name: str, item: str, mark: str) -> dict:
@@ -287,6 +327,7 @@ class PlanStore:
                 question["answer"] = ""
         _activity(revision, "user", "mark", item, choice)
         self._touch(plan)
+        _record_entry(self.root, plan["id"], revision["version"], "mark", item, choice)
         return self._public(plan)
 
     def submit(self, name: str) -> dict:
@@ -350,28 +391,42 @@ class PlanStore:
         if self.actor != "user":
             raise PlanError(approval_refusal(plan if "status" in plan else {**plan, "title": name, "current_revision": 1}))
         plan = self._load(name)
-        if plan["status"] == "approved":
+        confirming = plan["status"] == "approved" and not _receipt_matches(self.root, plan)
+        if plan["status"] == "approved" and not confirming:
             raise PlanError(
                 f"{plan['title']!r} is already approved at revision v{plan['approved_revision']}."
             )
-        if plan["status"] != "in_review":
+        if not confirming and plan["status"] != "in_review":
             raise PlanError(
                 f"{plan['title']!r} is still a draft at revision v{plan['current_revision']}. "
                 "Submit it for review before you approve it. The agent cannot approve it either."
             )
         now = _now()
-        plan["status"] = "approved"
-        plan["approved_revision"] = plan["current_revision"]
-        plan["approved_at"] = now
+        if not confirming or plan.get("approved_revision") != plan.get("current_revision"):
+            plan["status"] = "approved"
+            plan["approved_revision"] = plan["current_revision"]
+            plan["approved_at"] = now
         revision = _current(plan)
-        _activity(revision, "user", "approve", "plan", f"Approved revision v{revision['version']}.")
+        note = (
+            f"Recorded the approval of revision v{revision['version']} on this computer."
+            if confirming
+            else f"Approved revision v{revision['version']}."
+        )
+        _activity(revision, "user", "approve", "plan", note)
         self._touch(plan)
-        public = self._public(plan)
-        open_questions = sum(1 for item in revision["questions"] if item["status"] == "open")
-        leftover = f" {open_questions} question(s) were still open." if open_questions else ""
+        stored = self._load(name)
+        _record_approval(self.root, stored)
+        public = self._public(stored)
+        open_questions = _open_question_count(self.root, stored, _current(stored))
+        if open_questions == 1:
+            leftover = " 1 question was still open."
+        elif open_questions:
+            leftover = f" {open_questions} questions were still open."
+        else:
+            leftover = ""
         public["note"] = (
             f"Approved revision v{revision['version']}. "
-            "The dimensions and assumptions below are what the modeling step should use. "
+            "The dimensions for the model are listed on the right. "
             f"They are not a solid yet.{leftover}"
         )
         return public
@@ -382,6 +437,8 @@ class PlanStore:
         plan = self._load(name)
         if plan["status"] != "approved" or plan["approved_revision"] != plan["current_revision"]:
             raise PlanError(work_refusal(plan, kind))
+        if not _receipt_matches(self.root, plan):
+            raise PlanError(untrusted_refusal(plan, kind))
         revision = _current(plan)
         word = "Modeling" if kind == "model" else "Simulation"
         return {
@@ -392,9 +449,13 @@ class PlanStore:
             "released": kind,
             "units": "mm",
             "dimensions": copy.deepcopy(revision["dimensions"]),
-            "assumptions": copy.deepcopy(revision["assumptions"]),
+            "assumptions": [
+                _present_item(self.root, plan, revision, "assumption", item) for item in revision["assumptions"]
+            ],
             "research": copy.deepcopy(revision["research"]),
-            "questions": copy.deepcopy(revision["questions"]),
+            "questions": [
+                _present_item(self.root, plan, revision, "question", item) for item in revision["questions"]
+            ],
             "views": _views(self.root, revision),
             "ready": True,
             "note": (
@@ -440,15 +501,31 @@ class PlanStore:
 
     def _read(self, path: Path) -> dict:
         if path.stat().st_size > _MAX_BYTES:
-            raise PlanError(f"{path.name} is larger than a plan file should be.")
+            raise PlanError(f"{path.name} is larger than a plan file should be. It was not opened.")
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise PlanError(f"Could not read {path.name}: the file is not UTF-8.") from exc
+        try:
+            payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise PlanError(f"Could not read {path.name}: {exc}") from exc
+            raise PlanError(f"Could not read {path.name}: {exc.msg} at line {exc.lineno}.") from exc
         if not isinstance(payload, dict) or payload.get("format") != _FORMAT:
             raise PlanError(f"{path.name} is not a plan file this version can read.")
         if payload.get("id") != path.stem:
             raise PlanError(f"{path.name} does not match the plan id inside it.")
+        if payload.get("status") not in _STATUSES:
+            raise PlanError(f"{path.name} has a status this version does not use.")
+        if not isinstance(payload.get("title"), str) or not payload["title"].strip():
+            raise PlanError(f"{path.name} has no title.")
+        revisions = payload.get("revisions")
+        if not isinstance(revisions, list) or not revisions:
+            raise PlanError(f"{path.name} has no revisions to read.")
+        for revision in revisions:
+            _coerce_revision(revision, path.name)
+        if payload.get("current_revision") != revisions[-1].get("version"):
+            raise PlanError(f"{path.name} current revision does not match the last revision in the file.")
+        _check_strings(payload, path.name)
         return payload
 
     def _write(self, plan: dict) -> None:
@@ -473,47 +550,78 @@ class PlanStore:
                     "version": revision["version"],
                     "created_at": revision["created_at"],
                     "changed": revision["changed"],
-                    "research": revision["research"],
-                    "assumptions": revision["assumptions"],
-                    "questions": revision["questions"],
-                    "dimensions": revision["dimensions"],
-                    "sheets": [
-                        {
-                            "id": sheet["id"],
-                            "title": sheet["title"],
-                            "subtitle": sheet.get("subtitle") or "",
-                            "file": sheet["path"],
-                            "path": str(_abs(self.root, sheet["path"])),
-                            "panels": sheet.get("panels") or [],
-                        }
-                        for sheet in revision["sheets"]
+                    "research": copy.deepcopy(revision["research"]),
+                    "assumptions": [
+                        _present_item(self.root, plan, revision, "assumption", item)
+                        for item in revision["assumptions"]
                     ],
-                    "activity": revision["activity"],
+                    "questions": [
+                        _present_item(self.root, plan, revision, "question", item)
+                        for item in revision["questions"]
+                    ],
+                    "dimensions": copy.deepcopy(revision["dimensions"]),
+                    "sheets": [_sheet_public(self.root, sheet) for sheet in revision["sheets"]],
+                    "activity": copy.deepcopy(revision["activity"]),
                 }
             )
-        open_questions = [item["id"] for item in current["questions"] if item["status"] == "open"]
-        modeling = "open" if plan["status"] == "approved" else "closed"
+        view = self._approval_view(plan)
+        open_questions = [
+            item["id"]
+            for item in current["questions"]
+            if _question_still_open(self.root, plan, current, item)
+        ]
         return {
             "id": plan["id"],
             "title": plan["title"],
             "summary": plan["summary"],
             "units": "mm",
             "status": plan["status"],
-            "status_text": status_phrase(plan["status"]),
+            "status_text": view["status_text"],
+            "pill": view["pill"],
+            "approval": view["approval"],
             "current_revision": plan["current_revision"],
             "approved_revision": plan["approved_revision"],
             "approved_at": plan["approved_at"],
             "updated_at": plan["updated_at"],
-            "modeling": modeling,
-            "modeling_note": (
-                "This revision is approved. start_model_from_plan and start_simulation_from_plan can use it."
-                if modeling == "open"
-                else "Modeling and simulation from this plan stay off until you approve the current revision."
-            ),
+            "modeling": view["modeling"],
+            "modeling_note": view["modeling_note"],
             "open_questions": open_questions,
             "revision": revisions[-1],
             "revisions": revisions,
             "views": _views(self.root, current),
+        }
+
+    def _approval_view(self, plan: dict) -> dict:
+        recorded = _receipt_matches(self.root, plan)
+        if plan["status"] == "approved" and plan.get("approved_revision") == plan.get("current_revision") and recorded:
+            return {
+                "approval": "recorded",
+                "pill": "approved",
+                "status_text": "approved",
+                "modeling": "open",
+                "modeling_note": (
+                    "This revision is approved. start_model_from_plan and start_simulation_from_plan can use it."
+                ),
+            }
+        if plan["status"] == "approved":
+            return {
+                "approval": "missing",
+                "pill": "untrusted",
+                "status_text": "not approved by you",
+                "modeling": "closed",
+                "modeling_note": (
+                    "This file says approved, but this computer has no record of you approving this revision. "
+                    "Editing the plan file does not approve it. Modeling and simulation stay off until you approve it here."
+                ),
+            }
+        return {
+            "approval": "none",
+            "pill": plan["status"],
+            "status_text": status_phrase(plan["status"]),
+            "modeling": "closed",
+            "modeling_note": (
+                "Modeling and simulation from this plan stay off until you approve the current revision."
+            ),
         }
 
 
@@ -555,6 +663,274 @@ def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
             for revision in plan.get("revisions") or []:
                 _render_revision(root_path, plan, revision)
             _drop_orphan_sheets(root_path, plan)
+
+
+def _load_ledger() -> dict:
+    path = approvals_path()
+    if not path.is_file():
+        return {"format": 1, "approvals": {}, "entries": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"format": 1, "approvals": {}, "entries": {}}
+    if not isinstance(payload, dict):
+        return {"format": 1, "approvals": {}, "entries": {}}
+    approvals = payload.get("approvals")
+    entries = payload.get("entries")
+    return {
+        "format": 1,
+        "approvals": approvals if isinstance(approvals, dict) else {},
+        "entries": entries if isinstance(entries, dict) else {},
+    }
+
+
+def _save_ledger(ledger: dict) -> None:
+    path = approvals_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _revision_fingerprint(revision: dict) -> dict:
+    sheets = []
+    for sheet in revision.get("sheets") or []:
+        if not isinstance(sheet, dict):
+            continue
+        sheets.append(
+            {
+                "id": sheet.get("id"),
+                "title": sheet.get("title"),
+                "subtitle": sheet.get("subtitle") or "",
+                "panels": sheet.get("panels") or [],
+                "footer": sheet.get("footer") or "",
+            }
+        )
+    return {
+        "version": revision.get("version"),
+        "changed": revision.get("changed") or "",
+        "research": revision.get("research") or [],
+        "assumptions": revision.get("assumptions") or [],
+        "questions": revision.get("questions") or [],
+        "dimensions": revision.get("dimensions") or [],
+        "sheets": sheets,
+    }
+
+
+def _content_hash(revision: dict) -> str:
+    payload = json.loads(json.dumps(_revision_fingerprint(revision)))
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _approval_key(root: Path, plan_id: str, content: str) -> str:
+    raw = json.dumps(
+        {"workspace": str(root), "plan": plan_id, "content": content},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _receipt_matches(root: Path, plan: dict) -> bool:
+    if plan.get("status") != "approved" or plan.get("approved_revision") != plan.get("current_revision"):
+        return False
+    try:
+        revision = _current(plan)
+    except PlanError:
+        return False
+    content = _content_hash(revision)
+    record = _load_ledger()["approvals"].get(_approval_key(root, plan["id"], content))
+    return (
+        isinstance(record, dict)
+        and record.get("content") == content
+        and record.get("plan") == plan["id"]
+        and record.get("workspace") == str(root)
+    )
+
+
+def _record_approval(root: Path, plan: dict) -> None:
+    revision = _current(plan)
+    content = _content_hash(revision)
+    ledger = _load_ledger()
+    ledger["approvals"][_approval_key(root, plan["id"], content)] = {
+        "workspace": str(root),
+        "plan": plan["id"],
+        "revision": revision["version"],
+        "content": content,
+        "at": _now(),
+    }
+    _save_ledger(ledger)
+
+
+def _entry_key(root: Path, plan_id: str, version: int, kind: str, item: str, text: str) -> str:
+    raw = json.dumps(
+        {
+            "workspace": str(root),
+            "plan": plan_id,
+            "revision": version,
+            "kind": kind,
+            "item": item,
+            "text": text,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _has_entry(root: Path, plan_id: str, version: int, kind: str, item: str, text: str) -> bool:
+    record = _load_ledger()["entries"].get(_entry_key(root, plan_id, version, kind, item, text))
+    return isinstance(record, dict) and record.get("plan") == plan_id and record.get("text") == text
+
+
+def _record_entry(root: Path, plan_id: str, version: int, kind: str, item: str, text: str) -> None:
+    ledger = _load_ledger()
+    ledger["entries"][_entry_key(root, plan_id, version, kind, item, text)] = {
+        "workspace": str(root),
+        "plan": plan_id,
+        "revision": version,
+        "kind": kind,
+        "item": item,
+        "text": text,
+        "at": _now(),
+    }
+    _save_ledger(ledger)
+
+
+def _item_trusted(root: Path, plan: dict, revision: dict, kind: str, item: dict) -> bool:
+    status = item.get("status")
+    if status in (None, "", "open"):
+        return True
+    version = revision.get("version")
+    item_id = str(item.get("id") or "")
+    if not isinstance(version, int):
+        return False
+    if kind == "question" and status == "answered":
+        return _has_entry(root, plan["id"], version, "answer", item_id, str(item.get("answer") or ""))
+    if status in {"accepted", "rejected", "waived"}:
+        return _has_entry(root, plan["id"], version, "mark", item_id, str(status))
+    return False
+
+
+def _present_item(root: Path, plan: dict, revision: dict, kind: str, item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {
+            "id": "",
+            "text": "",
+            "status": "open",
+            "trusted": False,
+            "trust_note": "This item could not be read.",
+        }
+    shown = copy.deepcopy(item)
+    trusted = _item_trusted(root, plan, revision, kind, item)
+    shown["trusted"] = trusted
+    if trusted:
+        return shown
+    shown["file_status"] = item.get("status")
+    shown["status"] = "open"
+    if kind == "question" and item.get("answer"):
+        shown["trust_note"] = "This answer is in the file, but it was not entered on this computer."
+    else:
+        shown["trust_note"] = "This mark is in the file, but it was not entered on this computer."
+    return shown
+
+
+def _question_still_open(root: Path, plan: dict, revision: dict, item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("status") in (None, "", "open"):
+        return True
+    return not _item_trusted(root, plan, revision, "question", item)
+
+
+def _assumption_still_open(root: Path, plan: dict, revision: dict, item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("status") in (None, "", "open"):
+        return True
+    return not _item_trusted(root, plan, revision, "assumption", item)
+
+
+def _open_question_count(root: Path, plan: dict, revision: dict) -> int:
+    return sum(1 for item in revision.get("questions") or [] if _question_still_open(root, plan, revision, item))
+
+
+def _open_assumption_count(root: Path, plan: dict, revision: dict) -> int:
+    return sum(1 for item in revision.get("assumptions") or [] if _assumption_still_open(root, plan, revision, item))
+
+
+def _sheet_public(root: Path, sheet: dict) -> dict:
+    relative = sheet.get("path") or ""
+    absolute = ""
+    error = ""
+    if relative:
+        try:
+            absolute = str(_abs(root, relative))
+        except PlanError:
+            relative = ""
+            error = "This sheet path points outside the project and was not opened."
+    shown = {
+        "id": sheet.get("id"),
+        "title": sheet.get("title") or "",
+        "subtitle": sheet.get("subtitle") or "",
+        "file": relative,
+        "path": absolute,
+        "panels": sheet.get("panels") or [],
+    }
+    if error:
+        shown["error"] = error
+    return shown
+
+
+def _unreadable_summary(path: Path, exc: Exception) -> dict:
+    stem = path.stem
+    return {
+        "id": stem if _PLAN_ID.match(stem) else path.name,
+        "title": path.name,
+        "status": "unreadable",
+        "status_text": "could not be read",
+        "pill": "untrusted",
+        "approval": "none",
+        "modeling": "closed",
+        "error": str(exc),
+        "current_revision": None,
+        "approved_revision": None,
+        "open_questions": None,
+        "open_assumptions": None,
+        "sheet_count": 0,
+        "updated_at": "",
+    }
+
+
+def _coerce_revision(revision: dict, filename: str) -> None:
+    version = revision.get("version") if isinstance(revision, dict) else None
+    if not isinstance(revision, dict) or isinstance(version, bool) or not isinstance(version, int):
+        raise PlanError(f"{filename} has a revision this version cannot read.")
+    for key in ("research", "assumptions", "questions", "dimensions", "sheets", "activity"):
+        if key not in revision:
+            revision[key] = []
+        elif not isinstance(revision[key], list):
+            raise PlanError(f"{filename} revision v{version} has a {key} value that is not a list.")
+    if not isinstance(revision.get("changed"), str):
+        revision["changed"] = "" if revision.get("changed") is None else str(revision.get("changed"))
+
+
+def _check_strings(value: Any, filename: str) -> None:
+    if isinstance(value, str):
+        if len(value) > _MAX_TEXT:
+            raise PlanError(
+                f"{filename} has text longer than {_MAX_TEXT} characters. "
+                "A plan file is not a place for a long document. It was not opened."
+            )
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            _check_strings(item, filename)
+    elif isinstance(value, list):
+        for item in value:
+            _check_strings(item, filename)
 
 
 def _empty_revision(version: int, now: str, changed: str) -> dict:
@@ -825,14 +1201,17 @@ def _drop_orphan_sheets(root: Path, plan: dict) -> None:
 def _views(root: Path, revision: dict) -> list[dict]:
     views = []
     for sheet in revision.get("sheets") or []:
-        if not sheet.get("path"):
+        if not isinstance(sheet, dict) or not sheet.get("path"):
+            continue
+        shown = _sheet_public(root, sheet)
+        if not shown["file"]:
             continue
         views.append(
             {
-                "name": sheet["id"],
-                "title": sheet["title"],
-                "file": sheet["path"],
-                "path": str(_abs(root, sheet["path"])),
+                "name": shown["id"],
+                "title": shown["title"],
+                "file": shown["file"],
+                "path": shown["path"],
             }
         )
     return views

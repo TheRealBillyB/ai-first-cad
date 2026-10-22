@@ -48,6 +48,10 @@
 .plan-pill.draft { color: var(--warn, #8a5a12); }
 .plan-pill.in_review { color: var(--free, #2a5f8a); }
 .plan-pill.approved { color: var(--pass, #1c6b43); }
+.plan-pill.untrusted { color: var(--fail, #9d342c); }
+#plan-body { font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+#plan-body p { margin: 0 0 6px; }
+#plan-body button { width: 100%; margin-top: 4px; }
 .plan-banner {
   border: 1px solid var(--line, #c9c0b2);
   background: #efe4d2;
