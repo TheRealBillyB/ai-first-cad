@@ -559,6 +559,14 @@ def register_mcp(mcp, run, guard) -> None:
         return guard(lambda: run("save_project_as", path=path, name=name))
 
     @mcp.tool()
+    def list_folders(path: str | None = None) -> dict:
+        """List the folders inside a path so a project folder can be chosen.
+
+        Omit path to list the folder that is open. Names starting with a dot are skipped.
+        """
+        return guard(lambda: run("list_folders", path=path))
+
+    @mcp.tool()
     def list_recent_projects() -> dict:
         """Folders opened most recently on this computer."""
         return guard(lambda: run("list_recent_projects"))
