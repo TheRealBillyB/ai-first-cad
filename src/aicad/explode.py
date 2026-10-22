@@ -71,7 +71,7 @@ def plan(
     centers = _centers(solved, shapes)
     span = _span(solved, shapes)
     chosen = gap_mm is None
-    gap = _gap(gap_mm, span)
+    gap, capped = _gap(gap_mm, span)
     by_name = {instance["name"]: instance for instance in solved["instances"]}
     offsets: dict[str, list[float]] = {name: [0.0, 0.0, 0.0] for name in names}
     moves = []
@@ -91,6 +91,7 @@ def plan(
         "assembly": spec.get("name"),
         "gap_mm": gap,
         "gap_chosen": chosen,
+        "gap_capped": capped,
         "span_mm": round(span, 3),
         "moves": moves,
         "offsets": offsets,
@@ -99,6 +100,7 @@ def plan(
         "note": (
             f"Parts are pulled apart by {gap:g} mm at each joint"
             + (" (chosen from the assembly size)." if chosen else " (the gap you set).")
+            + (" The automatic gap is capped at 1000000 mm." if capped else "")
             + " This picture is not a disassembly procedure, and the gaps are not dimensions."
         ),
     }
@@ -127,9 +129,13 @@ def _move(instance: dict, depth: int, offset: list[float], direction: list[float
     }
 
 
-def _gap(gap_mm: float | None, span: float) -> float:
+def _gap(gap_mm: float | None, span: float) -> tuple[float, bool]:
+    """Return the gap and whether the automatic gap was capped."""
     if gap_mm is None:
-        return max(20.0, round(0.18 * span, 1))
+        gap = max(20.0, round(0.18 * span, 1))
+        if gap > 1_000_000:
+            return 1_000_000.0, True
+        return gap, False
     try:
         gap = float(gap_mm)
     except (TypeError, ValueError) as exc:
@@ -138,7 +144,7 @@ def _gap(gap_mm: float | None, span: float) -> float:
         raise GeometryError("gap_mm must be a positive number of millimeters.")
     if gap > 1_000_000:
         raise GeometryError("gap_mm is larger than 1000000 mm. Pass a smaller gap.")
-    return gap
+    return gap, False
 
 
 def _centers(solved: dict, shapes: dict[str, kernel.Shape]) -> dict[str, list[float]]:

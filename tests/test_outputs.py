@@ -188,7 +188,9 @@ def test_bill_of_materials_counts_parts_fasteners_and_a_hose(tmp_path):
     plate = next(row for row in by_category["part"] if row["part"] == "plate")
     assert plate["mass_estimate_kg"] == pytest.approx(30 * 20 * 6 * 7.85 / 1_000_000, rel=0.02)
 
-    with Path(report["csv"]).open(encoding="utf-8", newline="") as handle:
+    csv_bytes = Path(report["csv"]).read_bytes()
+    assert csv_bytes.startswith(b"\xef\xbb\xbf")
+    with Path(report["csv"]).open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert rows[0]["item"] == "1"
     assert any(row["category"] == "fastener" and row["quantity"] == "2" for row in rows)
@@ -371,6 +373,181 @@ def test_unknown_scale_is_an_error(tmp_path):
     _post(document)
     with pytest.raises(GeometryError):
         document.export_drawing("stand", scale="3:1")
+
+
+def test_a_thin_size_is_not_drawn_as_zero(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "foil", [80, 40, 0.04], [0, 0, 0.02])
+    document.create_assembly({"name": "foil", "instances": [{"name": "foil", "part": "foil"}], "joints": []})
+    report = document.export_drawing("foil")
+    sizes = {item["axis"]: item["mm"] for item in report["dimensions"]}
+    assert sizes["X"] == pytest.approx(80, abs=0.001)
+    assert sizes["Y"] == pytest.approx(40, abs=0.001)
+    assert sizes["Z"] == pytest.approx(0.04, abs=0.0001)
+    pdf = Path(report["files"]["pdf"]).read_bytes()
+    assert b"(0.04)" in pdf
+    assert b"(0)" not in pdf
+    texts = _dxf_texts(report["files"]["dxf"])
+    assert "0.04" in texts
+    _assert_on_sheet(report["files"]["dxf"])
+
+
+def test_a_huge_assembly_uses_a_smaller_scale_and_stays_on_the_page(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "slab", [2_000_000, 500_000, 100_000], [1_000_000, 0, 50_000])
+    document.create_assembly({"name": "slab", "instances": [{"name": "slab", "part": "slab"}], "joints": []})
+    report = document.export_drawing("slab")
+    assert report["scale"] not in {f"{numer}:{denom}" for numer, denom in _SCALES}
+    assert "1:1000" in report["scale_note"]
+    assert "Smaller than the usual ratios." in Path(report["files"]["pdf"]).read_bytes().decode("latin-1")
+    sizes = {item["axis"]: item["mm"] for item in report["dimensions"]}
+    assert sizes["X"] == pytest.approx(2_000_000, abs=0.5)
+    assert sizes["Y"] == pytest.approx(500_000, abs=0.5)
+    assert sizes["Z"] == pytest.approx(100_000, abs=0.5)
+    _assert_on_sheet(report["files"]["dxf"])
+
+
+def test_an_automatic_gap_on_a_huge_model_is_capped(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "slab", [6_000_000, 10, 10], [3_000_000, 0, 5])
+    document.create_assembly({"name": "slab", "instances": [{"name": "slab", "part": "slab"}], "joints": []})
+    report = document.exploded_view("slab")
+    assert report["gap_mm"] == 1_000_000
+    assert report["gap_capped"] is True
+    assert "capped" in report["note"].lower()
+    with pytest.raises(GeometryError):
+        document.exploded_view("slab", gap_mm=0)
+    with pytest.raises(GeometryError):
+        document.exploded_view("slab", gap_mm=-5)
+
+
+def test_a_reserved_windows_name_is_renamed(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [10, 10, 4], [0, 0, 2])
+    document.create_assembly({"name": "con", "instances": [{"name": "base", "part": "base"}], "joints": []})
+    report = document.export_drawing("con")
+    assert Path(report["files"]["pdf"]).name == "con_file.pdf"
+    assert Path(report["files"]["dxf"]).name == "con_file.dxf"
+    assert "Windows" in report["file_note"]
+    assert Path(report["files"]["png"]).parent.name == "con_file"
+    bom = document.bill_of_materials("con")
+    assert Path(bom["csv"]).name == "con_file.csv"
+    assert Path(bom["csv"]).read_bytes().startswith(b"\xef\xbb\xbf")
+    picture = document.exploded_view("con", gap_mm=15)
+    assert "con_file" in picture["views"][0]["path"]
+    assert "Windows" in picture["file_note"]
+
+
+def test_a_blocked_output_path_is_a_clear_error(tmp_path):
+    document = Document(tmp_path)
+    _post(document)
+    blocked = tmp_path / "locked"
+    blocked.mkdir()
+    blocked.chmod(0o555)
+    try:
+        with pytest.raises(GeometryError, match="Could not"):
+            document.export_drawing("stand", out_dir=blocked)
+    finally:
+        blocked.chmod(0o755)
+    parent = tmp_path / "notadir"
+    parent.write_text("x", encoding="utf-8")
+    with pytest.raises(GeometryError, match="Could not"):
+        document.export_drawing("stand", out_dir=parent / "sheet")
+    missing = tmp_path / "new" / "nested"
+    report = document.export_drawing("stand", out_dir=missing)
+    assert (missing / "stand.pdf").is_file()
+    assert report["files"]["pdf"].endswith("stand.pdf")
+
+
+def test_empty_missing_unicode_and_an_unknown_material(tmp_path):
+    document = Document(tmp_path)
+    with pytest.raises(GeometryError, match="at least one instance"):
+        document.create_assembly({"name": "empty", "instances": [], "joints": []})
+    with pytest.raises(GeometryError, match="No assembly"):
+        document.bill_of_materials("missing")
+    _box(document, "only", [12, 8, 5], [0, 0, 2.5])
+    document.create_assembly(
+        {
+            "name": "solo",
+            "instances": [{"name": "部件", "part": "only", "material": "mystery_alloy"}],
+            "joints": [],
+            "cables": [
+                {
+                    "name": "供水",
+                    "kind": "hose",
+                    "diameter_mm": 6,
+                    "waypoints": [
+                        {"instance": "部件", "at": [0, 0, 0]},
+                        {"instance": "部件", "at": [0, 0, 5]},
+                    ],
+                }
+            ],
+        }
+    )
+    bom = document.bill_of_materials("solo")
+    part = next(row for row in bom["rows"] if row["category"] == "part")
+    assert part["mass_estimate_kg"] is None
+    assert part["source"] != "library"
+    assert "部件" in part["instances"]
+    hose = next(row for row in bom["rows"] if row["category"] == "hose")
+    assert hose["name"] == "供水"
+    assert hose["mass_estimate_kg"] is None
+    text = Path(bom["csv"]).read_text(encoding="utf-8-sig")
+    assert "供水" in text
+    assert "部件" in text
+    exploded = document.exploded_view("solo", gap_mm=15)
+    assert exploded["moves"][0]["offset_mm"] == [0.0, 0.0, 0.0]
+    assert exploded["result_kind"] == "verified_check"
+    drawing = document.export_drawing("solo")
+    sizes = {item["axis"]: item["mm"] for item in drawing["dimensions"]}
+    assert sizes == {"X": pytest.approx(12, abs=0.05), "Y": pytest.approx(8, abs=0.05), "Z": pytest.approx(5, abs=0.05)}
+
+
+def test_a_table_uses_a_font_that_can_draw_the_name_when_one_is_installed():
+    from PIL import ImageFont
+
+    from aicad.bom import _FONT_CANDIDATES, _covers, _font_for
+
+    chosen = _font_for(16, "供水")
+    installed = False
+    for path in _FONT_CANDIDATES:
+        if not Path(path).is_file():
+            continue
+        try:
+            face = ImageFont.truetype(path, size=16)
+        except OSError:
+            continue
+        if _covers(face, "供水"):
+            installed = True
+            break
+    if installed:
+        assert _covers(chosen, "供水")
+    else:
+        assert chosen is not None
+
+
+def _dxf_texts(path: str) -> list[str]:
+    import ezdxf
+
+    loaded = ezdxf.readfile(path)
+    return [entity.dxf.text for entity in loaded.modelspace().query("TEXT")]
+
+
+def _assert_on_sheet(path: str) -> None:
+    import ezdxf
+
+    loaded = ezdxf.readfile(path)
+    assert loaded.header.get("$INSUNITS") == 4
+    for entity in loaded.modelspace():
+        if entity.dxftype() == "LINE":
+            points = (entity.dxf.start, entity.dxf.end)
+        elif entity.dxftype() == "TEXT":
+            points = (entity.dxf.insert,)
+        else:
+            continue
+        for point in points:
+            assert -1.0 <= float(point.x) <= 421.0
+            assert -1.0 <= float(point.y) <= 298.0
 
 
 def _fixed(name, parent, child, anchor=None):

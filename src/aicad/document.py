@@ -918,6 +918,7 @@ class Document:
             spec = self._get_assembly(name)
             shapes = self._assembly_shapes(spec)
             solved, _placed = assembly.posed_shapes(spec, shapes)
+            planned = None
             offsets = None
             gap = gap_mm
             if exploded:
@@ -929,18 +930,30 @@ class Document:
 
                 require_in_project(out_dir, self.workspace, writing=True)
             destination = Path(out_dir) if out_dir else self.workspace / "exports" / "drawings"
-            png = self.workspace / "renders" / "assemblies" / spec["name"] / "drawing.png"
-            return drawing_mod.make_drawing(
+            stem, reserved = _output_stem(spec["name"])
+            png = self.workspace / "renders" / "assemblies" / stem / "drawing.png"
+            report = drawing_mod.make_drawing(
                 spec,
                 solved,
                 shapes,
-                pdf_path=destination / f"{spec['name']}.pdf",
-                dxf_path=destination / f"{spec['name']}.dxf",
+                pdf_path=destination / f"{stem}.pdf",
+                dxf_path=destination / f"{stem}.dxf",
                 png_path=png,
                 scale=scale,
                 offsets=offsets,
                 gap_mm=gap,
             )
+            extras = []
+            if planned is not None and planned.get("gap_capped"):
+                extras.append("The automatic gap is capped at 1000000 mm.")
+            if reserved:
+                extras.append(
+                    f"The file is named {stem} because {reserved} is a reserved file name on Windows."
+                )
+                report["file_note"] = extras[-1]
+            if extras:
+                report["note"] = f"{report.get('note') or ''} {' '.join(extras)}".strip()
+            return report
 
     def bill_of_materials(self, name: str, out: str | Path | None = None) -> dict:
         """Count parts, catalog fasteners, and hoses or cables. Also writes a CSV.
@@ -956,12 +969,24 @@ class Document:
                 from aicad.sandbox import require_in_project
 
                 require_in_project(out, self.workspace, writing=True)
-            csv_path = Path(out) if out else self.workspace / "exports" / "bom" / f"{spec['name']}.csv"
-            png = self.workspace / "renders" / "assemblies" / spec["name"] / "bom.png"
+            stem, reserved = _output_stem(spec["name"])
+            csv_path = Path(out) if out else self.workspace / "exports" / "bom" / f"{stem}.csv"
+            png = self.workspace / "renders" / "assemblies" / stem / "bom.png"
             bom_mod.write_csv(report, csv_path)
             view = bom_mod.render_table(report, png)
             report["csv"] = str(csv_path.resolve())
             report["views"] = [view]
+            if reserved and not out:
+                file_note = f"The file is named {stem} because {reserved} is a reserved file name on Windows."
+            elif reserved:
+                file_note = (
+                    f"The picture folder is named {stem} because {reserved} is a reserved file name on Windows."
+                )
+            else:
+                file_note = ""
+            if file_note:
+                report["file_note"] = file_note
+                report["note"] = f"{report.get('note') or ''} {file_note}".strip()
             return report
 
     def exploded_view(
@@ -984,13 +1009,19 @@ class Document:
             planned = explode_mod.plan(spec, solved, shapes, self._library_specs(spec), gap_mm)
             moved = explode_mod.apply_moves(solved, planned["offsets"])
             mesh = assembly._colored_mesh(shapes, moved)  # noqa: SLF001
-            out = self.workspace / "renders" / "assemblies" / spec["name"]
-            pictures = render_motion_frames(
-                [mesh],
-                out,
-                "exploded",
-                [f"{spec['name']}  exploded"],
-            )
+            stem, reserved = _output_stem(spec["name"])
+            out = self.workspace / "renders" / "assemblies" / stem
+            try:
+                pictures = render_motion_frames(
+                    [mesh],
+                    out,
+                    "exploded",
+                    [f"{spec['name']}  exploded"],
+                )
+            except OSError as exc:
+                raise GeometryError(
+                    f"Could not write the exploded picture for {spec['name']}. {exc.strerror or exc}."
+                ) from exc
             frame = pictures["frames"][0]
             from PIL import Image
 
@@ -1023,7 +1054,7 @@ class Document:
                 report["views"].extend(sheet["views"])
             from aicad.honesty import VERIFIED_CHECK, finish
 
-            return finish(
+            finished = finish(
                 report,
                 kind=VERIFIED_CHECK,
                 name="Exploded view",
@@ -1034,6 +1065,13 @@ class Document:
                 ),
                 limits=list(report.get("omits") or explode_mod.OMITS),
             )
+            if reserved:
+                file_note = (
+                    f"The picture folder is named {stem} because {reserved} is a reserved file name on Windows."
+                )
+                finished["file_note"] = file_note
+                finished["note"] = f"{finished.get('note') or ''} {file_note}".strip()
+            return finished
 
     def assembly_mesh(self, name: str) -> dict:
         with self._lock:
@@ -1303,6 +1341,28 @@ def _assembly_name(spec: dict) -> str:
         raise GeometryError("An assembly spec needs a name.")
     _validate_name(spec["name"])
     return spec["name"]
+
+
+_WINDOWS_RESERVED = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def _output_stem(name: str) -> tuple[str, str]:
+    """A file stem Windows can create, and the original name when it was reserved.
+
+    ``con.pdf`` is a device, not a file. The second value is empty when the
+    name is safe to use as a file.
+    """
+    stem = str(name).strip().rstrip(" .") or "assembly"
+    if stem.upper() in _WINDOWS_RESERVED:
+        return f"{stem}_file", stem
+    return stem, ""
 
 
 def _validate_name(name: str) -> None:

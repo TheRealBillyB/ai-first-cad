@@ -20,6 +20,12 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Native geometry code cannot write on the MCP stdout | The STEP parser's error line was not JSON-RPC, and it landed on the protocol stream. |
 | Opening someone else's project does not create their notes or requirements file | Those files belong to that project. A missing one is not a template to write. |
 | `check-wall` accepts `--min-wall`, the same flag as `inspect` | The two commands were spelling one threshold differently. |
+| A parts-list picture uses a system font that contains the names | A Latin font draws a name such as 供水 as empty boxes. The list looks for an installed font that has the character, and it does not add a font package. |
+| An automatic explode gap stops at 1000000 mm | A huge model would otherwise ask for a gap the command rejects. |
+| Output files avoid Windows reserved device names | con.pdf is a device on Windows, so the file is named con_file and the report says so. |
+| Picture text is looked up in Linux, Windows, and macOS fonts | A missing font was falling back to a bitmap the assistant could not read. |
+| A sheet ratio can be smaller than 1:1000 | The usual list stops there, and a larger model still has to land on the page. The sheet names the ratio it used. |
+| A size below 1 mm is written out, and a still smaller size is labeled <0.001 | Drawing 0.04 mm as 0 was a false dimension. |
 | A bill of materials is a count, and a mass on it is a handbook estimate | Quantities come from the instances. Volume times a handbook density is not a weighed mass, and the list has no prices. |
 | An exploded view follows the joints | A slide moves on its axis, a hinge comes off its pin, and a catalog fastener lifts out. The gap is not a dimension. |
 | A drawing uses OpenCascade hidden-line removal | The edges come from the kernel already in use, so the sheet does not add a solver. |

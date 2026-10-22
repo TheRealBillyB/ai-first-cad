@@ -152,7 +152,7 @@ def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, di
 
 
 def write_csv(report: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _prepare(path)
     fields = [
         "item",
         "quantity",
@@ -168,7 +168,12 @@ def write_csv(report: dict, path: Path) -> None:
         "instances",
         "note",
     ]
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    # utf-8-sig so Excel on Windows reads a name such as 供水 as itself.
+    try:
+        handle_cm = path.open("w", encoding="utf-8-sig", newline="")
+    except OSError as exc:
+        raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc
+    with handle_cm as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         for row in report["rows"]:
@@ -179,23 +184,31 @@ def write_csv(report: dict, path: Path) -> None:
 
 def render_table(report: dict, path: Path) -> dict:
     """A plain table the assistant can look at. The CSV is the file to keep."""
-    path.parent.mkdir(parents=True, exist_ok=True)
     rows = report["rows"]
-    font = _font(15)
-    small = _font(13)
-    title_font = _font(18)
+    preview = " ".join(
+        str(row.get(key) or "")
+        for row in rows
+        for key in ("name", "description", "category", "material")
+    )
+    preview += " " + str(report.get("result_what") or "") + " " + str(report.get("assembly") or "")
+    font = _font_for(15, preview)
+    small = _font_for(13, preview)
+    title_font = _font_for(18, str(report.get("assembly") or ""))
     line_h = 26
     width = 1100
-    height = 78 + line_h * (len(rows) + 1) + 36
-    image = Image.new("RGB", (width, height), (248, 246, 240))
-    draw = ImageDraw.Draw(image)
     ink = (28, 32, 36)
     muted = (90, 86, 78)
+    caption = _wrap(str(report.get("result_what") or report.get("note") or ""), small, width - 32)
+    top = 36 + 18 * max(len(caption), 1) + 8
+    height = top + 28 + line_h * (len(rows) + 1) + 24
+    image = Image.new("RGB", (width, max(height, 160)), (248, 246, 240))
+    draw = ImageDraw.Draw(image)
     draw.text((16, 12), f"{report['assembly']}  bill of materials", fill=ink, font=title_font)
-    draw.text((16, 38), str(report.get("result_what") or report.get("note") or ""), fill=muted, font=small)
+    for index, line in enumerate(caption):
+        draw.text((16, 36 + index * 18), line, fill=muted, font=small)
     headers = ("item", "qty", "category", "name", "line kg", "description")
     starts = (16, 70, 120, 230, 420, 520)
-    top = 68
+    limits = (48, 44, 100, 180, 90, 540)
     for header, start in zip(headers, starts):
         draw.text((start, top), header, fill=ink, font=font)
     draw.line((12, top + 22, width - 12, top + 22), fill=ink, width=1)
@@ -210,11 +223,11 @@ def render_table(report: dict, path: Path) -> dict:
             row["category"],
             row["name"],
             "—" if mass is None else f"{mass:.3f}",
-            _clip(row["description"], 62),
+            row["description"],
         )
-        for value, start in zip(values, starts):
-            draw.text((start, y), value, fill=ink, font=font)
-    image.save(path, format="PNG", optimize=True)
+        for value, start, limit in zip(values, starts, limits):
+            draw.text((start, y), _fit(str(value), font, limit), fill=ink, font=font)
+    _save_png(path, image)
     return {"name": "bom", "path": str(path.resolve()), "width": image.width, "height": image.height}
 
 
@@ -309,19 +322,120 @@ def _mass(shape: kernel.Shape | None, material: str, quantity: int) -> tuple[flo
     return round(kilograms, 4), "Mass is volume times the handbook density. It is not a weighed mass."
 
 
-def _clip(text: str, limit: int) -> str:
-    if len(text) <= limit:
+def _fit(text: str, font, width: float) -> str:
+    if _length(font, text) <= width:
         return text
-    return text[: limit - 1] + "…"
+    trimmed = text
+    while trimmed and _length(font, trimmed + "…") > width:
+        trimmed = trimmed[:-1]
+    return (trimmed + "…") if trimmed else "…"
 
 
-def _font(size: int):
+def _wrap(text: str, font, width: float) -> list[str]:
+    words = text.split()
+    if not words:
+        return [""]
+    lines = []
+    current = words[0]
+    for word in words[1:]:
+        trial = current + " " + word
+        if _length(font, trial) <= width:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def _length(font, text: str) -> float:
+    if hasattr(font, "getlength"):
+        return float(font.getlength(text))
+    return float(len(text) * 8)
+
+
+# Latin faces first, so an English list keeps one of those. A name such as 供水
+# is drawn with a later face that actually contains the character, when the
+# machine has one. This does not add a font package.
+_FONT_CANDIDATES = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/msyh.ttf",
+    "C:/Windows/Fonts/simsun.ttc",
+    "C:/Windows/Fonts/malgun.ttf",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+)
+
+
+def _font_for(size: int, text: str = ""):
+    """A face that can draw ``text``. Latin text stays on the first face found."""
     from PIL import ImageFont
 
-    for path in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ):
-        if Path(path).is_file():
-            return ImageFont.truetype(path, size=size)
-    return ImageFont.load_default()
+    chosen = None
+    for path in _FONT_CANDIDATES:
+        if not Path(path).is_file():
+            continue
+        try:
+            font = ImageFont.truetype(path, size=size)
+        except OSError:
+            continue
+        if chosen is None:
+            chosen = font
+        if _covers(font, text):
+            return font
+    if chosen is not None:
+        return chosen
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _covers(font, text: str) -> bool:
+    """False when a character would be drawn as the font's missing-glyph box."""
+    if not text:
+        return True
+    try:
+        missing_box = font.getbbox("\ue000")
+        missing_len = float(font.getlength("\ue000"))
+    except (OSError, AttributeError, ValueError):
+        return True
+    for char in set(text):
+        if ord(char) < 128 or char.isspace():
+            continue
+        try:
+            same_box = font.getbbox(char) == missing_box
+            same_len = abs(float(font.getlength(char)) - missing_len) < 0.1
+        except (OSError, AttributeError, ValueError):
+            return False
+        if same_box and same_len:
+            return False
+    return True
+
+
+def _prepare(path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise GeometryError(f"Could not create the folder for {path}. {exc.strerror or exc}.") from exc
+
+
+def _save_png(path: Path, image: Image.Image) -> None:
+    _prepare(path)
+    try:
+        image.save(path, format="PNG", optimize=True)
+    except OSError as exc:
+        raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc

@@ -17,6 +17,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from aicad.errors import GeometryError
+
 ROUGH_ESTIMATE = "rough_estimate"
 VERIFIED_CHECK = "verified_check"
 
@@ -33,10 +35,21 @@ _FRAME = (120, 176, 220)
 _SANS = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
 )
 _SANS_BOLD = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
+    "C:/Windows/Fonts/segoeuib.ttf",
+    "/Library/Fonts/Arial Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    *_SANS,
 )
 
 
@@ -113,7 +126,12 @@ def sheet_lines(payload: dict) -> list[str]:
 def write_result_sheet(path: Path | str, payload: dict, *, title: str) -> dict:
     """Draw one blueprint sheet. Light text on a blue field, like a shop print."""
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise GeometryError(
+            f"Could not create the folder for {destination}. {exc.strerror or exc}."
+        ) from exc
     blocks = _blocks(payload) or [payload]
     width = 1400
     font = _font(_SANS, 22)
@@ -153,7 +171,10 @@ def write_result_sheet(path: Path | str, payload: dict, *, title: str) -> dict:
             fill = _INK
         draw.text((margin, y), line, font=face, fill=fill)
         y += line_height
-    image.save(destination, format="PNG")
+    try:
+        image.save(destination, format="PNG")
+    except OSError as exc:
+        raise GeometryError(f"Could not write {destination}. {exc.strerror or exc}.") from exc
     return {
         "name": "result_sheet",
         "path": str(destination),
@@ -167,7 +188,12 @@ def attach_sheet(payload: dict, directory: Path | str, stem: str, root: Path | s
     if not isinstance(payload, dict) or payload.get("sheet") or not _has_claim(payload):
         return payload
     folder = Path(directory)
-    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise GeometryError(
+            f"Could not create the folder for {folder}. {exc.strerror or exc}."
+        ) from exc
     filename = _safe_stem(stem, payload) + ".png"
     path = folder / filename
     title = _sheet_title(payload, stem)
@@ -216,8 +242,18 @@ def _safe_stem(stem: str, payload: dict) -> str:
     if isinstance(part, dict):
         part = part.get("name") or ""
     raw = f"{stem}_{part}" if part else stem
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(raw)).strip("_")
-    return (cleaned or "result")[:80]
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(raw)).strip("_") or "result"
+    # con.png is a device on Windows, whatever the extension is.
+    if cleaned.split(".")[0].upper() in {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{index}" for index in range(1, 10)),
+        *(f"LPT{index}" for index in range(1, 10)),
+    }:
+        cleaned = f"{cleaned}_file"
+    return cleaned[:80]
 
 
 def _public_path(path: Path, root: Path | None) -> str:

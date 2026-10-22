@@ -36,7 +36,9 @@ ASSUMPTIONS = [
     "The projection is third angle. The top view sits above the front view, and the right-side view sits to its right.",
     "Front looks along +Y, top looks down, and the right-side view looks along -X. Z is up.",
     "Dimensions are the axis-aligned width, depth, and height of the posed solids.",
-    "The scale is a standard ratio chosen so those views fit the sheet, unless you name one that fits.",
+    "The scale is a usual sheet ratio chosen so the views fit, unless you name one that fits. A very large assembly uses a smaller ratio, and the sheet says so.",
+    "A size of 1 mm or more is shown to the nearest 0.1 mm, or as a whole number when it is within 0.05 mm of one. A size below 1 mm is shown to 0.001 mm. A size smaller than that is labeled <0.001.",
+    "PDF and DXF coordinates are millimeters on the A3 sheet. The dimension text is the model size.",
     "Hidden lines are dashed. The isometric view leaves them out.",
     "A tangent edge, such as a fillet meeting a face, is a thin line when the kernel returns one.",
     "Catalog fasteners are the simplified catalog solids. Threads are not drawn.",
@@ -45,6 +47,9 @@ ASSUMPTIONS = [
 
 _PAGE_W = 420.0
 _PAGE_H = 297.0
+# Left room is for a dimension number. A number drawn on the part is hard to read.
+_ORTHO_PAD = (28.0, 16.0, 10.0, 12.0)
+_ISO_PAD = (8.0, 8.0, 8.0, 14.0)
 _SCALES = (
     (10, 1),
     (5, 1),
@@ -172,6 +177,7 @@ def make_drawing(
         ratio,
         exploded_shape is not None,
         gap_mm,
+        chosen not in _SCALES,
     )
     for view in ortho:
         _draw_view(lines, texts, fills, view, cells[(view["column"], view["row"])], ratio, None)
@@ -186,8 +192,6 @@ def make_drawing(
     )
     _overall_dimensions(lines, texts, fills, views, cells, ratio, size)
 
-    for path in (pdf_path, dxf_path, png_path):
-        path.parent.mkdir(parents=True, exist_ok=True)
     _write_pdf(pdf_path, lines, texts, fills)
     _write_dxf(dxf_path, lines, texts)
     _write_png(png_path, lines, texts, fills)
@@ -259,7 +263,7 @@ def make_drawing(
 
 
 def parse_scale(text: str) -> tuple[int, int]:
-    """Read ``1:2`` or ``2:1``. The pair has to be one of the standard ratios."""
+    """Read ``1:2`` or ``2:1``. The pair has to be a ratio this sheet can draw."""
     cleaned = text.strip().replace(" ", "")
     if ":" not in cleaned:
         raise GeometryError(
@@ -271,7 +275,7 @@ def parse_scale(text: str) -> tuple[int, int]:
         pair = (int(left), int(right))
     except ValueError as exc:
         raise GeometryError("A scale is two whole numbers, such as 1:5 or 2:1.") from exc
-    if pair not in _SCALES or pair[0] <= 0 or pair[1] <= 0:
+    if pair not in _all_scales() or pair[0] <= 0 or pair[1] <= 0:
         raise GeometryError(
             f"Scale {cleaned} is not one this sheet uses. "
             + "Choices: " + ", ".join(_scale_text(item) for item in _SCALES) + "."
@@ -335,23 +339,64 @@ def _choose_scale(requested: str | None, views: list[dict], cells: dict) -> tupl
         pair = parse_scale(requested)
         if _ortho_fits(views, cells, pair[0] / pair[1]):
             return pair, ""
-        fallback = _largest_fit(views, cells)
-        return fallback, (
+        fallback, extra = _largest_fit(views, cells)
+        note = (
             f"Scale {requested} does not fit this sheet. "
             f"The sheet uses {_scale_text(fallback)} instead."
         )
-    return _largest_fit(views, cells), ""
+        if extra:
+            note = f"{note} {extra}"
+        return fallback, note
+    return _largest_fit(views, cells)
 
 
-def _largest_fit(views: list[dict], cells: dict) -> tuple[int, int]:
-    for pair in _SCALES:
+def _largest_fit(views: list[dict], cells: dict) -> tuple[tuple[int, int], str]:
+    for pair in _all_scales():
         if _ortho_fits(views, cells, pair[0] / pair[1]):
-            return pair
-    return _SCALES[-1]
+            if pair in _SCALES:
+                return pair, ""
+            return pair, (
+                f"The usual sheet scales stop at 1:1000. "
+                f"This sheet uses {_scale_text(pair)} so the views fit."
+            )
+    pair = _pair_that_fits(views, cells)
+    return pair, f"This sheet uses {_scale_text(pair)} so the views fit."
+
+
+def _all_scales() -> tuple[tuple[int, int], ...]:
+    """Usual sheet ratios, then 1:2000, 1:5000, 1:10000, and so on."""
+    scales = list(_SCALES)
+    seen = set(scales)
+    base = 1000
+    while base < 1_000_000_000:
+        for factor in (2, 5, 10):
+            pair = (1, base * factor)
+            if pair not in seen and pair[1] > 1000:
+                scales.append(pair)
+                seen.add(pair)
+        base *= 10
+    return tuple(scales)
+
+
+def _pair_that_fits(
+    views: list[dict], cells: dict, pad: tuple[float, float, float, float] = _ORTHO_PAD
+) -> tuple[int, int]:
+    """A 1:N reduction when even 1:1000000000 is too large."""
+    needed = 1.0
+    for view in views:
+        cell = cells[(view["column"], view["row"])]
+        box = view["box"]
+        width = max(box[2] - box[0], 1e-6)
+        height = max(box[3] - box[1], 1e-6)
+        inner_w = max(cell.w - pad[0] - pad[2], 1.0)
+        inner_h = max(cell.h - pad[1] - pad[3], 1.0)
+        needed = min(needed, inner_w / width, inner_h / height)
+    denom = max(1, int(math.ceil(1.0 / max(needed, 1e-15))))
+    return (1, denom)
 
 
 def _ortho_fits(views: list[dict], cells: dict, ratio: float) -> bool:
-    pad = (18.0, 16.0, 8.0, 12.0)
+    pad = _ORTHO_PAD
     for view in views:
         cell = cells[(view["column"], view["row"])]
         if not _fits(view["box"], ratio, cell, pad):
@@ -361,14 +406,15 @@ def _ortho_fits(views: list[dict], cells: dict, ratio: float) -> bool:
 
 def _view_scale(view: dict, cells: dict, preferred: float) -> tuple[float, str]:
     cell = cells[(view["column"], view["row"])]
-    pad = (8.0, 8.0, 8.0, 14.0)
+    pad = _ISO_PAD
     if _fits(view["box"], preferred, cell, pad):
         return preferred, ""
-    for pair in _SCALES:
+    for pair in _all_scales():
         ratio = pair[0] / pair[1]
         if ratio <= preferred and _fits(view["box"], ratio, cell, pad):
             return ratio, f"The isometric view is {_scale_text(pair)} so it fits its corner."
-    return _SCALES[-1][0] / _SCALES[-1][1], "The isometric view is reduced to fit its corner."
+    pair = _pair_that_fits([view], cells, pad)
+    return pair[0] / pair[1], f"The isometric view is {_scale_text(pair)} so it fits its corner."
 
 
 def _fits(box: tuple[float, float, float, float], ratio: float, cell: _Cell, pad: tuple[float, float, float, float]) -> bool:
@@ -379,7 +425,7 @@ def _fits(box: tuple[float, float, float, float], ratio: float, cell: _Cell, pad
 
 def _draw_view(lines, texts, fills, view, cell: _Cell, ratio: float, scale_note: str | None) -> None:
     box = view["box"]
-    pad = (18.0, 16.0, 8.0, 12.0) if view["name"] != "iso" else (8.0, 8.0, 8.0, 14.0)
+    pad = _ORTHO_PAD if view["name"] != "iso" else _ISO_PAD
     mapper = _mapper(cell, box, ratio, pad)
     # Hidden lines go down first. A box's back edge sits on the front edge,
     # and a later visible line has to cover that dash.
@@ -417,8 +463,8 @@ def _mapper(cell: _Cell, box, ratio: float, pad: tuple[float, float, float, floa
 def _overall_dimensions(lines, texts, fills, views, cells, ratio: float, size) -> None:
     front = next(view for view in views if view["name"] == "front")
     top = next(view for view in views if view["name"] == "top")
-    front_map = _mapper(cells[(0, 0)], front["box"], ratio, (18.0, 16.0, 8.0, 12.0))
-    top_map = _mapper(cells[(0, 1)], top["box"], ratio, (18.0, 16.0, 8.0, 12.0))
+    front_map = _mapper(cells[(0, 0)], front["box"], ratio, _ORTHO_PAD)
+    top_map = _mapper(cells[(0, 1)], top["box"], ratio, _ORTHO_PAD)
     fx0, fy0 = front_map((front["box"][0], front["box"][1]))
     fx1, fy1 = front_map((front["box"][2], front["box"][3]))
     tx0, ty0 = top_map((top["box"][0], top["box"][1]))
@@ -447,22 +493,41 @@ def _vertical(lines, texts, fills, y1, y2, x, text) -> None:
 
 
 def _place_dimension(lines, texts, fills, x1, y1, x2, y2, text, along_x: bool) -> None:
-    _arrow(fills, (x1, y1), (x2, y2))
-    _arrow(fills, (x2, y2), (x1, y1))
     span = math.hypot(x2 - x1, y2 - y1)
     gap = _text_width(text, 3.0) + 2.0
+    # Arrowheads are a few millimetres long. On a foil they would hide the size.
+    draw_arrows = span >= 6.0
+    if draw_arrows:
+        _arrow(fills, (x1, y1), (x2, y2))
+        _arrow(fills, (x2, y2), (x1, y1))
     if along_x and span > gap + 4:
         mid = (x1 + x2) / 2
         lines.append(_Line(x1, y1, mid - gap / 2, y1, "DIMENSION", 0.18, _DIM))
         lines.append(_Line(mid + gap / 2, y1, x2, y2, "DIMENSION", 0.18, _DIM))
-        texts.append(_Text(mid - _text_width(text, 3.0) / 2, y1 - 1.1, text, 3.0, "DIMENSION", _DIM))
+        texts.append(_Text(*_keep_on_sheet(mid - _text_width(text, 3.0) / 2, y1 - 1.1, text, 3.0), text, 3.0, "DIMENSION", _DIM))
         return
     lines.append(_Line(x1, y1, x2, y2, "DIMENSION", 0.18, _DIM))
     if along_x:
-        texts.append(_Text(max(x1, x2) + 1.6, y1 - 1.1, text, 3.0, "DIMENSION", _DIM))
+        texts.append(_Text(*_keep_on_sheet(max(x1, x2) + 1.6, y1 - 1.1, text, 3.0), text, 3.0, "DIMENSION", _DIM))
     else:
+        width = _text_width(text, 3.0)
         mid_y = (y1 + y2) / 2
-        texts.append(_Text(x1 - _text_width(text, 3.0) - 1.4, mid_y - 1.1, text, 3.0, "DIMENSION", _DIM))
+        left = x1 - width - 1.4
+        text_y = mid_y - 1.1
+        if left < 8.0:
+            # Keep the number in the margin. Moving it right puts it on the part.
+            left = 8.0
+            if left + width > x1 - 0.6:
+                text_y = y2 + 1.5
+        texts.append(_Text(*_keep_on_sheet(left, text_y, text, 3.0), text, 3.0, "DIMENSION", _DIM))
+
+
+def _keep_on_sheet(x: float, y: float, text: str, size: float) -> tuple[float, float]:
+    """Keep a label inside the border. A number past the edge is unreadable."""
+    width = _text_width(text, size)
+    x = min(max(x, 8.0), _PAGE_W - 8.0 - width)
+    y = min(max(y, 8.0), _PAGE_H - 8.0 - size)
+    return (x, y)
 
 
 def _extension(lines, x1, y1, x2, y2) -> None:
@@ -502,7 +567,7 @@ def _frame(lines: list[_Line]) -> None:
     lines.append(_Line(248, 8, 248, 58, "TITLE", 0.25, _RULE))
 
 
-def _title_block(lines, texts, name, scale_text, ratio, exploded: bool, gap_mm: float | None) -> None:
+def _title_block(lines, texts, name, scale_text, ratio, exploded: bool, gap_mm: float | None, unusual: bool) -> None:
     texts.append(_Text(12, 46, str(name), 4.4, "TITLE", _INK))
     texts.append(_Text(12, 38, "LAYOUT DRAWING. Not a shop drawing.", 2.7, "TITLE", _INK))
     texts.append(
@@ -515,7 +580,19 @@ def _title_block(lines, texts, name, scale_text, ratio, exploded: bool, gap_mm: 
     else:
         texts.append(_Text(12, 18, "Hidden lines are dashed. The isometric view leaves them out.", 2.4, "TITLE", _MUTED))
     texts.append(_Text(12, 11.5, "Dimensions are millimeters.", 2.4, "TITLE", _MUTED))
-    texts.append(_Text(256, 46, f"SCALE {scale_text}", 3.4, "TITLE", _INK))
+    scale_label = f"SCALE {scale_text}"
+    texts.append(_Text(256, 46, scale_label, 3.4, "TITLE", _INK))
+    if unusual:
+        texts.append(
+            _Text(
+                256 + _text_width(scale_label, 3.4) + 3.0,
+                46.6,
+                "Smaller than the usual ratios.",
+                2.3,
+                "TITLE",
+                _MUTED,
+            )
+        )
     bar = _nice_length(ratio)
     bar_w = bar * ratio
     lines.append(_Line(256, 34, 256 + bar_w, 34, "TITLE", 0.45, _INK))
@@ -527,12 +604,18 @@ def _title_block(lines, texts, name, scale_text, ratio, exploded: bool, gap_mm: 
 
 
 def _nice_length(ratio: float) -> float:
+    """A bar of at most 70 mm on the sheet, including ratios below 1:1000."""
     best = 1.0
-    for step in (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000):
-        if step * ratio <= 70.0:
-            best = float(step)
-        else:
-            break
+    magnitude = 1.0
+    safe = max(ratio, 1e-15)
+    while magnitude < 1e15:
+        for factor in (1, 2, 5):
+            step = factor * magnitude
+            if step * safe <= 70.0:
+                best = step
+            else:
+                return best
+        magnitude *= 10
     return best
 
 
@@ -541,16 +624,28 @@ def _scale_text(pair: tuple[int, int]) -> str:
 
 
 def _pair(ratio: float) -> tuple[int, int]:
-    for pair in _SCALES:
+    for pair in _all_scales():
         if abs(pair[0] / pair[1] - ratio) < 1e-9:
             return pair
-    return (1, 1)
+    if ratio >= 1:
+        return (max(1, int(round(ratio))), 1)
+    return (1, max(1, int(round(1.0 / max(ratio, 1e-15)))))
 
 
 def _format_mm(value: float) -> str:
-    if abs(value - round(value)) < 0.05:
-        return str(int(round(value)))
-    return f"{value:.1f}"
+    """Text on the sheet. Whole millimetres stay whole. A thin size is not drawn as 0."""
+    number = float(value)
+    magnitude = abs(number)
+    if magnitude < 1e-9:
+        return "0"
+    if magnitude < 1:
+        text = f"{number:.3f}".rstrip("0").rstrip(".")
+        if text in {"", "0", "-0"}:
+            return "<0.001" if number >= 0 else ">-0.001"
+        return text
+    if abs(number - round(number)) < 0.05:
+        return str(int(round(number)))
+    return f"{number:.1f}"
 
 
 def _text_width(text: str, size: float) -> float:
@@ -607,7 +702,7 @@ def _write_pdf(path: Path, lines: list[_Line], texts: list[_Text], fills: list[_
     payload.extend(
         f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii")
     )
-    path.write_bytes(payload)
+    _write_bytes(path, payload)
 
 
 def _pdf_color(color: tuple[int, int, int]) -> str:
@@ -661,7 +756,7 @@ def _write_dxf(path: Path, lines: list[_Line], texts: list[_Text]) -> None:
             ]
         )
     parts.extend(["0", "ENDSEC", "0", "EOF", ""])
-    path.write_text("\n".join(parts), encoding="utf-8")
+    _write_text(path, "\n".join(parts))
 
 
 def _dxf_num(value: float) -> str:
@@ -689,7 +784,7 @@ def _write_png(path: Path, lines: list[_Line], texts: list[_Text], fills: list[_
     for text in texts:
         font = _font(max(8, int(round(text.size * ppm))))
         draw.text(pixel(text.x, text.y), text.text, fill=text.color, font=font, anchor="ls")
-    image.save(path, format="PNG", optimize=True)
+    _save_png(path, image)
 
 
 def _dashed(draw, start, end, color, width, on: float, off: float) -> None:
@@ -714,11 +809,56 @@ def _dashed(draw, start, end, color, width, on: float, off: float) -> None:
         drawing = not drawing
 
 
+_FONT_CANDIDATES = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+)
+
+
 def _font(size: int):
-    for path in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ):
+    for path in _FONT_CANDIDATES:
         if Path(path).is_file():
             return ImageFont.truetype(path, size=size)
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _prepare(path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise GeometryError(
+            f"Could not create the folder for {path}. {exc.strerror or exc}."
+        ) from exc
+
+
+def _write_bytes(path: Path, payload: bytes) -> None:
+    _prepare(path)
+    try:
+        path.write_bytes(payload)
+    except OSError as exc:
+        raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc
+
+
+def _write_text(path: Path, text: str) -> None:
+    _prepare(path)
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc
+
+
+def _save_png(path: Path, image: Image.Image) -> None:
+    _prepare(path)
+    try:
+        image.save(path, format="PNG", optimize=True)
+    except OSError as exc:
+        raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc
