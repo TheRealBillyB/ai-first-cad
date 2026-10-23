@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A refused POST is answered after its body has been read | Windows resets the socket when the answer is sent and the body is still unread, so the client never sees the refusal. |
 | A tendon is anchors, pulleys, guides, and an end anchor, measured on each motion-study step | Length adds the wrap arc. Tension past a pulley is the actuator force reduced by the capstan ratio. |
 | The suite runs in several processes, and a new push cancels that pull request's older run | Geometry was most of the time. On Windows, sandboxed scripts still start one at a time so the shared firewall rules stay in place, and the network probe still runs first and fails closed. |
 | A geometry import keeps the project as the working directory | The image library's attach routine points the process at the base interpreter, then puts the project back. That request is refused, so a relative file in the project still opens and a plugin file there is not loaded. |
