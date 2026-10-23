@@ -3,15 +3,16 @@
 Linux confines the process with Landlock (files, TCP, and signals) and a small
 seccomp filter. That filter accepts only the native instruction set. It refuses
 io_uring, ptrace, and cross-process memory, and it blocks every other socket
-and a new session. The process cap counts only that script's threads: a cgroup
-``pids.max`` when this user can create one, and otherwise the parent stops the
-script's process tree. It is not the user-wide process limit, which also counts
-a browser and was stalling geometry. macOS uses ``sandbox-exec`` and
-``setrlimit`` for CPU time. The parent watches the script's resident memory and
-stops it above the memory cap, because the address-space cap counts a system
-library cache and was stopping every script. Windows uses an AppContainer and a
-Job Object. CPU time, memory, and a wall-clock limit are set on that process.
-If those limits cannot be applied, the script is not run.
+and a new session. Landlock also refuses a symlink, named pipe, socket node, or
+device node outside the project. The process cap counts only that script's
+threads: a cgroup ``pids.max`` when this user can create one, and otherwise the
+parent stops the script's process tree. It is not the user-wide process limit,
+which also counts a browser and was stalling geometry. macOS uses
+``sandbox-exec`` and ``setrlimit`` for CPU time. The parent watches the script's
+resident memory and stops it above the memory cap, because the address-space
+cap counts a system library cache and was stopping every script. Windows uses
+an AppContainer and a Job Object. CPU time, memory, and a wall-clock limit are
+set on that process. If those limits cannot be applied, the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
@@ -87,8 +88,13 @@ _FS_READ = 1 << 2
 _FS_READ_DIR = 1 << 3
 _FS_REMOVE_DIR = 1 << 4
 _FS_REMOVE_FILE = 1 << 5
+_FS_MAKE_CHAR = 1 << 6
 _FS_MAKE_DIR = 1 << 7
 _FS_MAKE_REG = 1 << 8
+_FS_MAKE_SOCK = 1 << 9
+_FS_MAKE_FIFO = 1 << 10
+_FS_MAKE_BLOCK = 1 << 11
+_FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13
 _FS_TRUNCATE = 1 << 14
 _NET_BIND = 1 << 0
@@ -102,10 +108,15 @@ _WORK_ACCESS = (
     | _FS_REMOVE_FILE
     | _FS_MAKE_DIR
     | _FS_MAKE_REG
+    | _FS_MAKE_SOCK
+    | _FS_MAKE_FIFO
+    | _FS_MAKE_SYM
     | _FS_REFER
     | _FS_TRUNCATE
 )
-_HANDLED_FS = _WORK_ACCESS | _FS_EXECUTE
+# Device nodes are handled and never granted. Symlinks, pipes, and socket
+# nodes are granted only on the project folder, below.
+_HANDLED_FS = _WORK_ACCESS | _FS_EXECUTE | _FS_MAKE_CHAR | _FS_MAKE_BLOCK
 
 _LANDLOCK = {"x86_64": (444, 445, 446), "aarch64": (444, 445, 446)}
 _SECCOMP = {"x86_64": 317, "aarch64": 277}
