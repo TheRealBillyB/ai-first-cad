@@ -399,6 +399,7 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `place_part` | Move a part. Rotation is degrees about X, Y, Z, then the translation. It replaces the previous placement. |
 | `search_parts` | Find a socket-head screw, hex nut, plain washer, or deep-groove ball bearing. `608` is the 8×22×7 bearing. |
 | `insert_standard_part` | Insert one catalog part and place it. Screws need `length` (shank under the head, mm). |
+| `create_gear` | Spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width. |
 | `section_part` | A planar cross-section: an image, the cut area, and the outline. Axis plus offset, or an origin and a normal. |
 | `feature_report` | For each boolean step, how much material was new, buried, or actually removed. |
 | `inspect_part` | Measure, estimate wall thickness, report feature contribution, and return the pictures. Call this after every edit. |
@@ -527,6 +528,8 @@ A result is either a **verified check** or a **rough estimate**. A verified chec
 
 **Catalog parts.** Screws, nuts, washers, and bearings come from [bd_warehouse](https://github.com/gumyr/bd_warehouse), which builds them with build123d from published dimensions. A screw's shank points down (−Z) and the underside of the head sits on local z = 0. Nuts, washers, and bearings sit on z = 0 and grow toward +Z. Screws and nuts are built with `simple=True`, so the thread is not cut; a screw's modeled shank is near the minor diameter, and a clearance check against a hole uses that solid. `import_step` plus `place_part` is the path for a STEP file from McMaster-Carr or anywhere else.
 
+**Gears.** `create_gear` builds an external spur, helical, straight bevel, or spiral bevel as a solid, and reports the pitch diameters, base diameter, cone angles, and contact ratio. Spur and helical teeth follow ISO 21771:2007 with an ISO 53:1998 basic rack. Straight and spiral bevel teeth use the intersecting-axis pitch cones of ISO 23509:2016 and the virtual cylindrical gear of ANSI/AGMA 2005-D03. A bore, a hub, a DIN 6885-1 keyway, or an ISO 14 or DIN 5480 spline is optional. The formulas and the limits are in [docs/reference/gears.md](docs/reference/gears.md). Hypoid gears are not generated.
+
 ## Development
 
 ```bash
@@ -551,6 +554,7 @@ GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/
 - Clearance does not report how deep an interference goes, only its volume. Catalog screws omit threads, so a fit check is against the simple shank, not the major diameter.
 - Packaging measures the real solids. A polyhedron's protrusion is the farthest vertex outside the envelope. A curved face is maximized on that surface until the step is under 0.000001 mm. A part that sits within 0.0001 mm of the wall counts as touching. The reported point is one place the maximum is reached when a whole face is equally far. The envelope is the allowed volume, so a cavity has to be modeled as that interior solid.
 - The catalog is screws, nuts, washers, and one family of ball bearings. It is not a McMaster mirror. An arbitrary bought part is a STEP import.
+- A gear is the nominal involute at zero backlash. A bevel solid rules the back-cone profile along the face; the reported face and root angles are the parallel-clearance angles, and a spiral is a constant-angle spiral rather than a circular cutter path. Hypoid gears are not generated. See [docs/reference/gears.md](docs/reference/gears.md).
 - Renders are shaded orthographic pictures from a software rasterizer, not a dimensioned drawing. Sections are filled profiles with a scale bar, not a hatched drawing. There is no click-to-measure.
 - Sketches are on the XY plane and extrude along +Z. A revolve uses the X or Y axis of that same plane. The initial `at` guess has to be near a shape that satisfies the constraints, or the solver reports that it did not converge. Circle-to-line tangency is built from a point and a perpendicular radius, because the solver's tangent constraint does not take a full circle.
 - The SolveSpace solver linked through python-solvespace is GPL-3.0-or-later. Gmsh is GPL-2.0-or-later. CalculiX, which aicad runs as a separate program, is GPL-2.0-only. aicad is AGPL-3.0-or-later. Those solvers travel with the package or, for `ccx`, with the system install. The combination is covered in [docs/LICENSE_AUDIT.md](docs/LICENSE_AUDIT.md).
