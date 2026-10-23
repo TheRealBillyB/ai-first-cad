@@ -41,6 +41,7 @@ is more than the part needs. Each operation can include a `name`.
 Wall thickness is the smaller of a ray estimate and a section estimate, and
 the result says which one was used. `section_part` shows a cross-section.
 `search_parts` and `insert_standard_part` bring in real fasteners and bearings.
+`create_gear` builds a spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width.
 Clearance between two parts reports interference volume or the gap.
 
 For a shape that should stay consistent when a size changes, use a sketch:
@@ -166,6 +167,15 @@ deep-groove ball bearings (including the 608 bearing as size `M8-22-7`).
 of the head is on local z=0. Nuts, washers, and bearings sit on z=0.
 `import_step` plus `place_part` brings in an arbitrary STEP file, such as a
 McMaster-Carr download. Then `check_clearance` against your part.
+
+## Gears
+
+`create_gear` builds an external spur, helical, straight bevel, or spiral
+bevel. The spec uses millimeters: `module_mm`, `teeth`, `pressure_angle_deg`,
+and `face_width_mm`. A bevel also needs `mate_teeth` or `ratio`, and
+`shaft_angle_deg` when the shafts are not at 90 degrees. A positive helix or
+spiral angle is right-hand. Optional `bore_mm`, `hub`, `keyway` (DIN 6885-1),
+and `spline` (ISO 14 or DIN 5480) cut the blank. Hypoid gears are not built.
 
 ## Sketches
 
@@ -560,6 +570,32 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 position=position,
                 rotation_deg=rotation_deg,
                 fastener_type=fastener_type,
+            )
+        )
+
+    @mcp.tool()
+    def create_gear(
+        name: str,
+        spec: dict[str, Any],
+        position: list[float] | None = None,
+        rotation_deg: list[float] | None = None,
+    ) -> dict:
+        """Create or replace a spur, helical, straight bevel, or spiral bevel gear.
+
+        spec needs type, module_mm, teeth, and face_width_mm. pressure_angle_deg
+        defaults to 20. module_mm is the normal module, or the outer transverse
+        module for a bevel. A bevel needs mate_teeth or ratio. helix_angle_deg
+        and spiral_angle_deg are positive for a right-hand tooth. bore_mm, hub,
+        keyway (DIN 6885-1), and spline (ISO 14 or DIN 5480) are optional.
+        position and rotation_deg are [x, y, z]. Hypoid gears are not built.
+        """
+        return guard(
+            lambda: run(
+                "create_gear",
+                name=name,
+                spec=spec,
+                position=position,
+                rotation_deg=rotation_deg,
             )
         )
 
