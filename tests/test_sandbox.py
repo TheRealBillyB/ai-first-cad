@@ -6,6 +6,7 @@ probe with its own sandbox. A missing file does not count as confined.
 
 import asyncio
 import json
+import subprocess
 import sys
 import threading
 from dataclasses import replace
@@ -386,6 +387,55 @@ def test_network_switch_is_not_an_assistant_command(tmp_path, config_home, monke
     always = Workspace(tmp_path)
     assert always.script_status()["network"] == "on"
     assert "allow_script_network_once" not in COMMANDS
+
+
+def test_windows_grant_does_not_touch_the_volume_root(tmp_path, monkeypatch):
+    """Walking up to a project must not run icacls on ``/`` or ``C:\\``.
+
+    That call has no useful grant and can sit until the tool is killed.
+    """
+
+    from aicad import sandbox_windows
+
+    granted: list[Path] = []
+
+    def record(path, _sid, _rights, *, recurse):
+        granted.append(Path(path))
+        assert recurse is False
+
+    monkeypatch.setattr(sandbox_windows, "_icacls", record)
+    sandbox_windows._grant_traverse(tmp_path, "S-1-5-21-1")
+    sandbox_windows._grant_tree(Path(tmp_path.anchor), "S-1-5-21-1", "(OI)(CI)RX")
+    assert granted
+    assert all(not sandbox_windows._is_volume_root(path) for path in granted)
+
+
+def test_icacls_refuses_a_volume_root_and_stops_waiting(tmp_path, monkeypatch):
+    from aicad import sandbox_windows
+
+    calls: list[dict] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(sandbox_windows.subprocess, "run", fake_run)
+    with pytest.raises(OSError, match="volume root"):
+        sandbox_windows._icacls(Path(tmp_path.anchor), "S-1-5-21-1", "(RX)", recurse=False)
+    assert calls == []
+    with pytest.raises(OSError, match="did not finish"):
+        sandbox_windows._icacls(tmp_path, "S-1-5-21-1", "(RX)", recurse=False)
+    assert calls[0]["timeout"] == sandbox_windows._ICACLS_TIMEOUT_SECONDS
+
+
+def test_reclaim_skips_a_volume_root(tmp_path, monkeypatch):
+    from aicad import sandbox_windows
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("icacls should not run on a volume root")
+
+    monkeypatch.setattr(sandbox_windows.subprocess, "run", fail)
+    sandbox_windows._reclaim_for_user(Path(tmp_path.anchor))
 
 
 def test_unexpected_errors_become_tool_errors(tmp_path, config_home):

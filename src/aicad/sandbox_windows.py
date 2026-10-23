@@ -352,17 +352,47 @@ def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
     return sid, text
 
 
+# icacls on a volume root can sit until the tool is killed. A short wait is the
+# backstop for any other path that does not return.
+_ICACLS_TIMEOUT_SECONDS = 10
+
+
+def _is_volume_root(path: Path) -> bool:
+    """True for ``/``, ``C:\\``, and a path that is its own parent."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    if resolved.parent == resolved:
+        return True
+    anchor = resolved.anchor
+    return bool(anchor) and os.path.normcase(os.fspath(resolved)) == os.path.normcase(anchor)
+
+
 def _icacls(path: Path, sid: str, rights: str, *, recurse: bool) -> None:
+    if _is_volume_root(path):
+        raise OSError(f"Refusing to change access on the volume root {path}.")
     command = ["icacls", str(path), "/grant", f"*{sid}:{rights}", "/C", "/Q"]
     if recurse:
         command.append("/T")
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_ICACLS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OSError(f"Could not grant the sandbox access to {path}. icacls did not finish.") from exc
     if completed.returncode != 0:
         detail = (completed.stdout or "") + (completed.stderr or "")
         raise OSError(f"Could not grant the sandbox access to {path}. {detail.strip()}")
 
 
 def _grant_tree(path: Path, sid: str, rights: str) -> None:
+    if _is_volume_root(path):
+        return
     if path.is_dir():
         _icacls(path, sid, rights, recurse=True)
 
@@ -381,6 +411,8 @@ def _grant_traverse(path: Path, sid: str) -> None:
         parents.append(parent)
         current = parent
     for parent in parents:
+        if _is_volume_root(parent):
+            continue
         try:
             _icacls(parent, sid, "(RX)", recurse=False)
         except OSError:
@@ -444,7 +476,7 @@ def _current_user_sid() -> str | None:
 def _reclaim_for_user(path: Path) -> None:
     """Grant the current user access to a tree the AppContainer wrote."""
 
-    if not path.exists():
+    if not path.exists() or _is_volume_root(path):
         return
     sid = _current_user_sid()
     if sid:
@@ -456,12 +488,16 @@ def _reclaim_for_user(path: Path) -> None:
     user = os.environ.get("USERNAME", "").strip()
     if not user:
         return
-    subprocess.run(
-        ["icacls", str(path), "/grant", f"{user}:(OI)(CI)F", "/T", "/C", "/Q"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        subprocess.run(
+            ["icacls", str(path), "/grant", f"{user}:(OI)(CI)F", "/T", "/C", "/Q"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_ICACLS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return
 
 
 def _create_job(cpu_seconds: int, memory_bytes: int) -> wintypes.HANDLE:
