@@ -1154,19 +1154,27 @@ def _bevel_pair(left: dict, right: dict) -> dict:
         },
         "assumptions": [
             "Zero backlash. Pitch apexes coincide.",
-            "Transverse contact ratio is the Tredgold virtual spur pair at mid-face.",
-            "Overlap ratio is the rotation of a constant spiral angle along the face, divided by the angular pitch.",
+            "Transverse contact ratio is the Tredgold virtual spur pair at the middle of the face both gears share.",
+            "Overlap ratio is the rotation of a constant spiral angle along that shared face, divided by the angular pitch.",
         ],
     }
 
 
 def _bevel_contact(left: dict, right: dict) -> tuple[float, float]:
-    """Virtual spur contact ratio at mid-face, plus spiral overlap."""
-    # Rebuild enough of the virtual pair from the reported outer data.
+    """Virtual spur contact ratio on the shared face, plus spiral overlap.
+
+    Each gear's own mid-face is the middle of that gear's tooth. The mesh
+    only exists where both faces overlap, so both the virtual spur and the
+    spiral travel use that shared length.
+    """
+    outer = min(left["outer_cone_distance_mm"], right["outer_cone_distance_mm"])
+    inner = max(left["inner_cone_distance_mm"], right["inner_cone_distance_mm"])
+    if not inner < outer:
+        raise GeometryError("These bevel faces do not overlap, so there is no contact ratio.")
+    mean = (outer + inner) / 2.0
+
     def mid(data: dict) -> dict:
-        outer = data["outer_cone_distance_mm"]
-        mean = data["mean_cone_distance_mm"]
-        scale = mean / outer
+        scale = mean / data["outer_cone_distance_mm"]
         delta = math.radians(data["pitch_angle_deg"])
         m = data["outer_transverse_module_mm"] * scale
         ha = data["addendum_mm"] * scale
@@ -1189,9 +1197,7 @@ def _bevel_contact(left: dict, right: dict) -> tuple[float, float]:
     beta = math.radians(left["spiral_angle_deg"])
     if abs(beta) < 1e-12:
         return eps_a, 0.0
-    # Angular travel of the constant spiral from toe to heel, divided by the angular pitch.
-    outer = left["outer_cone_distance_mm"]
-    inner = left["inner_cone_distance_mm"]
+    # Angular travel of the constant spiral along the shared face, divided by the angular pitch.
     delta = math.radians(left["pitch_angle_deg"])
     travel = abs((math.tan(beta) / math.sin(delta)) * math.log(outer / inner))
     eps_b = travel / (2.0 * math.pi / left["teeth"])
