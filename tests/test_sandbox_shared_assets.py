@@ -131,18 +131,30 @@ def _assert_cwd_unchanged(payload: dict, project: Path) -> None:
     assert payload["cwd"] == str(project)
     assert payload["origin"] == str(project)
     assert payload["samples"] > 0
-    # Native geometry libraries can pass through the interpreter directory
+    # Native geometry libraries can pass through the real interpreter
+    # directory, including the base install behind a virtual environment,
     # and then put the project back. Another directory is still a move.
-    prefix = Path(sys.prefix).resolve()
-    interpreter = Path(sys.executable).resolve().parent
+    allowed = set()
+    for text in (
+        sys.prefix,
+        getattr(sys, "base_prefix", ""),
+        str(Path(sys.executable).resolve().parent),
+        str(Path(getattr(sys, "_base_executable", "") or sys.executable).resolve().parent),
+    ):
+        if not text:
+            continue
+        try:
+            allowed.add(os.path.normcase(str(Path(text).resolve())))
+        except OSError:
+            allowed.add(os.path.normcase(text))
     moved = []
     for item in payload["moved"]:
         try:
-            resolved = Path(item).resolve()
+            key = os.path.normcase(str(Path(item).resolve()))
         except OSError:
             moved.append(item)
             continue
-        if resolved != prefix and resolved != interpreter:
+        if key not in allowed:
             moved.append(item)
     assert moved == []
     assert payload["errors"] == []
