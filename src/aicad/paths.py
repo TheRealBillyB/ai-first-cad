@@ -129,6 +129,55 @@ def _export_blocked(text: str, root: Path) -> bool:
     return False
 
 
+_SUPERSCRIPT_DIGITS = str.maketrans(
+    {
+        "\u00b9": "1",
+        "\u00b2": "2",
+        "\u00b3": "3",
+        "\u2070": "0",
+        "\u2074": "4",
+        "\u2075": "5",
+        "\u2076": "6",
+        "\u2077": "7",
+        "\u2078": "8",
+        "\u2079": "9",
+    }
+)
+_RESERVED_DEVICES = frozenset({"nul", "con", "prn", "aux"})
+
+
+def is_reserved_device_name(component: str) -> bool:
+    """True when Windows treats this file or folder name as a device.
+
+    The name before the first dot or colon is what Windows uses, after trailing
+    spaces and dots are removed. ``NUL.txt`` and ``COM¹`` count.
+    """
+    if not isinstance(component, str) or not component:
+        return False
+    text = component.translate(_SUPERSCRIPT_DIGITS).rstrip(" .")
+    if not text or text in {".", ".."}:
+        return False
+    stem = text.split(".", 1)[0].split(":", 1)[0].rstrip(" .").casefold()
+    if stem in _RESERVED_DEVICES:
+        return True
+    return len(stem) == 4 and stem[:3] in {"com", "lpt"} and stem[3] in "123456789"
+
+
+def refuse_reserved_device(path: str | Path, root: Path | None, label: str, error: type[Exception]) -> None:
+    """Refuse a Windows device name used as an output file or folder."""
+    raw = Path(path)
+    if root is not None and raw.is_absolute():
+        try:
+            parts = Path(os.path.normpath(raw)).relative_to(Path(os.path.normpath(root))).parts
+        except ValueError:
+            parts = (raw.name,)
+    else:
+        parts = tuple(part for part in raw.parts if part not in {os.sep, "/", "\\"})
+    for part in parts:
+        if is_reserved_device_name(part):
+            raise error(f"{label} {part!r} is reserved on Windows.")
+
+
 def _is_inside(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
