@@ -20,6 +20,21 @@ def test_search_finds_an_m3_screw_and_a_608_bearing(tmp_path):
     assert match["dimensions"]["outside_mm"] == 22
     assert match["dimensions"]["width_mm"] == 7
 
+    screws_only = [item["size"] for item in screws["matches"] if item["kind"] == "socket_head_cap_screw"]
+    assert screws_only == ["M3-0.5"]
+    assert all(item["kind"] == "socket_head_cap_screw" for item in screws["matches"])
+
+
+def test_a_size_that_is_not_in_the_catalog_is_not_replaced_by_other_sizes(tmp_path):
+    document = Document(tmp_path)
+    missed = document.search_parts("M3-0.8 screw")
+    assert missed["matches"] == []
+    washers = document.search_parts("M3-0.8")
+    assert all(item["size"] != "M3" for item in washers["matches"])
+    sample = document.search_parts("screw")
+    assert len(sample["matches"]) == 8
+    assert {item["kind"] for item in sample["matches"]} == {"socket_head_cap_screw"}
+
 
 def test_screw_clears_a_hole_and_a_pin_does_not(tmp_path):
     document = Document(tmp_path)

@@ -631,7 +631,12 @@ def _matches_for_kind(kind: str, text: str) -> list[dict[str, object]]:
         return []
     sizes = _sizes(kind)
     wanted = [size for size in sizes if _size_matches(kind, size, text)]
-    if not wanted and _kind_mentioned(kind, text):
+    # A kind word with no size, such as "screw", lists a short sample.
+    # A size that is not in the table, such as "M3-0.8 screw", does not.
+    named_kind = any(_kind_mentioned(item, text) for item in _KINDS)
+    if wanted and named_kind and not _kind_mentioned(kind, text):
+        return []
+    if not wanted and _kind_mentioned(kind, text) and not _query_asks_for_size(text):
         wanted = sizes[:8]
     matches = []
     for size in wanted:
@@ -667,12 +672,13 @@ def _size_mentioned(kind: str, text: str) -> bool:
 
 
 def _size_matches(kind: str, size: str, text: str) -> bool:
+    """True when a query token is this size, or a fastener's series head.
+
+    ``m3`` matches screw ``M3-0.5`` and washer ``M3``. It does not match
+    ``M30`` or ``M3.5``. ``M3-0.8`` does not match washer ``M3``.
+    """
     if kind in _FASTENERS:
-        tokens = set()
-        for part in text.split():
-            tokens.add(part.upper())
-            if "-" in part:
-                tokens.add(part.split("-", 1)[0].upper())
+        tokens = {part.upper() for part in text.split()}
         head = size.split("-", 1)[0].upper()
         return head in tokens or size.upper() in tokens
     folded = "".join(text.lower().split()).replace("×", "x").replace("*", "x")
@@ -689,6 +695,10 @@ def _size_matches(kind: str, size: str, text: str) -> bool:
             if target == size and alias.lower() in folded:
                 return True
     return False
+
+
+def _query_asks_for_size(text: str) -> bool:
+    return any(any(character.isdigit() for character in token) for token in text.split())
 
 
 def _sizes(kind: str) -> list[str]:
