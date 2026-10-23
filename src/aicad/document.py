@@ -185,7 +185,7 @@ class Document:
             from aicad.sandbox import require_in_project
 
             require_in_project(path, self.workspace, writing=False)
-            source = Path(path).resolve()
+            source = _step_import_source(self.workspace, path)
             shape = kernel.import_step_file(source)
             relative = f"imports/{name}.step"
             destination = self.workspace / relative
@@ -1242,10 +1242,9 @@ class Document:
                     f"Could not write the exploded picture for {spec['name']}. {exc.strerror or exc}."
                 ) from exc
             frame = pictures["frames"][0]
-            from PIL import Image
+            from aicad.blueprint import png_size
 
-            with Image.open(frame["path"]) as image:
-                width, height = image.size
+            width, height = png_size(frame["path"])
             report = {key: value for key, value in planned.items() if key != "offsets"}
             report["views"] = [
                 {"name": "exploded", "path": frame["path"], "width": width, "height": height}
@@ -1720,6 +1719,36 @@ def _identity_placement() -> dict[str, list[float]]:
 def _vec3(value, label: str) -> tuple[float, float, float]:
     unit = "deg" if "rot" in label else "mm"
     return kernel.finite_vec3(value, label, unit=unit)
+
+
+def _step_import_source(root: Path, raw: str | Path) -> Path:
+    """The file ``import_step`` reads.
+
+    An absolute path is a file the person chose. A path inside the project,
+    including a link, must still point at a file inside the project after
+    the link is followed.
+    """
+    given = Path(raw)
+    if not given.is_absolute():
+        given = root / given
+    source = given.resolve()
+    root_resolved = root.resolve()
+    try:
+        given.absolute().relative_to(root_resolved)
+        lexical_inside = ".." not in given.parts
+    except ValueError:
+        lexical_inside = False
+    if lexical_inside and not _path_inside(source, root_resolved):
+        raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
+    return source
+
+
+def _path_inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _project_file(root: Path, raw: object, label: str) -> Path:

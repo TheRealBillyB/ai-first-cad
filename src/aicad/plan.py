@@ -523,6 +523,8 @@ class PlanStore:
             raise PlanError(f"{path.name} has no revisions to read.")
         for revision in revisions:
             _coerce_revision(revision, path.name)
+            for sheet in revision.get("sheets") or []:
+                _require_loaded_sheet(sheet, path.name)
         if payload.get("current_revision") != revisions[-1].get("version"):
             raise PlanError(f"{path.name} current revision does not match the last revision in the file.")
         _check_strings(payload, path.name)
@@ -1209,13 +1211,13 @@ def _fill(value) -> str:
 
 
 def _render_revision(root: Path, plan: dict, revision: dict) -> None:
-    folder = root / "plans" / plan["id"] / f"v{revision['version']}"
-    folder.mkdir(parents=True, exist_ok=True)
     stamp = plan.get("status") or "draft"
     if revision.get("version") != plan.get("current_revision"):
         stamp = "recorded"
     for sheet in revision.get("sheets") or []:
-        relative = f"plans/{plan['id']}/v{revision['version']}/{sheet['id']}.png"
+        if not isinstance(sheet, dict):
+            raise PlanError("A plan sheet has to stay inside the project.")
+        destination, relative = _sheet_destination(root, plan, revision, sheet)
         sheet["path"] = relative
         panels = []
         for panel in sheet["panels"]:
@@ -1223,8 +1225,9 @@ def _render_revision(root: Path, plan: dict, revision: dict) -> None:
             for block in drawn["blocks"]:
                 block["_fill"] = FILLS[block["fill"]]
             panels.append(drawn)
+        destination.parent.mkdir(parents=True, exist_ok=True)
         render_plan_sheet(
-            root / relative,
+            destination,
             title=sheet["title"],
             subtitle=sheet.get("subtitle") or "",
             revision=int(revision["version"]),
@@ -1232,6 +1235,42 @@ def _render_revision(root: Path, plan: dict, revision: dict) -> None:
             panels=panels,
             footer=sheet.get("footer") or _FOOTER,
         )
+
+
+def _require_loaded_sheet(sheet: object, filename: str) -> None:
+    """Reject a sheet id that cannot be drawn inside the project. The picture is not opened."""
+    if not isinstance(sheet, dict):
+        raise PlanError(f"{filename} has a sheet this version cannot read.")
+    sheet_id = sheet.get("id")
+    if not isinstance(sheet_id, str) or not _ITEM_ID.match(sheet_id):
+        raise PlanError(f"{filename} has a sheet this version cannot read.")
+
+
+def _sheet_destination(root: Path, plan: dict, revision: dict, sheet: dict) -> tuple[Path, str]:
+    """Picture path for one sheet. A name that leaves the project is refused before any write."""
+    plan_id = plan.get("id")
+    version = revision.get("version")
+    sheet_id = sheet.get("id")
+    if (
+        not isinstance(plan_id, str)
+        or not _PLAN_ID.match(plan_id)
+        or isinstance(version, bool)
+        or not isinstance(version, int)
+        or version < 1
+        or not isinstance(sheet_id, str)
+        or not _ITEM_ID.match(sheet_id)
+    ):
+        raise PlanError("A plan sheet has to stay inside the project.")
+    relative = f"plans/{plan_id}/v{version}/{sheet_id}.png"
+    parent = _abs(root, f"plans/{plan_id}/v{version}")
+    destination = parent / f"{sheet_id}.png"
+    try:
+        linked = destination.is_symlink() or (destination.exists() and destination.stat().st_nlink > 1)
+        if linked:
+            destination.unlink()
+    except OSError as exc:
+        raise PlanError("A plan sheet has to stay inside the project.") from exc
+    return destination, relative
 
 
 def _drop_orphan_sheets(root: Path, plan: dict) -> None:

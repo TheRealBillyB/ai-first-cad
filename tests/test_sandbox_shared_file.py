@@ -114,15 +114,19 @@ def test_opening_a_shared_project_does_not_run_its_part_script(tmp_path, config_
 
 
 def test_child_env_does_not_put_the_project_on_the_import_path(tmp_path, monkeypatch):
-    other = tmp_path / "libs"
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(["", ".", str(tmp_path), str(other)]))
+    outside = tmp_path.parent / f"outside-libs-{tmp_path.name}"
+    inside = tmp_path / "libs"
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(["", ".", str(tmp_path), str(inside), str(outside)]),
+    )
     env = _child_env(tmp_path, tmp_path / "job", False)
     assert env["PYTHONSAFEPATH"] == "1"
-    assert env["PYTHONPATH"] == str(other)
+    assert env["PYTHONPATH"] == str(outside.resolve())
     named = tmp_path / "aicad"
     named.mkdir()
-    parent_path = _pythonpath_for_child(named, str(tmp_path))
-    assert parent_path is None
+    assert _pythonpath_for_child(named, str(tmp_path)) is None
+    assert _pythonpath_for_child(tmp_path, str(inside)) is None
 
 
 def test_a_project_package_cannot_replace_the_sandbox_runner(tmp_path, config_home):
