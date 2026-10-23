@@ -501,3 +501,61 @@ def test_mcp_create_gear(tmp_path: Path):
     assert body["result_kind"] == "verified_check"
     assert body["gear"]["pitch_diameter_mm"] == pytest.approx(24)
     assert Document(tmp_path).measure("pinion").watertight
+
+
+def test_a_negative_shift_with_a_real_working_angle_keeps_that_centre():
+    # z = 30, m = 2, x = -0.2, α = 20°. inv αwt stays positive.
+    spec = {
+        "type": "spur",
+        "module_mm": 2,
+        "teeth": 30,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 8,
+        "profile_shift": -0.2,
+    }
+    report = pair_geometry(spec, spec)
+    alpha = math.radians(20)
+    inv_w = _inv(alpha) + 2.0 * math.tan(alpha) * (-0.4) / 60.0
+    assert inv_w > 0
+    guess = (3.0 * inv_w) ** (1.0 / 3.0)
+    for _ in range(25):
+        guess -= (_inv(guess) - inv_w) / (math.tan(guess) ** 2)
+    centre = 60.0 * math.cos(alpha) / math.cos(guess)
+    assert report["centre_distance_mm"] == pytest.approx(centre, abs=1e-6)
+    assert report["working_transverse_pressure_angle_deg"] == pytest.approx(math.degrees(guess), abs=1e-6)
+    assert report["centre_distance_mm"] == pytest.approx(59.152342, abs=1e-4)
+
+
+def test_profile_shifts_with_no_zero_backlash_centre_are_refused():
+    # z = 18, m = 2, x = -0.8. inv αwt is negative, so the base circles
+    # already leave about 1.18 mm of circumferential backlash.
+    spec = {
+        "type": "spur",
+        "module_mm": 2,
+        "teeth": 18,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 8,
+        "profile_shift": -0.8,
+    }
+    with pytest.raises(GeometryError, match="zero-backlash"):
+        pair_geometry(spec, spec)
+
+
+def test_bevel_mate_ratio_and_pitch_angle_must_agree():
+    common = {"module_mm": 3, "pressure_angle_deg": 20, "face_width_mm": 12, "shaft_angle_deg": 90}
+    with pytest.raises(GeometryError, match="pitch_angle"):
+        gear_data({"type": "straight_bevel", "teeth": 20, "mate_teeth": 40, "pitch_angle_deg": 45, **common})
+    with pytest.raises(GeometryError, match="ratio"):
+        gear_data({"type": "straight_bevel", "teeth": 20, "mate_teeth": 40, "ratio": 3, **common})
+    agreed = gear_data(
+        {
+            "type": "straight_bevel",
+            "teeth": 20,
+            "mate_teeth": 40,
+            "ratio": 2,
+            "pitch_angle_deg": 26.56505,
+            **common,
+        }
+    )
+    assert agreed["pitch_angle_deg"] == pytest.approx(26.56505, abs=1e-4)
+    assert agreed["ratio"] == pytest.approx(2)

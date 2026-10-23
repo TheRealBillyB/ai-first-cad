@@ -148,6 +148,42 @@ def transverse_outline(
     return _tile(_tooth_sector(scalars, involute_count, fillet_count), teeth)
 
 
+def _require_consistent_bevel(
+    teeth: int,
+    shaft_deg: float,
+    mate: int | None,
+    ratio: float | None,
+    pitch_angle: float | None,
+) -> None:
+    """Refuse a mate, a ratio, and a pitch angle that are not the same cone."""
+    implied = None
+    if mate is not None and ratio is not None:
+        expected = mate / teeth
+        if abs(ratio - expected) > 1e-6 * max(1.0, abs(expected)):
+            raise GeometryError(
+                "ratio does not match mate_teeth / teeth. Pass one, or pass values for the same pair."
+            )
+        implied = expected
+    elif mate is not None:
+        implied = mate / teeth
+    elif ratio is not None:
+        implied = ratio
+    if pitch_angle is None or implied is None:
+        return
+    shaft = math.radians(shaft_deg)
+    denominator = implied + math.cos(shaft)
+    if abs(denominator) < 1e-12:
+        raise GeometryError(
+            "pitch_angle_deg does not match the pitch cone from mate_teeth or ratio."
+        )
+    delta = math.degrees(math.atan(math.sin(shaft) / denominator))
+    if abs(delta - pitch_angle) > 1e-4:
+        raise GeometryError(
+            "pitch_angle_deg does not match the pitch cone from mate_teeth or ratio. "
+            "Pass one, or pass values for the same cone."
+        )
+
+
 def normalize_spec(spec: dict) -> dict:
     """Fill defaults and reject a hypoid or an unknown family."""
     if not isinstance(spec, dict):
@@ -251,6 +287,7 @@ def normalize_spec(spec: dict) -> dict:
                 "Bevel profile shift is the Gleason addendum split for the ratio. "
                 "Do not pass profile_shift on a bevel; it is computed."
             )
+        _require_consistent_bevel(teeth, shaft, mate, ratio, pitch_angle)
     else:
         mate = None
         ratio = None
@@ -1022,6 +1059,13 @@ def _cylindrical_pair(left: dict, right: dict) -> dict:
     x_sum = left["profile_shift"] + right["profile_shift"]
     z_sum = left["teeth"] + right["teeth"]
     inv_w = _inv(alpha_t) + 2.0 * math.tan(alpha_n) * x_sum / z_sum
+    # A negative involute has no working pressure angle. Reporting angle 0
+    # would place the gears on the base circles and claim backlash is zero.
+    if inv_w < -1e-12:
+        raise GeometryError(
+            "These profile shifts leave backlash even when the base circles touch, "
+            "so there is no zero-backlash centre distance."
+        )
     alpha_w = _inv_inverse(inv_w)
     d_sum = left["reference_diameter_mm"] + right["reference_diameter_mm"]
     centre = 0.5 * d_sum * math.cos(alpha_t) / math.cos(alpha_w)

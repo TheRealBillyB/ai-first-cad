@@ -1215,7 +1215,12 @@ _add(Command(
     _cmd_update_sketch,
     undo=True,
 ))
-_add(Command("get_sketch", "Solve a stored sketch and return status, free entities, dimensions, and geometry.", _PART, _cmd_get_sketch))
+_add(Command(
+    "get_sketch",
+    "Solve a stored sketch and return status, free entities, dimensions, and geometry.",
+    _obj({"name": _string("Sketch name.")}, ["name"]),
+    _cmd_get_sketch,
+))
 _add(Command(
     "set_dimension",
     "Change one named sketch dimension and regenerate solids made from that sketch.",
