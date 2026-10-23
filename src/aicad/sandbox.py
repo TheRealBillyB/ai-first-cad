@@ -904,6 +904,42 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     return roots
 
 
+def _pythonpath_for_child(workspace: Path, raw: str | None) -> str | None:
+    """Drop import entries that would load Python from the project.
+
+    The child uses the project as its working directory. An empty entry,
+    ``.``, or the project path itself would import a file named ``aicad``
+    from that folder before the sandbox is applied. A project folder that
+    is itself named ``aicad`` is the same problem when its parent is on the
+    path.
+    """
+    if not raw:
+        return None
+    root = workspace.resolve()
+    kept: list[str] = []
+    for entry in raw.split(os.pathsep):
+        text = entry.strip()
+        if text in ("", ".", ".."):
+            continue
+        try:
+            candidate = Path(text).expanduser().resolve()
+        except OSError:
+            kept.append(entry)
+            continue
+        if candidate == root:
+            continue
+        if root.name == "aicad":
+            try:
+                if (candidate / "aicad").resolve() == root:
+                    continue
+            except OSError:
+                pass
+        kept.append(entry)
+    if not kept:
+        return None
+    return os.pathsep.join(kept)
+
+
 def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     env: dict[str, str] = {}
     for key, value in os.environ.items():
@@ -913,6 +949,14 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
         if key in ("AICAD_CONFIG", "AICAD_SETTINGS", "AICAD_PLUGIN_CONSENT", "XDG_CONFIG_HOME"):
             continue
         env[key] = value
+    safe_path = _pythonpath_for_child(workspace, env.get("PYTHONPATH"))
+    if safe_path is None:
+        env.pop("PYTHONPATH", None)
+    else:
+        env["PYTHONPATH"] = safe_path
+    # Do not prepend the working directory to sys.path. The working directory
+    # is the project, and a module there would run before the sandbox.
+    env["PYTHONSAFEPATH"] = "1"
     env["AICAD_SANDBOX_CHILD"] = "1"
     env["AICAD_WORKSPACE"] = str(workspace)
     env["AICAD_JOB"] = str(job)
@@ -1141,10 +1185,12 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     (job / "job.json").write_text(json.dumps(spec) + "\n", encoding="utf-8")
     if script is not None:
         (job / "script.py").write_text(script, encoding="utf-8")
+    # -P is the same rule as PYTHONSAFEPATH: the project is the working
+    # directory, and it must not be the first place Python imports from.
     if sys.platform == "win32":
-        command = [sys.executable, "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job)]
+        command = [sys.executable, "-P", "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job)]
     else:
-        command = [sys.executable, "-m", "aicad.sandbox_run", str(job)]
+        command = [sys.executable, "-P", "-m", "aicad.sandbox_run", str(job)]
     profile_path: Path | None = None
     if sys.platform == "darwin":
         from aicad.sandbox_macos import build_profile, command_prefix
