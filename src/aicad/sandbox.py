@@ -989,6 +989,10 @@ def _windows_one_attempt(kind: str, address: str, port: int) -> str:
     try:
         try:
             if kind == "udp-sendto":
+                # An unbound sendto reports a blocked local port as WSAEINVAL.
+                # That is not a sent datagram, and it is not the access error
+                # the block returns for a bound socket. Bind first, then send.
+                sock.bind(("0.0.0.0", 0))
                 sock.sendto(_WINDOWS_PROBE_PAYLOAD, (address, port))
             else:
                 sock.connect((address, port))

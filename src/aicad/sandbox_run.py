@@ -158,6 +158,8 @@ def _probe(workspace: Path, job: Path) -> int:
                 packet.connect(("1.1.1.1", 53))
                 packet.send(b"aicad-net-probe")
             else:
+                # Bind first. A blocked implicit bind is WSAEINVAL, not a send.
+                packet.bind(("0.0.0.0", 0))
                 packet.sendto(b"aicad-net-probe", ("1.1.1.1", 53))
             return "sent"
         except OSError as exc:

@@ -524,6 +524,12 @@ def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure(monkeypatch):
     assert network_attempt_label(dns, success="connected").startswith("dns ")
     assert network_attempt_label(None, success="connected") == "connected"
     assert network_attempt_label(None, success="sent") == "sent"
+    # WSAEINVAL is not a refusal. A blocked implicit bind can report it, and
+    # the datagram was not sent, but the check still does not treat it as off.
+    invalid = _socket_error(22, 10022)
+    assert not confined_errno(invalid)
+    assert network_attempt_label(invalid, success="sent").startswith("error ")
+    assert "10022" in network_attempt_label(invalid, success="sent")
     # A timeout that also carries a denial errno is still a timeout.
     mixed = _socket_error(13, 10060, timeout=True)
     assert network_attempt_label(mixed, success="connected").startswith("timeout ")
@@ -623,6 +629,7 @@ def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure(monkeypatch):
     assert "sendto" in udp
     assert "connect" in udp
     assert ".send(" in udp
+    assert udp.index("bind(") < udp.index("sock.sendto(")
 
 
 def test_windows_network_block_names_only_that_container():

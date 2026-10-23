@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| An unconnected Windows UDP check binds its socket before it sends | A blocked implicit bind is reported as an invalid argument, and that datagram was not sent. Binding first makes the refusal an access error. An invalid-argument result is still not a closed network. |
 | A Windows network block covers every protocol, and both UDP sends have to be refused | A connected UDP send can leave the machine. The container is blocked inbound and outbound with no protocol or port limit, a successful send is not a closed network, and a receiver on the runner has to stay empty. |
 | A Windows network check sends one unconnected datagram | A connected UDP send can report success after the firewall has refused TCP. The datagram itself has to be refused. |
 | A Windows script runs only after that container's network is refused | An AppContainer with no network capability can still wait out a connection. The firewall blocks that container, and a timeout or a DNS failure is not a refusal. |
