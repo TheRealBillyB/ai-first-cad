@@ -395,6 +395,48 @@ def test_a_posed_assembly_can_be_checked_without_changing_the_pose(tmp_path):
     assert stored[0]["value"] == pytest.approx(0)
 
 
+def test_cylindrical_slide_is_a_length_in_the_packaging_pose(tmp_path):
+    document = Document(tmp_path)
+    _ops(document, "block", "box", size=[10, 10, 10])
+    _ops(document, "ground", "box", size=[4, 4, 4])
+    document.create_assembly(
+        {
+            "name": "ram",
+            "instances": [
+                {"name": "base", "part": "ground"},
+                {"name": "slider", "part": "block"},
+            ],
+            "joints": [
+                {
+                    "name": "travel",
+                    "type": "cylindrical",
+                    "parent": "base",
+                    "child": "slider",
+                    "axis": [0, 0, 1],
+                    "value": 0,
+                    "slide": 0,
+                }
+            ],
+        }
+    )
+    envelope = {"shape": "box", "size": [40, 40, 40]}
+    report = document.check_packaging(
+        envelope,
+        ["slider"],
+        assembly="ram",
+        joints={"travel": {"value": 0, "slide": 25}},
+    ).to_dict()
+    slider = _part(report, "slider")
+    # The 10 mm block, centred, moves to z = [20, 30]. The wall is at 20.
+    assert slider["max_protrusion_mm"] == pytest.approx(10)
+    assert slider["protrusion_at_mm"]["z"] == pytest.approx(30)
+    assert report["joints"]["travel"]["slide"] == pytest.approx(25)
+    assert report["joints"]["travel"]["value"] == pytest.approx(0)
+    stored = document.get_assembly("ram")["solved"]["joints"][0]
+    assert stored["slide"] == pytest.approx(0)
+    assert stored["value"] == pytest.approx(0)
+
+
 def test_touching_the_wall_passes_a_zero_gap_and_fails_a_required_gap(tmp_path):
     document = Document(tmp_path)
     _ops(document, "bay", "box", size=[20, 20, 20])
