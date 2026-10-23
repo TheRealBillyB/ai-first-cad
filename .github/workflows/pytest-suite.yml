@@ -91,8 +91,12 @@ jobs:
           else
             PY=.venv/Scripts/pytest.exe
           fi
+          # One core was running the suite. The rest of the runner waited.
+          # Windows sandboxed scripts share one firewall rule pair, so those
+          # tests stay on one worker. The step above still runs the network
+          # probe on its own, and it still stops the job when confinement fails.
           if [ "${{ inputs.os }}" = "windows-latest" ]; then
-            exec "$PY" -ra --tb=short --durations=15 \
+            exec "$PY" -ra --tb=short --durations=50 -n auto --dist loadgroup \
               --ignore=tests/test_sandbox.py --ignore=tests/test_sandbox_findings.py
           fi
-          exec "$PY" -ra --tb=short --durations=15
+          exec "$PY" -ra --tb=short --durations=50 -n auto --dist worksteal
