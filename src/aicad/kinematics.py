@@ -6,6 +6,8 @@ cylinder relation writes two: the barrel angle and the rod extension, from
 the pin-to-pin distance of a driver revolute. That keeps a hydraulic cylinder
 on its clevises without a spatial loop. A linkage here is a planar four-bar
 map, and a gear is a linear map between joint values.
+
+Serial-chain inverse kinematics and a tool path are solved in ``aicad.chain``.
 """
 
 from __future__ import annotations

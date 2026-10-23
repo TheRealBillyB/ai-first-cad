@@ -71,7 +71,7 @@ Requirements are checked against every design. The first kinds of goal: it holds
 - **Gear mesh and backlash check.** Verifies that a gear pair meshes with a specified backlash and does not interfere through a full rotation.
 - **Gear-train solver.** Computes speed ratios and torques through a train of gears, including planetary arrangements.
 - **Motion study.** **Done.** Drives assembly joints through angles or paths over time, and reports collisions and joint-limit violations.
-- **Kinematics.** Solves forward and inverse kinematics for a serial chain of joints, including the joint angles that reach a target pose.
+- **Kinematics.** **Done.** Solves forward and inverse kinematics for a serial chain of joints, including the joint values that reach a target pose, and steps a tool path through the motion study.
 - **Positional error budget.** Estimates the end-point position error of a jointed mechanism from link deflection (using the strength check), gear backlash, joint stiffness, and encoder resolution, and reports pass or fail against a tolerance.
 - **Cable and pulley routing.** Routes cables over pulleys and guides through joints, and checks how cable length and tension change across a joint's range of motion.
 - **Standard parts library.** **Done.** Inserts bearings, seals, fasteners, small motors, and gearboxes by catalog designation.

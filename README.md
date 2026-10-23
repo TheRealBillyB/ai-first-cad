@@ -249,6 +249,8 @@ Named poses store joint values. A motion is a sweep (`joint`, `start`, `end`, `f
 
 A motion study is the record of that kind of sweep for a later check to read. `duration_s` is the length of the timeline. `steps` is how many poses are solved, counting both ends. A driver is an expression in `t` (seconds), such as `90 * t`, or keyframes `{time_s, value}` with straight lines between them. A cylindrical joint can also drive `slide`. A coupling is a gear constraint on the study: the driven joint is `ratio * driver + offset`. Commands past a joint limit are held at the stop, and the stop is recorded. Pairs whose boxes are farther apart than `clearance_mm` are left alone. Every other pair is the boolean intersection of the modeled solids. An overlap reports the volume and the penetration depth. A gap shorter than the clearance reports the shortfall. The two sides of a joint are allowed to touch. `run_motion_study` returns schema `motion_study.v1`: the pose matrix of every part at every step, the collisions, and the limit hits. The module docstring in `aicad.motion_study` is the field list.
 
+`solve_kinematics` solves one serial chain, the joints from the grounded instance to a tool instance. The forward result is the tool point and frame. Inverse kinematics returns the joint values that place that frame on a target position and, when one is given, an orientation. A revolute value is degrees. A prismatic value is millimeters. Two parallel revolute joints return elbow up and elbow down. Six revolute joints whose last three axes meet at one point return each shoulder, elbow, and wrist branch that reaches. Any other mix of revolute and prismatic joints is solved from the joint values you pass. A target outside the reach is unreachable. A reachable pose that loses a direction of motion is singular. A pose that fits only past a stop is a limit, and those joint values are reported and not used. A path steps the tool along a straight line from the current pose, or through waypoints, and runs those joint values through the motion study, so collisions and stops use the same checks. The record is `kinematics.v1`. The module docstring in `aicad.chain` is the field list.
+
 Cables and hoses are polylines through waypoints fixed on parts (`instance`, `at`, and whether that point is a clip). Each route has a diameter, a minimum bend radius, and a stiffness (`low`, `medium`, `high`, or newtons per unit strain). Through a motion the check reports length change, strain against the rest length, bend radius at each waypoint, pinching between the centerline and a moving solid, and a self-intersection of the route. Rest length is the authored value, or the length of the first frame. A shorter route is slack, not compression. Samples next to a waypoint are the clip seat and are not counted as a pinch of that part.
 
 This is a kinematic model. The line does not sag, and clips do not slip. A later flexible-body model, a Cosserat rod or a chain of rigid segments with bending springs, would add sag, contact, and clip slip. It would still be checked against these length, bend, and gap limits.
@@ -257,7 +259,7 @@ Power is quasi-static. Gravity is 9.81 m/s² along −Z. Mass is the solid's vol
 
 A hydraulic cylinder turns that torque into force with `moment_arm_mm`. Extend uses the bore area. Retract uses bore minus rod. Pressure is force over area, in MPa. Flow is area times piston speed. Power is pressure times flow, divided by efficiency. One MPa·mm³/s is 0.001 W. The pump figure is the hydraulic energy over the motion duration, with no regeneration. An electric actuator divides joint torque by gear ratio and efficiency, then divides by the torque constant for current. Power is joint torque times speed, divided by efficiency. Braking energy is counted as spent. Battery watt-hours are that electric energy, and amp-hours divide by the stated voltage.
 
-The same commands are `create_assembly`, `set_joint`, `set_pose`, `run_motion`, `run_motion_study`, `check_cables`, `estimate_power`, `solve_modal`, `solve_assembly_modal`, and `check_bolts` on the Python API, the MCP server, and the CLI:
+The same commands are `create_assembly`, `set_joint`, `set_pose`, `run_motion`, `run_motion_study`, `solve_kinematics`, `check_cables`, `estimate_power`, `solve_modal`, `solve_assembly_modal`, and `check_bolts` on the Python API, the MCP server, and the CLI:
 
 ```bash
 aicad assemble rod_arm --file arm.json --workspace ./aicad_workspace
@@ -265,6 +267,7 @@ aicad joint rod_arm shoulder --value -40 --workspace ./aicad_workspace
 aicad pose rod_arm lift --workspace ./aicad_workspace
 aicad motion rod_arm --sequence lift --workspace ./aicad_workspace
 aicad motion-study rod_arm --file study.json --workspace ./aicad_workspace
+aicad kinematics rod_arm --file target.json --workspace ./aicad_workspace
 aicad cables rod_arm --sequence lift --workspace ./aicad_workspace
 aicad power rod_arm --sequence lift --workspace ./aicad_workspace
 ```
@@ -426,6 +429,7 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `create_assembly` / `update_assembly` / `get_assembly` / `list_assemblies` | Place parts, replace a spec (a spec that does not solve leaves the previous assembly), and read joint values. |
 | `set_joint` / `set_pose` / `run_motion` / `render_assembly` | Move an assembly, sweep a motion, and render the pose. Motion and the assembly render return pictures. |
 | `run_motion_study` | Drive joints from expressions or keyframes, apply gear couplings, and report collisions and joint-limit violations. The record is `motion_study.v1`. |
+| `solve_kinematics` | Forward and inverse kinematics of a serial chain, and a straight or waypoint tool path checked by the motion study. The record is `kinematics.v1`. |
 | `check_cables` / `estimate_power` | Cable length and strain, and a quasi-static power estimate. Read the assumptions. |
 | `list_sketches` / `update_sketch` / `update_part_from_sketch` | Sketch names, a replaced sketch spec, and a solid rebuilt from it. |
 | `session_payload` / `replace_session` / `save_project` / `open_project` | Read or replace the saved document, confirm `session.json`, or switch project folder. Opening does not run scripts. |
