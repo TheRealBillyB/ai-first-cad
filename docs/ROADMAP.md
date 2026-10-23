@@ -73,7 +73,7 @@ Requirements are checked against every design. The first kinds of goal: it holds
 - **Motion study.** **Done.** Drives assembly joints through angles or paths over time, and reports collisions and joint-limit violations.
 - **Kinematics.** Solves forward and inverse kinematics for a serial chain of joints, including the joint angles that reach a target pose.
 - **Positional error budget.** Estimates the end-point position error of a jointed mechanism from link deflection (using the strength check), gear backlash, joint stiffness, and encoder resolution, and reports pass or fail against a tolerance.
-- **Cable and pulley routing.** Routes cables over pulleys and guides through joints, and checks how cable length and tension change across a joint's range of motion.
+- **Cable and pulley routing.** **Done.** Routes cables over pulleys and guides through joints, and checks how cable length and tension change across a joint's range of motion.
 - **Standard parts library.** **Done.** Inserts bearings, seals, fasteners, small motors, and gearboxes by catalog designation.
 - **Animated renders.** Renders a motion study to a GIF or a video for documentation.
 

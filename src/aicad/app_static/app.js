@@ -1535,6 +1535,7 @@ function renderAssemblies() {
       </div>`).join("");
     const poses = current.poses.map((pose) => `<button type="button" data-pose="${pose}">${pose}</button>`).join(" ");
     const motions = current.motions.map((motion) => `<button type="button" data-motion="${motion}">${motion}</button>`).join(" ");
+    const studies = (current.studies || []).map((study) => `<span class="meta">${escapeHtml(study)}</span>`).join(" ");
     $("assembly-controls").innerHTML = `
       <h3>Joints</h3>
       ${joints || `<p class="muted">Grounded only.</p>`}
@@ -1542,6 +1543,8 @@ function renderAssemblies() {
       <div class="row">${poses || `<span class="muted">None</span>`}</div>
       <h3>Motion</h3>
       <div class="row">${motions || `<span class="muted">None</span>`}</div>
+      <h3>Studies</h3>
+      <div class="row">${studies || `<span class="muted">None</span>`}</div>
       <p class="muted">${current.instances.map((item) => item.name).join(", ")}</p>`;
     $("assembly-controls").querySelectorAll("[data-apply]").forEach((button) => {
       button.onclick = async () => {
@@ -1605,9 +1608,19 @@ function showMotionReport() {
 
 function showCableReport(report) {
   $("assembly-status").textContent = "Cables " + report.status;
-  const rows = (report.cables || []).map((cable) =>
-    `<li><strong>${escapeHtml(cable.name)}</strong> ${cable.status} · length ${cable.length_mm.map((value) => Number(value).toFixed(1)).join(" → ")} mm · strain ${cable.max_strain} · bend ${cable.min_bend_radius_mm == null ? "straight" : cable.min_bend_radius_mm + " mm"} · pinches ${cable.pinch_count}</li>`
-  ).join("");
+  const rows = (report.cables || []).map((cable) => {
+    const lengths = (cable.length_mm || []).map((value) => Number(value).toFixed(1)).join(" → ");
+    const bend = cable.min_bend_radius_mm == null ? "straight" : cable.min_bend_radius_mm + " mm";
+    let detail = "";
+    if (cable.route === "pulley") {
+      const state = (cable.length_state || []).join(" → ");
+      const wraps = (cable.wraps || []).map((wrap) => `${escapeHtml(wrap.name)} ${Number(wrap.max_wrap_deg).toFixed(1)}°`).join(", ");
+      const ratios = (cable.tension_ratio || []).map(Number).filter((value) => Number.isFinite(value));
+      const ratio = ratios.length ? Math.max(...ratios).toFixed(3) : "";
+      detail = `${state ? " · " + state : ""}${wraps ? " · wrap " + wraps : ""}${ratio ? " · tension ratio " + ratio : ""}`;
+    }
+    return `<li><strong>${escapeHtml(cable.name)}</strong> ${cable.status} · length ${lengths} mm · strain ${cable.max_strain} · bend ${bend} · pinches ${cable.pinch_count}${detail}</li>`;
+  }).join("");
   $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Cables</h3><ul>${rows}</ul>`;
 }
 
@@ -1950,7 +1963,7 @@ async function boot() {
   $("assembly-cables").onclick = async () => {
     if (!ui.assembly) return;
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
-    const sequence = current && current.motions[0];
+    const sequence = current && (current.motions[0] || (current.studies || [])[0]);
     const report = await command("check_cables", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
     await refresh();
     showCableReport(report);

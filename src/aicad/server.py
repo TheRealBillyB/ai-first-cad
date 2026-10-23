@@ -62,10 +62,12 @@ A cylinder relation sets a barrel angle and a rod extension from a revolute.
 `run_motion` sweeps those joints and reports collisions, with a picture per
 frame. `run_motion_study` drives joints from expressions or keyframes, applies
 gear couplings, and reports collisions and joint-limit violations.
-`check_cables` measures length, strain, bend radius, and pinching.
+`check_cables` measures length, strain, bend radius, and pinching. A tendon
+adds pulley wrap, slack or stretch, capstan tension, and collisions.
 `estimate_power` turns gravity and payloads into joint torque and then into
 hydraulic pressure and flow, or motor current and a rough battery figure.
-Read the assumptions on those reports. Cables are kinematic polylines.
+Read the assumptions on those reports. A clip route is a kinematic polyline.
+A tendon is anchors, pulleys, and an end anchor.
 
 `check_print` turns a part, colors the faces that need support, and checks the
 oriented size against a Bambu, Prusa, or Ender bed. `fits_printer` is the
@@ -307,7 +309,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
 - `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
 - `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
-- `check_cables` routes polylines through waypoints fixed on parts. It reports length change, strain, bend-radius violations, and pinching. It does not simulate a flexible body.
+- `check_cables` routes polylines through waypoints fixed on parts, and tendons through anchors, pulleys, guides, and an end anchor. It reports length change, slack or stretch, strain, bend-radius violations, wrap angle, capstan tension from `actuator_force_n`, and pinching or collision. A tendon length includes the wrap arc. `sequence` may name a motion study. It does not simulate a flexible body.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
@@ -858,15 +860,39 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         )
 
     @mcp.tool()
-    def check_cables(name: str, sequence: str | None = None, motion: dict[str, Any] | None = None) -> dict:
-        """Check cables and hoses through the current pose or a motion.
+    def check_cables(
+        name: str,
+        sequence: str | None = None,
+        motion: dict[str, Any] | None = None,
+        study: dict[str, Any] | None = None,
+        steps: int | None = None,
+    ) -> dict:
+        """Check cables, hoses, and tendons through a pose, a motion, or a motion study.
 
-        Each route has waypoints {instance, at, clip}, diameter_mm, min_bend_radius_mm,
-        and stiffness (low, medium, high, or newtons per unit strain). The report
-        has length change, strain, bend-radius violations, and pinches. The route
-        is a polyline. It does not sag.
+        A clip route has waypoints {instance, at, clip}, diameter_mm,
+        min_bend_radius_mm, and stiffness (low, medium, high, or newtons per
+        unit strain). A tendon has points: an anchor, then pulleys, guides, or
+        wraps fixed on parts, then an end anchor, plus diameter_mm and material.
+        A pulley has at (the center), axis, radius_mm for the cable centerline,
+        optional wrap of cw or ccw, and optional friction. Length includes the
+        wrap arc. The report has length change, slack or stretch, wrap angle,
+        bend-radius violations, and tension from actuator_force_n. Friction
+        multiplies tension by exp(-friction * wrap radians) on the far side of
+        each pulley. A centerline sample inside a solid, or closer than the
+        cable radius plus pinch_mm, is a collision. The line does not sag.
+        sequence names a motion, or a study when no motion uses that name.
+        study is an inline motion study. steps overrides how many poses are solved.
         """
-        return guard(lambda: run("check_cables", name=name, sequence=sequence, motion=motion))
+        return guard(
+            lambda: run(
+                "check_cables",
+                name=name,
+                sequence=sequence,
+                motion=motion,
+                study=study,
+                steps=steps,
+            )
+        )
 
     @mcp.tool()
     def estimate_power(

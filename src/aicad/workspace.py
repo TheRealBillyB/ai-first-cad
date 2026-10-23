@@ -948,6 +948,8 @@ def _cmd_check_cables(workspace: Workspace, arguments: dict) -> dict:
         arguments["name"],
         sequence=arguments.get("sequence"),
         motion=arguments.get("motion"),
+        study=arguments.get("study"),
+        steps=arguments.get("steps"),
     )
     report["assembly"] = arguments["name"]
     return workspace._remember_panel("cables", report)  # noqa: SLF001
@@ -1507,8 +1509,24 @@ _add(Command(
 ))
 _add(Command(
     "check_cables",
-    "Measure cable and hose length, strain, bend radius, and pinching through a pose or a motion.",
-    _MOTION,
+    "Measure cable, hose, and tendon routes through a pose, a motion, or a motion study. "
+    "A clip route uses waypoints. A tendon uses points: an anchor, pulleys or guides or wraps fixed on parts, and an end anchor, plus diameter_mm and material. "
+    "A pulley has at, axis, radius_mm for the cable centerline, optional wrap cw or ccw, and optional friction. "
+    "The report has path length with wrap arcs, length change, slack or stretch, wrap angle, bend-radius violations, capstan tension from actuator_force_n, and collisions. "
+    "sequence names a motion, or a study when no motion has that name. study is an inline motion study. steps overrides the study.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "sequence": _string("Named motion, or a named study when no motion has that name."),
+            "motion": {"type": "object", "description": "Inline sweep or keyframes, used when sequence is omitted."},
+            "study": {
+                "type": "object",
+                "description": "Inline motion study with drivers, couplings, duration_s, and steps.",
+            },
+            "steps": _number("Poses to solve for a study, including both ends."),
+        },
+        ["name"],
+    ),
     _cmd_check_cables,
 ))
 _add(Command(
