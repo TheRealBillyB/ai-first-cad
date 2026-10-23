@@ -332,16 +332,40 @@ def warning_text(offer: PluginOffer) -> str:
     return "\n".join(lines)
 
 
+def _plugin_refused(action: str) -> PluginConsentError:
+    return PluginConsentError(
+        f"A design script cannot {action} a plugin. "
+        "Plugin consent is a separate switch from design scripts. "
+        "Allow a plugin yourself with aicad plugins allow, outside the script."
+    )
+
+
 def _refuse_if_sandboxed(action: str) -> None:
     """A design script must not grant or use plugin consent."""
-    import os
+    from aicad.sandbox_state import in_sandbox
 
-    if os.environ.get("AICAD_SANDBOX_CHILD") == "1":
-        raise PluginConsentError(
-            f"A design script cannot {action} a plugin. "
-            "Plugin consent is a separate switch from design scripts. "
-            "Allow a plugin yourself with aicad plugins allow, outside the script."
-        )
+    if in_sandbox():
+        raise _plugin_refused(action)
+
+
+def seal_sandbox_plugins() -> None:
+    """Replace allow, load, and revoke for the rest of this process.
+
+    Called only in the confined child, before the script runs. The replacements
+    do not look at the environment, so clearing ``AICAD_SANDBOX_CHILD`` does
+    not turn them back on.
+    """
+    global allow, revoke, load
+
+    def _sealed(action: str):
+        def refuse(*_args, **_kwargs):
+            raise _plugin_refused(action)
+
+        return refuse
+
+    allow = _sealed("allow")
+    revoke = _sealed("revoke")
+    load = _sealed("load")
 
 
 def consent_file() -> Path:

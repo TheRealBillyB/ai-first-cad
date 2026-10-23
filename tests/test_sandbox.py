@@ -1,7 +1,13 @@
-"""Design scripts stay in the project, and opening a project does not run them."""
+"""Design scripts stay in the project, and opening a project does not run them.
+
+These tests run on Linux, macOS, and Windows. Each machine has to confine the
+probe with its own sandbox. A missing file does not count as confined.
+"""
 
 import asyncio
 import json
+import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,6 +25,27 @@ def config_home(tmp_path, monkeypatch):
     monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
     monkeypatch.delenv("AICAD_SCRIPT_NETWORK", raising=False)
     return tmp_path
+
+
+def test_windows_script_keeps_library_caches_in_the_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    from aicad import sandbox as sandbox_mod
+
+    font_cache = tmp_path / "font-cache"
+    font_file = font_cache / "ezdxf" / "font_manager_cache.json"
+    font_file.parent.mkdir(parents=True)
+    font_file.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(sandbox_mod, "_windows_font_cache_home", lambda: font_cache)
+    env = sandbox_mod._child_env(tmp_path, tmp_path / "job", False)
+    cache = str(tmp_path / ".aicad" / "cache")
+    assert env["XDG_CACHE_HOME"] == str(font_cache)
+    assert env["XDG_CONFIG_HOME"] == cache
+    assert env["XDG_DATA_HOME"] == cache
+    assert env["MPLCONFIGDIR"] == cache
+    assert env.get("USERPROFILE") != cache
+    assert env.get("APPDATA") != cache
+    assert env.get("LOCALAPPDATA") != cache
+    assert env.get("HOME") != cache
 
 
 def test_opening_a_session_does_not_run_its_script(tmp_path, config_home):
@@ -168,13 +195,137 @@ print(" | ".join(errors))
     assert '"ok": true' in log
 
 
+# EPERM, EACCES, ENETUNREACH, and the Windows access-denied socket codes.
+# ENOENT (2) is a missing path, not a sandbox.
+_CONFINED_ERRNOS = {1, 13, 101, 10013, 10051}
+
+
+def _assert_confined(label: str) -> None:
+    assert label.startswith("denied:"), label
+    code = int(label.rsplit(":", 1)[1])
+    assert code in _CONFINED_ERRNOS, label
+
+
+@pytest.mark.sandbox
 def test_os_probe_blocks_network_and_outside_files(tmp_path, config_home):
     probe = os_probe(tmp_path)
-    assert probe["read_outside"].startswith("denied")
-    assert probe["write_outside"].startswith("denied")
+    _assert_confined(probe["read_outside"])
+    _assert_confined(probe["write_outside"])
     assert probe["write_inside"] == "ok"
-    assert probe["tcp"].startswith("denied")
-    assert probe["udp"].startswith("denied")
+    _assert_confined(probe["tcp"])
+    _assert_confined(probe["udp"])
+    if sys.platform.startswith("linux"):
+        assert probe["mechanism"] == "landlock+seccomp"
+    elif sys.platform == "darwin":
+        assert probe["mechanism"] == "seatbelt"
+    elif sys.platform == "win32":
+        assert probe["mechanism"] == "appcontainer+job"
+
+
+@pytest.mark.sandbox_linux
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux Landlock sandbox")
+def test_linux_sandbox_is_landlock_and_seccomp(tmp_path, config_home):
+    probe = os_probe(tmp_path)
+    assert probe["mechanism"] == "landlock+seccomp"
+    _assert_confined(probe["read_outside"])
+    _assert_confined(probe["udp"])
+
+
+@pytest.mark.sandbox_macos
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS Seatbelt sandbox")
+def test_macos_sandbox_is_seatbelt(tmp_path, config_home):
+    probe = os_probe(tmp_path)
+    assert probe["mechanism"] == "seatbelt"
+    _assert_confined(probe["read_outside"])
+    _assert_confined(probe["tcp"])
+
+
+@pytest.mark.sandbox_windows
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows AppContainer sandbox")
+def test_windows_sandbox_is_an_appcontainer(tmp_path, config_home):
+    probe = os_probe(tmp_path)
+    assert probe["mechanism"] == "appcontainer+job"
+    _assert_confined(probe["read_outside"])
+    _assert_confined(probe["tcp"])
+
+
+@pytest.mark.sandbox_windows
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process rights")
+def test_windows_script_cannot_open_its_parent(tmp_path, config_home):
+    """Direct OpenProcess / TerminateProcess on this aicad process is denied."""
+    script = (
+        "import ctypes\n"
+        "from ctypes import wintypes\n"
+        "import aicad.sandbox as sandbox\n"
+        "kernel = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]\n"
+        "kernel.OpenProcess.restype = wintypes.HANDLE\n"
+        "kernel.CloseHandle.argtypes = [wintypes.HANDLE]\n"
+        "rights = 0x0001 | 0x1000\n"
+        "handle = kernel.OpenProcess(rights, False, sandbox.os.getppid())\n"
+        "if handle:\n"
+        "    kernel.CloseHandle(handle)\n"
+        "    open('open.txt', 'w', encoding='utf-8').write('opened')\n"
+        "else:\n"
+        "    open('open.txt', 'w', encoding='utf-8').write('denied:%s' % ctypes.get_last_error())\n"
+        "part = Box(1, 1, 1)\n"
+    )
+    run_part_script(script, tmp_path)
+    assert (tmp_path / "open.txt").read_text(encoding="utf-8").startswith("denied")
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux cgroup pids controller")
+def test_linux_process_cap_is_a_cgroup_when_this_user_can_make_one():
+    """The cap has to be a sibling cgroup. The user-wide limit counts other programs."""
+    from aicad.sandbox import _PROCESS_CAP, _prepare_pids_cgroup, _release_pids_cgroup
+
+    path = _prepare_pids_cgroup()
+    if path is None:
+        pytest.skip("this user cannot create a cgroup pids.max without root")
+    try:
+        assert (path / "pids.max").read_text(encoding="utf-8").strip() == str(_PROCESS_CAP)
+        assert path.name not in Path("/proc/self/cgroup").read_text(encoding="utf-8")
+    finally:
+        _release_pids_cgroup(path)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux counts every user thread toward RLIMIT_NPROC")
+def test_script_finishes_while_the_user_already_has_many_threads(tmp_path):
+    """A desktop with a browser open is already past 256 threads. Geometry still has to finish."""
+    from aicad.kernel import measure
+
+    stop = threading.Event()
+    threads: list[threading.Thread] = []
+
+    def park() -> None:
+        stop.wait()
+
+    try:
+        for _ in range(300):
+            thread = threading.Thread(target=park, daemon=True)
+            try:
+                thread.start()
+            except RuntimeError:
+                pytest.skip("this user cannot start 300 extra threads")
+            threads.append(thread)
+        shape = run_part_script(
+            "text = open('/proc/self/limits', encoding='utf-8').read()\n"
+            "open('limits.txt', 'w', encoding='utf-8').write(text)\n"
+            "part = Box(1, 1, 1)\n",
+            tmp_path,
+        )
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=1)
+    assert measure(shape).volume_mm3 == pytest.approx(1)
+    soft = None
+    for line in (tmp_path / "limits.txt").read_text(encoding="utf-8").splitlines():
+        if line.startswith("Max processes"):
+            soft = line.split()[2]
+            break
+    assert soft is not None
+    assert soft == "unlimited" or int(soft) > 256
 
 
 def test_wall_clock_limit_stops_the_script(tmp_path, config_home, monkeypatch):

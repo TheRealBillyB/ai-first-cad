@@ -113,17 +113,22 @@ class ScriptDocument:
 def _probe(workspace: Path, job: Path) -> int:
     import socket
 
+    from aicad.sandbox import denied_probe_label
+
+    spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
+    read_path = str(spec.get("probe_read") or "/etc/passwd")
+    write_path = str(spec.get("probe_write") or "/tmp/aicad-sandbox-outside")
     found: dict[str, str] = {}
     try:
-        open("/etc/passwd", encoding="utf-8").read(1)
+        open(read_path, encoding="utf-8").read(1)
         found["read_outside"] = "opened"
     except OSError as exc:
-        found["read_outside"] = f"denied:{exc.errno}"
+        found["read_outside"] = denied_probe_label(exc)
     try:
-        open("/tmp/aicad-sandbox-outside", "w", encoding="utf-8").write("x")
+        open(write_path, "w", encoding="utf-8").write("x")
         found["write_outside"] = "wrote"
     except OSError as exc:
-        found["write_outside"] = f"denied:{exc.errno}"
+        found["write_outside"] = denied_probe_label(exc)
     inside = workspace / "probe_inside.txt"
     inside.write_text("ok", encoding="utf-8")
     found["write_inside"] = inside.read_text(encoding="utf-8")
@@ -133,13 +138,21 @@ def _probe(workspace: Path, job: Path) -> int:
         stream.connect(("1.1.1.1", 80))
         found["tcp"] = "connected"
     except OSError as exc:
-        found["tcp"] = f"denied:{exc.errno}"
+        found["tcp"] = denied_probe_label(exc)
     try:
         packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         packet.sendto(b"x", ("1.1.1.1", 53))
         found["udp"] = "sent"
     except OSError as exc:
-        found["udp"] = f"denied:{exc.errno}"
+        found["udp"] = denied_probe_label(exc)
+    if sys.platform == "win32":
+        found["mechanism"] = "appcontainer+job"
+    elif sys.platform == "darwin":
+        found["mechanism"] = "seatbelt"
+    elif sys.platform.startswith("linux"):
+        found["mechanism"] = "landlock+seccomp"
+    else:
+        found["mechanism"] = sys.platform
     _write(job, {"ok": True, "probe": found})
     return 0
 
@@ -231,6 +244,17 @@ def _design(workspace: Path, job: Path) -> int:
     return 0
 
 
+def _leave(code: int) -> int:
+    """On Windows, skip interpreter shutdown. A confined process that has loaded
+    the geometry libraries can take more than a minute to exit, and the parent
+    waits for that. The result file is already written.
+    """
+
+    if sys.platform == "win32":
+        os._exit(code)
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
@@ -239,29 +263,48 @@ def main(argv: list[str] | None = None) -> int:
     job = Path(args[0])
     spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
     workspace = Path(os.environ["AICAD_WORKSPACE"]).resolve()
+    try:
+        import faulthandler
+
+        faulthandler.enable(all_threads=True)
+    except (OSError, ValueError):
+        pass
     os.environ["AICAD_SANDBOX_CHILD"] = "1"
     os.chdir(workspace)
-    from aicad.sandbox import apply_sandbox, install_python_guard
+    try:
+        from aicad.sandbox import apply_sandbox, install_python_guard
 
-    try:
-        roots = apply_sandbox(workspace, network=bool(spec.get("network")))
+        try:
+            roots = apply_sandbox(workspace, network=bool(spec.get("network")))
+        except Exception as exc:
+            _write(job, {"ok": False, "error": f"{exc}\n{traceback.format_exc()}"})
+            return _leave(0)
+        kind = spec.get("kind")
+        try:
+            if kind == "probe":
+                return _leave(_probe(workspace, job))
+            install_python_guard(workspace, roots)
+            if kind == "part":
+                return _leave(_part(workspace, job))
+            if kind == "design":
+                return _leave(_design(workspace, job))
+            _write(job, {"ok": False, "error": f"Unknown script job {kind!r}."})
+            return _leave(0)
+        except Exception as exc:
+            _write(job, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            return _leave(0)
     except Exception as exc:
-        _write(job, {"ok": False, "error": str(exc)})
-        return 0
-    kind = spec.get("kind")
-    try:
-        if kind == "probe":
-            return _probe(workspace, job)
-        install_python_guard(workspace, roots)
-        if kind == "part":
-            return _part(workspace, job)
-        if kind == "design":
-            return _design(workspace, job)
-        _write(job, {"ok": False, "error": f"Unknown script job {kind!r}."})
-        return 0
-    except Exception as exc:
-        _write(job, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-        return 0
+        # Importing the geometry stack can fail before the handlers above run.
+        # A partial native import then hangs while the process shuts down, and
+        # the parent waits out the wall-clock limit. Record the error and leave.
+        try:
+            _write(
+                job,
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"},
+            )
+        except Exception:
+            traceback.print_exc()
+        os._exit(1)
 
 
 if __name__ == "__main__":

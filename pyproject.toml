@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-timeout>=2.3"]
 robot = ["mujoco>=3.1"]
 
 [project.scripts]
@@ -41,3 +41,13 @@ aicad = ["py.typed", "app_static/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# A stuck test fails here instead of holding the CI job until the job clock
+# runs out. The Windows sandbox step uses a shorter limit.
+timeout = 300
+timeout_method = "thread"
+markers = [
+    "sandbox: design-script confinement, run on every operating system",
+    "sandbox_linux: Linux Landlock and seccomp sandbox",
+    "sandbox_macos: macOS Seatbelt sandbox",
+    "sandbox_windows: Windows AppContainer and Job Object sandbox",
+]

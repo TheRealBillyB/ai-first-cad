@@ -8,6 +8,27 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| The Linux process cap is the script's own threads, not every thread of the user | `RLIMIT_NPROC` is per user, so a 256 cap stalled geometry when a browser was open; a cgroup `pids.max` or the parent counting the script's threads does not, and classic seccomp cannot count `clone` or `fork`. |
+| Windows and macOS tests are manual, weekly, or the `cross-platform` label | Windows and macOS run on manual dispatch, a weekly schedule, or the cross-platform label to keep CI fast. Ubuntu still runs on every push and pull request. |
+| CI stops one test after 5 minutes, and the Windows job after 40 | A hung script was using the whole hour, so the log never reached the later tests. |
+| Windows builds the drawing-font list once, in the Python install | The container cannot read the user-profile copy, and building that list inside every script is slow. |
+| A Windows script keeps matplotlib's cache in the project | The AppContainer cannot read the user-profile cache, and that import was stopping every script. |
+| macOS must be allowed to read the `/` directory | Without that read, a sandboxed script aborts instead of starting. The files inside other directories stay denied. |
+| Windows does not rewrite this process's access list | An AppContainer cannot open a process that does not grant it, and adding a deny entry stopped later scripts from finishing. |
+| The macOS profile does not name pipe or socket vnode types | `sandbox-exec` treats those names as unset variables and then refuses to start the script. |
+| The script cannot open this aicad process on Windows | A job cannot block OpenProcess; the AppContainer is denied that right on this process. |
+| macOS stops a script whose resident memory passes 4 GiB | The parent checks that a few times a second, because the address-space cap was stopping every script. |
+| A failed design script keeps the one-shot network grant | The grant is spent only when that script finishes without an error. |
+| Linux does not hide another process's `/proc` command line | Remounting `/proc` from the sandbox is refused, and Python still needs `/proc` for itself. |
+| macOS does not set the 4 GiB address cap | The system library cache is already larger, and the cap was stopping every script. |
+| The script's process tree is killed when the tool returns | Linux blocks a new session and kills the group; macOS kills a child that leaves the group; Windows terminates the job. |
+| A script cannot signal its parent | Linux Landlock scope blocks signals leaving the sandbox; macOS and Windows refuse `os.kill` of another process in the child. |
+| The sandbox flag is not an environment variable | A script can clear `AICAD_SANDBOX_CHILD`; plugin allow, load, and revoke stay refused anyway. |
+| CI uses Python 3.12 on Ubuntu and 3.11 on Windows and macOS | The sketch solver publishes Windows and Mac wheels for 3.11 and not for 3.12, so 3.12 on those systems has to be compiled. |
+| Windows confinement is an AppContainer plus a Job Object | A restricted token cannot read Python without changing system file permissions; the container blocks the user profile and the network, and the job caps memory, CPU time, and child processes. |
+| macOS confinement is `sandbox-exec` plus `setrlimit` | Apple has deprecated `sandbox-exec`, and it is still the practical file and network profile that does not need a container. |
+| One install command is `python install.py` | It creates the virtual environment and installs aicad on Windows, Mac, and Linux. |
+| CalculiX stays a separate `ccx` program; the installer detects it and prints the command | aicad must not link GPL-2.0-only CalculiX, and the Python install does not download it. |
 | An approval is a receipt on this computer, not the word approved in the project file | A downloaded or hand-edited plan can say approved; modeling stays off until approve-plan on this machine records that revision. |
 | Plans are JSON and PNG in the project `plans/` folder, never scripts in the session | Opening a project must not run planning notes; a design file stays data until someone asks to run code. |
 | A revision is cut only by revise, and it records what changed | Earlier revisions stay, and each one says what changed. |
@@ -51,7 +72,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Decision | Rationale |
 | --- | --- |
 | A design script cannot allow or load a plugin | Plugin consent stays a separate switch the person uses; the sandbox cannot grant it. |
-| Design scripts and part scripts run in a Linux child with Landlock and seccomp | The file and network limits have to be real, and this kernel can apply them; if it cannot, the script does not run. |
+| Design scripts and part scripts run in a Linux child with Landlock and seccomp | The file and network limits have to be real, and this kernel can apply them; if it cannot, the script does not run. Superseded by the Windows and macOS sandbox rows. |
 | Opening a project loads script text and a saved STEP solid | A downloaded session must not execute Python just because it was opened. |
 | The import allowlist is a clear error; Landlock is the boundary | build123d can reach past a Python import list, so the operating system is what confines the process. |
 | Design-script permission lives outside the project | A script can write the project folder, so it must not be able to allow itself. |
