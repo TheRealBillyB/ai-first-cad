@@ -742,7 +742,7 @@ class Document:
         rotation_deg: list | tuple | None = None,
         fastener_type: str | None = None,
     ) -> PartInfo:
-        """Insert a catalog fastener, nut, washer, or bearing, then place it."""
+        """Insert a catalog part by designation, then place it."""
         with self._lock:
             self._require_new_name(name)
             placed_at = _vec3(position or [0, 0, 0], "position")
@@ -1370,7 +1370,7 @@ class Document:
             return assembly.preview_mesh(spec, self._assembly_shapes(spec))
 
     def _commit_assembly(self, spec: dict) -> dict:
-        cleaned = normalize_assembly(spec)
+        cleaned = normalize_assembly(self._with_resolved_mates(spec))
         self._require_assembly_parts(cleaned)
         if cleaned["actuators"]:
             actuators_for(cleaned)
@@ -1702,9 +1702,52 @@ class Document:
             )
         self._assemblies.clear()
         for record in payload.get("assemblies", []):
-            cleaned = normalize_assembly(record)
+            cleaned = normalize_assembly(self._with_resolved_mates(record))
             self._require_assembly_parts(cleaned)
             self._assemblies[cleaned["name"]] = cleaned
+
+    def _with_resolved_mates(self, spec: dict) -> dict:
+        """Turn parent_mate and child_mate into anchors before the joint is stored.
+
+        The mate names stay on the joint. Opening the project resolves them
+        again from the catalog part on each instance.
+        """
+        if not isinstance(spec, dict):
+            return spec
+        joints = spec.get("joints") or []
+        if not isinstance(joints, list):
+            return spec
+        if not any(
+            isinstance(joint, dict) and (joint.get("parent_mate") or joint.get("child_mate"))
+            for joint in joints
+        ):
+            return spec
+        part_by_instance: dict[str, str] = {}
+        instances = spec.get("instances") or []
+        if isinstance(instances, list):
+            for instance in instances:
+                if isinstance(instance, dict) and instance.get("name") and instance.get("part"):
+                    part_by_instance[str(instance["name"])] = str(instance["part"])
+        needed: list[str] = []
+        for joint in joints:
+            if not isinstance(joint, dict):
+                continue
+            for side in ("parent", "child"):
+                if not joint.get(f"{side}_mate"):
+                    continue
+                part_name = part_by_instance.get(str(joint.get(side) or ""))
+                if part_name and part_name not in needed:
+                    needed.append(part_name)
+        missing = [name for name in needed if name not in self._parts]
+        if missing:
+            known = ", ".join(self._parts) or "(none)"
+            label = spec.get("name") or "assembly"
+            raise GeometryError(
+                f"Assembly {label!r} needs parts that are not in the document: "
+                f"{', '.join(missing)}. Parts: {known}."
+            )
+        specs = {name: copy.deepcopy(self._parts[name].library_spec) for name in needed}
+        return library.resolve_assembly_mates(spec, specs)
 
 
 def _unbuilt_message(name: str) -> str:
