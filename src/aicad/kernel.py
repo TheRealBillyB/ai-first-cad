@@ -72,6 +72,11 @@ _NAME_IN_SCRIPT = "part"
 MAX_MM = 1_000_000.0
 _WALL_PROBES_MM = (0.01, 0.002, 0.0004)
 _WALL_HIT_FLOOR_MM = 1e-4
+# A cone's opposite wall is not parallel. 0.5 still rejects a face the ray only grazes.
+_WALL_ALIGNMENT = 0.5
+# Parameter-domain edges, where a cone apex or a knife tip sits. The regular
+# grid is (i+0.5)/n and never lands on that border.
+_WALL_BORDER = (0.02, 0.98)
 
 
 def finite_number(
@@ -355,39 +360,29 @@ def measure(shape: Shape) -> Measurement:
 
 
 def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEstimate:
-    """Estimate minimum wall thickness from rays and from planar sections.
+    """Estimate minimum wall thickness from face-normal rays.
 
-    The reported minimum is the smaller of the two. ``method`` says which one
-    produced it, or ``ray+section`` when they agree within 0.05 mm. A reading
-    that could not step into the solid is an upper bound and is marked capped,
-    so a later threshold cannot treat it as a pass.
+    A ray is the local thickness. ``method`` is ``ray+section`` when a planar
+    section agrees within 0.05 mm. An axis-aligned slice of a round or rotated
+    solid is a shorter chord than that thickness, and that chord does not lower
+    the estimate. A reading that could not step into the solid is an upper bound
+    and is marked capped, so a later threshold cannot treat it as a pass.
     """
     ray_mm, accepted, used, point, ray_capped = _ray_wall_thickness(shape, samples_per_edge)
     section_mm, section_count, section_capped = _section_wall_thickness(shape)
-    minimum, capped = _thinnest(ray_mm, ray_capped, section_mm, section_capped)
-    if ray_mm is None and section_mm is None:
-        method = "none"
-    elif ray_mm is None:
-        method = "section"
-    elif section_mm is None:
-        method = "ray"
-    elif abs(ray_mm - section_mm) <= 0.05:
-        method = "ray+section"
-    elif section_mm < ray_mm:
-        method = "section"
-    else:
-        method = "ray"
-    if method == "section":
+    minimum, capped, method = _thinnest(ray_mm, ray_capped, section_mm, section_capped)
+    if method != "ray" and method != "ray+section":
         point = None
     note = (
         f"Minimum came from {method}. "
         f"Ray samples: {_mm(ray_mm)} mm. "
         f"Planar sections ({section_count} slices): {_mm(section_mm)} mm. "
-        "Rays start 0.01 mm inside a face and keep a hit only when the segment "
-        "stays in the solid. Sections slice the part at 25%, 50%, and 75% of its "
-        "extent along X, Y, and Z and measure the width between roughly parallel "
-        "edges in that plane. The smaller number is the estimate. Either method "
-        "can miss a thin spot it does not cross."
+        "Rays start 0.01 mm inside a face, including the border of the face where a "
+        "taper comes to a point, and keep a hit only when the segment stays in the solid. "
+        "Sections slice the part at 25%, 50%, and 75% of its extent along X, Y, and Z. "
+        "A section width shorter than the ray reading is a chord of that slice, not a "
+        "thinner wall, and it does not lower the estimate. Either method can miss a thin "
+        "spot it does not cross."
     )
     if capped:
         note += (
@@ -413,23 +408,28 @@ def _thinnest(
     ray_capped: bool,
     section_mm: float | None,
     section_capped: bool,
-) -> tuple[float | None, bool]:
-    """The smaller reading. An upper bound wins when the other reading is the far side."""
-    pairs = [
-        (ray_mm, ray_capped),
-        (section_mm, section_capped),
-    ]
-    known = [(value, capped) for value, capped in pairs if value is not None]
-    if not known:
-        return None, False
-    value, capped = min(known, key=lambda item: item[0])
-    if capped:
-        return value, True
-    # A large "measurement" next to a capped upper bound is the far wall of a cavity.
-    bounds = [other for other, other_capped in known if other_capped]
-    if bounds and value > 0.5 and min(bounds) < value:
-        return min(bounds), True
-    return value, False
+) -> tuple[float | None, bool, str]:
+    """Local thickness, whether it is only an upper bound, and which method produced it.
+
+    A capped reading is an upper bound from a probe that never entered the solid.
+    It wins over a larger number, which is often the far side of a cavity. An
+    uncapped ray is a thickness along the surface normal. A shorter section is
+    not used in its place: that reading is the width of one axis-aligned slice.
+    """
+    if section_mm is not None and section_capped and (ray_mm is None or section_mm < ray_mm):
+        return section_mm, True, "section"
+    if ray_mm is not None and ray_capped and (section_mm is None or ray_mm <= section_mm):
+        return ray_mm, True, "ray"
+    if ray_mm is not None and not ray_capped:
+        if section_mm is not None and not section_capped and abs(ray_mm - section_mm) <= 0.05:
+            return ray_mm, False, "ray+section"
+        return ray_mm, False, "ray"
+    if section_mm is not None:
+        # No ray confirmed this width, so a later threshold cannot treat it as a pass.
+        return section_mm, True, "section"
+    if ray_mm is not None:
+        return ray_mm, ray_capped, "ray"
+    return None, False, "none"
 
 
 def _ray_wall_thickness(
@@ -447,32 +447,42 @@ def _ray_wall_thickness(
     thinnest_measured: float | None = None
     accepted = 0
 
+    def consider(face, u: float, v: float, *, record_miss: bool) -> None:
+        nonlocal accepted, thinnest_measured, thinnest_point
+        try:
+            point = face.position_at(u, v)
+            normal = face.normal_at(u, v)
+        except Exception:
+            return
+        if normal.length < 1e-9 or not face.is_inside(point):
+            return
+        inward, probe = _inward_probe(impl, point, normal)
+        if inward is None or probe is None:
+            # A border sample that cannot enter is not evidence the whole part is thin.
+            # The regular grid still records that miss.
+            if record_miss:
+                missed.append(_WALL_PROBES_MM[-1])
+            return
+        origin = point + inward * probe
+        distance = _first_parallel_hit(impl, origin, inward, probe)
+        if distance is None:
+            return
+        thickness = distance + probe
+        accepted += 1
+        measured.append(thickness)
+        if thinnest_measured is None or thickness < thinnest_measured:
+            thinnest_measured = thickness
+            thinnest_point = _vec(point)
+
     for face in impl.faces():
         for i in range(n):
             for j in range(n):
-                u = (i + 0.5) / n
-                v = (j + 0.5) / n
-                try:
-                    point = face.position_at(u, v)
-                    normal = face.normal_at(u, v)
-                except Exception:
-                    continue
-                if normal.length < 1e-9 or not face.is_inside(point):
-                    continue
-                inward, probe = _inward_probe(impl, point, normal)
-                if inward is None or probe is None:
-                    missed.append(_WALL_PROBES_MM[-1])
-                    continue
-                origin = point + inward * probe
-                distance = _first_parallel_hit(impl, origin, inward, probe)
-                if distance is None:
-                    continue
-                thickness = distance + probe
-                accepted += 1
-                measured.append(thickness)
-                if thinnest_measured is None or thickness < thinnest_measured:
-                    thinnest_measured = thickness
-                    thinnest_point = _vec(point)
+                consider(face, (i + 0.5) / n, (j + 0.5) / n, record_miss=True)
+        for u in _WALL_BORDER:
+            for v in _WALL_BORDER:
+                consider(face, u, v, record_miss=False)
+            consider(face, u, 0.5, record_miss=False)
+            consider(face, 0.5, u, record_miss=False)
     minimum, capped = _combine_wall_samples(measured, missed)
     if capped:
         thinnest_point = None
@@ -745,6 +755,56 @@ def viewport_mesh(shape: Shape) -> dict:
     }
 
 
+def face_pressure_triangles(
+    shape: Shape, face_index: int, deflection: float
+) -> list[tuple[float, tuple[float, float, float], tuple[tuple[float, float, float], ...]]]:
+    """Tessellate one face for a pressure load.
+
+    Each item is ``(area_mm2, outward_unit_normal, three_vertices)``. The normal
+    points out of the material, matching :func:`describe_faces`. A curved face
+    needs these triangles: one normal at the face center times the whole area
+    is a single force, and a round hole then gets a sideways load instead of
+    pressure.
+    """
+    faces = list(shape.impl.faces())
+    if face_index < 0 or face_index >= len(faces) or deflection <= 0:
+        return []
+    face = faces[face_index]
+    try:
+        vertices, triangles = face.tessellate(deflection)
+    except Exception:
+        return []
+    found = []
+    for tri in triangles:
+        try:
+            corners = tuple(
+                (float(vertices[int(index)].X), float(vertices[int(index)].Y), float(vertices[int(index)].Z))
+                for index in tri
+            )
+        except Exception:
+            continue
+        if len(corners) != 3:
+            continue
+        a, b, c = corners
+        ax, ay, az = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+        bx, by, bz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+        nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+        length = math.sqrt(nx * nx + ny * ny + nz * nz)
+        area = 0.5 * length
+        if area < 1e-12 or length < 1e-12:
+            continue
+        normal = (nx / length, ny / length, nz / length)
+        center = ((a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0)
+        try:
+            reference = face.normal_at(Vector(*center))
+            if normal[0] * reference.X + normal[1] * reference.Y + normal[2] * reference.Z < 0:
+                normal = (-normal[0], -normal[1], -normal[2])
+        except Exception:
+            pass
+        found.append((area, normal, corners))
+    return found
+
+
 def distance_point_to_face(shape: Shape, face_index: int, point: tuple[float, float, float]) -> float:
     """Shortest distance from a point to a face, in millimeters."""
     faces = list(shape.impl.faces())
@@ -936,7 +996,7 @@ def _first_parallel_hit(impl, origin, direction, probe: float) -> float | None:
                 aligned = abs(hit_normal.normalized().dot(direction))
             except Exception:
                 aligned = 0.0
-            if aligned > 0.7:
+            if aligned > _WALL_ALIGNMENT:
                 midpoint = origin + direction * (parameter * 0.5)
                 if _strictly_inside(impl, midpoint) and (best is None or parameter < best):
                     best = parameter
