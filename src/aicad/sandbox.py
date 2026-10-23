@@ -26,6 +26,7 @@ import os
 import platform
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -458,6 +459,31 @@ def script_builtins() -> dict:
     return allowed
 
 
+def _refuse_project_link(path: Path, root: Path, read_roots: list[Path], writing: bool) -> None:
+    """Block a path outside the project, and a hard link that has another name."""
+    inside = _inside(path, root)
+    if inside and _shared_file(path):
+        action = "write" if writing else "read"
+        raise ScriptError(
+            f"The script tried to {action} {path}, which has another name outside this use. "
+            "A design script can only use files that belong to the project alone."
+        )
+    if not inside and (writing or not _under(path, read_roots)):
+        action = "write" if writing else "read"
+        raise ScriptError(
+            f"The script tried to {action} {path}, which is outside the project folder {root}. "
+            "A design script can only use files inside that folder."
+        )
+
+
+def _shared_file(path: Path) -> bool:
+    try:
+        info = path.stat()
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and info.st_nlink > 1
+
+
 def _inside(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -492,21 +518,13 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
     real_os_open = os.open
     root = workspace.resolve()
 
-    def refuse(path: Path, writing: bool) -> None:
-        action = "write" if writing else "read"
-        raise ScriptError(
-            f"The script tried to {action} {path}, which is outside the project folder {root}. "
-            "A design script can only use files inside that folder."
-        )
-
     def py_open(file, mode="r", *args, **kwargs):
         if isinstance(file, (str, bytes, os.PathLike)):
             writing = any(flag in str(mode) for flag in ("w", "a", "x", "+"))
             path = Path(os.fsdecode(file))
             if not path.is_absolute():
                 path = Path.cwd() / path
-            if not _inside(path, root) and (writing or not _under(path, read_roots)):
-                refuse(path, writing)
+            _refuse_project_link(path, root, read_roots, writing)
         return real_open(file, mode, *args, **kwargs)
 
     def os_open(path, flags, mode=0o777, *, dir_fd=None):
@@ -515,8 +533,7 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
             file_path = Path(os.fsdecode(path))
             if not file_path.is_absolute():
                 file_path = Path.cwd() / file_path
-            if not _inside(file_path, root) and (writing or not _under(file_path, read_roots)):
-                refuse(file_path, writing)
+            _refuse_project_link(file_path, root, read_roots, writing)
         return real_os_open(path, flags, mode, dir_fd=dir_fd)
 
     builtins.open = py_open
@@ -864,7 +881,10 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     seal_sandbox_plugins()
     _refuse_foreign_kill()
     workspace = workspace.resolve()
-    temporary = workspace / ".aicad" / "tmp"
+    from aicad.paths import output_dir
+
+    private = output_dir(workspace, workspace / ".aicad", "Project data", ScriptError)
+    temporary = private / "tmp"
     temporary.mkdir(parents=True, exist_ok=True)
     os.environ["TMPDIR"] = str(temporary)
     os.environ["TMP"] = str(temporary)
@@ -1172,12 +1192,15 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         raise ScriptError(reason)
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
-    job = workspace / ".aicad" / "jobs" / uuid.uuid4().hex
+    from aicad.paths import output_dir
+
+    private = output_dir(workspace, workspace / ".aicad", "Project data", ScriptError)
+    job = private / "jobs" / uuid.uuid4().hex
     job.mkdir(parents=True, exist_ok=True)
-    (workspace / ".aicad" / "tmp").mkdir(parents=True, exist_ok=True)
+    (private / "tmp").mkdir(parents=True, exist_ok=True)
     if sys.platform == "win32":
         # Created before the AppContainer grant so the container can write it.
-        (workspace / ".aicad" / "cache").mkdir(parents=True, exist_ok=True)
+        (private / "cache").mkdir(parents=True, exist_ok=True)
     spec: dict = {"kind": kind, "network": network}
     probe_root = None
     if kind == "probe":

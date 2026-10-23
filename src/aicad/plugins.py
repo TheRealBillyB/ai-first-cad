@@ -600,11 +600,10 @@ def export_with(
         raise PluginError(
             "An exporter must return text or bytes. aicad chooses the path and writes the file."
         )
-    destination = Path(path)
-    if not destination.is_absolute():
-        destination = Path(document.workspace) / destination
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(data)
+    from aicad.paths import output_path, publish_bytes
+
+    destination = output_path(document.workspace, path, "Export path", PluginError)
+    publish_bytes(destination, data)
     return {
         "plugin": loaded.name,
         "publisher": loaded.publisher,

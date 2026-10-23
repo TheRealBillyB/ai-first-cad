@@ -126,12 +126,6 @@ def sheet_lines(payload: dict) -> list[str]:
 def write_result_sheet(path: Path | str, payload: dict, *, title: str) -> dict:
     """Draw one blueprint sheet. Light text on a blue field, like a shop print."""
     destination = Path(path)
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise GeometryError(
-            f"Could not create the folder for {destination}. {exc.strerror or exc}."
-        ) from exc
     blocks = _blocks(payload) or [payload]
     width = 1400
     font = _font(_SANS, 22)
@@ -171,8 +165,13 @@ def write_result_sheet(path: Path | str, payload: dict, *, title: str) -> dict:
             fill = _INK
         draw.text((margin, y), line, font=face, fill=fill)
         y += line_height
+    from aicad.paths import publish_file
+
+    def _save(temporary: Path) -> None:
+        image.save(temporary, format="PNG")
+
     try:
-        image.save(destination, format="PNG")
+        publish_file(destination, _save)
     except OSError as exc:
         raise GeometryError(f"Could not write {destination}. {exc.strerror or exc}.") from exc
     return {
@@ -187,13 +186,23 @@ def attach_sheet(payload: dict, directory: Path | str, stem: str, root: Path | s
     """Write a blueprint sheet next to the other project files, once."""
     if not isinstance(payload, dict) or payload.get("sheet") or not _has_claim(payload):
         return payload
-    folder = Path(directory)
-    try:
-        folder.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise GeometryError(
-            f"Could not create the folder for {folder}. {exc.strerror or exc}."
-        ) from exc
+    if root is not None:
+        from aicad.paths import output_dir
+
+        try:
+            folder = output_dir(Path(root), directory, "Result sheet", GeometryError)
+        except OSError as exc:
+            raise GeometryError(
+                f"Could not create the folder for {directory}. {exc.strerror or exc}."
+            ) from exc
+    else:
+        folder = Path(directory)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise GeometryError(
+                f"Could not create the folder for {folder}. {exc.strerror or exc}."
+            ) from exc
     filename = _safe_stem(stem, payload) + ".png"
     path = folder / filename
     title = _sheet_title(payload, stem)

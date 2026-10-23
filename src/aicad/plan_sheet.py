@@ -98,7 +98,12 @@ def render_plan_sheet(
             draw.text((20 * scale_px, footer_y + index * 22 * scale_px), line, font=font_small, fill=_NOTE)
 
     image = image.resize((width, height), Image.Resampling.LANCZOS)
-    image.save(out, "PNG")
+    from aicad.paths import publish_file
+
+    def write(temporary: Path) -> None:
+        image.save(temporary, "PNG")
+
+    publish_file(out, write)
     return out
 
 

@@ -529,12 +529,12 @@ class PlanStore:
         return payload
 
     def _write(self, plan: dict) -> None:
-        self.directory.mkdir(parents=True, exist_ok=True)
+        from aicad.paths import output_dir, publish_text
+
+        self.directory = output_dir(self.root, self.directory, "Plan", PlanError)
         path = self._path(plan["id"])
         _render_revision(self.root, plan, _current(plan))
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(path)
+        publish_text(path, json.dumps(plan, indent=2) + "\n")
         _drop_orphan_sheets(self.root, plan)
 
     def _touch(self, plan: dict) -> None:
@@ -638,11 +638,13 @@ def plan_files(root: str | Path) -> dict[str, str]:
 
 def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
     """Put plan JSON back and redraw the sheets those revisions name."""
+    from aicad.paths import output_dir, publish_text
+
     root_path = Path(root)
     directory = root_path / "plans"
-    if not files and not directory.is_dir():
+    if not files and not directory.is_dir() and not directory.is_symlink():
         return
-    directory.mkdir(parents=True, exist_ok=True)
+    directory = output_dir(root_path, directory, "Plans", PlanError)
     keep = set(files)
     for path in directory.glob("*.json"):
         if path.name not in keep:
@@ -654,7 +656,7 @@ def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
         if Path(name).name != name or not name.endswith(".json"):
             continue
         target = directory / name
-        target.write_text(text, encoding="utf-8")
+        publish_text(target, text)
         try:
             plan = json.loads(text)
         except json.JSONDecodeError:
@@ -1156,8 +1158,9 @@ def _fill(value) -> str:
 
 
 def _render_revision(root: Path, plan: dict, revision: dict) -> None:
-    folder = root / "plans" / plan["id"] / f"v{revision['version']}"
-    folder.mkdir(parents=True, exist_ok=True)
+    from aicad.paths import output_dir
+
+    folder = output_dir(root, root / "plans" / plan["id"] / f"v{revision['version']}", "Plan sheet", PlanError)
     stamp = plan.get("status") or "draft"
     if revision.get("version") != plan.get("current_revision"):
         stamp = "recorded"
@@ -1182,18 +1185,31 @@ def _render_revision(root: Path, plan: dict, revision: dict) -> None:
 
 
 def _drop_orphan_sheets(root: Path, plan: dict) -> None:
+    from aicad.paths import resolve_in_project
+
     folder = root / "plans" / plan["id"]
+    if not folder.exists() and not folder.is_symlink():
+        return
+    folder = resolve_in_project(root, folder, "Plan", PlanError)
     if not folder.is_dir():
         return
+    from aicad.paths import stays_inside
+
     referenced = set()
     for revision in plan.get("revisions") or []:
         for sheet in revision.get("sheets") or []:
             if sheet.get("path"):
-                referenced.add((root / sheet["path"]).resolve())
+                candidate = root / sheet["path"]
+                if stays_inside(root, candidate):
+                    referenced.add(candidate.resolve())
     for png in folder.rglob("*.png"):
+        if not stays_inside(root, png):
+            continue
         if png.resolve() not in referenced:
             png.unlink()
     for child in sorted(folder.rglob("*"), reverse=True):
+        if child.is_symlink() or not stays_inside(root, child):
+            continue
         if child.is_dir() and not any(child.iterdir()):
             child.rmdir()
 

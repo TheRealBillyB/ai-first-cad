@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import re
 import shutil
+import stat
 import struct
 import subprocess
 from pathlib import Path
@@ -217,6 +218,9 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
     stl = out_dir / "oriented.stl"
     gcode = out_dir / "print.gcode"
     _write_stl(vertices, triangles, stl)
+    # The slicer writes this path in its own process. Drop a link first so that
+    # write creates a file in this folder.
+    _drop_link(gcode)
     last = ""
     last_name = Path(executables[-1]).name
     for executable in executables:
@@ -395,17 +399,31 @@ def _render(mesh, name: str, threshold: float, out_dir: Path, part_name: str):
     return [view.to_dict() for view in views]
 
 
+def _drop_link(path: Path) -> None:
+    """Remove a symlink or extra hard link so the next create stays here."""
+    try:
+        if path.is_symlink():
+            path.unlink()
+            return
+        info = path.stat()
+    except OSError:
+        return
+    if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+        path.unlink()
+
+
 def _write_stl(vertices: np.ndarray, triangles: np.ndarray, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as handle:
-        handle.write(b"aicad oriented" + b"\0" * 66)
-        handle.write(struct.pack("<I", len(triangles)))
-        for triangle in triangles:
-            a, b, c = vertices[int(triangle[0])], vertices[int(triangle[1])], vertices[int(triangle[2])]
-            normal = np.cross(b - a, c - a)
-            length = float(np.linalg.norm(normal))
-            normal = normal / length if length > 1e-12 else np.array([0.0, 0.0, 1.0])
-            handle.write(struct.pack("<12fH", *normal, *a, *b, *c, 0))
+    from aicad.paths import publish_bytes
+
+    payload = bytearray(b"aicad oriented" + b"\0" * 66)
+    payload += struct.pack("<I", len(triangles))
+    for triangle in triangles:
+        a, b, c = vertices[int(triangle[0])], vertices[int(triangle[1])], vertices[int(triangle[2])]
+        normal = np.cross(b - a, c - a)
+        length = float(np.linalg.norm(normal))
+        normal = normal / length if length > 1e-12 else np.array([0.0, 0.0, 1.0])
+        payload += struct.pack("<12fH", *normal, *a, *b, *c, 0)
+    publish_bytes(path, bytes(payload))
 
 
 def _parse_duration(text: str) -> int | None:

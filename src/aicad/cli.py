@@ -455,9 +455,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         views = document.render(args.name)
         return emit({"views": [view.to_dict() for view in views]})
     if args.command == "export":
+        from aicad.paths import require_export_path
+
         destination = args.out
         if destination is None:
             destination = document.workspace / "exports" / f"{args.name}.{args.format}"
+        destination = require_export_path(document.workspace, destination, "Export path", AICADError)
         path = document.export(args.name, destination, args.format)
         return emit({"format": args.format, "path": str(path), "bytes": path.stat().st_size})
     if args.command == "check-wall":
