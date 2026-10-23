@@ -73,6 +73,17 @@ _sid_string: str | None = None
 _ICACLS_TIMEOUT_SECONDS = 15
 _ICACLS_TREE_TIMEOUT_SECONDS = 60
 
+_SE_FILE_OBJECT = 1
+_DACL_SECURITY_INFORMATION = 0x4
+_GRANT_ACCESS = 1
+_NO_MULTIPLE_TRUSTEE = 0
+_TRUSTEE_IS_SID = 0
+_TRUSTEE_IS_UNKNOWN = 0
+_NO_INHERITANCE = 0
+# Traverse and read attributes. This does not include listing the directory,
+# so a parent grant does not reveal the names of its other children.
+_FILE_GENERIC_EXECUTE = 0x1200A0
+
 
 class IcaclsTimeout(OSError):
     """icacls did not finish, so the folder was not granted."""
@@ -177,6 +188,25 @@ class _SidAndAttributes(ctypes.Structure):
         ("Sid", ctypes.c_void_p),
         ("Attributes", wintypes.DWORD),
         ("_pad", wintypes.DWORD),
+    ]
+
+
+class _Trustee(ctypes.Structure):
+    _fields_ = [
+        ("pMultipleTrustee", ctypes.c_void_p),
+        ("MultipleTrusteeOperation", wintypes.DWORD),
+        ("TrusteeForm", wintypes.DWORD),
+        ("TrusteeType", wintypes.DWORD),
+        ("ptstrName", ctypes.c_void_p),
+    ]
+
+
+class _ExplicitAccess(ctypes.Structure):
+    _fields_ = [
+        ("grfAccessPermissions", wintypes.DWORD),
+        ("grfAccessMode", wintypes.DWORD),
+        ("grfInheritance", wintypes.DWORD),
+        ("Trustee", _Trustee),
     ]
 
 
@@ -424,12 +454,113 @@ def _grant_tree(path: Path, sid: str, rights: str) -> None:
         _icacls(path, sid, rights, recurse=True)
 
 
+def _bind_acl() -> None:
+    _bind()
+    advapi32 = _advapi32()
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.SetEntriesInAclW.argtypes = [
+        wintypes.ULONG,
+        ctypes.POINTER(_ExplicitAccess),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.SetEntriesInAclW.restype = wintypes.DWORD
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+
+
+def _grant_traverse_one(path: Path, sid: str) -> None:
+    """Add traverse on this directory only. Children are not listed or changed.
+
+    icacls on a parent such as the tool cache does not return: it asks for
+    confirmation or walks more than that folder. The access call writes one
+    entry and does not scan the children.
+    """
+
+    _bind_acl()
+    advapi32 = _advapi32()
+    kernel32 = _kernel32()
+    sid_ptr = ctypes.c_void_p()
+    if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(sid_ptr)):
+        raise OSError(_win_error(f"Could not read the sandbox id for {path}"))
+    descriptor = ctypes.c_void_p()
+    new_dacl = ctypes.c_void_p()
+    try:
+        trustee = _Trustee()
+        trustee.pMultipleTrustee = None
+        trustee.MultipleTrusteeOperation = _NO_MULTIPLE_TRUSTEE
+        trustee.TrusteeForm = _TRUSTEE_IS_SID
+        trustee.TrusteeType = _TRUSTEE_IS_UNKNOWN
+        trustee.ptstrName = sid_ptr
+        explicit = _ExplicitAccess()
+        explicit.grfAccessPermissions = _FILE_GENERIC_EXECUTE
+        explicit.grfAccessMode = _GRANT_ACCESS
+        explicit.grfInheritance = _NO_INHERITANCE
+        explicit.Trustee = trustee
+
+        dacl = ctypes.c_void_p()
+        status = advapi32.GetNamedSecurityInfoW(
+            str(path),
+            _SE_FILE_OBJECT,
+            _DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            ctypes.byref(dacl),
+            None,
+            ctypes.byref(descriptor),
+        )
+        if status != 0:
+            raise OSError(f"Could not read access for {path} (code {status}).")
+        # A missing DACL already allows access. Replacing it would lock the folder.
+        if not dacl:
+            return
+        status = advapi32.SetEntriesInAclW(1, ctypes.byref(explicit), dacl, ctypes.byref(new_dacl))
+        if status != 0:
+            raise OSError(f"Could not add traverse for {path} (code {status}).")
+        mutable = ctypes.create_unicode_buffer(str(path))
+        status = advapi32.SetNamedSecurityInfoW(
+            mutable,
+            _SE_FILE_OBJECT,
+            _DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            new_dacl,
+            None,
+        )
+        if status != 0:
+            raise OSError(f"Could not grant traverse on {path} (code {status}).")
+    finally:
+        if new_dacl:
+            kernel32.LocalFree(new_dacl)
+        if descriptor:
+            kernel32.LocalFree(descriptor)
+        if sid_ptr:
+            kernel32.LocalFree(sid_ptr)
+
+
 def _grant_traverse(path: Path, sid: str) -> None:
     """Let the container walk down to a folder without granting that folder's children."""
 
-    # The leaf is granted separately. Parents only need traverse (and a
-    # directory read, which Windows often requires to open a child by name).
-    # The volume root is not granted: icacls waits for confirmation there.
+    # The leaf is granted separately. Parents only need traverse. The volume
+    # root is not granted: that would be an access entry on the whole drive.
     if os.name == "nt":
         try:
             text = str(path.resolve())
@@ -439,7 +570,7 @@ def _grant_traverse(path: Path, sid: str) -> None:
         text = str(path)
     for parent in _windows_traverse_parents(text):
         try:
-            _icacls(Path(parent), sid, "(RX)", recurse=False)
+            _grant_traverse_one(Path(parent), sid)
         except IcaclsTimeout:
             raise
         except OSError:

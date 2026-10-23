@@ -44,9 +44,12 @@ def test_grant_traverse_does_not_call_icacls_on_the_volume_root(monkeypatch):
     from aicad import sandbox_windows as win
 
     calls: list[str] = []
-    monkeypatch.setattr(win, "_icacls", lambda path, sid, rights, *, recurse: calls.append(str(path)))
+    icacls_calls: list[str] = []
+    monkeypatch.setattr(win, "_grant_traverse_one", lambda path, sid: calls.append(str(path)))
+    monkeypatch.setattr(win, "_icacls", lambda path, sid, rights, *, recurse: icacls_calls.append(str(path)))
     win._grant_traverse(Path(r"D:\a\ai-first-cad\ai-first-cad\.venv"), "S-1-2-3")
     assert calls
+    assert icacls_calls == []
     assert all(not win._is_volume_root_text(path) for path in calls)
 
 
@@ -65,13 +68,13 @@ def test_a_stuck_icacls_fails_with_a_clear_error(monkeypatch):
     assert r"C:\hostedtoolcache" in message
     assert "confirmation" in message
 
-    def stuck_grant(path, sid, rights, *, recurse):
+    def stuck_grant(path, sid):
         raise win.IcaclsTimeout(
             "icacls did not finish within 15 seconds for "
             r"C:\hostedtoolcache. It may be waiting for confirmation."
         )
 
-    monkeypatch.setattr(win, "_icacls", stuck_grant)
+    monkeypatch.setattr(win, "_grant_traverse_one", stuck_grant)
     with pytest.raises(win.IcaclsTimeout, match="confirmation"):
         win._grant_traverse(Path(r"C:\hostedtoolcache\windows\Python"), "S-1-2-3")
 
