@@ -1,29 +1,8 @@
 """AI-first CAD: model a hard-body part, then see and check it."""
 
-# `python -m aicad` puts the working directory on sys.path before this file
-# runs. The `aicad` command does not. Use that command to open a project.
-# To start the module, use `python -P -m aicad` (or PYTHONSAFEPATH=1).
-#
-# Frozen and built-in modules are not loaded from the working directory.
-# CPython 3.11 through 3.14 freeze the same startup modules (abc, codecs,
-# io, os, site, stat) and the same -m modules (runpy, importlib.machinery,
-# importlib.util). The importlib package itself is not frozen.
-#
-# Measured on Python 3.12: the working directory is inserted after site
-# finishes, so encodings and sitecustomize still come from the standard
-# library. Resolving -m then imports these non-frozen modules from sys.path
-# before this file: importlib, warnings, threading, functools, collections,
-# keyword, operator, reprlib, types, and _weakrefset. importlib.util on 3.11
-# also imports contextlib, functools, threading, types, and warnings at
-# import time. On 3.13 and 3.14 it imports types only, and the importlib
-# package no longer imports warnings. A top-level file or package with one
-# of those names can run before this file. If that import fails, this file
-# never runs. If the working directory contains the aicad package, -m
-# selects that copy and this file never runs either.
-#
-# The block below drops the working directory from sys.path before any later
-# import. When this folder is an aicad project (session.json or .aicad) and
-# a top-level module here uses a name already in sys.modules, startup stops.
+# Remove the working directory from the import path as early as possible.
+# Starting from a project folder is supported only through the aicad command
+# or `python -P -m aicad`.
 
 import sys
 
@@ -47,7 +26,6 @@ def _module_invocation() -> str | None:
 
 
 def _same_directory(entry: str, cwd: str) -> bool:
-    # os is frozen on 3.11+, so this import is not taken from the working directory.
     import os
 
     if not isinstance(entry, str):
