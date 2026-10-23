@@ -134,6 +134,7 @@ def _probe(workspace: Path, job: Path) -> int:
     inside = workspace / "probe_inside.txt"
     inside.write_text("ok", encoding="utf-8")
     found["write_inside"] = inside.read_text(encoding="utf-8")
+    stream = None
     try:
         stream = socket.socket()
         stream.settimeout(2)
@@ -141,16 +142,35 @@ def _probe(workspace: Path, job: Path) -> int:
         found["tcp"] = "connected"
     except OSError as exc:
         found["tcp"] = denied_probe_label(exc)
-    try:
-        # Unconnected. A connected UDP send can report success after the
-        # firewall has refused the datagram.
-        packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    finally:
+        if stream is not None:
+            stream.close()
+
+    def datagram(connected: bool) -> str:
+        try:
+            packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError as exc:
+            return denied_probe_label(exc)
         packet.settimeout(2)
-        packet.sendto(b"x", ("1.1.1.1", 53))
-        found["udp"] = "sent"
-    except OSError as exc:
-        found["udp"] = denied_probe_label(exc)
+        try:
+            if connected:
+                # connect() only selects the destination. send() is the attempt.
+                packet.connect(("1.1.1.1", 53))
+                packet.send(b"aicad-net-probe")
+            else:
+                packet.sendto(b"aicad-net-probe", ("1.1.1.1", 53))
+            return "sent"
+        except OSError as exc:
+            return denied_probe_label(exc)
+        finally:
+            packet.close()
+
+    found["udp"] = datagram(False)
+    found["udp_connected"] = datagram(True)
     if sys.platform == "win32":
+        from aicad.sandbox import _windows_net_probe_text
+
+        found["network"] = _windows_net_probe_text
         found["mechanism"] = "appcontainer+job"
     elif sys.platform == "darwin":
         found["mechanism"] = "seatbelt"

@@ -75,7 +75,7 @@ jobs:
         run: |
           # These run on their own first. A confinement failure shows up here,
           # and this step stops after 15 minutes instead of holding the whole job.
-          exec .venv/Scripts/pytest.exe -ra --tb=short --durations=15 --timeout=180 \
+          exec .venv/Scripts/pytest.exe -ra -s --tb=short --durations=15 --timeout=180 \
             tests/test_sandbox.py tests/test_sandbox_findings.py
 
       - name: Run the test suite

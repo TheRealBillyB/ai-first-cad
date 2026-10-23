@@ -18,10 +18,12 @@ starts a second process in a job of its own, so the script would not stay
 in the sandbox job. The new process stays suspended until that job holds
 it and its token is an AppContainer.
 
-When the script was not given the network, Windows Firewall blocks that
-container before the process runs. The script still checks the token and a
-real connection. It runs only when that connection is refused. A timeout
-is not a refusal.
+When the script was not given the network, Windows Firewall and a filter
+block that container's inbound and outbound traffic for every protocol
+before the process runs. The block is not limited to TCP or to a port.
+The script still checks the token. It runs only when a TCP connection and
+both a connected and an unconnected UDP send are refused. A successful
+send is not a refusal. A timeout is not a refusal.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ import re
 import subprocess
 import sys
 import threading
+import uuid
 from collections.abc import Sequence
 from ctypes import wintypes
 from pathlib import Path
@@ -102,11 +105,13 @@ _network_off_lock = threading.Lock()
 _network_off_holders = 0
 _network_off_sid: str | None = None
 _PACKAGE_SID_TEXT = re.compile(r"^S-1-15-2(?:-\d+)+$", re.IGNORECASE)
+# Inbound and outbound, every protocol. The old UDP-only name is removed
+# when present and is not installed again.
 _NETWORK_OFF_RULES = (
     "aicad-script-network-off-out",
-    "aicad-script-network-off-udp",
     "aicad-script-network-off-in",
 )
+_NETWORK_OFF_STALE_RULES = ("aicad-script-network-off-udp",)
 
 # One directory finishes immediately. A tree walk of the Python install can
 # take longer. Either one that does not finish is waiting, not working.
@@ -1393,13 +1398,304 @@ def _job_limit_violated(job: wintypes.HANDLE) -> bool:
     return bool(int(info.ViolationLimitFlags) & _LIMIT_VIOLATION_BITS)
 
 
+# ALE authorize layers. No protocol field and no port field: one package SID
+# matches TCP, UDP, and every other protocol those layers classify.
+_FWP_ACTION_BLOCK = 0x00001001
+_FWP_UINT64 = 4
+_FWP_SID = 13
+_FWP_MATCH_EQUAL = 0
+_FWPM_FILTER_FLAG_PERSISTENT = 0x00000001
+_FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT = 0x00000008
+_FWPM_SESSION_FLAG_DYNAMIC = 0x00000001
+_RPC_C_AUTHN_WINNT = 10
+_WFP_ALE_PACKAGE_ID = "71bc78fa-f17c-4997-a602-6abb261f351c"
+_WFP_BLOCK_LAYERS = (
+    ("ALE_AUTH_CONNECT_V4", "c38d57d1-05a7-4c33-904f-7fbceee60e82"),
+    ("ALE_AUTH_CONNECT_V6", "4a72393b-319f-44bc-84c3-ba54dcb3b6b4"),
+    ("ALE_AUTH_RECV_ACCEPT_V4", "e1cd9fe7-f4b5-4273-96c0-592e487b8650"),
+    ("ALE_AUTH_RECV_ACCEPT_V6", "a3b42c97-9f04-4672-b87e-cee9c483257f"),
+    ("ALE_AUTH_LISTEN_V4", "88bb5dad-76d7-4227-9c71-df0a3ed7be7e"),
+    ("ALE_AUTH_LISTEN_V6", "7ac9de24-17dd-4814-b4bd-a9fbc95a321b"),
+    ("ALE_RESOURCE_ASSIGNMENT_V4", "1247d66d-0b60-4a15-8d44-7155d0f53a0c"),
+    ("ALE_RESOURCE_ASSIGNMENT_V6", "55a650e1-5f0a-4eca-a653-88f53b26aa8c"),
+)
+_fwpuclnt_lib: ctypes.WinDLL | None = None
+_wfp_engine: int | None = None
+
+
+class _Guid(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+class _WfpDisplay(ctypes.Structure):
+    _fields_ = [
+        ("name", ctypes.c_wchar_p),
+        ("description", ctypes.c_wchar_p),
+    ]
+
+
+class _WfpBlob(ctypes.Structure):
+    _fields_ = [
+        ("size", ctypes.c_uint32),
+        ("data", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
+
+
+class _WfpValueData(ctypes.Union):
+    _fields_ = [
+        ("uint8", ctypes.c_uint8),
+        ("uint64", ctypes.POINTER(ctypes.c_uint64)),
+        ("sid", ctypes.c_void_p),
+    ]
+
+
+class _WfpValue(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint32),
+        ("data", _WfpValueData),
+    ]
+
+
+class _WfpCondition(ctypes.Structure):
+    _fields_ = [
+        ("fieldKey", _Guid),
+        ("matchType", ctypes.c_uint32),
+        ("value", _WfpValue),
+    ]
+
+
+class _WfpActionData(ctypes.Union):
+    _fields_ = [
+        ("filterType", _Guid),
+        ("calloutKey", _Guid),
+    ]
+
+
+class _WfpAction(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint32),
+        ("data", _WfpActionData),
+    ]
+
+
+class _WfpContext(ctypes.Union):
+    _fields_ = [
+        ("rawContext", ctypes.c_uint64),
+        ("providerContextKey", _Guid),
+    ]
+
+
+class _WfpFilter(ctypes.Structure):
+    """FWPM_FILTER0. The layout is the 64-bit one: 200 bytes."""
+
+    _fields_ = [
+        ("filterKey", _Guid),
+        ("displayData", _WfpDisplay),
+        ("flags", ctypes.c_uint32),
+        ("providerKey", ctypes.c_void_p),
+        ("providerData", _WfpBlob),
+        ("layerKey", _Guid),
+        ("subLayerKey", _Guid),
+        ("weight", _WfpValue),
+        ("numFilterConditions", ctypes.c_uint32),
+        ("filterCondition", ctypes.POINTER(_WfpCondition)),
+        ("action", _WfpAction),
+        ("context", _WfpContext),
+        ("reserved", ctypes.c_void_p),
+        ("filterId", ctypes.c_uint64),
+        ("effectiveWeight", _WfpValue),
+    ]
+
+
+class _WfpSession(ctypes.Structure):
+    _fields_ = [
+        ("sessionKey", _Guid),
+        ("displayData", _WfpDisplay),
+        ("flags", ctypes.c_uint32),
+        ("txnWaitTimeoutInMSec", ctypes.c_uint32),
+        ("processId", ctypes.c_uint32),
+        ("sid", ctypes.c_void_p),
+        ("username", ctypes.c_wchar_p),
+        ("kernelMode", ctypes.c_int),
+    ]
+
+
+class _WfpSubLayer(ctypes.Structure):
+    _fields_ = [
+        ("subLayerKey", _Guid),
+        ("displayData", _WfpDisplay),
+        ("flags", ctypes.c_uint32),
+        ("providerKey", ctypes.c_void_p),
+        ("providerData", _WfpBlob),
+        ("weight", ctypes.c_uint16),
+    ]
+
+
+def _guid(text: str) -> _Guid:
+    return _Guid.from_buffer_copy(uuid.UUID(text).bytes_le)
+
+
+def _wfp_failure(step: str, code: int) -> OSError:
+    number = code & 0xFFFFFFFF
+    return OSError(f"Could not set the script network block ({step}, code {number:#010x}).")
+
+
+def _wfp_block_filter(layer: str, sid_pointer: int, sublayer: _Guid) -> _WfpFilter:
+    """One hard block for this container. The only condition is its package SID."""
+
+    if not sid_pointer:
+        raise OSError("Could not set the script network block (the container id was empty).")
+    weight = ctypes.c_uint64(0xFFFFFFFFFFFFFFFF)
+    condition = _WfpCondition()
+    condition.fieldKey = _guid(_WFP_ALE_PACKAGE_ID)
+    condition.matchType = _FWP_MATCH_EQUAL
+    condition.value.type = _FWP_SID
+    condition.value.data.sid = sid_pointer
+    name = ctypes.create_unicode_buffer("aicad script network block")
+    description = ctypes.create_unicode_buffer("Blocks one aicad script container.")
+    filt = _WfpFilter()
+    filt.displayData.name = ctypes.cast(name, ctypes.c_wchar_p)
+    filt.displayData.description = ctypes.cast(description, ctypes.c_wchar_p)
+    filt.flags = _FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
+    filt.layerKey = _guid(layer)
+    filt.subLayerKey = sublayer
+    filt.weight.type = _FWP_UINT64
+    filt.weight.data.uint64 = ctypes.pointer(weight)
+    filt.numFilterConditions = 1
+    filt.filterCondition = ctypes.pointer(condition)
+    filt.action.type = _FWP_ACTION_BLOCK
+    filt._keepalive = [weight, condition, name, description]
+    return filt
+
+
+def _wfp_block_filters(sid_pointer: int, sublayer: _Guid | None = None) -> list[_WfpFilter]:
+    key = sublayer if sublayer is not None else _guid(str(uuid.uuid4()))
+    return [_wfp_block_filter(layer, sid_pointer, key) for _name, layer in _WFP_BLOCK_LAYERS]
+
+
+def _fwpuclnt() -> ctypes.WinDLL:
+    global _fwpuclnt_lib
+    if _fwpuclnt_lib is None:
+        library = ctypes.WinDLL("fwpuclnt", use_last_error=True)
+        library.FwpmEngineOpen0.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_void_p,
+            ctypes.POINTER(_WfpSession),
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        library.FwpmEngineOpen0.restype = wintypes.DWORD
+        library.FwpmEngineClose0.argtypes = [ctypes.c_void_p]
+        library.FwpmEngineClose0.restype = wintypes.DWORD
+        library.FwpmSubLayerAdd0.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_WfpSubLayer),
+            ctypes.c_void_p,
+        ]
+        library.FwpmSubLayerAdd0.restype = wintypes.DWORD
+        library.FwpmFilterAdd0.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_WfpFilter),
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint64),
+        ]
+        library.FwpmFilterAdd0.restype = wintypes.DWORD
+        _fwpuclnt_lib = library
+    return _fwpuclnt_lib
+
+
+def _install_wfp_block(sid_text: str) -> None:
+    """Block this container on every ALE authorize layer. Fail closed."""
+
+    global _wfp_engine
+    if sys.platform != "win32":
+        return
+    if _wfp_engine:
+        raise OSError("Could not set the script network block (a filter is already installed).")
+    _bind()
+    client = _fwpuclnt()
+    session_name = ctypes.create_unicode_buffer("aicad script network")
+    session_text = ctypes.create_unicode_buffer("Blocks one aicad script container.")
+    session = _WfpSession()
+    session.flags = _FWPM_SESSION_FLAG_DYNAMIC
+    session.displayData.name = ctypes.cast(session_name, ctypes.c_wchar_p)
+    session.displayData.description = ctypes.cast(session_text, ctypes.c_wchar_p)
+    session.kernelMode = 0
+    engine = ctypes.c_void_p()
+    code = int(
+        client.FwpmEngineOpen0(
+            None,
+            _RPC_C_AUTHN_WINNT,
+            None,
+            ctypes.byref(session),
+            ctypes.byref(engine),
+        )
+    )
+    if code or not engine.value:
+        raise _wfp_failure("FwpmEngineOpen0", code)
+    sid_ptr = None
+    try:
+        sid_ptr = _sid_pointer(sid_text)
+        if not sid_ptr.value:
+            raise OSError("Could not set the script network block (the container id was empty).")
+        sublayer_key = _guid(str(uuid.uuid4()))
+        sublayer_name = ctypes.create_unicode_buffer("aicad script network")
+        sublayer_text = ctypes.create_unicode_buffer("Blocks one aicad script container.")
+        sublayer = _WfpSubLayer()
+        sublayer.subLayerKey = sublayer_key
+        sublayer.displayData.name = ctypes.cast(sublayer_name, ctypes.c_wchar_p)
+        sublayer.displayData.description = ctypes.cast(sublayer_text, ctypes.c_wchar_p)
+        sublayer.weight = 0xFFFF
+        code = int(client.FwpmSubLayerAdd0(engine, ctypes.byref(sublayer), None))
+        if code:
+            raise _wfp_failure("FwpmSubLayerAdd0", code)
+        for name, layer in _WFP_BLOCK_LAYERS:
+            filt = _wfp_block_filter(layer, int(sid_ptr.value), sublayer_key)
+            if int(filt.numFilterConditions) != 1 or int(filt.action.type) != _FWP_ACTION_BLOCK:
+                raise OSError(
+                    "Could not set the script network block (the filter is not limited to the container)."
+                )
+            added = ctypes.c_uint64()
+            code = int(client.FwpmFilterAdd0(engine, ctypes.byref(filt), None, ctypes.byref(added)))
+            if code:
+                raise _wfp_failure(name, code)
+    except Exception:
+        client.FwpmEngineClose0(engine)
+        raise
+    finally:
+        if sid_ptr:
+            _kernel32().LocalFree(sid_ptr)
+    _wfp_engine = int(engine.value)
+
+
+def _close_wfp_block() -> None:
+    """Drop the dynamic filters. They also die when this process exits."""
+
+    global _wfp_engine
+    engine = _wfp_engine
+    _wfp_engine = None
+    if not engine or sys.platform != "win32":
+        return
+    _fwpuclnt().FwpmEngineClose0(ctypes.c_void_p(engine))
+
+
+def _firewall_rule_names() -> tuple[str, ...]:
+    return _NETWORK_OFF_RULES + _NETWORK_OFF_STALE_RULES
+
+
 def _firewall_script(sid: str | None = None, *, install: bool) -> str:
     """PowerShell that blocks, or clears, this container's inbound and outbound traffic.
 
     The package id is the AppContainer SID. A capability SID is not accepted.
+    Every protocol is blocked. The rules name no port.
     """
 
-    names = ", ".join(repr(name) for name in _NETWORK_OFF_RULES)
+    names = ", ".join(repr(name) for name in _firewall_rule_names())
     # A missing rule is not an error. Ending on that lookup would make
     # powershell.exe exit 1, and a later script that needs the network
     # would not start.
@@ -1422,10 +1718,6 @@ def _firewall_script(sid: str | None = None, *, install: bool) -> str:
         + "  New-NetFirewallRule -Name 'aicad-script-network-off-out' "
         + "-DisplayName 'aicad script network off outbound' "
         + "-Direction Outbound -Action Block -Protocol Any "
-        + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
-        + "  New-NetFirewallRule -Name 'aicad-script-network-off-udp' "
-        + "-DisplayName 'aicad script network off udp' "
-        + "-Direction Outbound -Action Block -Protocol UDP "
         + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
         + "  New-NetFirewallRule -Name 'aicad-script-network-off-in' "
         + "-DisplayName 'aicad script network off inbound' "
@@ -1471,6 +1763,14 @@ def _hold_network_block(sid_text: str) -> None:
             )
         if _network_off_holders == 0:
             _run_firewall_script(_firewall_script(sid_text, install=True))
+            try:
+                _install_wfp_block(sid_text)
+            except Exception:
+                try:
+                    _run_firewall_script(_firewall_script(install=False))
+                except OSError:
+                    pass
+                raise
             _network_off_sid = sid_text.upper()
         _network_off_holders += 1
 
@@ -1487,6 +1787,7 @@ def _release_network_block() -> None:
             return
         sid = _network_off_sid
         _network_off_sid = None
+        _close_wfp_block()
         try:
             _run_firewall_script(_firewall_script(sid, install=False))
         except OSError:

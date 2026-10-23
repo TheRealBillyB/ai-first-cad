@@ -481,7 +481,7 @@ def _socket_error(errno=None, winerror=None, *, timeout=False, dns=False):
     return error
 
 
-def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure():
+def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure(monkeypatch):
     """The script runs only when both probes were refused and the token has no network capability."""
 
     import inspect
@@ -491,12 +491,13 @@ def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure():
         _WINDOWS_TCP_PROBE,
         _WINDOWS_UDP_PROBE,
         _public_probe_address,
-        _windows_transport_label,
+        _windows_one_attempt,
         apply_sandbox,
         confined_errno,
         network_attempt_label,
         windows_network_failure_text,
         windows_network_is_off,
+        windows_receiver_targets,
     )
 
     assert _WINDOWS_TCP_PROBE == ("1.1.1.1", 443)
@@ -530,32 +531,63 @@ def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure():
     denied = network_attempt_label(_socket_error(13, 10013), success="connected")
     denied_udp = network_attempt_label(_socket_error(13, 10013), success="sent")
     package = "S-1-15-2-11-22-33-44-55-66-77"
-    assert windows_network_is_off(tcp=denied, udp=denied_udp, package=package, capabilities=())
+    refused = (
+        ("tcp", denied),
+        ("udp-sendto", denied_udp),
+        ("udp-connected", denied_udp),
+    )
+    assert windows_network_is_off(attempts=refused, package=package, capabilities=())
     assert not windows_network_is_off(
-        tcp=network_attempt_label(timeout, success="connected"),
-        udp=denied_udp,
+        attempts=(
+            ("tcp", network_attempt_label(timeout, success="connected")),
+            ("udp-sendto", denied_udp),
+            ("udp-connected", denied_udp),
+        ),
+        package=package,
+        capabilities=(),
+    )
+    # A successful send is on, connected or unconnected. An empty receiver
+    # does not make that send a refusal.
+    assert not windows_network_is_off(
+        attempts=(("tcp", denied), ("udp-sendto", "sent"), ("udp-connected", denied_udp)),
         package=package,
         capabilities=(),
     )
     assert not windows_network_is_off(
-        tcp=denied,
-        udp="sent",
+        attempts=(("tcp", denied), ("udp-sendto", denied_udp), ("udp-connected", "sent")),
         package=package,
         capabilities=(),
     )
-    assert not windows_network_is_off(tcp="loopback", udp=denied_udp, package=package, capabilities=())
-    assert not windows_network_is_off(tcp=denied, udp=denied_udp, package=package, capabilities=None)
-    assert not windows_network_is_off(tcp=denied, udp=denied_udp, package="unread", capabilities=())
+    assert not windows_network_is_off(
+        attempts=refused + (("udp-sendto@10.0.0.5:9", "sent"),),
+        package=package,
+        capabilities=(),
+    )
+    assert windows_network_is_off(
+        attempts=refused + (("udp-sendto@10.0.0.5:9", denied_udp),),
+        package=package,
+        capabilities=(),
+    )
+    assert not windows_network_is_off(
+        attempts=(("tcp", "loopback"), ("udp-sendto", denied_udp), ("udp-connected", denied_udp)),
+        package=package,
+        capabilities=(),
+    )
+    assert not windows_network_is_off(attempts=refused, package=package, capabilities=None)
+    assert not windows_network_is_off(attempts=refused, package="unread", capabilities=())
+    assert not windows_network_is_off(attempts=(("tcp", denied),), package=package, capabilities=())
     for capability in ("S-1-15-3-1", "s-1-15-3-2", "S-1-15-3-3"):
         assert not windows_network_is_off(
-            tcp=denied,
-            udp=denied_udp,
+            attempts=refused,
             package=package,
             capabilities=(capability,),
         )
     text = windows_network_failure_text(
-        tcp=network_attempt_label(timeout, success="connected"),
-        udp="sent",
+        attempts=(
+            ("tcp", network_attempt_label(timeout, success="connected")),
+            ("udp-sendto", "sent"),
+            ("udp-connected", "sent"),
+        ),
         package=package,
         capabilities=("S-1-15-3-1",),
     )
@@ -563,24 +595,34 @@ def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure():
     assert "probe=1.1.1.1:443,1.1.1.1:53" in text
     assert "tcp=timeout " in text
     assert "winerror=10060" in text
-    assert "udp=sent" in text
+    assert "udp-sendto=sent" in text
+    assert "udp-connected=sent" in text
     assert "package=" + package in text
     assert "capabilities=S-1-15-3-1" in text
     assert "capabilities=none" in windows_network_failure_text(
-        tcp=denied, udp=denied_udp, package=package, capabilities=()
+        attempts=refused, package=package, capabilities=()
     )
     assert "capabilities=unread" in windows_network_failure_text(
-        tcp=denied, udp=denied_udp, package=package, capabilities=None
+        attempts=refused, package=package, capabilities=None
     )
+    monkeypatch.setenv(
+        "AICAD_WIN_NET_RECEIVERS",
+        "10.1.2.3:40000:40001;127.0.0.1:5:6;example.test:1:2;127.0.0.1:0:1;010.0.0.1:1:2",
+    )
+    assert windows_receiver_targets() == (("10.1.2.3", 40000, 40001), ("127.0.0.1", 5, 6))
 
     source = inspect.getsource(apply_sandbox)
     windows = source.split('sys.platform == "win32"', 1)[1].split('sys.platform == "darwin"', 1)[0]
     assert windows.index("identity_failures") < windows.index("windows_network_is_off")
     assert "_network_blocked" not in windows
-    probe = inspect.getsource(_windows_transport_label)
+    probe = inspect.getsource(_windows_one_attempt)
+    assert "sendto" in probe
+    assert "connect" in probe
+    assert ".send(" in probe
     udp = probe.split("SOCK_DGRAM", 1)[1]
     assert "sendto" in udp
-    assert "connect" not in udp
+    assert "connect" in udp
+    assert ".send(" in udp
 
 
 def test_windows_network_block_names_only_that_container():
@@ -592,11 +634,16 @@ def test_windows_network_block_names_only_that_container():
 
     package = "S-1-15-2-11-22-33-44-55-66-77"
     script = win._firewall_script(package, install=True)
-    assert script.count("New-NetFirewallRule") == 3
-    assert script.count("-Action Block") == 3
+    assert script.count("New-NetFirewallRule") == 2
+    assert script.count("-Action Block") == 2
+    assert script.count("-Protocol Any") == 2
     assert "-Direction Outbound" in script
-    assert "-Protocol UDP" in script
     assert "-Direction Inbound" in script
+    assert "-Protocol UDP" not in script
+    assert "-Protocol TCP" not in script
+    assert "LocalPort" not in script
+    assert "RemotePort" not in script
+    assert "aicad-script-network-off-udp" in script
     assert f"-Package '{package}'" in script
     assert "S-1-15-3-1" not in script
     assert "Remove-NetFirewallRule" in script
@@ -610,6 +657,7 @@ def test_windows_network_block_names_only_that_container():
             win._firewall_script(bad, install=True)
 
     calls = []
+    closed = []
 
     def record(text):
         calls.append(text)
@@ -617,7 +665,10 @@ def test_windows_network_block_names_only_that_container():
     win._network_off_holders = 0
     win._network_off_sid = None
     original = win._run_firewall_script
+    original_close = win._close_wfp_block
+    original_install = win._install_wfp_block
     win._run_firewall_script = record
+    win._close_wfp_block = lambda: closed.append("closed")
     try:
         win._hold_network_block(package.lower())
         win._hold_network_block(package)
@@ -630,22 +681,98 @@ def test_windows_network_block_names_only_that_container():
             win._hold_network_block("S-1-15-2-9-9-9-9-9-9-9")
         win._release_network_block()
         assert len(calls) == 1
+        assert closed == []
         win._release_network_block()
         assert len(calls) == 2
+        assert closed == ["closed"]
         assert "New-NetFirewallRule" not in calls[1]
         assert win._network_off_holders == 0
         win._require_script_network_open()
         assert len(calls) == 3
+
+        def boom(_sid):
+            raise OSError("wfp failed")
+
+        win._install_wfp_block = boom
+        with pytest.raises(OSError, match="wfp failed"):
+            win._hold_network_block(package)
+        assert win._network_off_holders == 0
+        assert "New-NetFirewallRule" not in calls[-1]
+        assert "Remove-NetFirewallRule" in calls[-1]
     finally:
         win._run_firewall_script = original
+        win._close_wfp_block = original_close
+        win._install_wfp_block = original_install
         win._network_off_holders = 0
         win._network_off_sid = None
+        win._wfp_engine = None
 
     spawn = inspect.getsource(win.spawn)
     assert spawn.index("_hold_network_block") < spawn.index("_launch")
     assert spawn.index("TerminateJobObject") < spawn.index("_release_network_block")
     probe = inspect.getsource(win._probe_mode)
     assert probe.index("_hold_network_block") < probe.index("_launch")
+    hold = inspect.getsource(win._hold_network_block)
+    assert hold.index("_run_firewall_script") < hold.index("_install_wfp_block")
+    assert "_close_wfp_block" in inspect.getsource(win._release_network_block)
+
+
+def test_windows_wfp_block_is_every_protocol_for_that_container():
+    """The filter matches the package SID only. It names no protocol and no port."""
+
+    import ctypes
+
+    from aicad import sandbox_windows as win
+
+    assert ctypes.sizeof(win._WfpFilter) == 200
+    assert win._WfpFilter.flags.offset == 32
+    assert win._WfpFilter.providerKey.offset == 40
+    assert win._WfpFilter.layerKey.offset == 64
+    assert win._WfpFilter.weight.offset == 96
+    assert win._WfpFilter.numFilterConditions.offset == 112
+    assert win._WfpFilter.filterCondition.offset == 120
+    assert win._WfpFilter.action.offset == 128
+    assert win._WfpFilter.context.offset == 152
+    assert win._WfpFilter.effectiveWeight.offset == 184
+    assert ctypes.sizeof(win._WfpSession) == 72
+    assert win._WfpSession.sid.offset == 48
+    assert ctypes.sizeof(win._WfpSubLayer) == 72
+    assert win._WfpSubLayer.weight.offset == 64
+    assert ctypes.sizeof(win._WfpCondition) == 40
+    assert ctypes.sizeof(win._WfpValue) == 16
+    assert ctypes.sizeof(win._WfpAction) == 20
+    assert ctypes.sizeof(win._WfpBlob) == 16
+
+    filters = win._wfp_block_filters(0x1234)
+    assert len(filters) == len(win._WFP_BLOCK_LAYERS)
+    layers = set()
+    package = bytes(ctypes.string_at(ctypes.addressof(win._guid(win._WFP_ALE_PACKAGE_ID)), 16))
+    for filt, (_name, layer) in zip(filters, win._WFP_BLOCK_LAYERS, strict=True):
+        assert int(filt.numFilterConditions) == 1
+        assert int(filt.action.type) == win._FWP_ACTION_BLOCK
+        assert int(filt.flags) == win._FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
+        assert not int(filt.flags) & win._FWPM_FILTER_FLAG_PERSISTENT
+        condition = filt.filterCondition.contents
+        field = bytes(ctypes.string_at(ctypes.addressof(condition.fieldKey), 16))
+        assert field == package
+        assert int(condition.matchType) == win._FWP_MATCH_EQUAL
+        assert int(condition.value.type) == win._FWP_SID
+        assert int(condition.value.data.sid) == 0x1234
+        assert int(filt.weight.type) == win._FWP_UINT64
+        assert int(filt.weight.data.uint64.contents.value) == 0xFFFFFFFFFFFFFFFF
+        layer_bytes = bytes(ctypes.string_at(ctypes.addressof(filt.layerKey), 16))
+        expected = bytes(ctypes.string_at(ctypes.addressof(win._guid(layer)), 16))
+        assert layer_bytes == expected
+        layers.add(layer)
+    for required in (
+        "c38d57d1-05a7-4c33-904f-7fbceee60e82",
+        "4a72393b-319f-44bc-84c3-ba54dcb3b6b4",
+        "e1cd9fe7-f4b5-4273-96c0-592e487b8650",
+        "a3b42c97-9f04-4672-b87e-cee9c483257f",
+    ):
+        assert required in layers
+    with pytest.raises(OSError, match="container id was empty"):
+        win._wfp_block_filter(win._WFP_BLOCK_LAYERS[0][1], 0, win._guid(str(__import__("uuid").uuid4())))
 
 
 def test_windows_token_capability_list_keeps_network_sids():
@@ -854,6 +981,7 @@ def test_os_probe_blocks_network_and_outside_files(tmp_path, config_home):
     assert probe["write_inside"] == "ok"
     _assert_confined(probe["tcp"])
     _assert_confined(probe["udp"])
+    _assert_confined(probe["udp_connected"])
     if sys.platform.startswith("linux"):
         assert probe["mechanism"] == "landlock+seccomp"
     elif sys.platform == "darwin":
@@ -878,6 +1006,126 @@ def test_macos_sandbox_is_seatbelt(tmp_path, config_home):
     assert probe["mechanism"] == "seatbelt"
     _assert_confined(probe["read_outside"])
     _assert_confined(probe["tcp"])
+
+
+def _recv_tcp(sock) -> bytes:
+    import socket
+
+    sock.settimeout(0.3)
+    try:
+        conn, _addr = sock.accept()
+    except (TimeoutError, socket.timeout):
+        return b""
+    except OSError:
+        return b""
+    data = b""
+    try:
+        conn.settimeout(0.3)
+        while True:
+            try:
+                chunk = conn.recv(65535)
+            except (TimeoutError, socket.timeout):
+                break
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        conn.close()
+    return data
+
+
+def _recv_udp(sock) -> bytes:
+    import socket
+
+    sock.settimeout(0.3)
+    data = b""
+    while True:
+        try:
+            chunk, _addr = sock.recvfrom(65535)
+        except (TimeoutError, socket.timeout):
+            return data
+        except OSError:
+            return data
+        data += chunk
+
+
+@pytest.mark.sandbox_windows
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows AppContainer sandbox")
+def test_windows_sandbox_delivers_nothing(tmp_path, config_home, monkeypatch):
+    """A sandboxed send, connected or not, is refused and the parent receives nothing.
+
+    The receivers are outside the sandbox. One pair is a non-loopback address
+    of this machine. The other pair is loopback. The script runs only when
+    every attempt was refused. An empty receiver does not excuse a successful send.
+    """
+
+    import socket
+    import traceback
+
+    from aicad.sandbox import os_probe
+
+    route = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        route.connect(("1.1.1.1", 80))
+        external = route.getsockname()[0]
+    finally:
+        route.close()
+    assert external and not external.startswith("127."), external
+
+    def bind_pair(address):
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp.bind((address, 0))
+        tcp.listen(8)
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.bind((address, 0))
+        return tcp, udp
+
+    opened = []
+    try:
+        ext_tcp, ext_udp = bind_pair(external)
+        lo_tcp, lo_udp = bind_pair("127.0.0.1")
+        opened = [ext_tcp, ext_udp, lo_tcp, lo_udp]
+        spec = ";".join(
+            (
+                f"{external}:{ext_tcp.getsockname()[1]}:{ext_udp.getsockname()[1]}",
+                f"127.0.0.1:{lo_tcp.getsockname()[1]}:{lo_udp.getsockname()[1]}",
+            )
+        )
+        monkeypatch.setenv("AICAD_WIN_NET_RECEIVERS", spec)
+        error = None
+        probe = None
+        try:
+            probe = os_probe(tmp_path)
+        except Exception as exc:
+            error = f"{exc}\n{traceback.format_exc()}"
+        received = {
+            "external-tcp": _recv_tcp(ext_tcp),
+            "external-udp": _recv_udp(ext_udp),
+            "loopback-tcp": _recv_tcp(lo_tcp),
+            "loopback-udp": _recv_udp(lo_udp),
+        }
+    finally:
+        for sock in opened:
+            sock.close()
+    detail = probe.get("network") if isinstance(probe, dict) else error
+    shown = {key: bytes(value) for key, value in received.items()}
+    report = f"windows-net-probe {detail}; receivers={shown}"
+    print(report, file=sys.__stderr__, flush=True)
+    assert error is None, report
+    assert all(value == b"" for value in received.values()), report
+    network = str(probe.get("network") or "")
+    assert external in network, report
+    assert "127.0.0.1" in network, report
+    for part in network.split(";"):
+        item = part.strip()
+        if "=" not in item or item.startswith(("probe=", "package=", "capabilities=")):
+            continue
+        _name, value = item.split("=", 1)
+        assert value.startswith("denied "), report
+    _assert_confined(probe["tcp"])
+    _assert_confined(probe["udp"])
+    _assert_confined(probe["udp_connected"])
 
 
 @pytest.mark.sandbox_windows

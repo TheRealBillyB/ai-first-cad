@@ -26,6 +26,7 @@ import ctypes
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -915,16 +916,65 @@ def _public_probe_address(address: str) -> bool:
     return True
 
 
-def _windows_transport_label(kind: str) -> str:
-    """Try the public probe. Loopback is not used, and it is not a refusal."""
+# Set by the parent when it is listening. Dotted IPv4 only, so this cannot
+# turn into a name lookup. Each item is address, TCP port, UDP port.
+_WINDOWS_RECEIVER_ENV = "AICAD_WIN_NET_RECEIVERS"
+_WINDOWS_RECEIVER_ITEM = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5}):(\d{1,5})$")
+_WINDOWS_PROBE_PAYLOAD = b"aicad-net-probe"
+# The last Windows network detail, so the probe result can show it after a pass.
+_windows_net_probe_text = ""
+
+
+def _ipv4_text(address: str) -> bool:
+    parts = address.split(".")
+    if len(parts) != 4:
+        return False
+    for part in parts:
+        if not part.isdigit() or (len(part) > 1 and part.startswith("0")):
+            return False
+        if int(part) > 255:
+            return False
+    return True
+
+
+def windows_receiver_targets() -> tuple[tuple[str, int, int], ...]:
+    """Local receivers the parent asked the network check to try.
+
+    A name is ignored. The check must not look anything up.
+    """
+
+    found: list[tuple[str, int, int]] = []
+    raw = os.environ.get(_WINDOWS_RECEIVER_ENV, "")
+    for part in raw.split(";"):
+        item = part.strip()
+        if not item:
+            continue
+        match = _WINDOWS_RECEIVER_ITEM.fullmatch(item)
+        if match is None:
+            continue
+        address, tcp_text, udp_text = match.group(1), match.group(2), match.group(3)
+        tcp_port = int(tcp_text)
+        udp_port = int(udp_text)
+        if not _ipv4_text(address):
+            continue
+        if tcp_port <= 0 or tcp_port > 65535 or udp_port <= 0 or udp_port > 65535:
+            continue
+        found.append((address, tcp_port, udp_port))
+    return tuple(found)
+
+
+def _windows_one_attempt(kind: str, address: str, port: int) -> str:
+    """One TCP connect or one UDP send.
+
+    connect() on a UDP socket only selects the destination. The following
+    send() hands the datagram to the stack. A successful send is not a
+    refusal, connected or not.
+    """
 
     import socket
 
-    address, port = _WINDOWS_TCP_PROBE if kind == "tcp" else _WINDOWS_UDP_PROBE
-    if not _public_probe_address(address):
-        return "loopback"
     if kind == "tcp":
-        sock = socket.socket()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(2)
         try:
             try:
@@ -934,14 +984,15 @@ def _windows_transport_label(kind: str) -> str:
             return "connected"
         finally:
             sock.close()
-    # connect() on UDP is only local. The following send can report success
-    # after the firewall has already refused a TCP connection. The datagram
-    # itself has to be refused.
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(2)
     try:
         try:
-            sock.sendto(b"x", (address, port))
+            if kind == "udp-sendto":
+                sock.sendto(_WINDOWS_PROBE_PAYLOAD, (address, port))
+            else:
+                sock.connect((address, port))
+                sock.send(_WINDOWS_PROBE_PAYLOAD)
         except OSError as exc:
             return network_attempt_label(exc, success="sent")
         return "sent"
@@ -949,46 +1000,109 @@ def _windows_transport_label(kind: str) -> str:
         sock.close()
 
 
+def windows_network_attempts() -> tuple[tuple[str, str], ...]:
+    """TCP, an unconnected UDP send, and a connected UDP send.
+
+    Receiver attempts run first, so a later timeout cannot skip them.
+    Loopback is not a refusal. A public address that is loopback is recorded
+    as loopback and does not count as off.
+    """
+
+    attempts: list[tuple[str, str]] = []
+    for address, tcp_port, udp_port in windows_receiver_targets():
+        attempts.append(
+            (f"tcp@{address}:{tcp_port}", _windows_one_attempt("tcp", address, tcp_port))
+        )
+        attempts.append(
+            (
+                f"udp-sendto@{address}:{udp_port}",
+                _windows_one_attempt("udp-sendto", address, udp_port),
+            )
+        )
+        attempts.append(
+            (
+                f"udp-connected@{address}:{udp_port}",
+                _windows_one_attempt("udp-connected", address, udp_port),
+            )
+        )
+    tcp_host, tcp_port = _WINDOWS_TCP_PROBE
+    udp_host, udp_port = _WINDOWS_UDP_PROBE
+    if not _public_probe_address(tcp_host):
+        attempts.append(("tcp", "loopback"))
+    else:
+        attempts.append(("tcp", _windows_one_attempt("tcp", tcp_host, tcp_port)))
+    if not _public_probe_address(udp_host):
+        attempts.append(("udp-sendto", "loopback"))
+        attempts.append(("udp-connected", "loopback"))
+    else:
+        attempts.append(("udp-sendto", _windows_one_attempt("udp-sendto", udp_host, udp_port)))
+        attempts.append(
+            ("udp-connected", _windows_one_attempt("udp-connected", udp_host, udp_port))
+        )
+    return tuple(attempts)
+
+
+def _capability_text(capabilities: tuple[str, ...] | None) -> str:
+    if capabilities is None:
+        return "unread"
+    if not capabilities:
+        return "none"
+    return ",".join(capabilities)
+
+
+def windows_network_detail(
+    *,
+    attempts: tuple[tuple[str, str], ...],
+    package: str,
+    capabilities: tuple[str, ...] | None,
+) -> str:
+    tcp_host, tcp_port = _WINDOWS_TCP_PROBE
+    udp_host, udp_port = _WINDOWS_UDP_PROBE
+    targets = [f"{tcp_host}:{tcp_port}", f"{udp_host}:{udp_port}"]
+    for address, receiver_tcp, receiver_udp in windows_receiver_targets():
+        targets.append(f"{address}:{receiver_tcp}:{receiver_udp}")
+    shown = "; ".join(f"{name}={label}" for name, label in attempts)
+    return (
+        f"probe={','.join(targets)}; {shown}; "
+        f"package={package}; capabilities={_capability_text(capabilities)}"
+    )
+
+
 def windows_network_is_off(
     *,
-    tcp: str,
-    udp: str,
+    attempts: tuple[tuple[str, str], ...],
     package: str,
     capabilities: tuple[str, ...] | None,
 ) -> bool:
-    """True only when this token has no network capability and both probes were refused.
+    """True only when every send was refused and the token has no network capability.
 
-    The package id has to be present, because that is the container the
-    firewall block names. An unreadable capability list is not an empty one.
+    The public TCP connect, the unconnected UDP send, and the connected UDP
+    send all have to be present. A successful send is not off, because the
+    datagram may already have left. An unreadable capability list is not an
+    empty one. The package id has to be present, because that is the
+    container the block names.
     """
 
+    labels = {name: label for name, label in attempts}
+    if any(name not in labels for name in ("tcp", "udp-sendto", "udp-connected")):
+        return False
     if capabilities is None or not package.upper().startswith("S-1-15-2-"):
         return False
     present = {item.upper() for item in capabilities}
     if present & {item.upper() for item in _NETWORK_CAPABILITY_SIDS}:
         return False
-    return tcp.startswith("denied ") and udp.startswith("denied ")
+    return all(label.startswith("denied ") for _name, label in attempts)
 
 
 def windows_network_failure_text(
     *,
-    tcp: str,
-    udp: str,
+    attempts: tuple[tuple[str, str], ...],
     package: str,
     capabilities: tuple[str, ...] | None,
 ) -> str:
-    if capabilities is None:
-        shown = "unread"
-    elif not capabilities:
-        shown = "none"
-    else:
-        shown = ",".join(capabilities)
-    tcp_host, tcp_port = _WINDOWS_TCP_PROBE
-    udp_host, udp_port = _WINDOWS_UDP_PROBE
     return (
         "Windows did not turn the network off, so the script was not run. "
-        f"probe={tcp_host}:{tcp_port},{udp_host}:{udp_port}; "
-        f"tcp={tcp}; udp={udp}; package={package}; capabilities={shown}"
+        + windows_network_detail(attempts=attempts, package=package, capabilities=capabilities)
     )
 
 
@@ -1068,16 +1182,18 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
             )
         # The token and the job are already applied. This probe reads that token.
         if not network:
+            global _windows_net_probe_text
             package, capabilities = windows_token_network()
-            tcp = _windows_transport_label("tcp")
-            udp = _windows_transport_label("udp")
+            attempts = windows_network_attempts()
+            _windows_net_probe_text = windows_network_detail(
+                attempts=attempts, package=package, capabilities=capabilities
+            )
             if not windows_network_is_off(
-                tcp=tcp, udp=udp, package=package, capabilities=capabilities
+                attempts=attempts, package=package, capabilities=capabilities
             ):
                 raise ScriptError(
-                    windows_network_failure_text(
-                        tcp=tcp, udp=udp, package=package, capabilities=capabilities
-                    )
+                    "Windows did not turn the network off, so the script was not run. "
+                    + _windows_net_probe_text
                 )
         return roots
     if sys.platform == "darwin":

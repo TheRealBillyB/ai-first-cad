@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A Windows network block covers every protocol, and both UDP sends have to be refused | A connected UDP send can leave the machine. The container is blocked inbound and outbound with no protocol or port limit, a successful send is not a closed network, and a receiver on the runner has to stay empty. |
 | A Windows network check sends one unconnected datagram | A connected UDP send can report success after the firewall has refused TCP. The datagram itself has to be refused. |
 | A Windows script runs only after that container's network is refused | An AppContainer with no network capability can still wait out a connection. The firewall blocks that container, and a timeout or a DNS failure is not a refusal. |
 | A Windows script starts from the base interpreter and stays suspended until the job holds it | The virtual-environment redirector starts a second process in its own job. The script is resumed only after the sandbox job holds it and its token is an AppContainer. |
