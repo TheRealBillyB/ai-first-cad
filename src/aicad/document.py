@@ -190,6 +190,9 @@ class Document:
             source = _step_import_source(self.workspace, path)
             shape = kernel.import_step_file(source)
             relative = f"imports/{name}.step"
+            from aicad.paths import refuse_reserved_device
+
+            refuse_reserved_device(relative, None, "Import copy", GeometryError)
             destination = self.workspace / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
@@ -532,7 +535,10 @@ class Document:
 
             require_in_project(path, self.workspace, writing=True)
             part = self._get(name)
+            from aicad.paths import refuse_reserved_device
+
             destination = Path(path)
+            refuse_reserved_device(destination, self.workspace, "Export path", GeometryError)
             if not destination.is_absolute():
                 destination = self.workspace / destination
             kind = kind.lower()
@@ -1719,25 +1725,16 @@ def _assembly_name(spec: dict) -> str:
     return spec["name"]
 
 
-_WINDOWS_RESERVED = {
-    "CON",
-    "PRN",
-    "AUX",
-    "NUL",
-    *(f"COM{index}" for index in range(1, 10)),
-    *(f"LPT{index}" for index in range(1, 10)),
-}
-
-
 def _output_stem(name: str) -> tuple[str, str]:
-    """A file stem Windows can create, and the original name when it was reserved.
+    """A file stem that is not a Windows device name.
 
-    ``con.pdf`` is a device, not a file. The second value is empty when the
-    name is safe to use as a file.
+    The second value stays empty. A reserved name is refused.
     """
+    from aicad.paths import is_reserved_device_name
+
     stem = str(name).strip().rstrip(" .") or "assembly"
-    if stem.upper() in _WINDOWS_RESERVED:
-        return f"{stem}_file", stem
+    if is_reserved_device_name(stem):
+        raise GeometryError(f"{stem} is reserved on Windows. Pick another name.")
     return stem, ""
 
 
@@ -1770,11 +1767,15 @@ def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> d
 
 
 def _validate_name(name: str) -> None:
+    from aicad.paths import is_reserved_device_name
+
     if not isinstance(name, str) or not _NAME.match(name):
         raise GeometryError(
             "Part names must start with a letter or underscore and contain only "
             "letters, numbers, underscores, and hyphens (64 characters max)."
         )
+    if is_reserved_device_name(name):
+        raise GeometryError(f"{name} is reserved on Windows. Pick another name.")
 
 
 def _copy_spec(spec: Sketch | dict) -> dict:
