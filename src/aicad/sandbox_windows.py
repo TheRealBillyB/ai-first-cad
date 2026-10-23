@@ -101,7 +101,8 @@ _ALL_RESTRICTED_APPLICATION_PACKAGES = "S-1-15-2-2"
 _ACL_REVISION = 2
 _ACL_REVISION_DS = 4
 _SECURITY_DESCRIPTOR_REVISION = 1
-_AclSizeInformation = 2
+# AclSizeInformation. A plain integer: the structure class must not be passed here.
+_ACL_SIZE_INFORMATION = 2
 # Opening these is not a failure of the grant. Windows already allows the
 # container through, or the folder is not one this process can edit.
 _UNCHANGEABLE_ERRORS = {2, 3, 5, 32}
@@ -544,67 +545,75 @@ def _acl_error(prefix: str) -> OSError:
     return OSError(None, f"{prefix} (Windows error {code}).", None, code)
 
 
+def _security_signatures() -> dict[str, tuple[object, list[object]]]:
+    """Return types for the access-list calls. Tests reuse this list."""
+
+    return {
+        "GetSecurityInfo": (
+            wintypes.DWORD,
+            [
+                wintypes.HANDLE,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_void_p),
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_void_p),
+            ],
+        ),
+        "SetKernelObjectSecurity": (
+            wintypes.BOOL,
+            [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p],
+        ),
+        "GetAclInformation": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD],
+        ),
+        "GetAce": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)],
+        ),
+        "InitializeAcl": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD],
+        ),
+        "AddAce": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD],
+        ),
+        "AddAccessAllowedAce": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p],
+        ),
+        "InitializeSecurityDescriptor": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD],
+        ),
+        "SetSecurityDescriptorDacl": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.BOOL, ctypes.c_void_p, wintypes.BOOL],
+        ),
+        "GetLengthSid": (wintypes.DWORD, [ctypes.c_void_p]),
+    }
+
+
 def _bind_security() -> None:
     _bind()
     advapi32 = _advapi32()
-    advapi32.GetSecurityInfo.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    advapi32.GetSecurityInfo.restype = wintypes.DWORD
-    advapi32.SetKernelObjectSecurity.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-    ]
-    advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
-    advapi32.GetAclInformation.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-    ]
-    advapi32.GetAclInformation.restype = wintypes.BOOL
-    advapi32.GetAce.argtypes = [
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    advapi32.GetAce.restype = wintypes.BOOL
-    advapi32.InitializeAcl.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
-    advapi32.InitializeAcl.restype = wintypes.BOOL
-    advapi32.AddAce.argtypes = [
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-    ]
-    advapi32.AddAce.restype = wintypes.BOOL
-    advapi32.AddAccessAllowedAce.argtypes = [
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-    ]
-    advapi32.AddAccessAllowedAce.restype = wintypes.BOOL
-    advapi32.InitializeSecurityDescriptor.argtypes = [ctypes.c_void_p, wintypes.DWORD]
-    advapi32.InitializeSecurityDescriptor.restype = wintypes.BOOL
-    advapi32.SetSecurityDescriptorDacl.argtypes = [
-        ctypes.c_void_p,
-        wintypes.BOOL,
-        ctypes.c_void_p,
-        wintypes.BOOL,
-    ]
-    advapi32.SetSecurityDescriptorDacl.restype = wintypes.BOOL
-    advapi32.GetLengthSid.argtypes = [ctypes.c_void_p]
-    advapi32.GetLengthSid.restype = wintypes.DWORD
+    for name, (restype, argtypes) in _security_signatures().items():
+        function = getattr(advapi32, name)
+        function.argtypes = argtypes
+        function.restype = restype
+
+
+def _acl_information_arguments(
+    dacl: ctypes.c_void_p,
+    info: _AclSizeInformation,
+) -> tuple[object, ...]:
+    """Arguments for GetAclInformation. The class is an integer, not the structure."""
+
+    return (dacl, ctypes.byref(info), ctypes.sizeof(info), int(_ACL_SIZE_INFORMATION))
 
 
 def _open_directory(path: Path, access: int) -> wintypes.HANDLE:
@@ -651,7 +660,7 @@ def _read_dacl(handle: wintypes.HANDLE) -> tuple[ctypes.c_void_p, ctypes.c_void_
 def _ace_rows(dacl: ctypes.c_void_p) -> list[tuple[int, int, int, str]]:
     advapi32 = _advapi32()
     info = _AclSizeInformation()
-    if not advapi32.GetAclInformation(dacl, ctypes.byref(info), ctypes.sizeof(info), _AclSizeInformation):
+    if not advapi32.GetAclInformation(*_acl_information_arguments(dacl, info)):
         raise _acl_error("Could not read the access entries")
     rows: list[tuple[int, int, int, str]] = []
     for index in range(int(info.AceCount)):
@@ -695,7 +704,7 @@ def _acl_revision(dacl: ctypes.c_void_p) -> int:
 def _append_traverse_ace(dacl: ctypes.c_void_p, sid_ptr: ctypes.c_void_p) -> ctypes.Array:
     advapi32 = _advapi32()
     info = _AclSizeInformation()
-    if not advapi32.GetAclInformation(dacl, ctypes.byref(info), ctypes.sizeof(info), _AclSizeInformation):
+    if not advapi32.GetAclInformation(*_acl_information_arguments(dacl, info)):
         raise _acl_error("Could not measure the access list")
     sid_length = int(advapi32.GetLengthSid(sid_ptr))
     if sid_length <= 0:

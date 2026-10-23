@@ -151,6 +151,75 @@ def test_availability_probe_runs_once_per_process(monkeypatch):
     assert win.availability_error(None) == "The sandbox was not given the Python folders it needs to read."
 
 
+def test_windows_acl_calls_match_their_declared_types():
+    """The access-list arguments have to convert on any system, not only Windows."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    from aicad import sandbox_windows as win
+
+    def invoke(name: str, *args: object) -> None:
+        restype, argtypes = win._security_signatures()[name]
+        prototype = ctypes.CFUNCTYPE(restype, *argtypes)
+
+        def stub(*_got):
+            return 0
+
+        prototype(stub)(*args)
+
+    info = win._AclSizeInformation()
+    dacl = ctypes.c_void_p(1)
+    ace = ctypes.c_void_p(2)
+    sid = ctypes.c_void_p(3)
+    handle = wintypes.HANDLE(4)
+    descriptor = ctypes.c_void_p()
+    out_dacl = ctypes.c_void_p()
+    buffer = ctypes.create_string_buffer(64)
+    security = ctypes.create_string_buffer(64)
+    invoke("GetAclInformation", *win._acl_information_arguments(dacl, info))
+    with pytest.raises(ctypes.ArgumentError):
+        invoke(
+            "GetAclInformation",
+            dacl,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            win._AclSizeInformation,
+        )
+    invoke(
+        "GetSecurityInfo",
+        handle,
+        win._SE_FILE_OBJECT,
+        win._DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        ctypes.byref(out_dacl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    invoke("GetAce", dacl, 0, ctypes.byref(ace))
+    invoke("GetLengthSid", sid)
+    invoke("InitializeAcl", buffer, len(buffer), int(win._ACL_REVISION))
+    invoke("AddAce", buffer, int(win._ACL_REVISION), 0xFFFFFFFF, ace, 20)
+    invoke("AddAccessAllowedAce", buffer, int(win._ACL_REVISION), int(win._TRAVERSE_MASK), sid)
+    invoke("InitializeSecurityDescriptor", security, int(win._SECURITY_DESCRIPTOR_REVISION))
+    invoke("SetSecurityDescriptorDacl", security, True, buffer, False)
+    invoke("SetKernelObjectSecurity", handle, win._DACL_SECURITY_INFORMATION, security)
+    assert int(win._ACL_SIZE_INFORMATION) == 2
+    assert set(win._security_signatures()) == {
+        "GetSecurityInfo",
+        "SetKernelObjectSecurity",
+        "GetAclInformation",
+        "GetAce",
+        "InitializeAcl",
+        "AddAce",
+        "AddAccessAllowedAce",
+        "InitializeSecurityDescriptor",
+        "SetSecurityDescriptorDacl",
+        "GetLengthSid",
+    }
+
+
 def test_windows_script_keeps_library_caches_in_the_project(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     from aicad import sandbox as sandbox_mod
