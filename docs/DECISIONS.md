@@ -8,12 +8,40 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A geometry import keeps the project as the working directory | The image library's attach routine points the process at the base interpreter, then puts the project back. That request is refused, so a relative file in the project still opens and a plugin file there is not loaded. |
+| A relative project file can be missed only in the base interpreter directory | Native code is in that directory for a moment, and the file is not there. A changed file, or a miss from any other directory, still means the working directory moved. |
+| The child loader does not run a script that is outside the container | Loading the installed runner file is not confinement. Windows still requires an AppContainer in a job, and macOS still requires its profile. |
+| A geometry import may pass through the interpreter directory | Native libraries change that directory and put the project back. A relative file in the project still has to open, and no other directory counts as staying put. |
+| A slow Windows firewall command still has to finish the block | After earlier scripts the command can take longer than 30 seconds. The wait is longer, and the script still does not start when the block is missing. |
+| The program is started with the `aicad` command or `python -P` | The working directory is a project folder, so that start keeps the folder off the import path. |
+| Catalog parts are rows in dimension tables, and a joint may name a mate on those parts | Adding a designation is a new row, and the assembly stores the mate name so the anchor stays the catalog frame. |
+| A recorded Windows package id is not the network block | The next process reads both rules before it reuses them. A missing rule is installed again, and the record stays in the user profile, outside the project and outside folders a script can write. |
+| Windows firewall rules are remembered for the next process | Installing them again after the sandbox tests made the firewall call time out. The package id is recorded, and a network-on script removes the rules and that record. |
+| A Windows save reports a destination that cannot be created | An access-list deny does not stop this token from creating a folder. A file in that place cannot become the copy's parent, and the open project stays put. |
+| A Windows folder lock denies creates for that user | An Owner Rights allow did not stop a new folder. The user is denied creating a file, creating a folder, and traversing, and can still restore the access list. |
+| A Windows folder with write access removed cannot gain a child | Read and execute still allowed a new folder. Creating a file or a folder is denied, and the owner can still restore the access list. |
+| Windows firewall rules stay up for the next network-off script | Installing them again for every script made the firewall call time out. A network-on script still removes them first. |
+| A Windows export is judged after trailing dots and spaces are removed | ``.. .`` is ``..`` once Win32 trims the name. That path is refused before anything is written. |
+| A secret file on Windows is an owner-only access list | The mode bits from stat stay world-writable on Windows. The access list is what keeps the file private. |
+| A Windows CPU stop is the job's user time | The process can exit without a signal this platform names. User time at the cap is that limit, and a short crash is not. |
+| A confined script reports plugin consent under the home config | The Windows child keeps library caches in the project. That folder is not the consent file. |
+| An unconnected Windows UDP check binds its socket before it sends | A blocked implicit bind is reported as an invalid argument, and that datagram was not sent. Binding first makes the refusal an access error. An invalid-argument result is still not a closed network. |
+| A Windows network block covers every protocol, and both UDP sends have to be refused | A connected UDP send can leave the machine. The container is blocked inbound and outbound with no protocol or port limit, a successful send is not a closed network, and a receiver on the runner has to stay empty. |
+| A Windows network check sends one unconnected datagram | A connected UDP send can report success after the firewall has refused TCP. The datagram itself has to be refused. |
+| A Windows script runs only after that container's network is refused | An AppContainer with no network capability can still wait out a connection. The firewall blocks that container, and a timeout or a DNS failure is not a refusal. |
+| A Windows script starts from the base interpreter and stays suspended until the job holds it | The virtual-environment redirector starts a second process in its own job. The script is resumed only after the sandbox job holds it and its token is an AppContainer. |
+| A plugin ships with aicad only when its metadata directory is this install's | The package name is not that check, so another package with the same name still needs an allow. |
+| One unreadable entry-point file does not hide the other plugins | That package is skipped and listed with a warning. The rest are still listed. |
 | The syscall filter rejects other architectures and io_uring | A 32-bit socket call and io_uring both opened a socket while the network was off. |
 | A pose matrix is the exact rigid transform | Rounding the rotation shears the solid, and the boolean then reports no volume for a real overlap. |
 | A motion study is a timeline of drivers and gear couplings, posed by the joint solver | Later checks read one record of poses, collisions, and limit hits. |
 | Interference starts with the axis-aligned boxes and only then intersects the solids | A pair whose boxes are farther apart than the clearance cannot touch, so the boolean runs on the pairs that can. |
 | Penetration depth is the separating-axis translation, and the volume is the boolean | The depth is exact for convex solids. A non-convex solid reports the convex-hull depth, and the volume stays the real intersection. |
 | A joint command past its stop is held at the stop and recorded | The pose stays on the limit, and the study says which step reached it. |
+| A Windows traverse grant does not walk child directories | The named security call propagated access to every child and did not return. The entry is written on that directory's handle only, a parent that already allows traverse is skipped, and the probe result is kept for the process. |
+| A Windows traverse grant changes that one directory | icacls on a parent in the tool cache did not finish. Traverse adds one access entry on the directory and does not scan or change its children. |
+| The Windows sandbox does not grant a volume root, and icacls has to finish | icacls waits for a person on the drive root, so that folder is skipped. Any other icacls call that does not finish is an error, and the sandbox does not change that folder. |
+| Windows and macOS tests run on every pull request and on every push to main | Manual dispatch still starts the workflow. The weekly schedule and the cross-platform label no longer select those jobs. |
 
 ## 2026-10-22
 
@@ -56,13 +84,15 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Opening a session reports a bad part and still loads the others | One corrupt placement used to make every other part unreachable. |
 | A STEP path stored in the session has to stay inside the project | An absolute path or `..` was imported on open, and the file was outside the project. |
 | Notes returned to the assistant are wrapped as untrusted text, and an assistant export stays in the project | Project text is data. A tool result must not be able to write a STEP outside the folder. |
+| A drawing, bill of materials, or exploded view from the workspace stays in the project | Those commands were following a path outside the folder. |
 | A note is marked for every source except ui, cli, and api | Those three are the editor and see the file. Any other source, including one that does not exist yet, gets the project-text marker. |
 | Native geometry code cannot write on the MCP stdout | The STEP parser's error line was not JSON-RPC, and it landed on the protocol stream. |
 | Opening someone else's project does not create their notes or requirements file | Those files belong to that project. A missing one is not a template to write. |
 | `check-wall` accepts `--min-wall`, the same flag as `inspect` | The two commands were spelling one threshold differently. |
 | A parts-list picture uses a system font that contains the names | A Latin font draws a name such as 供水 as empty boxes. The list looks for an installed font that has the character, and it does not add a font package. |
 | An automatic explode gap stops at 1000000 mm | A huge model would otherwise ask for a gap the command rejects. |
-| Output files avoid Windows reserved device names | con.pdf is a device on Windows, so the file is named con_file and the report says so. |
+| Output files avoid Windows reserved device names | con.pdf is a device on Windows, so a part, folder, or output named con is refused. |
+| A blueprint sheet id cannot be a Windows reserved device name | con.png is a device on Windows, so that sheet id is refused. |
 | Picture text is looked up in Linux, Windows, and macOS fonts | A missing font was falling back to a bitmap the assistant could not read. |
 | A sheet ratio can be smaller than 1:1000 | The usual list stops there, and a larger model still has to land on the page. The sheet names the ratio it used. |
 | A size below 1 mm is written out, and a still smaller size is labeled <0.001 | Drawing 0.04 mm as 0 was a false dimension. |
@@ -97,6 +127,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Plugin permissions are a declaration, not a sandbox | Once allowed, a pack runs in-process; the design-script sandbox is a separate control. |
 | A third-party plugin runs only after an explicit allow | Opening a design must not run an unverified pack, and the warning names the publisher and the permissions it declared. |
 | Plugin API version 1 is entry points plus a static manifest | The host can list a pack and warn before importing it, and a breaking change has to bump the version. |
+| A plugin export stays inside the project | The file was written at whatever path the caller passed. |
 | A verified check is a kernel property of the model; a rough estimate samples, meshes, or uses a handbook number | A pass has to say which of those it is, or the number gets quoted as a proof. |
 | A failed Gmsh mesh is retried finer, then healed, then defeatured, and a simplified mesh cannot pass | The thin-wall crash and the stiff linear-tet frequency both hid the real result. |
 | CalculiX stays a separate ccx process | CalculiX is GPL-2.0-only and cannot be linked into this AGPL program. |

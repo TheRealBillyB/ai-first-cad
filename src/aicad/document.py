@@ -18,7 +18,7 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from aicad import assembly, bom as bom_mod
+from aicad import assembly, bom as bom_mod, gears as gears_mod
 from aicad.assembly import posed_shapes as _posed_shapes
 from aicad import drawing as drawing_mod
 from aicad import explode as explode_mod
@@ -95,6 +95,7 @@ class _Part:
         script_sha256: str | None = None,
         script_pending: bool = False,
         rebuild_error: str | None = None,
+        gear_spec: dict | None = None,
     ):
         self.name = name
         self.source = source
@@ -111,6 +112,7 @@ class _Part:
         self.script_sha256 = script_sha256
         self.script_pending = script_pending
         self.rebuild_error = rebuild_error
+        self.gear_spec = gear_spec
 
     @property
     def shape(self) -> kernel.Shape:
@@ -147,6 +149,9 @@ class Document:
     def __init__(self, workspace: str | Path = "aicad_workspace"):
         self.workspace = Path(workspace).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        from aicad.paths import remember_project
+
+        remember_project(self.workspace)
         self._parts: dict[str, _Part] = {}
         self._sketches: dict[str, _Sketch] = {}
         self._assemblies: dict[str, dict] = {}
@@ -182,15 +187,16 @@ class Document:
     def import_step(self, name: str, path: str | Path) -> PartInfo:
         with self._lock:
             self._require_new_name(name)
+            from aicad.paths import publish_bytes, refuse_reserved_device
             from aicad.sandbox import require_in_project
 
             require_in_project(path, self.workspace, writing=False)
             source = _step_import_source(self.workspace, path)
             shape = kernel.import_step_file(source)
             relative = f"imports/{name}.step"
-            destination = self.workspace / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
+            refuse_reserved_device(relative, None, "Import copy", GeometryError)
+            destination = _project_file(self.workspace, self.workspace / relative, "Imported STEP")
+            publish_bytes(destination, source.read_bytes())
             note = f"# Imported STEP, copied to {relative}\n"
             self._parts[name] = _Part(name, "step", shape, script=note, step_file=relative, base=shape)
             self._save()
@@ -208,6 +214,7 @@ class Document:
             part.ops = None
             part.step_file = None
             part.library_spec = None
+            part.gear_spec = None
             part.sketch_name = None
             part.sketch_steps = None
             part.placement = _identity_placement()
@@ -228,6 +235,7 @@ class Document:
             part.script = None
             part.step_file = None
             part.library_spec = None
+            part.gear_spec = None
             part.sketch_name = None
             part.sketch_steps = None
             part.placement = _identity_placement()
@@ -240,10 +248,19 @@ class Document:
     def delete_part(self, name: str) -> None:
         with self._lock:
             self._get(name)
-            del self._parts[name]
             renders = self.workspace / "renders" / name
-            if renders.exists():
-                shutil.rmtree(renders)
+            remove_link = False
+            if renders.exists() or renders.is_symlink():
+                from aicad.paths import is_reparse
+
+                remove_link = is_reparse(renders)
+                _project_resolved(self.workspace, renders, "Render")
+            del self._parts[name]
+            if renders.exists() or renders.is_symlink():
+                if remove_link:
+                    renders.unlink()
+                else:
+                    shutil.rmtree(renders)
             # The copied STEP file stays so undo can rebuild an imported part.
             self._save()
 
@@ -261,6 +278,8 @@ class Document:
                 "ops": part.ops,
                 "step_file": part.step_file,
                 "library": part.library_spec,
+                "gear": copy.deepcopy(part.gear_spec) if part.gear_spec else None,
+                "gear_data": gears_mod.gear_data(part.gear_spec) if part.gear_spec else None,
                 "placement": part.placement,
                 "sketch": part.sketch_name,
                 "steps": part.sketch_steps,
@@ -355,7 +374,10 @@ class Document:
         (``shape`` box, cylinder, or sphere) or an ``outline`` extruded
         along an axis. With ``assembly``, the parts are the posed instances.
         ``pose`` and ``joints`` select that pose for this check and do not
-        change the stored assembly. ``min_clearance_mm`` is the required gap
+        change the stored assembly. A joint value is a number: degrees on a
+        revolute or cylindrical joint, millimetres on a prismatic joint. A
+        cylindrical joint also accepts ``{"value": degrees, "slide": millimetres}``.
+        ``min_clearance_mm`` is the required gap
         to the envelope wall. Zero allows a part to touch the wall.
         """
         with self._lock:
@@ -422,7 +444,15 @@ class Document:
             protruding = tuple(item.name for item in rows if item.protrudes)
             joint_values = None
             if solved is not None:
-                joint_values = {joint["name"]: joint["value"] for joint in solved["joints"]}
+                joint_values = {}
+                for joint in solved["joints"]:
+                    if joint["type"] == "cylindrical":
+                        joint_values[joint["name"]] = {
+                            "value": joint["value"],
+                            "slide": joint["slide"],
+                        }
+                    else:
+                        joint_values[joint["name"]] = joint["value"]
             passed = all(item.passed for item in rows) and not overlaps
             return PackagingReport(
                 passed=passed,
@@ -517,7 +547,7 @@ class Document:
             part = self._get(name)
             measurement = kernel.measure(part.shape)
             mesh = kernel.tessellate(part.shape)
-            out_dir = self.workspace / "renders" / name
+            out_dir = _project_directory(self.workspace, self.workspace / "renders" / name, "Render")
             return render_views(mesh, out_dir, name, measurement, wall)
 
     def export(self, name: str, path: str | Path, kind: str) -> Path:
@@ -526,9 +556,18 @@ class Document:
 
             require_in_project(path, self.workspace, writing=True)
             part = self._get(name)
+            from aicad.paths import refuse_reserved_device, require_export_path
+
+            refuse_reserved_device(path, self.workspace, "Export path", GeometryError)
             destination = Path(path)
             if not destination.is_absolute():
-                destination = self.workspace / destination
+                # A relative export stays in the project. Windows trims a
+                # trailing dot or space before creating the file, and that
+                # trimmed path is refused when it would leave the project.
+                destination = require_export_path(self.workspace, path, "Export path", GeometryError)
+            destination = _project_file(
+                self.workspace, destination, "Export path", allow_absolute_outside=True
+            )
             kind = kind.lower()
             if kind == "step":
                 kernel.export_step_file(part.shape, destination)
@@ -552,7 +591,7 @@ class Document:
             mesh = kernel.tessellate(part.shape)
             views = render_views(
                 mesh,
-                self.workspace / "renders" / name,
+                _project_directory(self.workspace, self.workspace / "renders" / name, "Render"),
                 name,
                 measurement,
                 wall,
@@ -580,7 +619,11 @@ class Document:
             part = self._get(name)
             origin, normal = _parse_plane(plane)
             report = kernel.section_geometry(part.shape, origin, normal)
-            path = self.workspace / "renders" / name / f"{name}_section_{_plane_slug(plane)}.png"
+            path = _project_file(
+                self.workspace,
+                self.workspace / "renders" / name / f"{name}_section_{_plane_slug(plane)}.png",
+                "Section",
+            )
             thickness = "n/a" if report.min_thickness_mm is None else f"{report.min_thickness_mm:g} mm"
             view = render_section(
                 [loop.points_mm for loop in report.loops if loop.kind == "outer"],
@@ -674,6 +717,7 @@ class Document:
             part.ops = None
             part.step_file = None
             part.library_spec = None
+            part.gear_spec = None
             part.sketch_name = sketch_name
             part.sketch_steps = stored_steps
             part.placement = _identity_placement()
@@ -713,7 +757,7 @@ class Document:
         """Mesh the part and run a linear static solve. Pictures land next to the other renders."""
         with self._lock:
             part = self._get(name)
-            out_dir = self.workspace / "renders" / name
+            out_dir = _project_directory(self.workspace, self.workspace / "renders" / name, "Render")
             return fea.solve_part(part.shape, setup, out_dir=out_dir, stem="fea", part_name=name)
 
     def search_parts(self, query: str = "") -> dict[str, object]:
@@ -729,7 +773,7 @@ class Document:
         rotation_deg: list | tuple | None = None,
         fastener_type: str | None = None,
     ) -> PartInfo:
-        """Insert a catalog fastener, nut, washer, or bearing, then place it."""
+        """Insert a catalog part by designation, then place it."""
         with self._lock:
             self._require_new_name(name)
             placed_at = _vec3(position or [0, 0, 0], "position")
@@ -752,6 +796,66 @@ class Document:
             )
             self._save()
             return self._info(self._parts[name])
+
+    def create_gear(
+        self,
+        name: str,
+        spec: dict,
+        position: list | tuple | None = None,
+        rotation_deg: list | tuple | None = None,
+    ) -> dict:
+        """Build an involute gear. The spec is stored and the solid is rebuilt from it."""
+        with self._lock:
+            self._require_new_name(name)
+            return self._write_gear(name, spec, position, rotation_deg)
+
+    def update_gear(
+        self,
+        name: str,
+        spec: dict,
+        position: list | tuple | None = None,
+        rotation_deg: list | tuple | None = None,
+    ) -> dict:
+        """Replace a part with a gear. A failed build leaves the previous solid."""
+        with self._lock:
+            self._get(name)
+            return self._write_gear(name, spec, position, rotation_deg)
+
+    def _write_gear(self, name: str, spec: dict, position, rotation_deg) -> dict:
+        from aicad.honesty import VERIFIED_CHECK, finish
+
+        clean = gears_mod.normalize_spec(spec)
+        base = kernel.adopt(gears_mod.build_gear(clean))
+        placed_at = _vec3(position or [0, 0, 0], "position")
+        rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
+        shape = kernel.place(base, placed_at, rotation)
+        self._parts[name] = _Part(
+            name,
+            "gear",
+            shape,
+            base=base,
+            placement={"position": list(placed_at), "rotation_deg": list(rotation)},
+            gear_spec=clean,
+        )
+        self._save()
+        payload = self._info(self._parts[name]).to_dict()
+        payload["gear"] = gears_mod.gear_data(clean)
+        return finish(
+            payload,
+            kind=VERIFIED_CHECK,
+            name=name,
+            what=(
+                "Nominal involute gear from the cited tooth standard. "
+                "The solid and the pitch, base, and cone figures describe that model."
+            ),
+            limits=[
+                "Tooth thickness is the nominal zero-backlash size, not a tolerance grade.",
+                "A helical fillet uses the ISO 53 normal tip radius as a circle in the transverse plane.",
+                "A bevel solid rules the back-cone involute between the inner and outer cone distances. Reported face and root angles are the Gleason parallel-clearance angles.",
+                "A spiral trace is a constant-angle spiral, not a circular cutter path.",
+                "Hypoid gears, with a shaft offset, are not generated.",
+            ],
+        )
 
     def place_part(
         self,
@@ -840,7 +944,7 @@ class Document:
 
     def _solve_and_render(self, name: str, spec: dict) -> SketchReport:
         report = solve_sketch(spec, name)
-        path = self.workspace / "renders" / "sketches" / f"{name}.png"
+        path = _project_file(self.workspace, self.workspace / "renders" / "sketches" / f"{name}.png", "Sketch")
         view = render_sketch(report, path)
         return replace(report, view=view)
 
@@ -997,7 +1101,9 @@ class Document:
                 raise GeometryError(f"Name a motion on {name!r}, or pass one. Motions: {known}.")
             out = None
             if render:
-                out = self.workspace / "renders" / "assemblies" / spec["name"]
+                out = _project_directory(
+                    self.workspace, self.workspace / "renders" / "assemblies" / spec["name"], "Motion"
+                )
             return assembly.run_motion(spec, self._assembly_shapes(spec), chosen, out)
 
     def run_motion_study(
@@ -1045,14 +1151,16 @@ class Document:
         """Natural frequencies of one part. Pictures land next to the other renders."""
         with self._lock:
             part = self._get(name)
-            out_dir = self.workspace / "renders" / name
+            out_dir = _project_directory(self.workspace, self.workspace / "renders" / name, "Render")
             return solve_modal(part.shape, setup, out_dir=out_dir, stem="modal", part_name=name)
 
     def solve_assembly_modal(self, name: str, setup: dict | None = None) -> dict:
         """Natural frequencies of a posed assembly. Joints are tied and do not flex."""
         with self._lock:
             spec = self._get_assembly(name)
-            out_dir = self.workspace / "renders" / "assemblies" / spec["name"]
+            out_dir = _project_directory(
+                self.workspace, self.workspace / "renders" / "assemblies" / spec["name"], "Render"
+            )
             return solve_modal_assembly(spec, self._assembly_shapes(spec), setup or {}, out_dir)
 
     def check_bolts(self, spec: dict) -> dict:
@@ -1085,7 +1193,7 @@ class Document:
         """Overhang map, a suggested orientation, printer fit, and an optional slicer estimate."""
         with self._lock:
             part = self._get(name)
-            out_dir = self.workspace / "renders" / name
+            out_dir = _project_directory(self.workspace, self.workspace / "renders" / name, "Render")
             return analyze_print(part.shape, setup or {}, out_dir, name)
 
     def list_printers(self) -> dict:
@@ -1099,7 +1207,10 @@ class Document:
                 from aicad.sandbox import require_in_project
 
                 require_in_project(out_dir, self.workspace, writing=True)
-            destination = Path(out_dir) if out_dir else self.workspace / "exports" / "robot" / spec["name"]
+                destination = out_dir
+            else:
+                destination = self.workspace / "exports" / "robot" / spec["name"]
+            destination = _project_directory(self.workspace, Path(destination), "Robot export")
             return export_robot(spec, self._assembly_shapes(spec), destination)
 
     def render_assembly(self, name: str) -> dict:
@@ -1109,7 +1220,9 @@ class Document:
             shapes = self._assembly_shapes(spec)
             solved, _placed = assembly.posed_shapes(spec, shapes)
             mesh = assembly._colored_mesh(shapes, solved)  # noqa: SLF001
-            out = self.workspace / "renders" / "assemblies" / spec["name"]
+            out = _project_directory(
+                self.workspace, self.workspace / "renders" / "assemblies" / spec["name"], "Render"
+            )
             pictures = render_motion_frames(
                 [mesh],
                 out,
@@ -1148,9 +1261,20 @@ class Document:
                 from aicad.sandbox import require_in_project
 
                 require_in_project(out_dir, self.workspace, writing=True)
-            destination = Path(out_dir) if out_dir else self.workspace / "exports" / "drawings"
-            stem, reserved = _output_stem(spec["name"])
-            png = self.workspace / "renders" / "assemblies" / stem / "drawing.png"
+                checked = Path(out_dir)
+                if not checked.is_absolute():
+                    from aicad.paths import require_export_path
+
+                    checked = require_export_path(self.workspace, out_dir, "Export path", GeometryError)
+                destination = _project_directory(self.workspace, checked, "Export path")
+            else:
+                destination = _project_directory(
+                    self.workspace, self.workspace / "exports" / "drawings", "Drawing"
+                )
+            stem = _output_stem(spec["name"])
+            png = _project_file(
+                self.workspace, self.workspace / "renders" / "assemblies" / stem / "drawing.png", "Drawing"
+            )
             report = drawing_mod.make_drawing(
                 spec,
                 solved,
@@ -1165,11 +1289,6 @@ class Document:
             extras = []
             if planned is not None and planned.get("gap_capped"):
                 extras.append("The automatic gap is capped at 1000000 mm.")
-            if reserved:
-                extras.append(
-                    f"The file is named {stem} because {reserved} is a reserved file name on Windows."
-                )
-                report["file_note"] = extras[-1]
             if extras:
                 report["note"] = f"{report.get('note') or ''} {' '.join(extras)}".strip()
             return report
@@ -1184,28 +1303,28 @@ class Document:
             spec = self._get_assembly(name)
             shapes = self._assembly_shapes(spec)
             report = bom_mod.build_bom(spec, shapes, self._part_facts(spec))
+            stem = _output_stem(spec["name"])
             if out:
                 from aicad.sandbox import require_in_project
 
                 require_in_project(out, self.workspace, writing=True)
-            stem, reserved = _output_stem(spec["name"])
-            csv_path = Path(out) if out else self.workspace / "exports" / "bom" / f"{stem}.csv"
-            png = self.workspace / "renders" / "assemblies" / stem / "bom.png"
+                checked = Path(out)
+                if not checked.is_absolute():
+                    from aicad.paths import require_export_path
+
+                    checked = require_export_path(self.workspace, out, "Export path", GeometryError)
+                csv_path = _project_file(self.workspace, checked, "Export path")
+            else:
+                csv_path = _project_file(
+                    self.workspace, self.workspace / "exports" / "bom" / f"{stem}.csv", "Bill of materials"
+                )
+            png = _project_file(
+                self.workspace, self.workspace / "renders" / "assemblies" / stem / "bom.png", "Bill of materials"
+            )
             bom_mod.write_csv(report, csv_path)
             view = bom_mod.render_table(report, png)
             report["csv"] = str(csv_path.resolve())
             report["views"] = [view]
-            if reserved and not out:
-                file_note = f"The file is named {stem} because {reserved} is a reserved file name on Windows."
-            elif reserved:
-                file_note = (
-                    f"The picture folder is named {stem} because {reserved} is a reserved file name on Windows."
-                )
-            else:
-                file_note = ""
-            if file_note:
-                report["file_note"] = file_note
-                report["note"] = f"{report.get('note') or ''} {file_note}".strip()
             return report
 
     def exploded_view(
@@ -1228,8 +1347,10 @@ class Document:
             planned = explode_mod.plan(spec, solved, shapes, self._library_specs(spec), gap_mm)
             moved = explode_mod.apply_moves(solved, planned["offsets"])
             mesh = assembly._colored_mesh(shapes, moved)  # noqa: SLF001
-            stem, reserved = _output_stem(spec["name"])
-            out = self.workspace / "renders" / "assemblies" / stem
+            stem = _output_stem(spec["name"])
+            out = _project_directory(
+                self.workspace, self.workspace / "renders" / "assemblies" / stem, "Render"
+            )
             try:
                 pictures = render_motion_frames(
                     [mesh],
@@ -1283,12 +1404,6 @@ class Document:
                 ),
                 limits=list(report.get("omits") or explode_mod.OMITS),
             )
-            if reserved:
-                file_note = (
-                    f"The picture folder is named {stem} because {reserved} is a reserved file name on Windows."
-                )
-                finished["file_note"] = file_note
-                finished["note"] = f"{finished.get('note') or ''} {file_note}".strip()
             return finished
 
     def assembly_mesh(self, name: str) -> dict:
@@ -1297,7 +1412,7 @@ class Document:
             return assembly.preview_mesh(spec, self._assembly_shapes(spec))
 
     def _commit_assembly(self, spec: dict) -> dict:
-        cleaned = normalize_assembly(spec)
+        cleaned = normalize_assembly(self._with_resolved_mates(spec))
         self._require_assembly_parts(cleaned)
         if cleaned["actuators"]:
             actuators_for(cleaned)
@@ -1473,6 +1588,7 @@ class Document:
                     "ops": copy.deepcopy(part.ops) if part.ops is not None else None,
                     "step_file": part.step_file,
                     "library": copy.deepcopy(part.library_spec) if part.library_spec is not None else None,
+                    "gear": copy.deepcopy(part.gear_spec) if part.gear_spec is not None else None,
                     "placement": copy.deepcopy(part.placement),
                     "sketch": part.sketch_name,
                     "steps": copy.deepcopy(part.sketch_steps) if part.sketch_steps is not None else None,
@@ -1486,17 +1602,17 @@ class Document:
         }
 
     def _save(self) -> None:
+        from aicad.paths import publish_text
+
         payload = self._payload()
         path = self._session_path()
-        temporary = path.with_suffix(".json.tmp")
         try:
             text = json.dumps(payload, indent=2, allow_nan=False) + "\n"
         except ValueError as exc:
             raise DocumentError(
                 "The session has a number that is not finite, so it was not saved."
             ) from exc
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(path)
+        publish_text(path, text)
 
     def _reload(self) -> None:
         """Read ``session.json`` again. Script text is loaded and not executed."""
@@ -1508,14 +1624,15 @@ class Document:
 
     def _store_script_geometry(self, name: str, script: str, shape: kernel.Shape) -> str:
         relative = f".aicad/geometry/{name}-{_script_hash(script)[:16]}.step"
-        from aicad.sandbox import project_file
-
-        path = project_file(self.workspace, relative)
+        path = _project_file(self.workspace, self.workspace / relative, "Script geometry")
         kernel.export_step_file(shape, path)
         return relative
 
     def _load(self) -> None:
         path = self._session_path()
+        if not path.exists() and not path.is_symlink():
+            return
+        path = _project_resolved(self.workspace, path, "Session file", DocumentError)
         if not path.is_file():
             return
         try:
@@ -1542,7 +1659,7 @@ class Document:
                 if source == "ops":
                     base = kernel.make_from_ops(record["ops"])
                 elif source == "step":
-                    step_path = _project_file(
+                    step_path = _session_project_file(
                         self.workspace, record.get("step_file"), f"Part {name!r} step file"
                     )
                     base = kernel.import_step_file(step_path)
@@ -1556,6 +1673,11 @@ class Document:
                             spec.get("fastener_type"),
                         )
                     )
+                elif source == "gear":
+                    spec = record.get("gear")
+                    if not isinstance(spec, dict):
+                        raise DocumentError(f"Part {name!r} is a gear but has no gear spec.")
+                    base = kernel.adopt(gears_mod.build_gear(spec))
                 elif source == "sketch":
                     sketch_name = record.get("sketch")
                     sketch = self._sketches.get(sketch_name)
@@ -1572,7 +1694,7 @@ class Document:
                     script_pending = _script_hash(script_text) != record.get("script_sha256")
                     geometry = record.get("geometry_file")
                     if geometry:
-                        geometry_path = _project_file(
+                        geometry_path = _session_project_file(
                             self.workspace, geometry, f"Part {name!r} geometry file"
                         )
                         if geometry_path.is_file():
@@ -1614,6 +1736,7 @@ class Document:
                 base=base,
                 placement=stored_placement,
                 library_spec=record.get("library"),
+                gear_spec=record.get("gear") if source == "gear" else None,
                 sketch_name=record.get("sketch") if source == "sketch" else None,
                 sketch_steps=record.get("steps") if source == "sketch" else None,
                 geometry_file=record.get("geometry_file") if source == "script" else None,
@@ -1623,9 +1746,52 @@ class Document:
             )
         self._assemblies.clear()
         for record in payload.get("assemblies", []):
-            cleaned = normalize_assembly(record)
+            cleaned = normalize_assembly(self._with_resolved_mates(record))
             self._require_assembly_parts(cleaned)
             self._assemblies[cleaned["name"]] = cleaned
+
+    def _with_resolved_mates(self, spec: dict) -> dict:
+        """Turn parent_mate and child_mate into anchors before the joint is stored.
+
+        The mate names stay on the joint. Opening the project resolves them
+        again from the catalog part on each instance.
+        """
+        if not isinstance(spec, dict):
+            return spec
+        joints = spec.get("joints") or []
+        if not isinstance(joints, list):
+            return spec
+        if not any(
+            isinstance(joint, dict) and (joint.get("parent_mate") or joint.get("child_mate"))
+            for joint in joints
+        ):
+            return spec
+        part_by_instance: dict[str, str] = {}
+        instances = spec.get("instances") or []
+        if isinstance(instances, list):
+            for instance in instances:
+                if isinstance(instance, dict) and instance.get("name") and instance.get("part"):
+                    part_by_instance[str(instance["name"])] = str(instance["part"])
+        needed: list[str] = []
+        for joint in joints:
+            if not isinstance(joint, dict):
+                continue
+            for side in ("parent", "child"):
+                if not joint.get(f"{side}_mate"):
+                    continue
+                part_name = part_by_instance.get(str(joint.get(side) or ""))
+                if part_name and part_name not in needed:
+                    needed.append(part_name)
+        missing = [name for name in needed if name not in self._parts]
+        if missing:
+            known = ", ".join(self._parts) or "(none)"
+            label = spec.get("name") or "assembly"
+            raise GeometryError(
+                f"Assembly {label!r} needs parts that are not in the document: "
+                f"{', '.join(missing)}. Parts: {known}."
+            )
+        specs = {name: copy.deepcopy(self._parts[name].library_spec) for name in needed}
+        return library.resolve_assembly_mates(spec, specs)
 
 
 def _unbuilt_message(name: str) -> str:
@@ -1646,34 +1812,38 @@ def _assembly_name(spec: dict) -> str:
     return spec["name"]
 
 
-_WINDOWS_RESERVED = {
-    "CON",
-    "PRN",
-    "AUX",
-    "NUL",
-    *(f"COM{index}" for index in range(1, 10)),
-    *(f"LPT{index}" for index in range(1, 10)),
-}
+def _output_stem(name: str) -> str:
+    """A file stem that is not a Windows device name. A reserved name is refused."""
+    from aicad.paths import is_reserved_device_name
 
-
-def _output_stem(name: str) -> tuple[str, str]:
-    """A file stem Windows can create, and the original name when it was reserved.
-
-    ``con.pdf`` is a device, not a file. The second value is empty when the
-    name is safe to use as a file.
-    """
     stem = str(name).strip().rstrip(" .") or "assembly"
-    if stem.upper() in _WINDOWS_RESERVED:
-        return f"{stem}_file", stem
-    return stem, ""
+    if is_reserved_device_name(stem):
+        raise GeometryError(f"{stem} is reserved on Windows. Pick another name.")
+    return stem
 
 
 def _pack_vec(point: tuple[float, float, float]) -> Vec3:
     return Vec3(round_mm(point[0]), round_mm(point[1]), round_mm(point[2]))
 
 
-def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> dict[str, float]:
-    overrides: dict[str, float] = {}
+def _packaging_joint_value(name: str, value):
+    """A number, or a cylindrical ``{value, slide}`` override."""
+    if isinstance(value, dict):
+        cleaned = {}
+        if "value" in value:
+            cleaned["value"] = kernel.finite_number(value["value"], f"joint {name}", unit="deg")
+        if "slide" in value:
+            cleaned["slide"] = kernel.finite_number(value["slide"], f"joint {name} slide", unit="mm")
+        if not cleaned or any(key not in {"value", "slide"} for key in value):
+            raise GeometryError(
+                f"Joint {name} override is a number, or {{value: degrees, slide: millimetres}}."
+            )
+        return cleaned
+    return kernel.finite_number(value, f"joint {name}", unit="deg or mm")
+
+
+def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> dict:
+    overrides: dict = {}
     if pose is not None:
         if not isinstance(pose, str) or not pose.strip():
             raise GeometryError("pose must be a name.")
@@ -1685,7 +1855,7 @@ def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> d
         if not isinstance(joints, dict):
             raise GeometryError("joints must be an object of joint names and values.")
         for key, value in joints.items():
-            overrides[str(key)] = kernel.finite_number(value, f"joint {key}", unit="deg or mm")
+            overrides[str(key)] = _packaging_joint_value(key, value)
     known = {joint["name"] for joint in spec["joints"]}
     unknown = [name for name in overrides if name not in known]
     if unknown:
@@ -1697,11 +1867,15 @@ def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> d
 
 
 def _validate_name(name: str) -> None:
+    from aicad.paths import is_reserved_device_name
+
     if not isinstance(name, str) or not _NAME.match(name):
         raise GeometryError(
             "Part names must start with a letter or underscore and contain only "
             "letters, numbers, underscores, and hyphens (64 characters max)."
         )
+    if is_reserved_device_name(name):
+        raise GeometryError(f"{name} is reserved on Windows. Pick another name.")
 
 
 def _copy_spec(spec: Sketch | dict) -> dict:
@@ -1724,13 +1898,13 @@ def _vec3(value, label: str) -> tuple[float, float, float]:
 def _step_import_source(root: Path, raw: str | Path) -> Path:
     """The file ``import_step`` reads.
 
-    An absolute path is a file the person chose. A path inside the project,
-    including a link, must still point at a file inside the project after
-    the link is followed.
+    An absolute path is a file the person chose. A relative path stays inside
+    the project after the link is followed.
     """
-    given = Path(raw)
-    if not given.is_absolute():
-        given = root / given
+    from aicad.paths import stays_inside
+
+    original = Path(raw)
+    given = original if original.is_absolute() else root / original
     source = given.resolve()
     root_resolved = root.resolve()
     try:
@@ -1738,20 +1912,34 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
         lexical_inside = ".." not in given.parts
     except ValueError:
         lexical_inside = False
-    if lexical_inside and not _path_inside(source, root_resolved):
-        raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
+    if not original.is_absolute() or lexical_inside:
+        if not stays_inside(root_resolved, source):
+            raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
     return source
 
 
-def _path_inside(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
+def _project_file(root: Path, raw: object, label: str, *, allow_absolute_outside: bool = False) -> Path:
+    """A path to write that stays inside the project unless an absolute path was named."""
+    from aicad.paths import output_path
+
+    return output_path(root, raw, label, GeometryError, allow_absolute_outside=allow_absolute_outside)
 
 
-def _project_file(root: Path, raw: object, label: str) -> Path:
+def _project_directory(root: Path, path: Path, label: str) -> Path:
+    """A directory inside the project. A link that leaves the project is refused."""
+    from aicad.paths import output_dir
+
+    return output_dir(root, path, label, GeometryError)
+
+
+def _project_resolved(root: Path, path: Path, label: str, error: type[Exception] = GeometryError) -> Path:
+    """An existing path inside the project. Nothing is created."""
+    from aicad.paths import resolve_in_project
+
+    return resolve_in_project(root, path, label, error)
+
+
+def _session_project_file(root: Path, raw: object, label: str) -> Path:
     """A session path that stays inside the project. Absolute and ``..`` are not read."""
     from aicad.paths import require_session_file
 

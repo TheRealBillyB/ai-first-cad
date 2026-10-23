@@ -253,16 +253,27 @@ def test_settings_file_keeps_the_key_out_of_the_public_view(tmp_path, monkeypatc
     assert saved["key_hint"] == "…1234"
     assert "sk-secret" not in json.dumps(saved)
     stored = json.loads(path.read_text(encoding="utf-8"))
+    from aicad.paths import file_is_user_private
+
     assert stored["api_key"] == "sk-secret-1234"
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert file_is_user_private(path)
     assert public_settings()["provider"] == "anthropic"
+
+
+def test_get_sketch_names_a_sketch():
+    from aicad.workspace import COMMANDS
+
+    description = COMMANDS["get_sketch"].parameters["properties"]["name"]["description"]
+    assert description == "Sketch name."
+    sketch = next(spec for spec in tool_specs() if spec["name"] == "get_sketch")
+    assert sketch["parameters"]["properties"]["name"]["description"] == "Sketch name."
 
 
 def test_cli_app_help_lists_the_workspace(tmp_path):
     import subprocess
     import sys
 
-    completed = subprocess.run([sys.executable, "-m", "aicad", "app", "--help"], check=False, capture_output=True, text=True)
+    completed = subprocess.run([sys.executable, "-P", "-m", "aicad", "app", "--help"], check=False, capture_output=True, text=True)
     assert completed.returncode == 0
     assert "--no-browser" in completed.stdout
     assert (ROOT / "src" / "aicad" / "app_static" / "index.html").is_file()

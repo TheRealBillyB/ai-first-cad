@@ -201,6 +201,7 @@ def test_cli_bolts(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-m",
             "aicad",
             "bolts",

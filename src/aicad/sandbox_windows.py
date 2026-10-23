@@ -12,14 +12,30 @@ There is no in-process fallback. A job cannot block OpenProcess on a
 process outside the job. The container can open a process only when that
 process grants the container, and this aicad process does not. aicad does
 not add its own deny entry: that change stopped later scripts from finishing.
+
+The script is the base interpreter. The virtual-environment redirector
+starts a second process in a job of its own, so the script would not stay
+in the sandbox job. The new process stays suspended until that job holds
+it and its token is an AppContainer.
+
+When the script was not given the network, Windows Firewall and a filter
+block that container's inbound and outbound traffic for every protocol
+before the process runs. The block is not limited to TCP or to a port.
+The script still checks the token. It runs only when a TCP connection and
+both a connected and an unconnected UDP send are refused. A successful
+send is not a refusal. A timeout is not a refusal.
 """
 
 from __future__ import annotations
 
 import ctypes
+import ntpath
 import os
+import re
 import subprocess
 import sys
+import threading
+import uuid
 from collections.abc import Sequence
 from ctypes import wintypes
 from pathlib import Path
@@ -32,7 +48,12 @@ _CREATE_SUSPENDED = 0x00000004
 _CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _CREATE_NO_WINDOW = 0x08000000
 _EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+# Leave the runner's job when it allows it, then enter only the sandbox job.
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+_ERROR_ACCESS_DENIED = 5
 _STARTF_USESTDHANDLES = 0x00000100
+_PROBE_CPU_SECONDS = 30
+_PROBE_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
 
 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
@@ -46,12 +67,18 @@ _JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x00000400
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
 _JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
+_JobObjectBasicAccountingInformation = 1
 _JobObjectExtendedLimitInformation = 9
+# 100 ms, in the job's 100-nanosecond ticks. A CPU kill can land a little
+# under the cap. A short crash stays well under it.
+_CPU_LIMIT_SLACK_TICKS = 1_000_000
 
 _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 0x00000102
 _TOKEN_QUERY = 0x0008
 _TokenIsAppContainer = 29
+_TokenCapabilities = 30
+_TokenAppContainerSid = 31
 _ERROR_ALREADY_EXISTS = 0x800700B7
 _INVALID_HANDLE = ctypes.c_void_p(-1).value
 
@@ -66,6 +93,80 @@ _FILE_ATTRIBUTE_NORMAL = 0x80
 _mode: str | None = None
 _mode_error: str | None = None
 _sid_string: str | None = None
+# One loaded library per process. A new WinDLL() drops the prototypes set below,
+# and a handle returned as a C int is not a pointer-sized HANDLE.
+_kernel32_lib: ctypes.WinDLL | None = None
+_userenv_lib: ctypes.WinDLL | None = None
+_advapi32_lib: ctypes.WinDLL | None = None
+_bound = False
+# The availability probe starts a container. Later tests in this process reuse it.
+_probe_done = False
+_probe_result: str | None = None
+# Parents already checked for this container, so a later script does not open them again.
+_granted_traverse: set[tuple[str, str, str]] = set()
+# One firewall block for this container, shared by overlapping network-off children.
+_network_off_lock = threading.Lock()
+_network_off_holders = 0
+_network_off_sid: str | None = None
+# Rules left in place after the last network-off child. The next child with
+# the same package reuses them. A network-on script removes them first.
+_network_off_rules_sid: str | None = None
+# The next process has no memory of that. The record is only the package id.
+# It is not proof the rules still exist. It lives in the real local profile,
+# which is not the project and is not a folder the script is allowed to write.
+_network_off_marker_path: Path | None = None
+_profile_local_app_data_known = False
+_profile_local_app_data_path: Path | None = None
+_FOLDERID_LOCAL_APPDATA = "{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}"
+_PACKAGE_SID_TEXT = re.compile(r"^S-1-15-2(?:-\d+)+$", re.IGNORECASE)
+# Inbound and outbound, every protocol. The old UDP-only name is removed
+# when present and is not installed again.
+_NETWORK_OFF_RULES = (
+    "aicad-script-network-off-out",
+    "aicad-script-network-off-in",
+)
+_NETWORK_OFF_STALE_RULES = ("aicad-script-network-off-udp",)
+
+# One directory finishes immediately. A tree walk of the Python install can
+# take longer. Either one that does not finish is waiting, not working.
+_ICACLS_TIMEOUT_SECONDS = 15
+_ICACLS_TREE_TIMEOUT_SECONDS = 60
+_GRANT_TIMEOUT_SECONDS = 15
+
+_SE_FILE_OBJECT = 1
+_DACL_SECURITY_INFORMATION = 0x4
+_READ_CONTROL = 0x00020000
+_WRITE_DAC = 0x00040000
+_FILE_SHARE_DELETE = 0x00000004
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_ACCESS_ALLOWED_ACE_TYPE = 0
+_INHERIT_ONLY_ACE = 0x8
+_FILE_LIST_DIRECTORY = 0x00000001
+_FILE_TRAVERSE = 0x00000020
+_FILE_READ_ATTRIBUTES = 0x00000080
+_SYNCHRONIZE = 0x00100000
+_GENERIC_ALL = 0x10000000
+_GENERIC_EXECUTE = 0x20000000
+# Walk this directory and read its attributes. Listing its children is not included.
+_TRAVERSE_MASK = _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+_ALL_APPLICATION_PACKAGES = "S-1-15-2-1"
+_ALL_RESTRICTED_APPLICATION_PACKAGES = "S-1-15-2-2"
+_ACL_REVISION = 2
+_ACL_REVISION_DS = 4
+_SECURITY_DESCRIPTOR_REVISION = 1
+# AclSizeInformation. A plain integer: the structure class must not be passed here.
+_ACL_SIZE_INFORMATION = 2
+# Opening these is not a failure of the grant. Windows already allows the
+# container through, or the folder is not one this process can edit.
+_UNCHANGEABLE_ERRORS = {2, 3, 5, 32}
+
+
+class IcaclsTimeout(OSError):
+    """icacls did not finish, so the folder was not granted."""
+
+
+class GrantTimeout(OSError):
+    """A folder grant did not finish, so that folder was not changed."""
 
 
 class _IoCounters(ctypes.Structure):
@@ -92,6 +193,21 @@ class _JobBasicLimit(ctypes.Structure):
         ("Affinity", ctypes.c_size_t),
         ("PriorityClass", wintypes.DWORD),
         ("SchedulingClass", wintypes.DWORD),
+    ]
+
+
+class _JobBasicAccounting(ctypes.Structure):
+    """JOBOBJECT_BASIC_ACCOUNTING_INFORMATION. 48 bytes, including on 64-bit."""
+
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_int64),
+        ("TotalKernelTime", ctypes.c_int64),
+        ("ThisPeriodTotalUserTime", ctypes.c_int64),
+        ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+        ("TotalPageFaultCount", ctypes.c_uint32),
+        ("TotalProcesses", ctypes.c_uint32),
+        ("ActiveProcesses", ctypes.c_uint32),
+        ("TotalTerminatedProcesses", ctypes.c_uint32),
     ]
 
 
@@ -170,24 +286,79 @@ class _SidAndAttributes(ctypes.Structure):
     ]
 
 
+class _AceHeader(ctypes.Structure):
+    _fields_ = [
+        ("AceType", ctypes.c_ubyte),
+        ("AceFlags", ctypes.c_ubyte),
+        ("AceSize", wintypes.WORD),
+    ]
+
+
+class _AclSizeInformation(ctypes.Structure):
+    _fields_ = [
+        ("AceCount", wintypes.DWORD),
+        ("AclBytesInUse", wintypes.DWORD),
+        ("AclBytesFree", wintypes.DWORD),
+    ]
+
+
 def _kernel32() -> ctypes.WinDLL:
-    return ctypes.WinDLL("kernel32", use_last_error=True)
+    global _kernel32_lib
+    if _kernel32_lib is None:
+        _kernel32_lib = ctypes.WinDLL("kernel32", use_last_error=True)
+    return _kernel32_lib
 
 
 def _userenv() -> ctypes.WinDLL:
-    return ctypes.WinDLL("userenv", use_last_error=True)
+    global _userenv_lib
+    if _userenv_lib is None:
+        _userenv_lib = ctypes.WinDLL("userenv", use_last_error=True)
+    return _userenv_lib
 
 
 def _advapi32() -> ctypes.WinDLL:
-    return ctypes.WinDLL("advapi32", use_last_error=True)
+    global _advapi32_lib
+    if _advapi32_lib is None:
+        _advapi32_lib = ctypes.WinDLL("advapi32", use_last_error=True)
+    return _advapi32_lib
 
 
 def _win_error(prefix: str) -> str:
-    code = ctypes.get_last_error()
-    return f"{prefix} (Windows error {code})."
+    return f"{prefix} (Windows error {_last_error()})."
+
+
+def _last_error(kernel32=None) -> int:
+    if kernel32 is not None:
+        recorded = getattr(kernel32, "last_error", None)
+        if recorded is not None:
+            return int(recorded) & 0xFFFFFFFF
+    getter = getattr(ctypes, "get_last_error", None)
+    if getter is None:
+        return 0
+    return int(getter()) & 0xFFFFFFFF
+
+
+def _update_attribute_signature() -> tuple[object, list[object]]:
+    """Argument types for UpdateProcThreadAttribute. Tests call this prototype."""
+
+    return (
+        wintypes.BOOL,
+        [
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+        ],
+    )
 
 
 def _bind() -> None:
+    global _bound
+    if _bound:
+        return
     kernel32 = _kernel32()
     kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -210,6 +381,8 @@ def _bind() -> None:
     kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
     kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
     kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
     kernel32.ResumeThread.restype = wintypes.DWORD
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
@@ -225,16 +398,9 @@ def _bind() -> None:
         ctypes.POINTER(ctypes.c_size_t),
     ]
     kernel32.InitializeProcThreadAttributeList.restype = wintypes.BOOL
-    kernel32.UpdateProcThreadAttribute.argtypes = [
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_size_t),
-    ]
-    kernel32.UpdateProcThreadAttribute.restype = wintypes.BOOL
+    update_restype, update_argtypes = _update_attribute_signature()
+    kernel32.UpdateProcThreadAttribute.argtypes = update_argtypes
+    kernel32.UpdateProcThreadAttribute.restype = update_restype
     kernel32.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
     kernel32.DeleteProcThreadAttributeList.restype = None
     kernel32.CreateProcessW.argtypes = [
@@ -315,6 +481,7 @@ def _bind() -> None:
     advapi32.GetTokenInformation.restype = wintypes.BOOL
     kernel32.LocalFree.argtypes = [ctypes.c_void_p]
     kernel32.LocalFree.restype = ctypes.c_void_p
+    _bound = True
 
 
 def _sid_to_string(sid: ctypes.c_void_p) -> str:
@@ -352,11 +519,58 @@ def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
     return sid, text
 
 
+def _is_volume_root_text(path: str) -> bool:
+    """True for ``C:\\`` and ``\\\\server\\share``.
+
+    icacls asks "Are you sure?" on a volume root and then waits for a person.
+    Saying yes would add an access entry on the whole drive. The container
+    does not get that entry.
+    """
+
+    drive, tail = ntpath.splitdrive(path)
+    if not drive:
+        return False
+    return tail in ("", "\\", "/")
+
+
+def _windows_traverse_parents(path: str) -> list[str]:
+    """Parents that may receive traverse, nearest first, never the volume root."""
+
+    current = ntpath.normpath(path)
+    parents: list[str] = []
+    while True:
+        parent = ntpath.dirname(current)
+        if parent == current:
+            break
+        if not _is_volume_root_text(parent):
+            parents.append(parent)
+        current = parent
+    return parents
+
+
+def _run_icacls(command: list[str], path: Path, *, recurse: bool) -> subprocess.CompletedProcess[str]:
+    timeout = _ICACLS_TREE_TIMEOUT_SECONDS if recurse else _ICACLS_TIMEOUT_SECONDS
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise IcaclsTimeout(
+            f"icacls did not finish within {timeout} seconds for {path}. "
+            "It may be waiting for confirmation, so the sandbox did not change that folder."
+        ) from exc
+
+
 def _icacls(path: Path, sid: str, rights: str, *, recurse: bool) -> None:
     command = ["icacls", str(path), "/grant", f"*{sid}:{rights}", "/C", "/Q"]
     if recurse:
         command.append("/T")
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    completed = _run_icacls(command, path, recurse=recurse)
     if completed.returncode != 0:
         detail = (completed.stdout or "") + (completed.stderr or "")
         raise OSError(f"Could not grant the sandbox access to {path}. {detail.strip()}")
@@ -367,33 +581,347 @@ def _grant_tree(path: Path, sid: str, rights: str) -> None:
         _icacls(path, sid, rights, recurse=True)
 
 
-def _grant_traverse(path: Path, sid: str) -> None:
+def _package_sid(lpac: bool) -> str:
+    """The package id this container already carries, besides its own id."""
+
+    if lpac:
+        return _ALL_RESTRICTED_APPLICATION_PACKAGES
+    return _ALL_APPLICATION_PACKAGES
+
+
+def _ace_allows_traverse(ace_type: int, ace_flags: int, mask: int) -> bool:
+    """True when this entry lets its trustee walk the directory itself."""
+
+    if ace_type != _ACCESS_ALLOWED_ACE_TYPE:
+        return False
+    if ace_flags & _INHERIT_ONLY_ACE:
+        return False
+    if mask & (_GENERIC_ALL | _GENERIC_EXECUTE):
+        return True
+    return bool(mask & _FILE_TRAVERSE)
+
+
+def _dacl_needs_grant(
+    aces: Sequence[tuple[int, int, int, str]],
+    sid: str,
+    package_sid: str,
+) -> bool:
+    """False when the directory already lets this container walk through it."""
+
+    wanted = {sid, package_sid}
+    for ace_type, ace_flags, mask, ace_sid in aces:
+        if ace_sid in wanted and _ace_allows_traverse(ace_type, ace_flags, mask):
+            return False
+    return True
+
+
+def _finish_within(seconds: float, path: Path, work) -> None:
+    """Run ``work`` and give up if it does not return.
+
+    A grant that walks every child of a tool-cache directory does not return
+    before the test is killed. Stopping here leaves that directory unchanged.
+    """
+
+    box: dict[str, Exception] = {}
+
+    def run() -> None:
+        try:
+            work()
+        except Exception as exc:
+            box["error"] = exc
+
+    thread = threading.Thread(target=run, name="aicad-grant", daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        raise GrantTimeout(
+            f"Granting traverse did not finish within {seconds:g} seconds for {path}. "
+            "The sandbox stopped waiting, and that folder was not changed."
+        )
+    error = box.get("error")
+    if error is not None:
+        raise error
+
+
+def _acl_error(prefix: str) -> OSError:
+    code = ctypes.get_last_error() & 0xFFFFFFFF
+    return OSError(None, f"{prefix} (Windows error {code}).", None, code)
+
+
+def _security_signatures() -> dict[str, tuple[object, list[object]]]:
+    """Return types for the access-list calls. Tests reuse this list."""
+
+    return {
+        "GetSecurityInfo": (
+            wintypes.DWORD,
+            [
+                wintypes.HANDLE,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_void_p),
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_void_p),
+            ],
+        ),
+        "SetKernelObjectSecurity": (
+            wintypes.BOOL,
+            [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p],
+        ),
+        "GetAclInformation": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD],
+        ),
+        "GetAce": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)],
+        ),
+        "InitializeAcl": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD],
+        ),
+        "AddAce": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD],
+        ),
+        "AddAccessAllowedAce": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p],
+        ),
+        "InitializeSecurityDescriptor": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.DWORD],
+        ),
+        "SetSecurityDescriptorDacl": (
+            wintypes.BOOL,
+            [ctypes.c_void_p, wintypes.BOOL, ctypes.c_void_p, wintypes.BOOL],
+        ),
+        "GetLengthSid": (wintypes.DWORD, [ctypes.c_void_p]),
+    }
+
+
+def _bind_security() -> None:
+    _bind()
+    advapi32 = _advapi32()
+    for name, (restype, argtypes) in _security_signatures().items():
+        function = getattr(advapi32, name)
+        function.argtypes = argtypes
+        function.restype = restype
+
+
+def _acl_information_arguments(
+    dacl: ctypes.c_void_p,
+    info: _AclSizeInformation,
+) -> tuple[object, ...]:
+    """Arguments for GetAclInformation. The class is an integer, not the structure."""
+
+    return (dacl, ctypes.byref(info), ctypes.sizeof(info), int(_ACL_SIZE_INFORMATION))
+
+
+def _open_directory(path: Path, access: int) -> wintypes.HANDLE:
+    handle = _kernel32().CreateFileW(
+        str(path),
+        access,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    )
+    if handle is None or ctypes.cast(handle, ctypes.c_void_p).value in {None, _INVALID_HANDLE}:
+        raise _acl_error(f"Could not open {path} to grant traverse")
+    return handle
+
+
+def _read_dacl(handle: wintypes.HANDLE) -> tuple[ctypes.c_void_p, ctypes.c_void_p | None]:
+    """Return the security descriptor and its DACL.
+
+    A missing DACL already allows access. The caller must free the descriptor.
+    The DACL pointer is inside that descriptor.
+    """
+
+    dacl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    status = _advapi32().GetSecurityInfo(
+        handle,
+        _SE_FILE_OBJECT,
+        _DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if status != 0:
+        raise OSError(None, f"Could not read the access list (Windows error {status}).", None, status)
+    if not dacl.value:
+        return descriptor, None
+    return descriptor, dacl
+
+
+def _ace_rows(dacl: ctypes.c_void_p) -> list[tuple[int, int, int, str]]:
+    advapi32 = _advapi32()
+    info = _AclSizeInformation()
+    if not advapi32.GetAclInformation(*_acl_information_arguments(dacl, info)):
+        raise _acl_error("Could not read the access entries")
+    rows: list[tuple[int, int, int, str]] = []
+    for index in range(int(info.AceCount)):
+        ace = ctypes.c_void_p()
+        if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+            raise _acl_error("Could not read an access entry")
+        header = ctypes.cast(ace, ctypes.POINTER(_AceHeader)).contents
+        mask = int(ctypes.cast(ace.value + 4, ctypes.POINTER(wintypes.DWORD)).contents.value)
+        ace_sid = ""
+        if header.AceType == _ACCESS_ALLOWED_ACE_TYPE and int(header.AceSize) >= 8:
+            try:
+                ace_sid = _sid_to_string(ctypes.c_void_p(ace.value + 8))
+            except OSError:
+                ace_sid = ""
+        rows.append((int(header.AceType), int(header.AceFlags), mask, ace_sid))
+    return rows
+
+
+def _parent_allows_traverse(path: Path, sid: str, package_sid: str) -> bool:
+    _bind_security()
+    handle = _open_directory(path, _READ_CONTROL)
+    descriptor = ctypes.c_void_p()
+    try:
+        descriptor, dacl = _read_dacl(handle)
+        if dacl is None:
+            return True
+        return not _dacl_needs_grant(_ace_rows(dacl), sid, package_sid)
+    finally:
+        if descriptor.value:
+            _kernel32().LocalFree(descriptor)
+        _kernel32().CloseHandle(handle)
+
+
+def _acl_revision(dacl: ctypes.c_void_p) -> int:
+    revision = int(ctypes.cast(dacl, ctypes.POINTER(ctypes.c_ubyte)).contents.value)
+    if revision == _ACL_REVISION_DS:
+        return _ACL_REVISION_DS
+    return _ACL_REVISION
+
+
+def _append_traverse_ace(dacl: ctypes.c_void_p, sid_ptr: ctypes.c_void_p) -> ctypes.Array:
+    advapi32 = _advapi32()
+    info = _AclSizeInformation()
+    if not advapi32.GetAclInformation(*_acl_information_arguments(dacl, info)):
+        raise _acl_error("Could not measure the access list")
+    sid_length = int(advapi32.GetLengthSid(sid_ptr))
+    if sid_length <= 0:
+        raise _acl_error("Could not measure the sandbox id")
+    extra = ((8 + sid_length + 3) & ~3) + 8
+    total = int(info.AclBytesInUse) + extra
+    if total > 65535:
+        raise OSError("The access list is too large to add traverse.")
+    revision = _acl_revision(dacl)
+    buffer = ctypes.create_string_buffer(total)
+    if not advapi32.InitializeAcl(buffer, total, revision):
+        raise _acl_error("Could not build the access list")
+    for index in range(int(info.AceCount)):
+        ace = ctypes.c_void_p()
+        if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+            raise _acl_error("Could not copy an access entry")
+        size = int(ctypes.cast(ace, ctypes.POINTER(_AceHeader)).contents.AceSize)
+        # Append. Inserting at the front would reverse the existing entries.
+        if not advapi32.AddAce(buffer, revision, 0xFFFFFFFF, ace, size):
+            raise _acl_error("Could not copy an access entry")
+    if not advapi32.AddAccessAllowedAce(buffer, revision, _TRAVERSE_MASK, sid_ptr):
+        raise _acl_error("Could not add traverse")
+    return buffer
+
+
+def _sid_pointer(sid: str) -> ctypes.c_void_p:
+    sid_ptr = ctypes.c_void_p()
+    if not _advapi32().ConvertStringSidToSidW(sid, ctypes.byref(sid_ptr)):
+        raise _acl_error("Could not read the sandbox id")
+    return sid_ptr
+
+
+def _write_traverse_ace(path: Path, sid: str) -> None:
+    """Write one non-inherited traverse entry on this directory only.
+
+    SetNamedSecurityInfo walks every child and applies inheritance. Writing
+    the open directory handle does not open or change the children.
+    """
+
+    _bind_security()
+    advapi32 = _advapi32()
+    kernel32 = _kernel32()
+    sid_ptr = _sid_pointer(sid)
+    handle: wintypes.HANDLE | None = None
+    descriptor = ctypes.c_void_p()
+    try:
+        handle = _open_directory(path, _READ_CONTROL | _WRITE_DAC)
+        descriptor, dacl = _read_dacl(handle)
+        # A missing access list already allows access. Replacing it would lock the folder.
+        if dacl is None:
+            return
+        new_dacl = _append_traverse_ace(dacl, sid_ptr)
+        security = ctypes.create_string_buffer(64)
+        if not advapi32.InitializeSecurityDescriptor(security, _SECURITY_DESCRIPTOR_REVISION):
+            raise _acl_error(f"Could not grant traverse on {path}")
+        if not advapi32.SetSecurityDescriptorDacl(security, True, new_dacl, False):
+            raise _acl_error(f"Could not grant traverse on {path}")
+        if not advapi32.SetKernelObjectSecurity(handle, _DACL_SECURITY_INFORMATION, security):
+            raise _acl_error(f"Could not grant traverse on {path}")
+    finally:
+        if descriptor.value:
+            kernel32.LocalFree(descriptor)
+        if handle:
+            kernel32.CloseHandle(handle)
+        if sid_ptr.value:
+            kernel32.LocalFree(sid_ptr)
+
+
+def _grant_traverse_one(path: Path, sid: str, package_sid: str) -> None:
+    if _parent_allows_traverse(path, sid, package_sid):
+        return
+    _write_traverse_ace(path, sid)
+
+
+def _grant_traverse(path: Path, sid: str, package_sid: str | None = None) -> None:
     """Let the container walk down to a folder without granting that folder's children."""
 
-    current = path.resolve()
-    # The leaf is granted separately. Parents only need traverse (and a
-    # directory read, which Windows often requires to open a child by name).
-    parents: list[Path] = []
-    while True:
-        parent = current.parent
-        if parent == current:
-            break
-        parents.append(parent)
-        current = parent
-    for parent in parents:
+    # The leaf is granted separately. Parents only need traverse. The volume
+    # root is not granted: that would be an access entry on the whole drive.
+    if not package_sid:
+        package_sid = _ALL_APPLICATION_PACKAGES
+    if os.name == "nt":
         try:
-            _icacls(parent, sid, "(RX)", recurse=False)
+            text = str(path.resolve())
         except OSError:
-            # The drive root and some system folders are not ours to edit.
-            # The container can still walk them when Windows already allows it.
+            text = str(path)
+    else:
+        text = str(path)
+    for parent in _windows_traverse_parents(text):
+        key = (sid, package_sid, ntpath.normcase(parent))
+        if key in _granted_traverse:
             continue
+        try:
+            _finish_within(
+                _GRANT_TIMEOUT_SECONDS,
+                Path(parent),
+                lambda parent=parent: _grant_traverse_one(Path(parent), sid, package_sid),
+            )
+        except (GrantTimeout, IcaclsTimeout):
+            raise
+        except OSError as exc:
+            if getattr(exc, "winerror", None) in _UNCHANGEABLE_ERRORS:
+                continue
+            raise
+        _granted_traverse.add(key)
 
 
 def _marker_path() -> Path:
     return Path(sys.prefix) / ".aicad-appcontainer-acl"
 
 
-def grant_read_paths(paths: Sequence[Path], sid: str) -> None:
+def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = None) -> None:
+    if not package_sid:
+        package_sid = _ALL_APPLICATION_PACKAGES
     marker = _marker_path()
     already = False
     try:
@@ -403,17 +931,19 @@ def grant_read_paths(paths: Sequence[Path], sid: str) -> None:
     if not already:
         for path in paths:
             _grant_tree(path, sid, "(OI)(CI)RX")
-            _grant_traverse(path, sid)
+            _grant_traverse(path, sid, package_sid)
         try:
             marker.write_text(sid, encoding="utf-8")
         except OSError:
             pass
 
 
-def grant_workspace(path: Path, sid: str) -> None:
+def grant_workspace(path: Path, sid: str, package_sid: str | None = None) -> None:
+    if not package_sid:
+        package_sid = _ALL_APPLICATION_PACKAGES
     path.mkdir(parents=True, exist_ok=True)
     _grant_tree(path, sid, "(OI)(CI)M")
-    _grant_traverse(path, sid)
+    _grant_traverse(path, sid, package_sid)
 
 
 _user_sid: str | None = None
@@ -451,16 +981,17 @@ def _reclaim_for_user(path: Path) -> None:
         try:
             _icacls(path, sid, "(OI)(CI)F", recurse=True)
             return
+        except IcaclsTimeout:
+            raise
         except OSError:
             pass
     user = os.environ.get("USERNAME", "").strip()
     if not user:
         return
-    subprocess.run(
+    _run_icacls(
         ["icacls", str(path), "/grant", f"{user}:(OI)(CI)F", "/T", "/C", "/Q"],
-        capture_output=True,
-        text=True,
-        check=False,
+        path,
+        recurse=True,
     )
 
 
@@ -520,6 +1051,240 @@ def _environment_block(env: dict[str, str]) -> ctypes.Array:
     return buffer
 
 
+def _command_for_container(
+    command: list[str], env: dict[str, str]
+) -> tuple[list[str], dict[str, str]]:
+    """Run the base interpreter when this process is a virtual-environment redirector.
+
+    The redirector starts another Python and puts that child in a new job.
+    The sandbox has to start the interpreter that will run the script.
+    ``__PYVENV_LAUNCHER__`` keeps the environment's own prefix.
+    """
+
+    copied = dict(env)
+    if not command:
+        return list(command), copied
+    base = getattr(sys, "_base_executable", None) or ""
+    current = command[0]
+    if not base:
+        return list(command), copied
+    if os.path.normcase(os.path.normpath(base)) == os.path.normcase(os.path.normpath(current)):
+        return list(command), copied
+    if os.path.normcase(os.path.normpath(current)) != os.path.normcase(
+        os.path.normpath(sys.executable)
+    ):
+        return list(command), copied
+    copied["__PYVENV_LAUNCHER__"] = current
+    return [base, *command[1:]], copied
+
+
+def _creation_flags(*, breakaway: bool) -> int:
+    flags = (
+        _CREATE_SUSPENDED
+        | _CREATE_UNICODE_ENVIRONMENT
+        | _CREATE_NO_WINDOW
+        | _EXTENDED_STARTUPINFO_PRESENT
+    )
+    if breakaway:
+        flags |= _CREATE_BREAKAWAY_FROM_JOB
+    return flags
+
+
+def _confinement_attributes(
+    *,
+    sid: ctypes.c_void_p | int,
+    job: int,
+    handles: tuple[int, int, int],
+    lpac: bool,
+    network: bool,
+    advapi32=None,
+) -> tuple[list[tuple[int, int, int]], list[object], ctypes.c_void_p | None]:
+    """Attribute rows for CreateProcess. The returned objects keep the buffers alive."""
+
+    alive: list[object] = []
+    security = _SecurityCapabilities()
+    security.AppContainerSid = sid
+    security.CapabilityCount = 0
+    security.Capabilities = None
+    capability_sid: ctypes.c_void_p | None = None
+    if network:
+        if advapi32 is None:
+            advapi32 = _advapi32()
+        capability_sid = ctypes.c_void_p()
+        if not advapi32.ConvertStringSidToSidW("S-1-15-3-1", ctypes.byref(capability_sid)):
+            raise OSError(_win_error("Could not look up the network capability"))
+        capabilities = _SidAndAttributes()
+        capabilities.Sid = capability_sid
+        capabilities.Attributes = 0x4  # SE_GROUP_ENABLED
+        cap_ptr = ctypes.pointer(capabilities)
+        security.Capabilities = ctypes.cast(cap_ptr, ctypes.c_void_p)
+        security.CapabilityCount = 1
+        alive.append(capabilities)
+        alive.append(cap_ptr)
+    alive.append(security)
+    rows = [
+        (
+            _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+            ctypes.addressof(security),
+            ctypes.sizeof(security),
+        )
+    ]
+    job_list = (wintypes.HANDLE * 1)(job)
+    alive.append(job_list)
+    rows.append(
+        (_PROC_THREAD_ATTRIBUTE_JOB_LIST, ctypes.addressof(job_list), ctypes.sizeof(job_list))
+    )
+    handle_list = (wintypes.HANDLE * 3)(handles[0], handles[1], handles[2])
+    alive.append(handle_list)
+    rows.append(
+        (
+            _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            ctypes.addressof(handle_list),
+            ctypes.sizeof(handle_list),
+        )
+    )
+    if lpac:
+        policy = wintypes.DWORD(_PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT)
+        alive.append(policy)
+        rows.append(
+            (
+                _PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+                ctypes.addressof(policy),
+                ctypes.sizeof(policy),
+            )
+        )
+    return rows, alive, capability_sid
+
+
+def _apply_attributes(kernel32, attribute_list, rows: Sequence[tuple[int, int, int]]) -> None:
+    messages = {
+        _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: "Could not attach the AppContainer",
+        _PROC_THREAD_ATTRIBUTE_JOB_LIST: "Could not put the script in the Job Object",
+        _PROC_THREAD_ATTRIBUTE_HANDLE_LIST: "Could not pass the script's output handles",
+        _PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: (
+            "Could not request the stricter AppContainer"
+        ),
+    }
+    for attribute, address, size in rows:
+        if not kernel32.UpdateProcThreadAttribute(
+            attribute_list,
+            0,
+            attribute,
+            ctypes.c_void_p(address),
+            size,
+            None,
+            None,
+        ):
+            raise OSError(_win_error(messages.get(attribute, "Could not set a process attribute")))
+
+
+def _startup_info(attribute_list, stdin: int, stdout: int, stderr: int) -> _StartupInfoEx:
+    startup = _StartupInfoEx()
+    startup.StartupInfo.cb = ctypes.sizeof(startup)
+    startup.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
+    startup.StartupInfo.hStdInput = stdin
+    startup.StartupInfo.hStdOutput = stdout
+    startup.StartupInfo.hStdError = stderr
+    startup.lpAttributeList = ctypes.c_void_p(ctypes.addressof(attribute_list))
+    return startup
+
+
+def _start_suspended(
+    kernel32,
+    application: str,
+    command_line,
+    environment,
+    cwd: str,
+    startup: _StartupInfoEx,
+    process: _ProcessInformation,
+) -> None:
+    """Create the process suspended. Retry without breakaway when the parent job forbids it."""
+
+    last = "Could not start the sandboxed script."
+    for breakaway in (True, False):
+        created = kernel32.CreateProcessW(
+            application,
+            command_line,
+            None,
+            None,
+            True,
+            _creation_flags(breakaway=breakaway),
+            ctypes.cast(environment, ctypes.c_void_p),
+            cwd,
+            ctypes.byref(startup),
+            ctypes.byref(process),
+        )
+        if created:
+            return
+        code = _last_error(kernel32)
+        last = f"Could not start the sandboxed script (Windows error {code})."
+        if breakaway and code == _ERROR_ACCESS_DENIED:
+            continue
+        raise OSError(last)
+    raise OSError(last)
+
+
+def _process_in_job(kernel32, process: int, job: int) -> bool:
+    flag = wintypes.BOOL(False)
+    if not kernel32.IsProcessInJob(process, job, ctypes.byref(flag)):
+        return False
+    return bool(flag.value)
+
+
+def _process_is_appcontainer(kernel32, advapi32, process: int) -> tuple[bool, str]:
+    """Whether this suspended process token is an AppContainer."""
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+        return False, _win_error("Could not read the script token")
+    try:
+        value = wintypes.DWORD(0)
+        returned = wintypes.DWORD(0)
+        ok = advapi32.GetTokenInformation(
+            token,
+            _TokenIsAppContainer,
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+            ctypes.byref(returned),
+        )
+        if not ok:
+            return False, _win_error("Could not read the AppContainer flag")
+        if int(value.value) != 1:
+            return False, "the process is not an AppContainer"
+        return True, ""
+    finally:
+        if token.value:
+            kernel32.CloseHandle(token)
+
+
+def _commit_suspended(kernel32, advapi32, job: int, process: _ProcessInformation) -> None:
+    """Put a suspended process in the job, require the container, then resume it.
+
+    A process that is not in the job, or whose token is not an AppContainer,
+    is terminated. It is not resumed.
+    """
+
+    assigned = bool(kernel32.AssignProcessToJobObject(job, process.hProcess))
+    in_job = assigned or _process_in_job(kernel32, process.hProcess, job)
+    reasons: list[str] = []
+    if not in_job:
+        reasons.append(_win_error("the process is not in the Job Object"))
+    else:
+        contained, detail = _process_is_appcontainer(kernel32, advapi32, process.hProcess)
+        if not contained:
+            reasons.append(detail)
+    if reasons:
+        kernel32.TerminateProcess(process.hProcess, 1)
+        raise OSError(
+            "Windows did not confine the script ("
+            + "; ".join(reasons)
+            + "). The script was not started."
+        )
+    if kernel32.ResumeThread(process.hThread) == 0xFFFFFFFF:
+        kernel32.TerminateProcess(process.hProcess, 1)
+        raise OSError(_win_error("Could not resume the sandboxed script"))
+
+
 def _launch(
     command: list[str],
     *,
@@ -534,27 +1299,22 @@ def _launch(
 ) -> _ProcessInformation:
     kernel32 = _kernel32()
     advapi32 = _advapi32()
+    command, env = _command_for_container(command, env)
     stdin = _open_inherited("NUL", _GENERIC_READ, _OPEN_EXISTING)
     stdout = _open_inherited(str(stdout_path), _GENERIC_WRITE, _CREATE_ALWAYS)
     stderr = _open_inherited(str(stderr_path), _GENERIC_WRITE, _CREATE_ALWAYS)
-    capability_sid = ctypes.c_void_p()
-    capabilities = None
+    capability_sid = None
     try:
-        security = _SecurityCapabilities()
-        security.AppContainerSid = sid
-        security.CapabilityCount = 0
-        security.Capabilities = None
-        if network:
-            # internetClient. Without this capability the container has no network.
-            if not advapi32.ConvertStringSidToSidW("S-1-15-3-1", ctypes.byref(capability_sid)):
-                raise OSError(_win_error("Could not look up the network capability"))
-            capabilities = _SidAndAttributes()
-            capabilities.Sid = capability_sid
-            capabilities.Attributes = 0x4  # SE_GROUP_ENABLED
-            security.Capabilities = ctypes.cast(ctypes.pointer(capabilities), ctypes.c_void_p)
-            security.CapabilityCount = 1
-
-        attribute_count = 4 if lpac else 3
+        # internetClient is added only when the script was given the network.
+        rows, alive, capability_sid = _confinement_attributes(
+            sid=sid,
+            job=job,
+            handles=(stdin, stdout, stderr),
+            lpac=lpac,
+            network=network,
+            advapi32=advapi32,
+        )
+        attribute_count = len(rows)
         size = ctypes.c_size_t(0)
         kernel32.InitializeProcThreadAttributeList(None, attribute_count, 0, ctypes.byref(size))
         attributes = ctypes.create_string_buffer(size.value)
@@ -563,85 +1323,31 @@ def _launch(
         ):
             raise OSError(_win_error("Could not prepare the process attributes"))
         try:
-            if not kernel32.UpdateProcThreadAttribute(
-                attributes,
-                0,
-                _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-                ctypes.byref(security),
-                ctypes.sizeof(security),
-                None,
-                None,
-            ):
-                raise OSError(_win_error("Could not attach the AppContainer"))
-            job_list = (wintypes.HANDLE * 1)(job)
-            if not kernel32.UpdateProcThreadAttribute(
-                attributes,
-                0,
-                _PROC_THREAD_ATTRIBUTE_JOB_LIST,
-                job_list,
-                ctypes.sizeof(job_list),
-                None,
-                None,
-            ):
-                raise OSError(_win_error("Could not put the script in the Job Object"))
-            handles = (wintypes.HANDLE * 3)(stdin, stdout, stderr)
-            if not kernel32.UpdateProcThreadAttribute(
-                attributes,
-                0,
-                _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                handles,
-                ctypes.sizeof(handles),
-                None,
-                None,
-            ):
-                raise OSError(_win_error("Could not pass the script's output handles"))
-            policy = wintypes.DWORD(_PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT)
-            if lpac and not kernel32.UpdateProcThreadAttribute(
-                attributes,
-                0,
-                _PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
-                ctypes.byref(policy),
-                ctypes.sizeof(policy),
-                None,
-                None,
-            ):
-                raise OSError(_win_error("Could not request the stricter AppContainer"))
-
-            startup = _StartupInfoEx()
-            startup.StartupInfo.cb = ctypes.sizeof(_StartupInfoEx)
-            startup.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
-            startup.StartupInfo.hStdInput = stdin
-            startup.StartupInfo.hStdOutput = stdout
-            startup.StartupInfo.hStdError = stderr
-            startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
-
+            _apply_attributes(kernel32, attributes, rows)
+            startup = _startup_info(attributes, stdin, stdout, stderr)
             command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
             environment = _environment_block(env)
             process = _ProcessInformation()
-            created = kernel32.CreateProcessW(
+            _start_suspended(
+                kernel32,
                 command[0],
                 command_line,
-                None,
-                None,
-                True,
-                _CREATE_SUSPENDED
-                | _CREATE_UNICODE_ENVIRONMENT
-                | _CREATE_NO_WINDOW
-                | _EXTENDED_STARTUPINFO_PRESENT,
-                ctypes.cast(environment, ctypes.c_void_p),
+                environment,
                 cwd,
-                ctypes.byref(startup),
-                ctypes.byref(process),
+                startup,
+                process,
             )
-            if not created:
-                raise OSError(_win_error("Could not start the sandboxed script"))
-            if kernel32.ResumeThread(process.hThread) == 0xFFFFFFFF:
-                kernel32.TerminateJobObject(job, 1)
+            try:
+                _commit_suspended(kernel32, advapi32, job, process)
+            except Exception:
                 kernel32.CloseHandle(process.hThread)
                 kernel32.CloseHandle(process.hProcess)
-                raise OSError(_win_error("Could not resume the sandboxed script"))
+                raise
             return process
         finally:
+            # CreateProcess has copied the attribute pointers. The buffers in
+            # ``alive`` stay reachable until this function returns.
+            del alive
             kernel32.DeleteProcThreadAttributeList(attributes)
     finally:
         kernel32.CloseHandle(stdin)
@@ -673,8 +1379,8 @@ def _job_memory_killed(job: wintypes.HANDLE, memory_bytes: int) -> bool:
     return peak >= int(memory_bytes * 0.85)
 
 
-# JobObjectLimitViolationInformation. The first two fields are enough to see
-# whether the job stopped the process for CPU time or for memory.
+# JobObjectLimitViolationInformation. Memory bits show up here. The CPU-time
+# cap does not, so user-time accounting is checked separately.
 _JobObjectLimitViolationInformation = 13
 _LIMIT_VIOLATION_BITS = (
     _JOB_OBJECT_LIMIT_PROCESS_TIME
@@ -706,6 +1412,80 @@ class _JobLimitViolation(ctypes.Structure):
     ]
 
 
+def _user_time_reached_limit(total_user_ticks: int, limit_ticks: int) -> bool:
+    """True when user time is within 100 ms of the per-process cap.
+
+    The recorded time can stop a little short of the cap. A cap shorter than
+    that slack has to be met exactly, so a short crash is not a CPU stop.
+    """
+
+    limit = int(limit_ticks)
+    if limit <= 0:
+        return False
+    threshold = limit - _CPU_LIMIT_SLACK_TICKS
+    if threshold < 0:
+        threshold = limit
+    return int(total_user_ticks) >= threshold
+
+
+def _job_cpu_time_reached(job: wintypes.HANDLE) -> bool:
+    """True when this job's user time has reached its per-process cap.
+
+    The violation record does not include the CPU-time bit, and the process
+    exit can look ordinary. The accounting counter is the record of that cap.
+    """
+
+    kernel32 = _kernel32()
+    accounting = _JobBasicAccounting()
+    returned = wintypes.DWORD(0)
+    if not kernel32.QueryInformationJobObject(
+        job,
+        _JobObjectBasicAccountingInformation,
+        ctypes.byref(accounting),
+        ctypes.sizeof(accounting),
+        ctypes.byref(returned),
+    ):
+        return False
+    limits = _JobExtendedLimit()
+    if not kernel32.QueryInformationJobObject(
+        job,
+        _JobObjectExtendedLimitInformation,
+        ctypes.byref(limits),
+        ctypes.sizeof(limits),
+        ctypes.byref(returned),
+    ):
+        return False
+    flags = int(limits.BasicLimitInformation.LimitFlags)
+    if not flags & _JOB_OBJECT_LIMIT_PROCESS_TIME:
+        return False
+    return _user_time_reached_limit(
+        int(accounting.TotalUserTime),
+        int(limits.BasicLimitInformation.PerProcessUserTimeLimit),
+    )
+
+
+def _job_stop_was_a_limit(
+    *,
+    timed_out: bool,
+    violated: bool,
+    cpu_reached: bool,
+    exit_code: int,
+    memory_peak: bool,
+) -> bool:
+    """True when the job's CPU or memory cap stopped the script.
+
+    A wall-clock timeout is separate. User time at the cap counts even when
+    the exit code is 0. A memory peak counts only on a failed exit, so a
+    script that finishes is not reported as a memory stop.
+    """
+
+    if timed_out:
+        return False
+    if violated or cpu_reached:
+        return True
+    return exit_code != 0 and memory_peak
+
+
 def _job_limit_violated(job: wintypes.HANDLE) -> bool:
     """True when the job reports a CPU or memory limit violation."""
     info = _JobLimitViolation()
@@ -719,6 +1499,586 @@ def _job_limit_violated(job: wintypes.HANDLE) -> bool:
     ):
         return False
     return bool(int(info.ViolationLimitFlags) & _LIMIT_VIOLATION_BITS)
+
+
+# ALE authorize layers. No protocol field and no port field: one package SID
+# matches TCP, UDP, and every other protocol those layers classify.
+_FWP_ACTION_BLOCK = 0x00001001
+_FWP_UINT64 = 4
+_FWP_SID = 13
+_FWP_MATCH_EQUAL = 0
+_FWPM_FILTER_FLAG_PERSISTENT = 0x00000001
+_FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT = 0x00000008
+_FWPM_SESSION_FLAG_DYNAMIC = 0x00000001
+_RPC_C_AUTHN_WINNT = 10
+_WFP_ALE_PACKAGE_ID = "71bc78fa-f17c-4997-a602-6abb261f351c"
+_WFP_BLOCK_LAYERS = (
+    ("ALE_AUTH_CONNECT_V4", "c38d57d1-05a7-4c33-904f-7fbceee60e82"),
+    ("ALE_AUTH_CONNECT_V6", "4a72393b-319f-44bc-84c3-ba54dcb3b6b4"),
+    ("ALE_AUTH_RECV_ACCEPT_V4", "e1cd9fe7-f4b5-4273-96c0-592e487b8650"),
+    ("ALE_AUTH_RECV_ACCEPT_V6", "a3b42c97-9f04-4672-b87e-cee9c483257f"),
+    ("ALE_AUTH_LISTEN_V4", "88bb5dad-76d7-4227-9c71-df0a3ed7be7e"),
+    ("ALE_AUTH_LISTEN_V6", "7ac9de24-17dd-4814-b4bd-a9fbc95a321b"),
+    ("ALE_RESOURCE_ASSIGNMENT_V4", "1247d66d-0b60-4a15-8d44-7155d0f53a0c"),
+    ("ALE_RESOURCE_ASSIGNMENT_V6", "55a650e1-5f0a-4eca-a653-88f53b26aa8c"),
+)
+_fwpuclnt_lib: ctypes.WinDLL | None = None
+_wfp_engine: int | None = None
+
+
+class _Guid(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+class _WfpDisplay(ctypes.Structure):
+    _fields_ = [
+        ("name", ctypes.c_wchar_p),
+        ("description", ctypes.c_wchar_p),
+    ]
+
+
+class _WfpBlob(ctypes.Structure):
+    _fields_ = [
+        ("size", ctypes.c_uint32),
+        ("data", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
+
+
+class _WfpValueData(ctypes.Union):
+    _fields_ = [
+        ("uint8", ctypes.c_uint8),
+        ("uint64", ctypes.POINTER(ctypes.c_uint64)),
+        ("sid", ctypes.c_void_p),
+    ]
+
+
+class _WfpValue(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint32),
+        ("data", _WfpValueData),
+    ]
+
+
+class _WfpCondition(ctypes.Structure):
+    _fields_ = [
+        ("fieldKey", _Guid),
+        ("matchType", ctypes.c_uint32),
+        ("value", _WfpValue),
+    ]
+
+
+class _WfpActionData(ctypes.Union):
+    _fields_ = [
+        ("filterType", _Guid),
+        ("calloutKey", _Guid),
+    ]
+
+
+class _WfpAction(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint32),
+        ("data", _WfpActionData),
+    ]
+
+
+class _WfpContext(ctypes.Union):
+    _fields_ = [
+        ("rawContext", ctypes.c_uint64),
+        ("providerContextKey", _Guid),
+    ]
+
+
+class _WfpFilter(ctypes.Structure):
+    """FWPM_FILTER0. The layout is the 64-bit one: 200 bytes."""
+
+    _fields_ = [
+        ("filterKey", _Guid),
+        ("displayData", _WfpDisplay),
+        ("flags", ctypes.c_uint32),
+        ("providerKey", ctypes.c_void_p),
+        ("providerData", _WfpBlob),
+        ("layerKey", _Guid),
+        ("subLayerKey", _Guid),
+        ("weight", _WfpValue),
+        ("numFilterConditions", ctypes.c_uint32),
+        ("filterCondition", ctypes.POINTER(_WfpCondition)),
+        ("action", _WfpAction),
+        ("context", _WfpContext),
+        ("reserved", ctypes.c_void_p),
+        ("filterId", ctypes.c_uint64),
+        ("effectiveWeight", _WfpValue),
+    ]
+
+
+class _WfpSession(ctypes.Structure):
+    _fields_ = [
+        ("sessionKey", _Guid),
+        ("displayData", _WfpDisplay),
+        ("flags", ctypes.c_uint32),
+        ("txnWaitTimeoutInMSec", ctypes.c_uint32),
+        ("processId", ctypes.c_uint32),
+        ("sid", ctypes.c_void_p),
+        ("username", ctypes.c_wchar_p),
+        ("kernelMode", ctypes.c_int),
+    ]
+
+
+class _WfpSubLayer(ctypes.Structure):
+    _fields_ = [
+        ("subLayerKey", _Guid),
+        ("displayData", _WfpDisplay),
+        ("flags", ctypes.c_uint32),
+        ("providerKey", ctypes.c_void_p),
+        ("providerData", _WfpBlob),
+        ("weight", ctypes.c_uint16),
+    ]
+
+
+def _guid(text: str) -> _Guid:
+    return _Guid.from_buffer_copy(uuid.UUID(text).bytes_le)
+
+
+def _wfp_failure(step: str, code: int) -> OSError:
+    number = code & 0xFFFFFFFF
+    return OSError(f"Could not set the script network block ({step}, code {number:#010x}).")
+
+
+def _wfp_block_filter(layer: str, sid_pointer: int, sublayer: _Guid) -> _WfpFilter:
+    """One hard block for this container. The only condition is its package SID."""
+
+    if not sid_pointer:
+        raise OSError("Could not set the script network block (the container id was empty).")
+    weight = ctypes.c_uint64(0xFFFFFFFFFFFFFFFF)
+    condition = _WfpCondition()
+    condition.fieldKey = _guid(_WFP_ALE_PACKAGE_ID)
+    condition.matchType = _FWP_MATCH_EQUAL
+    condition.value.type = _FWP_SID
+    condition.value.data.sid = sid_pointer
+    name = ctypes.create_unicode_buffer("aicad script network block")
+    description = ctypes.create_unicode_buffer("Blocks one aicad script container.")
+    filt = _WfpFilter()
+    filt.displayData.name = ctypes.cast(name, ctypes.c_wchar_p)
+    filt.displayData.description = ctypes.cast(description, ctypes.c_wchar_p)
+    filt.flags = _FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
+    filt.layerKey = _guid(layer)
+    filt.subLayerKey = sublayer
+    filt.weight.type = _FWP_UINT64
+    filt.weight.data.uint64 = ctypes.pointer(weight)
+    filt.numFilterConditions = 1
+    filt.filterCondition = ctypes.pointer(condition)
+    filt.action.type = _FWP_ACTION_BLOCK
+    filt._keepalive = [weight, condition, name, description]
+    return filt
+
+
+def _wfp_block_filters(sid_pointer: int, sublayer: _Guid | None = None) -> list[_WfpFilter]:
+    key = sublayer if sublayer is not None else _guid(str(uuid.uuid4()))
+    return [_wfp_block_filter(layer, sid_pointer, key) for _name, layer in _WFP_BLOCK_LAYERS]
+
+
+def _fwpuclnt() -> ctypes.WinDLL:
+    global _fwpuclnt_lib
+    if _fwpuclnt_lib is None:
+        library = ctypes.WinDLL("fwpuclnt", use_last_error=True)
+        library.FwpmEngineOpen0.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_void_p,
+            ctypes.POINTER(_WfpSession),
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        library.FwpmEngineOpen0.restype = wintypes.DWORD
+        library.FwpmEngineClose0.argtypes = [ctypes.c_void_p]
+        library.FwpmEngineClose0.restype = wintypes.DWORD
+        library.FwpmSubLayerAdd0.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_WfpSubLayer),
+            ctypes.c_void_p,
+        ]
+        library.FwpmSubLayerAdd0.restype = wintypes.DWORD
+        library.FwpmFilterAdd0.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_WfpFilter),
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint64),
+        ]
+        library.FwpmFilterAdd0.restype = wintypes.DWORD
+        _fwpuclnt_lib = library
+    return _fwpuclnt_lib
+
+
+def _install_wfp_block(sid_text: str) -> None:
+    """Block this container on every ALE authorize layer. Fail closed."""
+
+    global _wfp_engine
+    if sys.platform != "win32":
+        return
+    if _wfp_engine:
+        raise OSError("Could not set the script network block (a filter is already installed).")
+    _bind()
+    client = _fwpuclnt()
+    session_name = ctypes.create_unicode_buffer("aicad script network")
+    session_text = ctypes.create_unicode_buffer("Blocks one aicad script container.")
+    session = _WfpSession()
+    session.flags = _FWPM_SESSION_FLAG_DYNAMIC
+    session.displayData.name = ctypes.cast(session_name, ctypes.c_wchar_p)
+    session.displayData.description = ctypes.cast(session_text, ctypes.c_wchar_p)
+    session.kernelMode = 0
+    engine = ctypes.c_void_p()
+    code = int(
+        client.FwpmEngineOpen0(
+            None,
+            _RPC_C_AUTHN_WINNT,
+            None,
+            ctypes.byref(session),
+            ctypes.byref(engine),
+        )
+    )
+    if code or not engine.value:
+        raise _wfp_failure("FwpmEngineOpen0", code)
+    sid_ptr = None
+    try:
+        sid_ptr = _sid_pointer(sid_text)
+        if not sid_ptr.value:
+            raise OSError("Could not set the script network block (the container id was empty).")
+        sublayer_key = _guid(str(uuid.uuid4()))
+        sublayer_name = ctypes.create_unicode_buffer("aicad script network")
+        sublayer_text = ctypes.create_unicode_buffer("Blocks one aicad script container.")
+        sublayer = _WfpSubLayer()
+        sublayer.subLayerKey = sublayer_key
+        sublayer.displayData.name = ctypes.cast(sublayer_name, ctypes.c_wchar_p)
+        sublayer.displayData.description = ctypes.cast(sublayer_text, ctypes.c_wchar_p)
+        sublayer.weight = 0xFFFF
+        code = int(client.FwpmSubLayerAdd0(engine, ctypes.byref(sublayer), None))
+        if code:
+            raise _wfp_failure("FwpmSubLayerAdd0", code)
+        for name, layer in _WFP_BLOCK_LAYERS:
+            filt = _wfp_block_filter(layer, int(sid_ptr.value), sublayer_key)
+            if int(filt.numFilterConditions) != 1 or int(filt.action.type) != _FWP_ACTION_BLOCK:
+                raise OSError(
+                    "Could not set the script network block (the filter is not limited to the container)."
+                )
+            added = ctypes.c_uint64()
+            code = int(client.FwpmFilterAdd0(engine, ctypes.byref(filt), None, ctypes.byref(added)))
+            if code:
+                raise _wfp_failure(name, code)
+    except Exception:
+        client.FwpmEngineClose0(engine)
+        raise
+    finally:
+        if sid_ptr:
+            _kernel32().LocalFree(sid_ptr)
+    _wfp_engine = int(engine.value)
+
+
+def _close_wfp_block() -> None:
+    """Drop the dynamic filters. They also die when this process exits."""
+
+    global _wfp_engine
+    engine = _wfp_engine
+    _wfp_engine = None
+    if not engine or sys.platform != "win32":
+        return
+    _fwpuclnt().FwpmEngineClose0(ctypes.c_void_p(engine))
+
+
+def _firewall_rule_names() -> tuple[str, ...]:
+    return _NETWORK_OFF_RULES + _NETWORK_OFF_STALE_RULES
+
+
+def _firewall_script(sid: str | None = None, *, install: bool) -> str:
+    """PowerShell that blocks, or clears, this container's inbound and outbound traffic.
+
+    The package id is the AppContainer SID. A capability SID is not accepted.
+    Every protocol is blocked. The rules name no port.
+    """
+
+    names = ", ".join(repr(name) for name in _firewall_rule_names())
+    # A missing rule is not an error. Ending on that lookup would make
+    # powershell.exe exit 1, and a later script that needs the network
+    # would not start.
+    remove = (
+        "$ErrorActionPreference = 'Stop'\n"
+        "try {\n"
+        f"  foreach ($name in @({names})) {{\n"
+        "    foreach ($rule in @(Get-NetFirewallRule -Name $name -ErrorAction Ignore)) {\n"
+        "      Remove-NetFirewallRule -InputObject $rule\n"
+        "    }\n"
+        "  }\n"
+    )
+    if not install:
+        return remove + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
+    if sid is None or _PACKAGE_SID_TEXT.fullmatch(sid) is None:
+        raise OSError("The AppContainer id is not a package SID, so the network was not blocked.")
+    package = sid.upper()
+    return (
+        remove
+        + "  New-NetFirewallRule -Name 'aicad-script-network-off-out' "
+        + "-DisplayName 'aicad script network off outbound' "
+        + "-Direction Outbound -Action Block -Protocol Any "
+        + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
+        + "  New-NetFirewallRule -Name 'aicad-script-network-off-in' "
+        + "-DisplayName 'aicad script network off inbound' "
+        + "-Direction Inbound -Action Block -Protocol Any "
+        + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
+        + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
+    )
+
+
+def _run_firewall_script(script: str) -> None:
+    kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        # Later calls get slower. A timeout is still a missing block.
+        "timeout": 120,
+        "check": False,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = _CREATE_NO_WINDOW
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            **kwargs,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OSError(f"Could not set the script network block. {exc}") from exc
+    if completed.returncode != 0:
+        detail = ((completed.stderr or "") + (completed.stdout or "")).strip()
+        raise OSError(
+            "Could not set the script network block "
+            f"(code {completed.returncode}). {detail}"
+        )
+
+
+def _lookup_profile_local_app_data() -> Path | None:
+    """The real local profile directory, not TEMP and not an overridden variable.
+
+    A sandboxed script's environment points this name at the project, and the
+    project is a folder it can write. The known profile folder is neither.
+    """
+
+    if sys.platform != "win32":
+        return Path.home() / ".config"
+    try:
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    except OSError:
+        return None
+    shell32.SHGetKnownFolderPath.argtypes = [
+        ctypes.POINTER(_Guid),
+        wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
+    folder = _guid(_FOLDERID_LOCAL_APPDATA)
+    found = ctypes.c_void_p()
+    code = int(shell32.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.byref(found)))
+    if code != 0 or not found.value:
+        return None
+    try:
+        text = ctypes.wstring_at(found.value)
+    finally:
+        ole32.CoTaskMemFree(found)
+    if not text:
+        return None
+    return Path(text)
+
+
+def _profile_local_app_data() -> Path | None:
+    global _profile_local_app_data_known, _profile_local_app_data_path
+    if _profile_local_app_data_known:
+        return _profile_local_app_data_path
+    _profile_local_app_data_known = True
+    _profile_local_app_data_path = _lookup_profile_local_app_data()
+    return _profile_local_app_data_path
+
+
+def _network_off_marker() -> Path | None:
+    if _network_off_marker_path is not None:
+        return _network_off_marker_path
+    base = _profile_local_app_data()
+    if base is None:
+        return None
+    return base / "aicad" / "script-network-off-sid"
+
+
+def _recorded_rules_sid() -> str | None:
+    path = _network_off_marker()
+    if path is None:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if _PACKAGE_SID_TEXT.fullmatch(text) is None:
+        return None
+    return text.upper()
+
+
+def _record_rules_sid(sid: str) -> None:
+    path = _network_off_marker()
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(sid.upper() + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def _forget_recorded_rules() -> None:
+    path = _network_off_marker()
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def _firewall_present_script(sid: str) -> str:
+    """Read the two block rules. This script does not create or remove any rule."""
+
+    if _PACKAGE_SID_TEXT.fullmatch(sid) is None:
+        raise OSError("The AppContainer id is not a package SID, so the network was not blocked.")
+    package = sid.upper()
+    names = (
+        ("aicad-script-network-off-out", "Outbound"),
+        ("aicad-script-network-off-in", "Inbound"),
+    )
+    checks = "\n".join(
+        f"  if (-not (Test-AicadBlock '{name}' '{direction}' '{package}')) {{ exit 2 }}\n"
+        for name, direction in names
+    )
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        "function Test-AicadBlock([string]$Name, [string]$Direction, [string]$Package) {\n"
+        "  $rules = @(Get-NetFirewallRule -Name $Name -ErrorAction Ignore)\n"
+        "  if ($rules.Count -ne 1) { return $false }\n"
+        "  $rule = $rules[0]\n"
+        "  if ([string]$rule.Enabled -ne 'True') { return $false }\n"
+        "  if ([string]$rule.Action -ne 'Block') { return $false }\n"
+        "  if ([string]$rule.Direction -ne $Direction) { return $false }\n"
+        "  $ports = @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule)\n"
+        "  if ($ports.Count -ne 1) { return $false }\n"
+        "  $protocol = [string]$ports[0].Protocol\n"
+        "  if ($protocol -ne 'Any' -and $protocol -ne '256') { return $false }\n"
+        "  foreach ($value in @($ports[0].LocalPort) + @($ports[0].RemotePort)) {\n"
+        "    foreach ($item in @($value)) {\n"
+        "      $text = [string]$item\n"
+        "      if ($text -and $text -ne 'Any') { return $false }\n"
+        "    }\n"
+        "  }\n"
+        "  $apps = @(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule)\n"
+        "  if ($apps.Count -ne 1) { return $false }\n"
+        "  if ([string]$apps[0].Package.Trim().ToUpperInvariant() -ne $Package) { return $false }\n"
+        "  return $true\n"
+        "}\n"
+        "try {\n"
+        f"{checks}"
+        "  exit 0\n"
+        "} catch {\n"
+        "  Write-Output ($_ | Out-String)\n"
+        "  exit 2\n"
+        "}\n"
+    )
+
+
+def _firewall_block_is_present(sid: str) -> bool:
+    """True only when both block rules for this package are installed now.
+
+    A missing rule, a timed-out lookup, or any other failure is not present.
+    The caller installs the rules again or does not start the script.
+    """
+
+    if sys.platform != "win32":
+        return False
+    try:
+        _run_firewall_script(_firewall_present_script(sid))
+    except OSError:
+        return False
+    return True
+
+
+def _hold_network_block(sid_text: str) -> None:
+    """Install the container block. A second overlapping child reuses it.
+
+    The firewall rules stay after the last child. A record names the package
+    for the next process, and that record is used only after both rules are
+    read back. A missing rule is installed again. The filter is installed for
+    each hold, because closing it drops the dynamic session.
+    """
+
+    global _network_off_holders, _network_off_sid, _network_off_rules_sid
+    with _network_off_lock:
+        if _network_off_holders and _network_off_sid != sid_text.upper():
+            raise OSError(
+                "A script still has the network blocked, so this script was not started."
+            )
+        if _network_off_holders == 0:
+            wanted = sid_text.upper()
+            if _network_off_rules_sid != wanted:
+                recorded = _recorded_rules_sid() == wanted
+                if not recorded or not _firewall_block_is_present(wanted):
+                    _run_firewall_script(_firewall_script(sid_text, install=True))
+                    _record_rules_sid(wanted)
+                _network_off_rules_sid = wanted
+            try:
+                if _wfp_engine is None:
+                    _install_wfp_block(sid_text)
+            except Exception:
+                try:
+                    _run_firewall_script(_firewall_script(install=False))
+                except OSError:
+                    pass
+                _forget_recorded_rules()
+                _network_off_rules_sid = None
+                raise
+            _network_off_sid = wanted
+        _network_off_holders += 1
+
+
+def _release_network_block() -> None:
+    """Drop the filter once the last network-off child has exited.
+
+    The firewall rules stay. The next network-off script with this package
+    reuses them. A network-on script removes them before it starts.
+    """
+
+    global _network_off_holders, _network_off_sid
+    with _network_off_lock:
+        if _network_off_holders <= 0:
+            return
+        _network_off_holders -= 1
+        if _network_off_holders > 0:
+            return
+        _network_off_sid = None
+        _close_wfp_block()
+
+
+def _require_script_network_open() -> None:
+    """A network-on script must not run while the shared container is blocked."""
+
+    global _network_off_sid, _network_off_rules_sid
+    with _network_off_lock:
+        if _network_off_holders:
+            raise OSError(
+                "A script still has the network blocked, so this script was not started."
+            )
+        _close_wfp_block()
+        _forget_recorded_rules()
+        _run_firewall_script(_firewall_script(install=False))
+        _network_off_sid = None
+        _network_off_rules_sid = None
 
 
 def spawn(
@@ -742,13 +2102,21 @@ def spawn(
     sid, sid_text = _appcontainer_sid()
     job = None
     process = None
+    held_block = False
     try:
         # Do not rewrite this process's access list. An AppContainer can open
         # a process only when that process grants the container, and this
         # process does not. Adding a deny entry here stopped later scripts
         # from finishing in CI. See SECURITY.md.
-        grant_workspace(workspace, sid_text)
+        grant_workspace(workspace, sid_text, _package_sid(mode == "lpac"))
         job = _create_job(cpu_seconds, memory_bytes)
+        if network:
+            _require_script_network_open()
+        else:
+            # The block is in place before the process is resumed. The child
+            # then checks that the connection is refused.
+            _hold_network_block(sid_text)
+            held_block = True
         process = _launch(
             command,
             cwd=cwd,
@@ -772,12 +2140,15 @@ def spawn(
         exit_code = int(code.value)
         if exit_code >= 0x80000000:
             exit_code = exit_code - 0x100000000
-        # A CPU-limit kill often leaves a normal-looking exit code. The job's
-        # own violation flags are what say the limit stopped the script.
-        memory_killed = (
-            not timed_out
-            and exit_code != 0
-            and (_job_limit_violated(job) or _job_memory_killed(job, memory_bytes))
+        # A CPU-time kill often leaves an ordinary exit code, and the
+        # violation record does not include that limit. User time at the cap
+        # is what says the limit stopped the script.
+        memory_killed = _job_stop_was_a_limit(
+            timed_out=timed_out,
+            violated=_job_limit_violated(job),
+            cpu_reached=_job_cpu_time_reached(job),
+            exit_code=exit_code,
+            memory_peak=_job_memory_killed(job, memory_bytes),
         )
         # Files the container creates can omit this user's inherited access.
         # Give it back before the parent reads the result.
@@ -804,15 +2175,33 @@ def spawn(
             _kernel32().CloseHandle(process.hProcess)
         if job is not None:
             _kernel32().CloseHandle(job)
+        if held_block:
+            _release_network_block()
         _advapi32().FreeSid(sid)
+
+
+def _probe_source() -> str:
+    """Probe program. A process that only prints is not confined."""
+
+    return (
+        "import aicad\n"
+        "from aicad.sandbox_windows import identity_failures\n"
+        f"failed = identity_failures({_PROBE_MEMORY_BYTES})\n"
+        "if failed:\n"
+        "    raise SystemExit('confinement: ' + '; '.join(failed))\n"
+        "print('sandbox-ok')\n"
+    )
 
 
 def _probe_command(workspace: Path) -> list[str]:
     script = workspace / "probe.py"
     # The real script imports aicad. A probe that only prints can succeed in a
-    # container that then fails to load the geometry libraries.
-    script.write_text("import aicad\nprint('sandbox-ok')\n", encoding="utf-8")
-    return [sys.executable, "-B", "-u", str(script)]
+    # container that then fails to load the geometry libraries. The same
+    # confinement check the script uses has to pass before this counts.
+    script.write_text(_probe_source(), encoding="utf-8")
+    # -P keeps the project folder, which is both the working directory and the
+    # script directory, off sys.path. The script path is absolute.
+    return [sys.executable, "-P", "-B", "-u", str(script.resolve())]
 
 
 def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
@@ -825,12 +2214,16 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
     try:
         sid, sid_text = _appcontainer_sid()
         try:
-            grant_read_paths(read_paths, sid_text)
-            grant_workspace(root, sid_text)
-            job = _create_job(30, 2 * 1024 * 1024 * 1024)
+            package = _package_sid(mode == "lpac")
+            grant_read_paths(read_paths, sid_text, package)
+            grant_workspace(root, sid_text, package)
+            job = _create_job(_PROBE_CPU_SECONDS, _PROBE_MEMORY_BYTES)
+            held_block = False
             try:
                 stdout_path = root / "stdout.txt"
                 stderr_path = root / "stderr.txt"
+                _hold_network_block(sid_text)
+                held_block = True
                 process = _launch(
                     _probe_command(root),
                     cwd=str(root),
@@ -856,6 +2249,8 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
                     _kernel32().CloseHandle(process.hProcess)
             finally:
                 _kernel32().CloseHandle(job)
+                if held_block:
+                    _release_network_block()
         finally:
             _advapi32().FreeSid(sid)
     except OSError as exc:
@@ -891,6 +2286,7 @@ def _probe_env(workspace: Path) -> dict[str, str]:
     env["USERPROFILE"] = location
     env["APPDATA"] = location
     env["LOCALAPPDATA"] = location
+    env["PYTHONSAFEPATH"] = "1"
     return env
 
 
@@ -920,15 +2316,23 @@ def ensure_mode(read_paths: Sequence[Path]) -> str:
 
 
 def availability_error(read_paths: Sequence[Path] | None = None) -> str | None:
+    """Whether this process can confine a script. The answer is kept for the process."""
+
+    global _probe_done, _probe_result
     if ctypes.sizeof(ctypes.c_void_p) != 8:
         return "The Windows sandbox needs 64-bit Python. The script was not run."
     if not read_paths:
         return "The sandbox was not given the Python folders it needs to read."
+    if _probe_done:
+        return _probe_result
     try:
         ensure_mode(read_paths)
     except OSError as exc:
-        return str(exc)
-    return None
+        _probe_result = str(exc)
+    else:
+        _probe_result = None
+    _probe_done = True
+    return _probe_result
 
 
 def identity_failures(memory_bytes: int) -> list[str]:
@@ -955,7 +2359,12 @@ def identity_failures(memory_bytes: int) -> list[str]:
         )
     except OSError:
         ok = False
-    if not ok or is_container.value != 1:
+    if not ok:
+        failures.append(
+            "the AppContainer check did not complete "
+            f"(Windows error {_last_error()})"
+        )
+    elif int(is_container.value) != 1:
         failures.append("the process is not an AppContainer")
 
     in_job = wintypes.BOOL(False)
@@ -963,7 +2372,13 @@ def identity_failures(memory_bytes: int) -> list[str]:
         in_job_ok = bool(kernel32.IsProcessInJob(-1, None, ctypes.byref(in_job)))
     except OSError:
         in_job_ok = False
-    if not in_job_ok or not in_job.value:
+    if not in_job_ok:
+        failures.append(
+            "the Job Object check did not complete "
+            f"(Windows error {_last_error()})"
+        )
+        return failures
+    if not in_job.value:
         failures.append("the process is not in a Job Object")
         return failures
     info = _JobExtendedLimit()
@@ -984,10 +2399,90 @@ def identity_failures(memory_bytes: int) -> list[str]:
     return failures
 
 
+class _TokenAppContainerInformation(ctypes.Structure):
+    _fields_ = [("TokenAppContainer", ctypes.c_void_p)]
+
+
+def _token_group_sids(buffer, read_sid) -> list[str]:
+    """Capability SIDs in a 64-bit TOKEN_GROUPS. The caller still holds the buffer."""
+
+    if ctypes.sizeof(ctypes.c_void_p) != 8:
+        raise OSError("the network capability list needs 64-bit Python")
+    raw = bytes(buffer)
+    if len(raw) < 8:
+        raise OSError("the network capability list was too small")
+    count = int.from_bytes(raw[:4], "little")
+    if count > 64:
+        raise OSError("the network capability list was not readable")
+    if len(raw) < 8 + count * 16:
+        raise OSError("the network capability list was cut off")
+    found: list[str] = []
+    for index in range(count):
+        start = 8 + index * 16
+        pointer = int.from_bytes(raw[start : start + 8], "little")
+        if pointer:
+            found.append(str(read_sid(pointer)))
+    return found
+
+
+def _token_buffer(advapi32, info_class: int):
+    """Bytes of one token class. The buffer stays alive until the caller drops it."""
+
+    returned = wintypes.DWORD(0)
+    advapi32.GetTokenInformation(-4, info_class, None, 0, ctypes.byref(returned))
+    size = int(returned.value)
+    if size <= 0 or size > 1024 * 1024:
+        raise OSError(f"the token could not be read (Windows error {_last_error()}).")
+    buffer = ctypes.create_string_buffer(size)
+    returned = wintypes.DWORD(0)
+    if not advapi32.GetTokenInformation(-4, info_class, buffer, size, ctypes.byref(returned)):
+        raise OSError(f"the token could not be read (Windows error {_last_error()}).")
+    return buffer
+
+
+def windows_token_network() -> tuple[str, tuple[str, ...] | None]:
+    """This process's package SID and capability SIDs.
+
+    The capability tuple is None when the list could not be read. An empty
+    tuple means the token has none. The process-token pseudo-handle is not closed.
+    """
+
+    _bind()
+    advapi32 = _advapi32()
+    package = "unread"
+    try:
+        raw = _token_buffer(advapi32, _TokenAppContainerSid)
+        try:
+            info = _TokenAppContainerInformation.from_buffer(raw)
+            if not info.TokenAppContainer:
+                package = "unread empty"
+            else:
+                package = _sid_to_string(ctypes.c_void_p(info.TokenAppContainer))
+        finally:
+            del raw
+    except (OSError, ValueError) as exc:
+        package = f"unread {exc}"
+    try:
+        raw = _token_buffer(advapi32, _TokenCapabilities)
+        try:
+            capabilities = tuple(
+                _token_group_sids(
+                    raw,
+                    lambda pointer: _sid_to_string(ctypes.c_void_p(pointer)),
+                )
+            )
+        finally:
+            del raw
+    except (OSError, ValueError) as exc:
+        return f"{package}; capabilities unread ({exc})", None
+    return package, capabilities
+
+
 def network_error_is_confined(error: OSError) -> bool:
     winerror = getattr(error, "winerror", None)
     # 5 and 10013 are access denied. 10051 is network unreachable, which is what a
-    # blocked stack reports. A timeout or a reset means the packet left the machine.
+    # blocked stack reports. A timeout (10060), host unreachable (10065), or a DNS
+    # failure means the socket was not refused.
     return winerror in {5, 10013, 10051} or error.errno in {13, 1}
 
 

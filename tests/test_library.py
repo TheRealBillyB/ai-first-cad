@@ -1,4 +1,4 @@
-"""Standard parts from bd_warehouse, placement, and clearance."""
+"""Standard parts, placement, and clearance."""
 
 import pytest
 
@@ -14,8 +14,26 @@ def test_search_finds_an_m3_screw_and_a_608_bearing(tmp_path):
 
     bearings = document.search_parts("608")
     match = next(item for item in bearings["matches"] if item["kind"] == "ball_bearing")
-    assert match["size"] == "M8-22-7"
-    assert "608" in match["aliases"]
+    assert match["size"] == "608"
+    assert "M8-22-7" in match["aliases"]
+    assert match["dimensions"]["bore_mm"] == 8
+    assert match["dimensions"]["outside_mm"] == 22
+    assert match["dimensions"]["width_mm"] == 7
+
+    screws_only = [item["size"] for item in screws["matches"] if item["kind"] == "socket_head_cap_screw"]
+    assert screws_only == ["M3-0.5"]
+    assert all(item["kind"] == "socket_head_cap_screw" for item in screws["matches"])
+
+
+def test_a_size_that_is_not_in_the_catalog_is_not_replaced_by_other_sizes(tmp_path):
+    document = Document(tmp_path)
+    missed = document.search_parts("M3-0.8 screw")
+    assert missed["matches"] == []
+    washers = document.search_parts("M3-0.8")
+    assert all(item["size"] != "M3" for item in washers["matches"])
+    sample = document.search_parts("screw")
+    assert len(sample["matches"]) == 8
+    assert {item["kind"] for item in sample["matches"]} == {"socket_head_cap_screw"}
 
 
 def test_screw_clears_a_hole_and_a_pin_does_not(tmp_path):
@@ -24,7 +42,7 @@ def test_screw_clears_a_hole_and_a_pin_does_not(tmp_path):
         "plate",
         "part = Pos(0, 0, 2) * Box(20, 20, 4) - Cylinder(1.7, 12)\n",
     )
-    # simple=True models the shank without threads, near the minor diameter.
+    # The shank is the ISO 724 basic minor diameter, without threads.
     # The head is held 1 mm above the plate so the reported gap is the shank-to-hole gap.
     document.insert_standard_part(
         "screw",

@@ -152,7 +152,7 @@ def test_step_external_file_outside_the_folder_is_not_opened(layout):
     canary = _canary(outside)
     before = _digest(secret)
     step = project / "extern.step"
-    _assembly_step(step, "../outside/secret.step", str(canary))
+    _assembly_step(step, "../outside/secret.step", canary.as_posix())
     _write_session(project, [{"name": "extern", "source": "step", "step_file": "extern.step"}])
     opened = _open(project)
     info = opened.list_parts()[0]
@@ -325,6 +325,20 @@ def test_3mf_zip_entries_do_not_leave_the_project(layout):
         with pytest.raises(GeometryError):
             import_step_file(path)
     _assert_canary_absent(outside, scratch)
+
+
+def test_a_relative_step_path_stays_in_the_project(layout):
+    project, outside, _scratch, secret = layout
+    before = _digest(secret)
+    document = Document(project)
+    with pytest.raises(DocumentError, match="outside the project"):
+        document.import_step("again", Path("..") / outside.name / secret.name)
+    assert _digest(secret) == before
+    assert not (project / "imports").exists()
+    local = project / "local.step"
+    _box_step(local)
+    document.import_step("local", Path("nested") / ".." / "local.step")
+    assert document.measure("local").watertight
 
 
 def test_symlinked_step_outside_the_project_is_not_read(layout):

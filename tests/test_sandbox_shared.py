@@ -417,10 +417,21 @@ def test_pack_named_as_the_core_distribution_is_not_run_when_listed_or_allowed(t
     )
     monkeypatch.syspath_prepend(str(base))
     offer = _offer("h-core")
-    plugins.warning_text(offer)
+    # The package name is not enough to count as this install, so it still needs an allow.
+    # Listing it and recording that allow does not import the module.
+    assert offer.third_party is True
+    assert offer.problem is None
+    assert offer.distribution == "aicad"
+    warning = plugins.warning_text(offer)
+    assert "after you allow it" in warning
     plugins._list_payload()
-    with pytest.raises(plugins.PluginError):
-        plugins.allow("h-core", accept=True)
+    # The distribution name matches aicad. That does not make it this install.
+    # Listing it and recording an allow must not run the package. Loading it
+    # before that allow must not run it either.
+    with pytest.raises(plugins.PluginConsentError):
+        plugins.load("h-core")
+    allowed = plugins.allow("h-core", accept=True)
+    assert allowed.third_party is True
     assert "h_core_plugin" not in sys.modules
     _assert_absent(canary)
 

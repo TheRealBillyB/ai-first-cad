@@ -11,8 +11,6 @@ and draws this file from that data. Opening the PNG does not run code.
 from __future__ import annotations
 
 import math
-import os
-import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -100,24 +98,13 @@ def render_plan_sheet(
             draw.text((20 * scale_px, footer_y + index * 22 * scale_px), line, font=font_small, fill=_NOTE)
 
     image = image.resize((width, height), Image.Resampling.LANCZOS)
-    _replace_png(out, image)
-    return out
+    from aicad.paths import publish_file
 
-
-def _replace_png(path: Path, image: Image.Image) -> None:
-    """Write the PNG in this directory. A link at the same name is replaced, not followed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        descriptor, name = tempfile.mkstemp(prefix=".sheet-", suffix=".png", dir=path.parent)
-        os.close(descriptor)
-        temporary = Path(name)
+    def write(temporary: Path) -> None:
         image.save(temporary, "PNG")
-        os.replace(temporary, path)
-        temporary = None
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+
+    publish_file(out, write)
+    return out
 
 
 def _page_size(panels: int) -> tuple[int, int]:

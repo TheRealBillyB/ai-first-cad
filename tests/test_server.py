@@ -26,6 +26,7 @@ def test_cli_measures_a_script(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-m",
             "aicad",
             "run",
@@ -51,7 +52,7 @@ def test_mcp_server_builds_and_inspects_the_example(tmp_path):
 async def _mcp_example(tmp_path: Path) -> None:
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "aicad", "serve", "--workspace", str(tmp_path)],
+        args=["-P", "-m", "aicad", "serve", "--workspace", str(tmp_path)],
         cwd=str(tmp_path),
     )
     async with stdio_client(params) as (read, write):
@@ -134,7 +135,7 @@ async def _mcp_example(tmp_path: Path) -> None:
             catalog = await session.call_tool("search_parts", {"query": "608"})
             assert catalog.is_error is False, _text(catalog)
             matches = json.loads(_text(catalog))["matches"]
-            assert any(item["size"] == "M8-22-7" for item in matches)
+            assert any(item["size"] == "608" for item in matches)
             image_blocks = [block for block in inspected.content if block.type == "image"]
             assert len(image_blocks) >= 8
             assert image_blocks[0].mime_type == "image/png"
@@ -176,7 +177,7 @@ def test_mcp_sketch_dimension_rebuilds_the_part(tmp_path):
 async def _mcp_sketch(tmp_path: Path) -> None:
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "aicad", "serve", "--workspace", str(tmp_path / "ws")],
+        args=["-P", "-m", "aicad", "serve", "--workspace", str(tmp_path / "ws")],
         cwd=str(tmp_path),
     )
     spec = _rectangle_spec()

@@ -531,12 +531,12 @@ class PlanStore:
         return payload
 
     def _write(self, plan: dict) -> None:
-        self.directory.mkdir(parents=True, exist_ok=True)
+        from aicad.paths import output_dir, publish_text
+
+        self.directory = output_dir(self.root, self.directory, "Plan", PlanError)
         path = self._path(plan["id"])
         _render_revision(self.root, plan, _current(plan))
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(path)
+        publish_text(path, json.dumps(plan, indent=2) + "\n")
         _drop_orphan_sheets(self.root, plan)
 
     def _touch(self, plan: dict) -> None:
@@ -640,11 +640,13 @@ def plan_files(root: str | Path) -> dict[str, str]:
 
 def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
     """Put plan JSON back and redraw the sheets those revisions name."""
+    from aicad.paths import output_dir, publish_text
+
     root_path = Path(root)
     directory = root_path / "plans"
-    if not files and not directory.is_dir():
+    if not files and not directory.is_dir() and not directory.is_symlink():
         return
-    directory.mkdir(parents=True, exist_ok=True)
+    directory = output_dir(root_path, directory, "Plans", PlanError)
     keep = set(files)
     for path in directory.glob("*.json"):
         if path.name not in keep:
@@ -656,7 +658,7 @@ def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
         if Path(name).name != name or not name.endswith(".json"):
             continue
         target = directory / name
-        target.write_text(text, encoding="utf-8")
+        publish_text(target, text)
         try:
             plan = json.loads(text)
         except json.JSONDecodeError:
@@ -1089,6 +1091,7 @@ def _normalize_sheet(spec: dict, revision: dict) -> dict:
             "A sheet id is short lowercase letters, numbers, and underscores, such as 01_top. "
             f"{sheet_id!r} is not."
         )
+    _refuse_reserved_sheet_id(sheet_id)
     owns_sheet = any(sheet["id"] == sheet_id for sheet in revision["sheets"])
     if not owns_sheet and sheet_id in _ids(revision):
         raise PlanError(f"Id {sheet_id!r} is already used on this revision.")
@@ -1211,6 +1214,9 @@ def _fill(value) -> str:
 
 
 def _render_revision(root: Path, plan: dict, revision: dict) -> None:
+    from aicad.paths import output_dir
+
+    output_dir(root, root / "plans" / plan["id"] / f"v{revision['version']}", "Plan sheet", PlanError)
     stamp = plan.get("status") or "draft"
     if revision.get("version") != plan.get("current_revision"):
         stamp = "recorded"
@@ -1237,6 +1243,13 @@ def _render_revision(root: Path, plan: dict, revision: dict) -> None:
         )
 
 
+def _refuse_reserved_sheet_id(sheet_id: str) -> None:
+    from aicad.paths import is_reserved_device_name
+
+    if is_reserved_device_name(sheet_id):
+        raise PlanError(f"{sheet_id} is reserved on Windows. Pick another sheet id.")
+
+
 def _require_loaded_sheet(sheet: object, filename: str) -> None:
     """Reject a sheet id that cannot be drawn inside the project. The picture is not opened."""
     if not isinstance(sheet, dict):
@@ -1244,6 +1257,7 @@ def _require_loaded_sheet(sheet: object, filename: str) -> None:
     sheet_id = sheet.get("id")
     if not isinstance(sheet_id, str) or not _ITEM_ID.match(sheet_id):
         raise PlanError(f"{filename} has a sheet this version cannot read.")
+    _refuse_reserved_sheet_id(sheet_id)
 
 
 def _sheet_destination(root: Path, plan: dict, revision: dict, sheet: dict) -> tuple[Path, str]:
@@ -1261,12 +1275,14 @@ def _sheet_destination(root: Path, plan: dict, revision: dict, sheet: dict) -> t
         or not _ITEM_ID.match(sheet_id)
     ):
         raise PlanError("A plan sheet has to stay inside the project.")
+    _refuse_reserved_sheet_id(sheet_id)
     relative = f"plans/{plan_id}/v{version}/{sheet_id}.png"
     parent = _abs(root, f"plans/{plan_id}/v{version}")
     destination = parent / f"{sheet_id}.png"
+    from aicad.paths import is_reparse, shared_file
+
     try:
-        linked = destination.is_symlink() or (destination.exists() and destination.stat().st_nlink > 1)
-        if linked:
+        if is_reparse(destination) or shared_file(destination):
             destination.unlink()
     except OSError as exc:
         raise PlanError("A plan sheet has to stay inside the project.") from exc
@@ -1274,18 +1290,31 @@ def _sheet_destination(root: Path, plan: dict, revision: dict, sheet: dict) -> t
 
 
 def _drop_orphan_sheets(root: Path, plan: dict) -> None:
+    from aicad.paths import resolve_in_project
+
     folder = root / "plans" / plan["id"]
+    if not folder.exists() and not folder.is_symlink():
+        return
+    folder = resolve_in_project(root, folder, "Plan", PlanError)
     if not folder.is_dir():
         return
+    from aicad.paths import stays_inside
+
     referenced = set()
     for revision in plan.get("revisions") or []:
         for sheet in revision.get("sheets") or []:
             if sheet.get("path"):
-                referenced.add((root / sheet["path"]).resolve())
+                candidate = root / sheet["path"]
+                if stays_inside(root, candidate):
+                    referenced.add(candidate.resolve())
     for png in folder.rglob("*.png"):
+        if not stays_inside(root, png):
+            continue
         if png.resolve() not in referenced:
             png.unlink()
     for child in sorted(folder.rglob("*"), reverse=True):
+        if child.is_symlink() or not stays_inside(root, child):
+            continue
         if child.is_dir() and not any(child.iterdir()):
             child.rmdir()
 
@@ -1310,11 +1339,12 @@ def _views(root: Path, revision: dict) -> list[dict]:
 
 
 def _abs(root: Path, relative: str) -> Path:
-    path = (root / relative).resolve()
-    root_resolved = root.resolve()
-    if path != root_resolved and root_resolved not in path.parents:
-        raise PlanError("A plan sheet has to stay inside the project.")
-    return path
+    from aicad.paths import resolve_in_project
+
+    try:
+        return resolve_in_project(root, Path(root) / relative, "Plan sheet", PlanError)
+    except PlanError as exc:
+        raise PlanError("A plan sheet has to stay inside the project.") from exc
 
 
 def _current(plan: dict) -> dict:

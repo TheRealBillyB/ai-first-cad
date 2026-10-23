@@ -163,18 +163,19 @@ def test_opening_a_project_does_not_load_its_plugin_pack(tmp_path, config_home):
 
 
 def test_listing_and_allowing_a_project_pack_does_not_run_it(tmp_path, config_home):
-    """The pack is visible only because the project folder is the working directory."""
+    """The start command keeps the working directory off the import path, so a pack there is not listed or run."""
     project = tmp_path / "shared"
     canary = tmp_path / "outside" / _CANARY_NAME
-    # No RECORD, so discovery reads the manifest by finding the module.
+    # No RECORD. Discovery would have to find this folder on the import path.
     _write_pack(project, canary, record=False)
     env = os.environ.copy()
     env["AICAD_CONFIG"] = str(tmp_path / "config")
     env["AICAD_PLUGIN_CONSENT"] = str(tmp_path / "consent" / "plugins.json")
     env["HOME"] = str(tmp_path / "home")
+    env.pop("PYTHONSAFEPATH", None)
 
     listed = subprocess.run(
-        [sys.executable, "-m", "aicad", "plugins", "list"],
+        [sys.executable, "-P", "-m", "aicad", "plugins", "list"],
         cwd=project,
         env=env,
         capture_output=True,
@@ -183,24 +184,23 @@ def test_listing_and_allowing_a_project_pack_does_not_run_it(tmp_path, config_ho
     )
     assert listed.returncode == 0, listed.stderr
     payload = json.loads(listed.stdout)
-    match = next(item for item in payload["plugins"] if item["name"] == "canary")
-    assert match["allowed"] is False
+    assert all(item["name"] != "canary" for item in payload["plugins"])
     _assert_absent(canary)
 
     allowed = subprocess.run(
-        [sys.executable, "-m", "aicad", "plugins", "allow", "canary", "--yes"],
+        [sys.executable, "-P", "-m", "aicad", "plugins", "allow", "canary", "--yes"],
         cwd=project,
         env=env,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert allowed.returncode == 0, allowed.stderr
-    assert json.loads(allowed.stdout)["allowed"] is True
+    assert allowed.returncode != 0
+    assert "Nothing was run" in allowed.stderr
+    assert "Traceback" not in allowed.stderr
     _assert_absent(canary)
     assert "canaryplug" not in sys.modules
 
-    # Opening the same folder does not treat that allow as a reason to import.
     Document(project)
     _assert_absent(canary)
 

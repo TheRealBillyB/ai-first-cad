@@ -235,7 +235,7 @@ def test_handbook_material_aliases_share_a_bom_line():
     m5 = next(row for row in fasteners if row["size"] == "M5-0.8")
     assert m5["quantity"] == 2
     assert m5["material"] == "steel"
-    m6 = next(row for row in fasteners if row["size"] == "M6-1.0")
+    m6 = next(row for row in fasteners if row["size"] == "M6-1")
     assert m6["quantity"] == 1
 
 
@@ -372,6 +372,7 @@ def test_cli_writes_the_bill_of_materials(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-m",
             "aicad",
             "bill-of-materials",
@@ -469,34 +470,44 @@ def test_an_automatic_gap_is_capped_for_a_span_no_legal_part_can_reach():
         _gap(1_000_000.1, 10)
 
 
-def test_a_reserved_windows_name_is_renamed(tmp_path):
+def test_a_reserved_windows_name_is_refused(tmp_path):
     document = Document(tmp_path)
     _box(document, "base", [10, 10, 4], [0, 0, 2])
-    document.create_assembly({"name": "con", "instances": [{"name": "base", "part": "base"}], "joints": []})
-    report = document.export_drawing("con")
-    assert Path(report["files"]["pdf"]).name == "con_file.pdf"
-    assert Path(report["files"]["dxf"]).name == "con_file.dxf"
-    assert "Windows" in report["file_note"]
-    assert Path(report["files"]["png"]).parent.name == "con_file"
-    bom = document.bill_of_materials("con")
-    assert Path(bom["csv"]).name == "con_file.csv"
-    assert Path(bom["csv"]).read_bytes().startswith(b"\xef\xbb\xbf")
-    picture = document.exploded_view("con", gap_mm=15)
-    assert "con_file" in picture["views"][0]["path"]
-    assert "Windows" in picture["file_note"]
+    with pytest.raises(GeometryError, match="reserved"):
+        document.create_assembly({"name": "con", "instances": [{"name": "base", "part": "base"}], "joints": []})
+    assert list(tmp_path.rglob("con.pdf")) == []
+    assert list(tmp_path.rglob("con.csv")) == []
+    assert list(tmp_path.rglob("con_file*")) == []
+    root = Path(__file__).resolve().parents[1]
+    assert "con_file" not in (root / "README.md").read_text(encoding="utf-8")
+    assert "con_file" not in (root / "docs" / "DECISIONS.md").read_text(encoding="utf-8")
+
+
+def test_windows_directory_lock_denies_new_files_and_folders():
+    from aicad.paths import _DIRECTORY_LOCK_ALLOW, _DIRECTORY_LOCK_DENY
+
+    assert _DIRECTORY_LOCK_DENY & 0x0002  # FILE_ADD_FILE
+    assert _DIRECTORY_LOCK_DENY & 0x0004  # FILE_ADD_SUBDIRECTORY
+    assert _DIRECTORY_LOCK_DENY & 0x0020  # FILE_TRAVERSE
+    assert _DIRECTORY_LOCK_ALLOW & 0x00040000  # WRITE_DAC
+    assert (_DIRECTORY_LOCK_ALLOW & 0x0002) == 0
+    assert (_DIRECTORY_LOCK_ALLOW & 0x0004) == 0
+    assert (_DIRECTORY_LOCK_ALLOW & 0x0020) == 0
 
 
 def test_a_blocked_output_path_is_a_clear_error(tmp_path):
     document = Document(tmp_path)
     _post(document)
+    from aicad.paths import allow_directory_write, deny_directory_write
+
     blocked = tmp_path / "locked"
     blocked.mkdir()
-    blocked.chmod(0o555)
+    deny_directory_write(blocked)
     try:
         with pytest.raises(GeometryError, match="Could not"):
             document.export_drawing("stand", out_dir=blocked)
     finally:
-        blocked.chmod(0o755)
+        allow_directory_write(blocked)
     parent = tmp_path / "notadir"
     parent.write_text("x", encoding="utf-8")
     with pytest.raises(GeometryError, match="Could not"):

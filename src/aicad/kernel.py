@@ -1,8 +1,10 @@
 """Geometry kernel adapter.
 
 build123d and OpenCascade are imported here. ``aicad.library`` imports
-bd_warehouse, and ``aicad.sketch`` imports the SolveSpace solver. The rest of
-aicad talks to plain records and to :class:`Shape`.
+bd_warehouse for fastener sizes that are not in the local tables.
+``aicad.catalog_build`` imports build123d to build those tables.
+``aicad.sketch`` imports the SolveSpace solver. The rest of aicad talks to
+plain records and to :class:`Shape`.
 """
 
 from __future__ import annotations
@@ -17,6 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from aicad.paths import prepare_geometry_import
+
+prepare_geometry_import()
 from build123d import (
     Axis,
     Box,
@@ -1528,10 +1534,27 @@ def solid_inertia(shape: Shape) -> dict:
     }
 
 
+def _prepare_export_parent(path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise GeometryError(f"Could not write {path}.") from exc
+
+
 def export_step_file(shape: Shape, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not export_step(shape.impl, path):
-        raise GeometryError(f"Could not write STEP file {path}.")
+    from aicad.paths import nofollow_writes, publish_file
+
+    def write(temporary: Path) -> None:
+        try:
+            written = export_step(shape.impl, temporary)
+        except (OSError, RuntimeError) as exc:
+            raise GeometryError(f"Could not write STEP file {path}.") from exc
+        if not written:
+            raise GeometryError(f"Could not write STEP file {path}.")
+
+    if not nofollow_writes():
+        _prepare_export_parent(path)
+    publish_file(path, write)
 
 
 def export_stl_file(
@@ -1540,14 +1563,20 @@ def export_stl_file(
     linear_tolerance: float = 0.05,
     angular_tolerance: float = 0.2,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not export_stl(
-        shape.impl,
-        path,
-        tolerance=linear_tolerance,
-        angular_tolerance=angular_tolerance,
-    ):
-        raise GeometryError(f"Could not write STL file {path}.")
+    from aicad.paths import nofollow_writes, publish_file
+
+    def write(temporary: Path) -> None:
+        if not export_stl(
+            shape.impl,
+            temporary,
+            tolerance=linear_tolerance,
+            angular_tolerance=angular_tolerance,
+        ):
+            raise GeometryError(f"Could not write STL file {path}.")
+
+    if not nofollow_writes():
+        _prepare_export_parent(path)
+    publish_file(path, write)
 
 
 # Entity names that point at another file. The check is case-insensitive.

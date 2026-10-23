@@ -29,9 +29,9 @@ import ctypes
 import json
 import os
 import platform
+import re
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import tempfile
@@ -52,15 +52,23 @@ WARNING = (
     "project does not turn it on."
 )
 
-# Windows starts the child through this snippet. ``python -m`` imports aicad
-# before main() runs, so an import error never reaches the child's handler.
-# A partial native import can then hang until the wall-clock limit.
+# Windows starts the child through this snippet. Loading the runner by name
+# imports aicad before main() runs, so an import error never reaches the
+# child's handler. A partial native import can then hang until the wall-clock
+# limit. The runner file is an argument, so the project folder is not where
+# that import starts.
 _WINDOWS_CHILD_BOOT = r"""
-import json, os, sys, traceback
+import importlib.util, json, os, sys, traceback
 from pathlib import Path
 job = Path(sys.argv[1])
+runner = Path(sys.argv[2])
 try:
-    from aicad.sandbox_run import main
+    spec = importlib.util.spec_from_file_location("aicad.sandbox_run", runner)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load {runner}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    main = module.main
 except Exception as exc:
     try:
         detail = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
@@ -468,21 +476,21 @@ def script_log_path(workspace: Path) -> Path:
 
 def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> None:
     """Append one design-script row. A log path that leaves the project is skipped."""
+    from aicad.paths import output_path, publish_text
+
+    root = Path(workspace).resolve()
     try:
-        path = project_file(workspace, ".aicad/script_log.jsonl")
+        path = output_path(root, script_log_path(root), "Script log", ScriptError)
     except ScriptError:
         return
     row = {"time": _now(), "kind": "design", "ok": ok, "error": error, "script": script}
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    flags |= getattr(os, "O_CLOEXEC", 0)
+    line = json.dumps(row) + "\n"
     try:
-        descriptor = os.open(path, flags, 0o666)
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
     except OSError:
         return
     try:
-        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row) + "\n")
+        publish_text(path, existing + line, root=root)
     except OSError:
         return
 
@@ -515,53 +523,35 @@ def script_builtins() -> dict:
     return allowed
 
 
+def _refuse_project_link(path: Path, root: Path, read_roots: list[Path], writing: bool) -> None:
+    """Block a path outside the project, and a hard link that has another name."""
+    inside = _inside(path, root)
+    if inside and _shared_file(path):
+        action = "write" if writing else "read"
+        raise ScriptError(
+            f"The script tried to {action} {path}, which has another name outside this use. "
+            "A design script can only use files that belong to the project alone."
+        )
+    if not inside and (writing or not _under(path, read_roots)):
+        action = "write" if writing else "read"
+        raise ScriptError(
+            f"The script tried to {action} {path}, which is outside the project folder {root}. "
+            "A design script can only use files inside that folder."
+        )
+
+
+def _shared_file(path: Path) -> bool:
+    from aicad.paths import shared_file
+
+    return shared_file(path)
+
+
 def _inside(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
     except (OSError, ValueError):
         return False
     return True
-
-
-_OUTSIDE = "A path in this project points outside the project folder, so the script was not run."
-_NO_FOLDER = "Could not create a project folder, so the script was not run."
-
-
-def _relative_parts(relative: str) -> tuple[str, ...]:
-    text = str(relative).replace("\\", "/")
-    if text.startswith("/") or text.startswith("~"):
-        raise ScriptError(_OUTSIDE)
-    parts: list[str] = []
-    for part in text.split("/"):
-        if part in ("", "."):
-            continue
-        if part == ".." or "\x00" in part:
-            raise ScriptError(_OUTSIDE)
-        parts.append(part)
-    if not parts:
-        raise ScriptError(_OUTSIDE)
-    return tuple(parts)
-
-
-def _linked_more_than_once(path: Path) -> bool:
-    """True when ``path`` is a regular file with another name for the same data."""
-    try:
-        info = path.lstat()
-    except OSError:
-        return False
-    return stat.S_ISREG(info.st_mode) and info.st_nlink > 1
-
-
-def _write_would_touch_extra_name(path: Path) -> bool:
-    if _linked_more_than_once(path):
-        return True
-    if not path.is_symlink():
-        return False
-    try:
-        target = path.resolve(strict=True)
-    except OSError:
-        return False
-    return _linked_more_than_once(target)
 
 
 def _refuse_multilink(workspace: Path) -> None:
@@ -571,72 +561,20 @@ def _refuse_multilink(workspace: Path) -> None:
     project. Directory link counts are not file names, and directory links
     are not followed.
     """
+    from aicad.paths import is_reparse, shared_file
+
     root = workspace.resolve()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         current = Path(dirpath)
-        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
+        dirnames[:] = [name for name in dirnames if not is_reparse(current / name)]
         for name in filenames:
             path = current / name
-            if not _linked_more_than_once(path):
+            if is_reparse(path) or not shared_file(path):
                 continue
             relative = path.relative_to(root).as_posix()
             raise ScriptError(
                 f"{relative} is linked from more than one name, so the script was not run."
             )
-
-
-def project_dir(workspace: Path, relative: str) -> Path:
-    """A directory inside the project. A link that leaves the project is refused."""
-    root = Path(workspace).resolve()
-    current = root
-    for part in _relative_parts(relative):
-        current = current / part
-        if current.is_symlink():
-            try:
-                target = current.resolve(strict=True)
-            except OSError as exc:
-                raise ScriptError(_OUTSIDE) from exc
-            if not target.is_dir() or not _inside(target, root):
-                raise ScriptError(_OUTSIDE)
-            current = target
-            continue
-        if current.exists():
-            if not current.is_dir() or not _inside(current, root):
-                raise ScriptError(_OUTSIDE)
-            continue
-        try:
-            current.mkdir(mode=0o700)
-        except OSError as exc:
-            raise ScriptError(_NO_FOLDER) from exc
-    resolved = current.resolve()
-    if not resolved.is_dir() or not _inside(resolved, root):
-        raise ScriptError(_OUTSIDE)
-    return resolved
-
-
-def project_file(workspace: Path, relative: str) -> Path:
-    """A file path inside the project. A link that leaves the project is refused.
-
-    A dangling link is refused too. Opening it would create the missing target.
-    """
-    root = Path(workspace).resolve()
-    parts = _relative_parts(relative)
-    parent = project_dir(workspace, "/".join(parts[:-1])) if len(parts) > 1 else root
-    path = parent / parts[-1]
-    if path.is_symlink():
-        try:
-            target = path.resolve(strict=True)
-        except OSError as exc:
-            raise ScriptError(_OUTSIDE) from exc
-        if not target.is_file() or not _inside(target, root):
-            raise ScriptError(_OUTSIDE)
-        return target
-    if path.exists() and (not path.is_file() or not _inside(path, root)):
-        raise ScriptError(_OUTSIDE)
-    resolved = path.resolve()
-    if not _inside(resolved, root):
-        raise ScriptError(_OUTSIDE)
-    return resolved
 
 
 def _under(path: Path, roots: list[Path]) -> bool:
@@ -665,25 +603,13 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
     real_os_open = os.open
     root = workspace.resolve()
 
-    def refuse(path: Path, writing: bool) -> None:
-        action = "write" if writing else "read"
-        raise ScriptError(
-            f"The script tried to {action} {path}, which is outside the project folder {root}. "
-            "A design script can only use files inside that folder."
-        )
-
     def py_open(file, mode="r", *args, **kwargs):
         if isinstance(file, (str, bytes, os.PathLike)):
             writing = any(flag in str(mode) for flag in ("w", "a", "x", "+"))
             path = Path(os.fsdecode(file))
             if not path.is_absolute():
                 path = Path.cwd() / path
-            if writing and _write_would_touch_extra_name(path):
-                raise ScriptError(
-                    f"{path} is linked from more than one name, so it was not written."
-                )
-            if not _inside(path, root) and (writing or not _under(path, read_roots)):
-                refuse(path, writing)
+            _refuse_project_link(path, root, read_roots, writing)
         return real_open(file, mode, *args, **kwargs)
 
     def os_open(path, flags, mode=0o777, *, dir_fd=None):
@@ -692,12 +618,7 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
             file_path = Path(os.fsdecode(path))
             if not file_path.is_absolute():
                 file_path = Path.cwd() / file_path
-            if writing and _write_would_touch_extra_name(file_path):
-                raise ScriptError(
-                    f"{file_path} is linked from more than one name, so it was not written."
-                )
-            if not _inside(file_path, root) and (writing or not _under(file_path, read_roots)):
-                refuse(file_path, writing)
+            _refuse_project_link(file_path, root, read_roots, writing)
         return real_os_open(path, flags, mode, dir_fd=dir_fd)
 
     builtins.open = py_open
@@ -971,8 +892,21 @@ def _block_sockets(*, network: bool) -> None:
         )
 
 
+# A literal public address. Loopback is often allowed inside a container, and a
+# name would make a DNS failure look like a closed network.
+_WINDOWS_TCP_PROBE = ("1.1.1.1", 443)
+_WINDOWS_UDP_PROBE = ("1.1.1.1", 53)
+# internetClient, internetClientServer, privateNetworkClientServer.
+_NETWORK_CAPABILITY_SIDS = frozenset({"S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"})
+
+
 def confined_errno(error: OSError) -> bool:
-    """True when this error is the operating system refusing the sandbox, not a timeout."""
+    """True when this error is the operating system refusing the sandbox.
+
+    A timeout, a DNS failure, and any other code are not a refusal. A packet
+    that was allowed to wait is not proof the network is off.
+    """
+
     winerror = getattr(error, "winerror", None)
     if winerror in {5, 10013, 10051}:
         return True
@@ -996,6 +930,245 @@ def _file_blocked(path: str) -> bool:
     except OSError as exc:
         return confined_errno(exc)
     return False
+
+
+def _error_codes(error: BaseException) -> str:
+    winerror = getattr(error, "winerror", None)
+    number = getattr(error, "errno", None)
+    return f"winerror={winerror} errno={number}"
+
+
+def _network_timeout(error: BaseException) -> bool:
+    if isinstance(error, TimeoutError):
+        return True
+    if getattr(error, "winerror", None) == 10060:
+        return True
+    return getattr(error, "errno", None) in {10060, 110}
+
+
+def _network_dns(error: BaseException) -> bool:
+    import socket
+
+    if isinstance(error, socket.gaierror):
+        return True
+    number = getattr(error, "winerror", None)
+    errno = getattr(error, "errno", None)
+    return number in {11001, 11002, 11003, 11004} or errno in {11001, 11002, 11003, 11004}
+
+
+def network_attempt_label(error: BaseException | None, *, success: str) -> str:
+    """What one connect or send did. Only a sandbox refusal is a denial."""
+
+    if error is None:
+        return success
+    if _network_timeout(error):
+        return f"timeout {_error_codes(error)}"
+    if _network_dns(error):
+        return f"dns {_error_codes(error)}"
+    if isinstance(error, OSError) and confined_errno(error):
+        return f"denied {_error_codes(error)}"
+    return f"error {_error_codes(error)}"
+
+
+def _public_probe_address(address: str) -> bool:
+    text = address.strip().lower()
+    if text in {"localhost", "::1", "0.0.0.0"} or text.startswith("127."):
+        return False
+    return True
+
+
+# Set by the parent when it is listening. Dotted IPv4 only, so this cannot
+# turn into a name lookup. Each item is address, TCP port, UDP port.
+_WINDOWS_RECEIVER_ENV = "AICAD_WIN_NET_RECEIVERS"
+_WINDOWS_RECEIVER_ITEM = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5}):(\d{1,5})$")
+_WINDOWS_PROBE_PAYLOAD = b"aicad-net-probe"
+# The last Windows network detail, so the probe result can show it after a pass.
+_windows_net_probe_text = ""
+
+
+def _ipv4_text(address: str) -> bool:
+    parts = address.split(".")
+    if len(parts) != 4:
+        return False
+    for part in parts:
+        if not part.isdigit() or (len(part) > 1 and part.startswith("0")):
+            return False
+        if int(part) > 255:
+            return False
+    return True
+
+
+def windows_receiver_targets() -> tuple[tuple[str, int, int], ...]:
+    """Local receivers the parent asked the network check to try.
+
+    A name is ignored. The check must not look anything up.
+    """
+
+    found: list[tuple[str, int, int]] = []
+    raw = os.environ.get(_WINDOWS_RECEIVER_ENV, "")
+    for part in raw.split(";"):
+        item = part.strip()
+        if not item:
+            continue
+        match = _WINDOWS_RECEIVER_ITEM.fullmatch(item)
+        if match is None:
+            continue
+        address, tcp_text, udp_text = match.group(1), match.group(2), match.group(3)
+        tcp_port = int(tcp_text)
+        udp_port = int(udp_text)
+        if not _ipv4_text(address):
+            continue
+        if tcp_port <= 0 or tcp_port > 65535 or udp_port <= 0 or udp_port > 65535:
+            continue
+        found.append((address, tcp_port, udp_port))
+    return tuple(found)
+
+
+def _windows_one_attempt(kind: str, address: str, port: int) -> str:
+    """One TCP connect or one UDP send.
+
+    connect() on a UDP socket only selects the destination. The following
+    send() hands the datagram to the stack. A successful send is not a
+    refusal, connected or not.
+    """
+
+    import socket
+
+    if kind == "tcp":
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        try:
+            try:
+                sock.connect((address, port))
+            except OSError as exc:
+                return network_attempt_label(exc, success="connected")
+            return "connected"
+        finally:
+            sock.close()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(2)
+    try:
+        try:
+            if kind == "udp-sendto":
+                # An unbound sendto reports a blocked local port as WSAEINVAL.
+                # That is not a sent datagram, and it is not the access error
+                # the block returns for a bound socket. Bind first, then send.
+                sock.bind(("0.0.0.0", 0))
+                sock.sendto(_WINDOWS_PROBE_PAYLOAD, (address, port))
+            else:
+                sock.connect((address, port))
+                sock.send(_WINDOWS_PROBE_PAYLOAD)
+        except OSError as exc:
+            return network_attempt_label(exc, success="sent")
+        return "sent"
+    finally:
+        sock.close()
+
+
+def windows_network_attempts() -> tuple[tuple[str, str], ...]:
+    """TCP, an unconnected UDP send, and a connected UDP send.
+
+    Receiver attempts run first, so a later timeout cannot skip them.
+    Loopback is not a refusal. A public address that is loopback is recorded
+    as loopback and does not count as off.
+    """
+
+    attempts: list[tuple[str, str]] = []
+    for address, tcp_port, udp_port in windows_receiver_targets():
+        attempts.append(
+            (f"tcp@{address}:{tcp_port}", _windows_one_attempt("tcp", address, tcp_port))
+        )
+        attempts.append(
+            (
+                f"udp-sendto@{address}:{udp_port}",
+                _windows_one_attempt("udp-sendto", address, udp_port),
+            )
+        )
+        attempts.append(
+            (
+                f"udp-connected@{address}:{udp_port}",
+                _windows_one_attempt("udp-connected", address, udp_port),
+            )
+        )
+    tcp_host, tcp_port = _WINDOWS_TCP_PROBE
+    udp_host, udp_port = _WINDOWS_UDP_PROBE
+    if not _public_probe_address(tcp_host):
+        attempts.append(("tcp", "loopback"))
+    else:
+        attempts.append(("tcp", _windows_one_attempt("tcp", tcp_host, tcp_port)))
+    if not _public_probe_address(udp_host):
+        attempts.append(("udp-sendto", "loopback"))
+        attempts.append(("udp-connected", "loopback"))
+    else:
+        attempts.append(("udp-sendto", _windows_one_attempt("udp-sendto", udp_host, udp_port)))
+        attempts.append(
+            ("udp-connected", _windows_one_attempt("udp-connected", udp_host, udp_port))
+        )
+    return tuple(attempts)
+
+
+def _capability_text(capabilities: tuple[str, ...] | None) -> str:
+    if capabilities is None:
+        return "unread"
+    if not capabilities:
+        return "none"
+    return ",".join(capabilities)
+
+
+def windows_network_detail(
+    *,
+    attempts: tuple[tuple[str, str], ...],
+    package: str,
+    capabilities: tuple[str, ...] | None,
+) -> str:
+    tcp_host, tcp_port = _WINDOWS_TCP_PROBE
+    udp_host, udp_port = _WINDOWS_UDP_PROBE
+    targets = [f"{tcp_host}:{tcp_port}", f"{udp_host}:{udp_port}"]
+    for address, receiver_tcp, receiver_udp in windows_receiver_targets():
+        targets.append(f"{address}:{receiver_tcp}:{receiver_udp}")
+    shown = "; ".join(f"{name}={label}" for name, label in attempts)
+    return (
+        f"probe={','.join(targets)}; {shown}; "
+        f"package={package}; capabilities={_capability_text(capabilities)}"
+    )
+
+
+def windows_network_is_off(
+    *,
+    attempts: tuple[tuple[str, str], ...],
+    package: str,
+    capabilities: tuple[str, ...] | None,
+) -> bool:
+    """True only when every send was refused and the token has no network capability.
+
+    The public TCP connect, the unconnected UDP send, and the connected UDP
+    send all have to be present. A successful send is not off, because the
+    datagram may already have left. An unreadable capability list is not an
+    empty one. The package id has to be present, because that is the
+    container the block names.
+    """
+
+    labels = {name: label for name, label in attempts}
+    if any(name not in labels for name in ("tcp", "udp-sendto", "udp-connected")):
+        return False
+    if capabilities is None or not package.upper().startswith("S-1-15-2-"):
+        return False
+    present = {item.upper() for item in capabilities}
+    if present & {item.upper() for item in _NETWORK_CAPABILITY_SIDS}:
+        return False
+    return all(label.startswith("denied ") for _name, label in attempts)
+
+
+def windows_network_failure_text(
+    *,
+    attempts: tuple[tuple[str, str], ...],
+    package: str,
+    capabilities: tuple[str, ...] | None,
+) -> str:
+    return (
+        "Windows did not turn the network off, so the script was not run. "
+        + windows_network_detail(attempts=attempts, package=package, capabilities=capabilities)
+    )
 
 
 def _network_blocked() -> bool:
@@ -1055,14 +1228,17 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     seal_sandbox_plugins()
     _refuse_foreign_kill()
     workspace = workspace.resolve()
-    temporary = project_dir(workspace, ".aicad/tmp")
+    from aicad.paths import output_dir
+
+    private = output_dir(workspace, workspace / ".aicad", "Project data", ScriptError)
+    temporary = output_dir(workspace, private / "tmp", "Temporary files", ScriptError)
     os.environ["TMPDIR"] = str(temporary)
     os.environ["TMP"] = str(temporary)
     os.environ["TEMP"] = str(temporary)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     roots = _read_roots()
     if sys.platform == "win32":
-        from aicad.sandbox_windows import identity_failures
+        from aicad.sandbox_windows import identity_failures, windows_token_network
 
         failures = identity_failures(memory_bytes())
         if failures:
@@ -1071,8 +1247,21 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
                 + "; ".join(failures)
                 + "), so the script was not run."
             )
-        if not network and not _network_blocked():
-            raise ScriptError("Windows did not turn the network off, so the script was not run.")
+        # The token and the job are already applied. This probe reads that token.
+        if not network:
+            global _windows_net_probe_text
+            package, capabilities = windows_token_network()
+            attempts = windows_network_attempts()
+            _windows_net_probe_text = windows_network_detail(
+                attempts=attempts, package=package, capabilities=capabilities
+            )
+            if not windows_network_is_off(
+                attempts=attempts, package=package, capabilities=capabilities
+            ):
+                raise ScriptError(
+                    "Windows did not turn the network off, so the script was not run. "
+                    + _windows_net_probe_text
+                )
         return roots
     if sys.platform == "darwin":
         _set_limits()
@@ -1215,6 +1404,9 @@ def _windows_font_cache_home() -> Path:
     if target.is_file() and target.stat().st_size > 0:
         return root
     try:
+        from aicad.paths import prepare_geometry_import
+
+        prepare_geometry_import()
         from ezdxf.fonts.fonts import build_font_manager_cache
 
         build_font_manager_cache(target)
@@ -1387,6 +1579,31 @@ def _kill_process_tree(leader: int, seen: set[int], lock: threading.Lock) -> Non
         _kill_pid(pid)
 
 
+def _sandbox_runner() -> Path:
+    """This install's sandbox_run.py. The child loads that file, not a name from the project."""
+
+    import importlib.util
+
+    spec = importlib.util.find_spec("aicad.sandbox_run")
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    if not isinstance(origin, str) or not origin:
+        raise ScriptError("The sandbox runner is not a file in this install.")
+    return Path(origin).resolve()
+
+
+def _child_command(job: Path) -> list[str]:
+    """Python command for one sandbox child.
+
+    ``-P`` leaves the working directory off ``sys.path``. The runner argument
+    is the installed file, so the child does not look the module up by name.
+    """
+
+    runner = str(_sandbox_runner())
+    if sys.platform == "win32":
+        return [sys.executable, "-P", "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job), runner]
+    return [sys.executable, "-P", "-B", "-u", runner, str(job)]
+
+
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
@@ -1394,14 +1611,22 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     _refuse_multilink(workspace)
-    tmp_dir = project_dir(workspace, ".aicad/tmp")
-    jobs_dir = project_dir(workspace, ".aicad/jobs")
-    cache_dir = project_dir(workspace, ".aicad/cache") if sys.platform == "win32" else None
+    from aicad.paths import is_reparse, output_dir
+
+    private = output_dir(workspace, workspace / ".aicad", "Project data", ScriptError)
+    tmp_dir = output_dir(workspace, private / "tmp", "Temporary files", ScriptError)
+    jobs_dir = output_dir(workspace, private / "jobs", "Script jobs", ScriptError)
+    cache_dir = None
+    cache_path = private / "cache"
+    if sys.platform == "win32" or is_reparse(cache_path):
+        # On Windows this directory is created before the AppContainer grant
+        # so the container can write it. A link that leaves the project is refused.
+        cache_dir = output_dir(workspace, cache_path, "Library cache", ScriptError)
     job = jobs_dir / uuid.uuid4().hex
     try:
         job.mkdir(mode=0o700)
     except OSError as exc:
-        raise ScriptError(_NO_FOLDER) from exc
+        raise ScriptError("Could not create a project folder, so the script was not run.") from exc
     spec: dict = {"kind": kind, "network": network}
     probe_root = None
     if kind == "probe":
@@ -1411,10 +1636,9 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         (job / "script.py").write_text(script, encoding="utf-8")
     # -P is the same rule as PYTHONSAFEPATH: the project is the working
     # directory, and it must not be the first place Python imports from.
-    if sys.platform == "win32":
-        command = [sys.executable, "-P", "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job)]
-    else:
-        command = [sys.executable, "-P", "-m", "aicad.sandbox_run", str(job)]
+    # The runner is this install's file, not a module name looked up from
+    # the working directory.
+    command = _child_command(job)
     profile_path: Path | None = None
     if sys.platform == "darwin":
         from aicad.sandbox_macos import build_profile, command_prefix
@@ -1521,6 +1745,20 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             shutil.rmtree(probe_root, ignore_errors=True)
 
 
+def _died_from_limit_signal(code: int) -> bool:
+    """True when ``code`` is the memory or CPU signal.
+
+    The names are looked up only if this platform has them. A missing name
+    is not a limit, and reading it must not raise.
+    """
+
+    if code >= 0:
+        return False
+    signals = {getattr(signal, name, None) for name in ("SIGKILL", "SIGXCPU")}
+    signals.discard(None)
+    return -code in signals
+
+
 def _payload_from_result(
     job: Path,
     code: int,
@@ -1541,11 +1779,10 @@ def _payload_from_result(
         tail = stderr[-2000:]
         shutil.rmtree(job, ignore_errors=True)
         # SIGKILL is the memory cap and the parent's kill. SIGXCPU is the CPU
-        # cap. Other signals, including an abort, are crashes.
-        limit_signal = code < 0 and -code in {
-            signal.SIGKILL,
-            getattr(signal, "SIGXCPU", -1),
-        }
+        # cap. Other signals, including an abort, are crashes. Windows has
+        # neither name; a CPU stop on that platform is decided from the job
+        # before this function runs.
+        limit_signal = _died_from_limit_signal(code)
         if memory_killed or limit_signal:
             detail = tail.strip()
             if code < 0:

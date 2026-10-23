@@ -45,10 +45,12 @@ def export_robot(spec: dict, shapes: dict, out_dir: Path) -> dict:
     _apply_child_offsets(spec, links)
     joints = _joints(spec)
     name = str(spec["name"])
+    from aicad.paths import publish_text
+
     urdf_path = out_dir / "robot.urdf"
     mjcf_path = out_dir / "robot.xml"
-    urdf_path.write_text(_urdf(name, links, joints, spec), encoding="utf-8")
-    mjcf_path.write_text(_mjcf(name, links, joints, spec), encoding="utf-8")
+    publish_text(urdf_path, _urdf(name, links, joints, spec))
+    publish_text(mjcf_path, _mjcf(name, links, joints, spec))
     validation = validate_robot(urdf_path, mjcf_path)
     loaded = validation["mujoco"]["status"] == "loaded" or validation["pybullet"]["status"] == "loaded"
     report = {

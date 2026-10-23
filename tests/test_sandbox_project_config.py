@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from aicad.document import Document
-from aicad.errors import ScriptError
+from aicad.errors import GeometryError, ScriptError
 from aicad.kernel import measure
 from aicad.sandbox import (
     MEMORY_BYTES,
@@ -259,16 +259,8 @@ def test_cache_directory_symlink_is_not_written(tmp_path, config_home):
     cache = project / ".aicad" / "cache"
     cache.parent.mkdir()
     _symlink(cache, outside, directory=True)
-    script = (
-        "from pathlib import Path\n"
-        "try:\n"
-        f"    Path('.aicad/cache/{CANARY_NAME}').write_text({CANARY_BODY!r}, encoding='utf-8')\n"
-        "except Exception:\n"
-        "    pass\n"
-        "part = Box(1, 1, 1)\n"
-    )
-    shape = run_part_script(script, project)
-    assert measure(shape).volume_mm3 == pytest.approx(1)
+    with pytest.raises(ScriptError, match="outside the project"):
+        run_part_script(_write_attempt(_canary(outside)), project)
     _assert_outside_empty(outside)
 
 
@@ -280,7 +272,7 @@ def test_geometry_directory_symlink_is_not_written(tmp_path, config_home):
     _symlink(geometry, outside, directory=True)
     document = Document(project)
     with _Watch(outside) as watch:
-        with pytest.raises(ScriptError, match="outside the project"):
+        with pytest.raises(GeometryError, match="outside the project"):
             document.create_part_from_script("box", _write_attempt(_canary(outside)))
     assert watch.seen == []
     _assert_outside_empty(outside)

@@ -134,6 +134,7 @@ def _probe(workspace: Path, job: Path) -> int:
     inside = workspace / "probe_inside.txt"
     inside.write_text("ok", encoding="utf-8")
     found["write_inside"] = inside.read_text(encoding="utf-8")
+    stream = None
     try:
         stream = socket.socket()
         stream.settimeout(2)
@@ -141,13 +142,37 @@ def _probe(workspace: Path, job: Path) -> int:
         found["tcp"] = "connected"
     except OSError as exc:
         found["tcp"] = denied_probe_label(exc)
-    try:
-        packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        packet.sendto(b"x", ("1.1.1.1", 53))
-        found["udp"] = "sent"
-    except OSError as exc:
-        found["udp"] = denied_probe_label(exc)
+    finally:
+        if stream is not None:
+            stream.close()
+
+    def datagram(connected: bool) -> str:
+        try:
+            packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError as exc:
+            return denied_probe_label(exc)
+        packet.settimeout(2)
+        try:
+            if connected:
+                # connect() only selects the destination. send() is the attempt.
+                packet.connect(("1.1.1.1", 53))
+                packet.send(b"aicad-net-probe")
+            else:
+                # Bind first. A blocked implicit bind is WSAEINVAL, not a send.
+                packet.bind(("0.0.0.0", 0))
+                packet.sendto(b"aicad-net-probe", ("1.1.1.1", 53))
+            return "sent"
+        except OSError as exc:
+            return denied_probe_label(exc)
+        finally:
+            packet.close()
+
+    found["udp"] = datagram(False)
+    found["udp_connected"] = datagram(True)
     if sys.platform == "win32":
+        from aicad.sandbox import _windows_net_probe_text
+
+        found["network"] = _windows_net_probe_text
         found["mechanism"] = "appcontainer+job"
     elif sys.platform == "darwin":
         found["mechanism"] = "seatbelt"
@@ -260,7 +285,7 @@ def _leave(code: int) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
-        print("usage: python -m aicad.sandbox_run JOB_DIR", file=sys.stderr)
+        print("usage: python -P -m aicad.sandbox_run JOB_DIR", file=sys.stderr)
         return 2
     job = Path(args[0])
     spec = json.loads((job / "job.json").read_text(encoding="utf-8"))

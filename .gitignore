@@ -211,6 +211,9 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Apt package archives cached by the test workflow.
+.apt-archives/
+
 # aicad session workspaces
 aicad_workspace/
 examples/workspace/

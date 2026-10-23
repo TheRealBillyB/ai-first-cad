@@ -40,7 +40,8 @@ is more than the part needs. Each operation can include a `name`.
 
 Wall thickness is the smaller of a ray estimate and a section estimate, and
 the result says which one was used. `section_part` shows a cross-section.
-`search_parts` and `insert_standard_part` bring in real fasteners and bearings.
+`search_parts` and `insert_standard_part` bring in bearings, seals, fasteners, motors, and gearboxes.
+`create_gear` builds a spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width.
 Clearance between two parts reports interference volume or the gap.
 
 For a shape that should stay consistent when a size changes, use a sketch:
@@ -162,12 +163,28 @@ a rib that is buried inside a boss.
 
 ## Standard parts
 
-`search_parts` finds socket-head screws, hex nuts, plain washers, and
-deep-groove ball bearings (including the 608 bearing as size `M8-22-7`).
-`insert_standard_part` places one. A screw's shank points down: the underside
-of the head is on local z=0. Nuts, washers, and bearings sit on z=0.
-`import_step` plus `place_part` brings in an arbitrary STEP file, such as a
-McMaster-Carr download. Then `check_clearance` against your part.
+`search_parts` finds catalog parts by designation: ISO 4762 socket-head
+screws, ISO 4032 nuts, ISO 7089 washers, ISO 15 deep-groove bearings
+(`608` is 8×22×7; the older size code `M8-22-7` still finds it), ISO 355
+tapered roller bearings (`30205`, `32005X`), DIN 3760 / ISO 6194 radial shaft
+seals (`20x35x7`), NEMA ICS 16 stepper faces (`NEMA17`, `NEMA23`), and a
+small set of published planetary gearboxes. `insert_standard_part` places
+one. A screw's shank points down: the underside of the head is on local z=0.
+Nuts, washers, bearings, and seals sit on z=0. A motor face is on z=0 with
+the shaft toward +Z. A gearbox input face is on z=0 with the output toward +Z.
+A joint can name `parent_mate` and `child_mate` (`bore`, `shaft`, `mount`,
+`input`) instead of typing the anchor. `import_step` plus `place_part` brings
+in an arbitrary STEP file, such as a McMaster-Carr download. Then
+`check_clearance` against your part.
+
+## Gears
+
+`create_gear` builds an external spur, helical, straight bevel, or spiral
+bevel. The spec uses millimeters: `module_mm`, `teeth`, `pressure_angle_deg`,
+and `face_width_mm`. A bevel also needs `mate_teeth` or `ratio`, and
+`shaft_angle_deg` when the shafts are not at 90 degrees. A positive helix or
+spiral angle is right-hand. Optional `bore_mm`, `hub`, `keyway` (DIN 6885-1),
+and `spline` (ISO 14 or DIN 5480) cut the blank. Hypoid gears are not built.
 
 ## Sketches
 
@@ -425,7 +442,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         parts: list[str] | None = None,
         assembly: str | None = None,
         pose: str | None = None,
-        joints: dict[str, float] | None = None,
+        joints: dict | None = None,
         min_clearance_mm: float = 0.0,
     ) -> dict:
         """Check that parts fit inside an envelope.
@@ -437,6 +454,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
         With assembly, the check uses the posed instances. pose and joints
         select that pose for this call and do not change the stored assembly.
+        A cylindrical joint may be {value: degrees, slide: millimeters}.
         The report lists each part, anything that sticks out and where, the
         minimum signed clearance, and overlap between parts inside the envelope.
         """
@@ -561,11 +579,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def search_parts(query: str = "") -> dict:
-        """Search standard screws, nuts, washers, and ball bearings.
+        """Search the standard-parts catalog by designation.
 
-        An empty query lists the kinds. Try 'M3', 'screw', 'nut', 'washer',
-        'bearing', or '608'. Screws need a length when inserted. A screw's shank
-        points down, with the underside of the head on local z=0.
+        An empty query lists the kinds. Try 'M5', '608', '30205', '20x35x7',
+        'NEMA17', 'seal', or 'gearbox'. Screws need a length when inserted.
+        A screw's shank points down, with the underside of the head on local z=0.
         """
         return guard(lambda: run("search_parts", query=query))
 
@@ -579,13 +597,15 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         rotation_deg: list[float] | None = None,
         fastener_type: str | None = None,
     ) -> dict:
-        """Insert a catalog part and place it.
+        """Insert a catalog part by designation and place it.
 
-        kind is socket_head_cap_screw, hex_nut, plain_washer, or ball_bearing.
-        size is a designation such as M3-0.5, M3, or M8-22-7 (608 is accepted).
-        length is required for screws and is the shank length under the head, in mm.
-        position and rotation_deg are [x, y, z]. Rotation is degrees about X, Y, Z
-        and is applied before the translation. Then check_clearance against your part.
+        kind is socket_head_cap_screw, hex_nut, plain_washer, ball_bearing,
+        tapered_roller_bearing, radial_shaft_seal, stepper_motor, or gearbox.
+        size is a designation such as M5-0.8, 608, 30205, 20x35x7, NEMA17, or
+        S-MG17-G10. length is required for screws and is the shank under the
+        head, in mm. position and rotation_deg are [x, y, z]. Rotation is
+        degrees about X, Y, Z and is applied before the translation. Mate the
+        part with parent_mate and child_mate on an assembly joint.
         """
         return guard(
             lambda: run(
@@ -597,6 +617,32 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 position=position,
                 rotation_deg=rotation_deg,
                 fastener_type=fastener_type,
+            )
+        )
+
+    @mcp.tool()
+    def create_gear(
+        name: str,
+        spec: dict[str, Any],
+        position: list[float] | None = None,
+        rotation_deg: list[float] | None = None,
+    ) -> dict:
+        """Create or replace a spur, helical, straight bevel, or spiral bevel gear.
+
+        spec needs type, module_mm, teeth, and face_width_mm. pressure_angle_deg
+        defaults to 20. module_mm is the normal module, or the outer transverse
+        module for a bevel. A bevel needs mate_teeth or ratio. helix_angle_deg
+        and spiral_angle_deg are positive for a right-hand tooth. bore_mm, hub,
+        keyway (DIN 6885-1), and spline (ISO 14 or DIN 5480) are optional.
+        position and rotation_deg are [x, y, z]. Hypoid gears are not built.
+        """
+        return guard(
+            lambda: run(
+                "create_gear",
+                name=name,
+                spec=spec,
+                position=position,
+                rotation_deg=rotation_deg,
             )
         )
 

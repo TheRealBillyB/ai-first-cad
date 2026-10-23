@@ -138,6 +138,11 @@ def test_consent_file_is_user_config_not_the_project(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert plugins.consent_file() == tmp_path / "xdg" / "aicad" / "plugins.json"
     assert project not in plugins.consent_file().parents
+    monkeypatch.setenv("AICAD_PLUGIN_CONSENT", str(project / "plugins.json"))
+    monkeypatch.setattr("aicad.sandbox_state.in_sandbox", lambda: True)
+    sandboxed = plugins.consent_file()
+    assert sandboxed == tmp_path / "home" / ".config" / "aicad" / "plugins.json"
+    assert project not in sandboxed.parents
 
 
 def test_discover_and_warning_do_not_import(tmp_path, monkeypatch, isolated_consent):
@@ -351,19 +356,53 @@ def test_duplicate_plugin_names_are_not_loaded(tmp_path, monkeypatch):
     assert not marker.exists()
 
 
-def test_first_party_still_does_not_load_on_open(tmp_path, monkeypatch):
+@pytest.mark.parametrize("dist_name", ["aicad", "AICAD", " aicad "])
+def test_a_copied_core_package_name_still_needs_an_allow(tmp_path, monkeypatch, dist_name):
     marker = tmp_path / "imported.txt"
     base = tmp_path / "dist"
     _write_distribution(
         base,
-        dist_name="aicad",
+        dist_name=dist_name,
         version="0.9.0",
         entry_name="shipped",
         module="shipped_plugin",
         init_source=_marker_source(marker, _peek_body()),
-        manifest=_analysis_manifest("shipped", publisher="aicad"),
+        manifest=_analysis_manifest("shipped"),
     )
     monkeypatch.syspath_prepend(str(base))
+    offer = plugins.get("shipped")
+    assert offer.third_party is True
+    assert offer.distribution == "aicad"
+    warning = plugins.warning_text(offer)
+    assert "ships with aicad" not in warning
+    assert "after you allow it" in warning
+    from aicad.document import Document
+
+    Document(tmp_path / "empty")
+    with pytest.raises(plugins.PluginConsentError):
+        plugins.load("shipped")
+    plugins.allow("shipped", accept=True)
+    assert "shipped_plugin" not in sys.modules
+    assert not marker.exists()
+    loaded = plugins.load("shipped")
+    assert loaded.name == "shipped"
+    assert marker.read_text(encoding="utf-8") == "imported"
+
+
+def test_a_plugin_ships_only_with_this_installs_metadata(tmp_path, monkeypatch):
+    marker = tmp_path / "imported.txt"
+    base = tmp_path / "dist"
+    info = _write_distribution(
+        base,
+        dist_name="local-pack",
+        version="1.0.0",
+        entry_name="shipped",
+        module="shipped_plugin",
+        init_source=_marker_source(marker, _peek_body()),
+        manifest=_analysis_manifest("shipped"),
+    )
+    monkeypatch.syspath_prepend(str(base))
+    monkeypatch.setattr(plugins, "_core_metadata_dirs", lambda: frozenset({info.resolve()}))
     offer = plugins.get("shipped")
     assert offer.third_party is False
     assert "ships with aicad" in plugins.warning_text(offer)
@@ -373,10 +412,61 @@ def test_first_party_still_does_not_load_on_open(tmp_path, monkeypatch):
     assert not marker.exists()
     with pytest.raises(plugins.PluginError):
         plugins.allow("shipped", accept=True)
+    assert "shipped_plugin" not in sys.modules
     assert not marker.exists()
     loaded = plugins.load("shipped")
     assert loaded.name == "shipped"
     assert marker.read_text(encoding="utf-8") == "imported"
+
+
+def test_shipped_metadata_is_the_directory_next_to_this_install(tmp_path):
+    roots = plugins._core_metadata_dirs()
+    package_parent = Path(plugins.__file__).resolve().parent.parent
+    assert roots
+    for path in roots:
+        assert path.is_dir()
+        assert path.parent == package_parent
+    copied = tmp_path / "aicad-0.9.0.dist-info"
+    copied.mkdir()
+    assert copied.resolve() not in plugins._core_metadata_dirs()
+
+
+def test_one_unreadable_entry_point_file_does_not_hide_other_plugins(tmp_path, monkeypatch):
+    marker = tmp_path / "imported.txt"
+    good = tmp_path / "good"
+    bad = tmp_path / "bad"
+    _write_distribution(
+        good,
+        dist_name="good-pack",
+        version="1.0.0",
+        entry_name="kept",
+        module="toy_kept",
+        init_source=_marker_source(marker, _peek_body()),
+        manifest=_analysis_manifest("kept"),
+    )
+    info = _write_distribution(
+        bad,
+        dist_name="bad-pack",
+        version="1.0.0",
+        entry_name="skipped",
+        module="toy_skipped",
+        init_source=_marker_source(marker, _peek_body()),
+        manifest=_analysis_manifest("skipped"),
+    )
+    (info / "entry_points.txt").write_text("[aicad.plugins]\nnot-a-pair\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(good))
+    monkeypatch.syspath_prepend(str(bad))
+    found = {offer.name: offer for offer in plugins.discover()}
+    assert found["kept"].problem is None
+    assert found["kept"].third_party is True
+    assert "could not be read" in (found["bad-pack"].problem or "")
+    assert "skipped" in plugins.warning_text(found["bad-pack"])
+    assert plugins.get("kept").name == "kept"
+    with pytest.raises(plugins.PluginError):
+        plugins.load("bad-pack")
+    assert "toy_kept" not in sys.modules
+    assert "toy_skipped" not in sys.modules
+    assert not marker.exists()
 
 
 def test_hello_plugin_reports_cubic_centimeters(tmp_path, monkeypatch):

@@ -11,6 +11,8 @@ This is a door, not a framework. Version 1 has one call, `register(host)`, and t
 - Installing a plugin does not run it. aicad can list it first.
 - aicad reads `aicad.plugin.json` as text. It does not import the plugin to learn the publisher or the permissions.
 - The warning is written by aicad. The plugin does not get a hook to replace it.
+- A package named aicad is not, by that name, part of this install. It needs the same allow as any other package. A plugin ships with aicad only when its metadata directory is the one next to this copy of aicad.
+- An entry-point file that cannot be read skips that one package and lists a warning. Other plugins are still listed. Nothing from the skipped package is imported.
 
 ## The example
 
@@ -105,7 +107,7 @@ aicad plugins run volume-note volume shaft
 
 Any small solid works. A `10 × 20 × 30` mm box is `6` cm³.
 
-The allow is stored in user config: `$XDG_CONFIG_HOME/aicad/plugins.json`, or `~/.config/aicad/plugins.json`. It is not stored in the design. Set `AICAD_PLUGIN_CONSENT` to point at a different file.
+The allow is stored in user config: `$XDG_CONFIG_HOME/aicad/plugins.json`, or `~/.config/aicad/plugins.json`. It is not stored in the design. Set `AICAD_PLUGIN_CONSENT` to point at a different file. A confined script reports the home config path. It does not report a folder inside the project.
 
 If the package version, the entry point, or `aicad.plugin.json` changes, the old allow stops working and the warning comes back. An editable install that changes the Python without changing that declaration is still the version you allowed. Read the code you install.
 
@@ -134,7 +136,7 @@ aicad saves that script as an ordinary part. Opening the design later shows the 
 
 ## An exporter
 
-Declare `"provides": ["exporter"]`. Return text or bytes. aicad writes the file at the path the person gave. Do not use the format names `step` or `stl`.
+Declare `"provides": ["exporter"]`. Return text or bytes. aicad writes the file inside the open project. A path outside that folder is refused. Do not use the format names `step` or `stl`.
 
 ```python
 def register(host) -> None:
