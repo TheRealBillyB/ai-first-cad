@@ -7,6 +7,8 @@ the document's named parts.
 
 from __future__ import annotations
 
+import re
+
 from aicad.errors import GeometryError
 
 # Common bearing designations for the SKT deep-groove table (bore-outer-width).
@@ -139,7 +141,12 @@ def _matches_for_kind(kind: str, text: str) -> list[dict[str, object]]:
         return []
     sizes = _sizes(kind)
     wanted = [size for size in sizes if _size_matches(kind, size, text)]
-    if not wanted and _kind_mentioned(kind, text):
+    # A kind word with no size, such as "screw", lists a short sample.
+    # A size that is not in the table, such as "M3-0.8 screw", does not.
+    named_kind = any(_kind_mentioned(item, text) for item in _KINDS)
+    if wanted and named_kind and not _kind_mentioned(kind, text):
+        return []
+    if not wanted and _kind_mentioned(kind, text) and not _query_asks_for_size(text):
         wanted = sizes[:8]
     matches = []
     for size in wanted:
@@ -172,21 +179,27 @@ def _size_mentioned(kind: str, text: str) -> bool:
 
 
 def _size_matches(kind: str, size: str, text: str) -> bool:
-    folded = text.replace(" ", "")
-    if size.lower() in folded or size.lower() in text:
-        return True
-    for alias, target in _BEARING_ALIASES.items():
-        if kind == "ball_bearing" and size == target and alias in folded:
+    """True when a query token is this size, or its series head.
+
+    ``m3`` matches screw ``M3-0.5`` and washer ``M3``. It does not match
+    ``M30`` or ``M3.5``. ``M3-0.8`` does not match washer ``M3``.
+    """
+    size_l = size.lower()
+    head = size.split("-", 1)[0].lower()
+    for token in text.split():
+        if token == size_l or token == head:
             return True
-    # "m3" matches "M3-0.5" and washer "M3", but not "M30".
-    token = folded.upper()
-    head = size.split("-", 1)[0].upper()
-    if head and (token == head or f"{head}-" in size.upper() and head in token.split("-")):
-        if token == head or token == size.upper():
-            return True
-    if head and token == head:
-        return True
+        for alias, target in _BEARING_ALIASES.items():
+            if kind == "ball_bearing" and size == target and token == alias.lower():
+                return True
     return False
+
+
+_SIZE_TOKEN = re.compile(r"^(?:m\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?){0,3}|\d{3,4})$")
+
+
+def _query_asks_for_size(text: str) -> bool:
+    return any(_SIZE_TOKEN.match(token) for token in text.split())
 
 
 def _aliases_for(kind: str, size: str) -> list[str]:
