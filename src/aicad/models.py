@@ -195,6 +195,114 @@ class ClearanceReport:
 
 
 @dataclass(frozen=True)
+class PackagingPart:
+    """One solid against the envelope."""
+
+    name: str
+    passed: bool
+    contained: bool
+    protrudes: bool
+    min_clearance_mm: float
+    clearance_at_mm: Vec3
+    max_protrusion_mm: float
+    protrusion_at_mm: Vec3 | None
+    outside_volume_mm3: float
+    method: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "passed": self.passed,
+            "contained": self.contained,
+            "protrudes": self.protrudes,
+            "min_clearance_mm": self.min_clearance_mm,
+            "clearance_at_mm": self.clearance_at_mm.to_dict(),
+            "max_protrusion_mm": self.max_protrusion_mm,
+            "protrusion_at_mm": None if self.protrusion_at_mm is None else self.protrusion_at_mm.to_dict(),
+            "outside_volume_mm3": self.outside_volume_mm3,
+            "method": self.method,
+        }
+
+
+@dataclass(frozen=True)
+class PackagingOverlap:
+    """Material shared by two parts that also lies inside the envelope."""
+
+    part_a: str
+    part_b: str
+    volume_mm3: float
+    at_mm: Vec3
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "part_a": self.part_a,
+            "part_b": self.part_b,
+            "volume_mm3": self.volume_mm3,
+            "at_mm": self.at_mm.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class PackagingReport:
+    """Whether parts fit inside an envelope, and where they do not."""
+
+    passed: bool
+    required_clearance_mm: float
+    min_clearance_mm: float
+    min_clearance_part: str
+    min_clearance_at_mm: Vec3
+    envelope: dict
+    parts: tuple[PackagingPart, ...]
+    protruding: tuple[str, ...]
+    overlaps: tuple[PackagingOverlap, ...]
+    assembly: str | None
+    pose: str | None
+    joints: dict | None
+    note: str
+
+    def to_dict(self) -> dict[str, object]:
+        return finish(
+            {
+                "passed": self.passed,
+                "required_clearance_mm": self.required_clearance_mm,
+                "min_clearance_mm": self.min_clearance_mm,
+                "min_clearance_part": self.min_clearance_part,
+                "min_clearance_at_mm": self.min_clearance_at_mm.to_dict(),
+                "envelope": self.envelope,
+                "parts": [part.to_dict() for part in self.parts],
+                "protruding": list(self.protruding),
+                "overlaps": [overlap.to_dict() for overlap in self.overlaps],
+                "assembly": self.assembly,
+                "pose": self.pose,
+                "joints": self.joints,
+                "note": self.note,
+                "assumptions": [
+                    "The envelope solid is the allowed volume. Its boundary is the wall.",
+                    "min_clearance_mm is the smallest signed distance from a part to that wall.",
+                    "A positive clearance is a gap inside the wall. Zero means the part touches the wall.",
+                    "A negative clearance means the part sticks out, and its absolute value is max_protrusion_mm.",
+                    "protrusion_at_mm is one point on the part where that protrusion is reached.",
+                    "Overlap is the boolean intersection of two parts that also lies inside the envelope.",
+                    "passed is false when any part is closer to the wall than required, or when any overlap is reported.",
+                ],
+            },
+            kind=VERIFIED_CHECK,
+            name="Packaging",
+            what=(
+                "Containment, wall clearance, protrusion, and part-to-part overlap "
+                "are a verified check of these CAD solids against the envelope."
+            ),
+            limits=[
+                "This is the model, not a manufactured fit.",
+                "A polyhedron's protrusion is the farthest vertex outside the envelope.",
+                "A curved surface is searched until the step is under 0.000001 mm.",
+                "A face that sits on the wall within 0.0001 mm counts as touching, not as sticking out.",
+                "The kernel's own tolerance applies.",
+            ],
+        )
+
+
+@dataclass(frozen=True)
 class RenderedView:
     name: str
     path: str
