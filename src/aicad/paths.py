@@ -948,6 +948,8 @@ def replace_file(root: Path, relative: str | Path, write) -> None:
     placed = False
     try:
         descriptor = _call(_libc().openat(dirfd, os.fsencode(temporary), flags, 0o644), temporary)
+        # openat's mode is not applied on every system, so set it on the descriptor.
+        os.fchmod(descriptor, 0o644)
         target, staged = _writer_target(descriptor, Path(name).suffix)
         write(target)
         if staged is not None:
@@ -1065,9 +1067,20 @@ def output_path(
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
     parent = output_dir(root_resolved, resolved.parent, label, error)
     name = resolved.name
-    if name in {"", ".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+    if _refused_file_name(name) or _windows_reserved_punctuation(name):
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
     return parent / name
+
+
+def _refused_file_name(name: str) -> bool:
+    return name in {"", ".", ".."} or "/" in name or "\\" in name or "\x00" in name
+
+
+def _windows_reserved_punctuation(name: str) -> bool:
+    """True when Windows will not create this as an ordinary file name."""
+    if os.name != "nt":
+        return False
+    return any(char in name for char in ':*?"<>|')
 
 
 def shared_file(path: Path) -> bool:

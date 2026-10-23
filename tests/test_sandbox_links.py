@@ -359,9 +359,8 @@ def test_a_slicer_does_not_write_through_a_link(tmp_path, monkeypatch):
         os.link(canary, gcode)
     except OSError:
         pytest.skip("this machine cannot create a hard link")
-    fake = tmp_path / "fake-slicer"
-    fake.write_text(
-        "#!/usr/bin/env python3\n"
+    script = tmp_path / "fake_slicer.py"
+    script.write_text(
         "import sys\n"
         "from pathlib import Path\n"
         "args = sys.argv[1:]\n"
@@ -372,7 +371,21 @@ def test_a_slicer_does_not_write_through_a_link(tmp_path, monkeypatch):
         "Path(dest).write_text('CANARY_HIT\\n', encoding='utf-8')\n",
         encoding="utf-8",
     )
-    fake.chmod(0o755)
+    if os.name == "nt":
+        fake = tmp_path / "fake-slicer.cmd"
+        fake.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        real_run = subprocess.run
+
+        def run(command, **kwargs):
+            if command and command[0] == str(fake):
+                command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", command[0], *command[1:]]
+            return real_run(command, **kwargs)
+
+        monkeypatch.setattr("aicad.printprep.subprocess.run", run)
+    else:
+        fake = tmp_path / "fake-slicer"
+        fake.write_text("#!/usr/bin/env python3\n" + script.read_text(encoding="utf-8"), encoding="utf-8")
+        fake.chmod(0o755)
     monkeypatch.setattr("aicad.printprep.find_slicers", lambda: [str(fake)])
     import numpy as np
 
@@ -444,6 +457,7 @@ def test_a_private_file_is_copied_into_the_project(tmp_path, monkeypatch):
     paths.publish_text(target, "inside\n", root=project)
     assert target.read_text(encoding="utf-8") == "inside\n"
     assert target.is_file() and not target.is_symlink()
+    assert target.stat().st_mode & 0o400
     step = project / "exports" / "box.step"
     export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [4, 4, 4]}]), step)
     assert step.is_file() and step.stat().st_size > 0 and not step.is_symlink()
@@ -457,12 +471,12 @@ def test_a_locked_directory_refuses_the_new_file(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "nofollow_writes", lambda: False)
     locked = tmp_path / "locked"
     locked.mkdir()
-    locked.chmod(0o555)
+    paths.deny_directory_write(locked)
     try:
         with pytest.raises(OSError):
             paths.publish_text(locked / "part.txt", "inside\n")
     finally:
-        locked.chmod(0o755)
+        paths.allow_directory_write(locked)
     assert list(locked.iterdir()) == []
 
 
