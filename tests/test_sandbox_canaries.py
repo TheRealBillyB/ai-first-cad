@@ -14,7 +14,7 @@ import pytest
 
 from aicad.kernel import measure
 from aicad.sandbox import run_part_script, sandbox_supported
-from aicad.sandbox_macos import build_profile
+from aicad.sandbox_macos import _escape, build_profile
 
 
 CANARY_NAME = "SANDBOX_CANARY.txt"
@@ -32,16 +32,21 @@ def config_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_macos_profile_denies_network_and_limits_writes(tmp_path):
-    project = tmp_path / "project"
-    profile = build_profile(["/usr"], [str(project)], network=False)
+def _assert_profile(profile: str, project: str) -> None:
     assert "(deny default)" in profile
     assert "(deny network*)" in profile
     assert "(allow network*)" not in profile
     assert '(allow file-read* (literal "/"))' in profile
     write_lines = [line for line in profile.splitlines() if "file-write*" in line]
     assert write_lines
-    assert all(str(project) in line for line in write_lines)
+    assert all(_escape(project) in line for line in write_lines)
+
+
+def test_macos_profile_denies_network_and_limits_writes(tmp_path):
+    project = str(tmp_path / "project")
+    _assert_profile(build_profile(["/usr"], [project], network=False), project)
+    windows_project = "D:\\a\\project"
+    _assert_profile(build_profile(["/usr"], [windows_project], network=False), windows_project)
 
 
 @pytest.mark.sandbox_linux
