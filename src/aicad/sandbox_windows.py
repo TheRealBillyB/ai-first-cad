@@ -17,6 +17,7 @@ not add its own deny entry: that change stopped later scripts from finishing.
 from __future__ import annotations
 
 import ctypes
+import ntpath
 import os
 import subprocess
 import sys
@@ -66,6 +67,15 @@ _FILE_ATTRIBUTE_NORMAL = 0x80
 _mode: str | None = None
 _mode_error: str | None = None
 _sid_string: str | None = None
+
+# One directory finishes immediately. A tree walk of the Python install can
+# take longer. Either one that does not finish is waiting, not working.
+_ICACLS_TIMEOUT_SECONDS = 15
+_ICACLS_TREE_TIMEOUT_SECONDS = 60
+
+
+class IcaclsTimeout(OSError):
+    """icacls did not finish, so the folder was not granted."""
 
 
 class _IoCounters(ctypes.Structure):
@@ -352,11 +362,58 @@ def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
     return sid, text
 
 
+def _is_volume_root_text(path: str) -> bool:
+    """True for ``C:\\`` and ``\\\\server\\share``.
+
+    icacls asks "Are you sure?" on a volume root and then waits for a person.
+    Saying yes would add an access entry on the whole drive. The container
+    does not get that entry.
+    """
+
+    drive, tail = ntpath.splitdrive(path)
+    if not drive:
+        return False
+    return tail in ("", "\\", "/")
+
+
+def _windows_traverse_parents(path: str) -> list[str]:
+    """Parents that may receive traverse, nearest first, never the volume root."""
+
+    current = ntpath.normpath(path)
+    parents: list[str] = []
+    while True:
+        parent = ntpath.dirname(current)
+        if parent == current:
+            break
+        if not _is_volume_root_text(parent):
+            parents.append(parent)
+        current = parent
+    return parents
+
+
+def _run_icacls(command: list[str], path: Path, *, recurse: bool) -> subprocess.CompletedProcess[str]:
+    timeout = _ICACLS_TREE_TIMEOUT_SECONDS if recurse else _ICACLS_TIMEOUT_SECONDS
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise IcaclsTimeout(
+            f"icacls did not finish within {timeout} seconds for {path}. "
+            "It may be waiting for confirmation, so the sandbox did not change that folder."
+        ) from exc
+
+
 def _icacls(path: Path, sid: str, rights: str, *, recurse: bool) -> None:
     command = ["icacls", str(path), "/grant", f"*{sid}:{rights}", "/C", "/Q"]
     if recurse:
         command.append("/T")
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    completed = _run_icacls(command, path, recurse=recurse)
     if completed.returncode != 0:
         detail = (completed.stdout or "") + (completed.stderr or "")
         raise OSError(f"Could not grant the sandbox access to {path}. {detail.strip()}")
@@ -370,22 +427,24 @@ def _grant_tree(path: Path, sid: str, rights: str) -> None:
 def _grant_traverse(path: Path, sid: str) -> None:
     """Let the container walk down to a folder without granting that folder's children."""
 
-    current = path.resolve()
     # The leaf is granted separately. Parents only need traverse (and a
     # directory read, which Windows often requires to open a child by name).
-    parents: list[Path] = []
-    while True:
-        parent = current.parent
-        if parent == current:
-            break
-        parents.append(parent)
-        current = parent
-    for parent in parents:
+    # The volume root is not granted: icacls waits for confirmation there.
+    if os.name == "nt":
         try:
-            _icacls(parent, sid, "(RX)", recurse=False)
+            text = str(path.resolve())
         except OSError:
-            # The drive root and some system folders are not ours to edit.
-            # The container can still walk them when Windows already allows it.
+            text = str(path)
+    else:
+        text = str(path)
+    for parent in _windows_traverse_parents(text):
+        try:
+            _icacls(Path(parent), sid, "(RX)", recurse=False)
+        except IcaclsTimeout:
+            raise
+        except OSError:
+            # Some system folders are not ours to edit. The container can
+            # still walk them when Windows already allows it.
             continue
 
 
@@ -451,16 +510,17 @@ def _reclaim_for_user(path: Path) -> None:
         try:
             _icacls(path, sid, "(OI)(CI)F", recurse=True)
             return
+        except IcaclsTimeout:
+            raise
         except OSError:
             pass
     user = os.environ.get("USERNAME", "").strip()
     if not user:
         return
-    subprocess.run(
+    _run_icacls(
         ["icacls", str(path), "/grant", f"{user}:(OI)(CI)F", "/T", "/C", "/Q"],
-        capture_output=True,
-        text=True,
-        check=False,
+        path,
+        recurse=True,
     )
 
 

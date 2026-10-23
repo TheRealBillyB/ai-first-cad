@@ -27,6 +27,55 @@ def config_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_windows_traverse_grant_skips_the_volume_root():
+    from aicad.sandbox_windows import _is_volume_root_text, _windows_traverse_parents
+
+    parents = _windows_traverse_parents(r"C:\hostedtoolcache\windows\Python\3.11.9\x64")
+    assert r"C:\hostedtoolcache\windows\Python\3.11.9" in parents
+    assert r"C:\hostedtoolcache" in parents
+    assert not any(_is_volume_root_text(parent) for parent in parents)
+    workspace = _windows_traverse_parents(r"D:\a\ai-first-cad\ai-first-cad\.venv\Lib\site-packages")
+    assert r"D:\a" in workspace
+    assert not any(_is_volume_root_text(parent) for parent in workspace)
+    assert _windows_traverse_parents(r"\\server\share\folder") == []
+
+
+def test_grant_traverse_does_not_call_icacls_on_the_volume_root(monkeypatch):
+    from aicad import sandbox_windows as win
+
+    calls: list[str] = []
+    monkeypatch.setattr(win, "_icacls", lambda path, sid, rights, *, recurse: calls.append(str(path)))
+    win._grant_traverse(Path(r"D:\a\ai-first-cad\ai-first-cad\.venv"), "S-1-2-3")
+    assert calls
+    assert all(not win._is_volume_root_text(path) for path in calls)
+
+
+def test_a_stuck_icacls_fails_with_a_clear_error(monkeypatch):
+    import subprocess
+
+    from aicad import sandbox_windows as win
+
+    def stuck(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0] if args else "icacls", timeout=kwargs.get("timeout", 15))
+
+    monkeypatch.setattr(win.subprocess, "run", stuck)
+    with pytest.raises(win.IcaclsTimeout, match="did not finish") as raised:
+        win._icacls(Path(r"C:\hostedtoolcache"), "S-1-2-3", "(RX)", recurse=False)
+    message = str(raised.value)
+    assert r"C:\hostedtoolcache" in message
+    assert "confirmation" in message
+
+    def stuck_grant(path, sid, rights, *, recurse):
+        raise win.IcaclsTimeout(
+            "icacls did not finish within 15 seconds for "
+            r"C:\hostedtoolcache. It may be waiting for confirmation."
+        )
+
+    monkeypatch.setattr(win, "_icacls", stuck_grant)
+    with pytest.raises(win.IcaclsTimeout, match="confirmation"):
+        win._grant_traverse(Path(r"C:\hostedtoolcache\windows\Python"), "S-1-2-3")
+
+
 def test_windows_script_keeps_library_caches_in_the_project(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     from aicad import sandbox as sandbox_mod

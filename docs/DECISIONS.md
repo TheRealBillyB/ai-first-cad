@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| The Windows sandbox does not grant a volume root, and icacls has to finish | icacls waits for a person on the drive root, so that folder is skipped. Any other icacls call that does not finish is an error, and the sandbox does not change that folder. |
 | Windows and macOS tests run on every pull request and on every push to main | Manual dispatch still starts the workflow. The weekly schedule and the cross-platform label no longer select those jobs. |
 
 ## 2026-10-22
