@@ -491,6 +491,7 @@ def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure():
         _WINDOWS_TCP_PROBE,
         _WINDOWS_UDP_PROBE,
         _public_probe_address,
+        _windows_transport_label,
         apply_sandbox,
         confined_errno,
         network_attempt_label,
@@ -576,6 +577,10 @@ def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure():
     windows = source.split('sys.platform == "win32"', 1)[1].split('sys.platform == "darwin"', 1)[0]
     assert windows.index("identity_failures") < windows.index("windows_network_is_off")
     assert "_network_blocked" not in windows
+    probe = inspect.getsource(_windows_transport_label)
+    udp = probe.split("SOCK_DGRAM", 1)[1]
+    assert "sendto" in udp
+    assert "connect" not in udp
 
 
 def test_windows_network_block_names_only_that_container():
@@ -587,16 +592,19 @@ def test_windows_network_block_names_only_that_container():
 
     package = "S-1-15-2-11-22-33-44-55-66-77"
     script = win._firewall_script(package, install=True)
-    assert script.count("New-NetFirewallRule") == 2
-    assert script.count("-Action Block") == 2
+    assert script.count("New-NetFirewallRule") == 3
+    assert script.count("-Action Block") == 3
     assert "-Direction Outbound" in script
+    assert "-Protocol UDP" in script
     assert "-Direction Inbound" in script
     assert f"-Package '{package}'" in script
     assert "S-1-15-3-1" not in script
     assert "Remove-NetFirewallRule" in script
+    assert script.endswith("exit 0\n")
     removal = win._firewall_script(install=False)
     assert "New-NetFirewallRule" not in removal
     assert "Remove-NetFirewallRule" in removal
+    assert removal.endswith("exit 0\n")
     for bad in ("S-1-15-3-1", "S-1-15-2-1'; Remove-Item", "S-1-5-18", ""):
         with pytest.raises(OSError, match="not a package SID"):
             win._firewall_script(bad, install=True)

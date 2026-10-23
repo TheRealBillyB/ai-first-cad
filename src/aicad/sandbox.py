@@ -923,19 +923,28 @@ def _windows_transport_label(kind: str) -> str:
     address, port = _WINDOWS_TCP_PROBE if kind == "tcp" else _WINDOWS_UDP_PROBE
     if not _public_probe_address(address):
         return "loopback"
-    stream = kind == "tcp"
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM if stream else socket.SOCK_DGRAM)
+    if kind == "tcp":
+        sock = socket.socket()
+        sock.settimeout(2)
+        try:
+            try:
+                sock.connect((address, port))
+            except OSError as exc:
+                return network_attempt_label(exc, success="connected")
+            return "connected"
+        finally:
+            sock.close()
+    # connect() on UDP is only local. The following send can report success
+    # after the firewall has already refused a TCP connection. The datagram
+    # itself has to be refused.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(2)
     try:
         try:
-            # A connected UDP send is what reports a firewall refusal. sendto
-            # can return success when the stack drops the datagram later.
-            sock.connect((address, port))
-            if not stream:
-                sock.send(b"x")
+            sock.sendto(b"x", (address, port))
         except OSError as exc:
-            return network_attempt_label(exc, success="connected" if stream else "sent")
-        return "connected" if stream else "sent"
+            return network_attempt_label(exc, success="sent")
+        return "sent"
     finally:
         sock.close()
 

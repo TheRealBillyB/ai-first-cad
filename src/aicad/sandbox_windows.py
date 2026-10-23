@@ -102,7 +102,11 @@ _network_off_lock = threading.Lock()
 _network_off_holders = 0
 _network_off_sid: str | None = None
 _PACKAGE_SID_TEXT = re.compile(r"^S-1-15-2(?:-\d+)+$", re.IGNORECASE)
-_NETWORK_OFF_RULES = ("aicad-script-network-off-out", "aicad-script-network-off-in")
+_NETWORK_OFF_RULES = (
+    "aicad-script-network-off-out",
+    "aicad-script-network-off-udp",
+    "aicad-script-network-off-in",
+)
 
 # One directory finishes immediately. A tree walk of the Python install can
 # take longer. Either one that does not finish is waiting, not working.
@@ -1396,28 +1400,38 @@ def _firewall_script(sid: str | None = None, *, install: bool) -> str:
     """
 
     names = ", ".join(repr(name) for name in _NETWORK_OFF_RULES)
+    # A missing rule is not an error. Ending on that lookup would make
+    # powershell.exe exit 1, and a later script that needs the network
+    # would not start.
     remove = (
         "$ErrorActionPreference = 'Stop'\n"
-        f"foreach ($name in @({names})) {{\n"
-        "  $rule = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue\n"
-        "  if ($null -ne $rule) { Remove-NetFirewallRule -Name $name }\n"
-        "}\n"
+        "try {\n"
+        f"  foreach ($name in @({names})) {{\n"
+        "    foreach ($rule in @(Get-NetFirewallRule -Name $name -ErrorAction Ignore)) {\n"
+        "      Remove-NetFirewallRule -InputObject $rule\n"
+        "    }\n"
+        "  }\n"
     )
     if not install:
-        return remove
+        return remove + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
     if sid is None or _PACKAGE_SID_TEXT.fullmatch(sid) is None:
         raise OSError("The AppContainer id is not a package SID, so the network was not blocked.")
     package = sid.upper()
     return (
         remove
-        + "New-NetFirewallRule -Name 'aicad-script-network-off-out' "
+        + "  New-NetFirewallRule -Name 'aicad-script-network-off-out' "
         + "-DisplayName 'aicad script network off outbound' "
-        + "-Direction Outbound -Action Block "
+        + "-Direction Outbound -Action Block -Protocol Any "
         + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
-        + "New-NetFirewallRule -Name 'aicad-script-network-off-in' "
+        + "  New-NetFirewallRule -Name 'aicad-script-network-off-udp' "
+        + "-DisplayName 'aicad script network off udp' "
+        + "-Direction Outbound -Action Block -Protocol UDP "
+        + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
+        + "  New-NetFirewallRule -Name 'aicad-script-network-off-in' "
         + "-DisplayName 'aicad script network off inbound' "
-        + "-Direction Inbound -Action Block "
+        + "-Direction Inbound -Action Block -Protocol Any "
         + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
+        + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
     )
 
 
