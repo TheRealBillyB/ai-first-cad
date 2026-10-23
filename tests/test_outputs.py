@@ -235,7 +235,7 @@ def test_handbook_material_aliases_share_a_bom_line():
     m5 = next(row for row in fasteners if row["size"] == "M5-0.8")
     assert m5["quantity"] == 2
     assert m5["material"] == "steel"
-    m6 = next(row for row in fasteners if row["size"] == "M6-1.0")
+    m6 = next(row for row in fasteners if row["size"] == "M6-1")
     assert m6["quantity"] == 1
 
 

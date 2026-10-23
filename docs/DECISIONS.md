@@ -16,6 +16,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Interference starts with the axis-aligned boxes and only then intersects the solids | A pair whose boxes are farther apart than the clearance cannot touch, so the boolean runs on the pairs that can. |
 | Penetration depth is the separating-axis translation, and the volume is the boolean | The depth is exact for convex solids. A non-convex solid reports the convex-hull depth, and the volume stays the real intersection. |
 | A joint command past its stop is held at the stop and recorded | The pose stays on the limit, and the study says which step reached it. |
+| Catalog parts are rows in dimension tables, and a joint may name a mate on those parts | Adding a designation is a new row, and the assembly stores the mate name so the anchor stays the catalog frame. |
 
 ## 2026-10-22
 
