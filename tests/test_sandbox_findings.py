@@ -29,6 +29,26 @@ def config_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_landlock_without_signal_scope_does_not_run(monkeypatch):
+    class Libc:
+        def __init__(self, abi: int):
+            self.abi = abi
+
+        def syscall(self, *_args):
+            return self.abi
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("aicad.sandbox._arch", lambda: "x86_64")
+    monkeypatch.setattr("aicad.sandbox._libc", lambda: Libc(5))
+    ok, reason = sandbox_supported()
+    assert ok is False
+    assert "signal" in reason
+    monkeypatch.setattr("aicad.sandbox._libc", lambda: Libc(6))
+    ok, reason = sandbox_supported()
+    assert ok is True
+    assert reason == ""
+
+
 def test_bh_s01_design_script_cannot_clear_the_plugin_gate(tmp_path, config_home):
     _sandbox_or_skip()
     allow_design_scripts(tmp_path)

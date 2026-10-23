@@ -329,6 +329,11 @@ def sandbox_supported() -> tuple[bool, str]:
             "This computer's kernel cannot block both files and the network for a script "
             f"(Landlock ABI {abi}, errno {errno}), so the script will not run."
         )
+    if abi < 6:
+        return False, (
+            "This computer's kernel cannot block signals leaving a script "
+            f"(Landlock ABI {abi}), so the script will not run."
+        )
     return True, ""
 
 
@@ -780,10 +785,9 @@ def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
             raise ScriptError("Could not lock the script process, so the script was not run.")
     net = 0 if network else (_NET_BIND | _NET_CONNECT)
     abi = int(libc.syscall(create, None, 0, 1))
-    if abi >= 6:
-        attr = _RulesetAttrScoped(_HANDLED_FS, net, _LANDLOCK_SCOPE_SIGNAL)
-    else:
-        attr = _RulesetAttr(_HANDLED_FS, net)
+    if abi < 6:
+        raise ScriptError(sandbox_supported()[1])
+    attr = _RulesetAttrScoped(_HANDLED_FS, net, _LANDLOCK_SCOPE_SIGNAL)
     ruleset = libc.syscall(create, ctypes.byref(attr), ctypes.sizeof(attr), 0)
     if ruleset < 0:
         raise ScriptError(
