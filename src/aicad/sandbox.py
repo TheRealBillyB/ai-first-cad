@@ -954,14 +954,35 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     return roots
 
 
+# Imported while the interpreter is starting, before the sandbox is applied.
+# ``aicad`` is this program. The other names are imported by site startup
+# (Debian and Ubuntu also import ``apport_python_hook`` from sitecustomize).
+_STARTUP_MODULE_NAMES = frozenset(
+    {
+        "aicad",
+        "apport_python_hook",
+        "sitecustomize",
+        "usercustomize",
+    }
+)
+
+
+def _under_directory(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def _pythonpath_for_child(workspace: Path, raw: str | None) -> str | None:
     """Drop import entries that would load Python from the project.
 
-    The child uses the project as its working directory. An empty entry,
-    ``.``, or the project path itself would import a file named ``aicad``
-    from that folder before the sandbox is applied. A project folder that
-    is itself named ``aicad`` is the same problem when its parent is on the
-    path.
+    The child uses the project as its working directory. A relative entry
+    would be read from that folder, so every entry that is kept is absolute
+    and taken from this process's current directory. The project itself, any
+    directory inside it, and a parent directory that would import the project
+    under a name Python loads at startup are removed.
     """
     if not raw:
         return None
@@ -972,19 +993,21 @@ def _pythonpath_for_child(workspace: Path, raw: str | None) -> str | None:
         if text in ("", ".", ".."):
             continue
         try:
-            candidate = Path(text).expanduser().resolve()
+            candidate = Path(text).expanduser()
+            if not candidate.is_absolute():
+                candidate = Path.cwd() / candidate
+            candidate = candidate.resolve()
         except OSError:
-            kept.append(entry)
             continue
-        if candidate == root:
+        if _under_directory(candidate, root):
             continue
-        if root.name == "aicad":
+        if root.name in _STARTUP_MODULE_NAMES:
             try:
-                if (candidate / "aicad").resolve() == root:
+                if (candidate / root.name).resolve() == root:
                     continue
             except OSError:
-                pass
-        kept.append(entry)
+                continue
+        kept.append(str(candidate))
     if not kept:
         return None
     return os.pathsep.join(kept)
