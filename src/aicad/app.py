@@ -426,11 +426,16 @@ def _handler(session: Workspace):
         def _marked_note(self, path: Path, mime: str) -> None:
             from aicad.workspace import _fence_note
 
-            try:
-                text = path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                self._bytes(path, mime)
-                return
+            root = os.path.realpath(self.workspace.root)
+            resolved = os.path.realpath(path)
+            if resolved.startswith(root + os.sep):
+                try:
+                    text = Path(resolved).read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    self._bytes(Path(resolved), mime)
+                    return
+            else:
+                raise GeometryError("That file is outside the project.")
             marked = _fence_note({"markdown": text})["markdown"].encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")

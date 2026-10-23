@@ -5,6 +5,7 @@ import os
 import threading
 from http.client import HTTPConnection
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -241,3 +242,27 @@ def test_picture_request_can_carry_the_token_in_the_query(server):
     assert text.startswith("<<<UNTRUSTED PROJECT TEXT")
     assert "hello" in text
     assert text.rstrip().endswith("<<<END UNTRUSTED PROJECT TEXT>>>")
+
+
+def test_a_note_outside_the_project_is_refused(server, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("secret-note\n", encoding="utf-8")
+    sibling = tmp_path / "project-extra"
+    sibling.mkdir()
+    (sibling / "notes.txt").write_text("sibling-note\n", encoding="utf-8")
+    (tmp_path / "project" / "linked.txt").symlink_to(secret)
+
+    queries = [
+        "/api/file?path=../outside/secret.txt",
+        "/api/file?path=linked.txt",
+        "/api/file?path=" + quote(str(secret)),
+        "/api/file?path=" + quote(str(sibling / "notes.txt")),
+    ]
+    for query in queries:
+        status, payload, _headers = _exchange(server, "GET", query, token="agent")
+        assert status == 400
+        assert b"outside the project" in payload
+        assert b"secret-note" not in payload
+        assert b"sibling-note" not in payload
