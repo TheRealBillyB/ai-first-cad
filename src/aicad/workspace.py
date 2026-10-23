@@ -108,7 +108,7 @@ class Workspace:
                     result = attach_sheet(result, self.root / "renders" / "sheets", name, root=self.root)
                     if name in {"check_requirements", "get_requirements", "set_requirements"} and result.get("sheet"):
                         self.requirements_sheet = result["sheet"]
-                    if source in ("mcp", "chat") and name == "read_document":
+                    if source in ("mcp", "chat", "agent") and name == "read_document":
                         result = _fence_note(result)
             except Exception:
                 if command.undo:
