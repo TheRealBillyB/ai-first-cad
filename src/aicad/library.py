@@ -62,21 +62,16 @@ def search(query: str = "") -> dict[str, object]:
 
 
 def _catalog_class(module: str, name: str):
-    """Load one catalog class.
-
-    The first import leaves the caller's working directory unchanged when it
-    returns. A later call uses the class already loaded and does not change
-    the working directory at all.
-    """
+    """Load one catalog class. This does not change the process working directory."""
     import sys
 
     loaded = sys.modules.get(module)
     if loaded is not None and hasattr(loaded, name):
         return getattr(loaded, name)
-    from aicad.paths import aside_from_cwd
+    from aicad.paths import prepare_geometry_import
 
-    with aside_from_cwd():
-        imported = __import__(module, fromlist=[name])
+    prepare_geometry_import()
+    imported = __import__(module, fromlist=[name])
     return getattr(imported, name)
 
 

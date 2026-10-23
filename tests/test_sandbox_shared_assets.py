@@ -93,6 +93,51 @@ def _marker_font(path: Path) -> None:
     builder.save(str(path))
 
 
+def _child_import(project: Path, body: str) -> str:
+    return (
+        "import json, os, threading, time\n"
+        "from pathlib import Path\n"
+        f"os.chdir({str(project)!r})\n"
+        "origin = os.getcwd()\n"
+        "samples = []\n"
+        "errors = []\n"
+        "stop = threading.Event()\n"
+        "def watch():\n"
+        "    while not stop.is_set():\n"
+        "        samples.append(os.getcwd())\n"
+        "        try:\n"
+        "            text = open('local.txt', encoding='utf-8').read()\n"
+        "        except OSError as exc:\n"
+        "            errors.append(repr(exc))\n"
+        "        else:\n"
+        "            if text != 'kept\\n':\n"
+        "                errors.append(text)\n"
+        "thread = threading.Thread(target=watch, daemon=True)\n"
+        "thread.start()\n"
+        "while not samples:\n"
+        "    time.sleep(0.001)\n"
+        f"{body}\n"
+        "stop.set()\n"
+        "thread.join()\n"
+        "from ezdxf._options import options\n"
+        "loaded = [str(Path(path).resolve()) for path in options.loaded_config_files]\n"
+        "print(json.dumps({'cwd': os.getcwd(), 'origin': origin, 'errors': errors, "
+        "'samples': len(samples), 'moved': [item for item in samples if item != origin], "
+        "'loaded': loaded}))\n"
+    )
+
+
+def _assert_cwd_unchanged(payload: dict, project: Path) -> None:
+    assert payload["cwd"] == str(project)
+    assert payload["origin"] == str(project)
+    assert payload["samples"] > 0
+    assert payload["moved"] == []
+    assert payload["errors"] == []
+    project_ini = (project / "ezdxf.ini").resolve()
+    for item in payload["loaded"]:
+        assert Path(item).resolve() != project_ini
+
+
 def _script_hash(script: str) -> str:
     return hashlib.sha256(script.encode("utf-8")).hexdigest()
 
@@ -285,6 +330,7 @@ def test_shared_font_config_does_not_open_an_outside_font(tmp_path):
         ]
     )
     (project / "ezdxf.ini").write_text(ini, encoding="utf-8")
+    (project / "local.txt").write_text("kept\n", encoding="utf-8")
     cache = tmp_path / "cache"
     config = tmp_path / "xdg-config"
     env = os.environ.copy()
@@ -293,19 +339,15 @@ def test_shared_font_config_does_not_open_an_outside_font(tmp_path):
     env["XDG_CACHE_HOME"] = str(cache)
     env["XDG_CONFIG_HOME"] = str(config)
     env["AICAD_CONFIG"] = str(tmp_path / "aicad-config")
-    code = (
-        "import json, os\n"
-        "from pathlib import Path\n"
-        f"os.chdir({str(project)!r})\n"
+    body = (
         "import aicad.gears.solid\n"
         "from aicad.document import Document\n"
         "from aicad.workspace import Workspace\n"
         "Document(Path(os.getcwd()))\n"
         f"Workspace(Path({str(tmp_path / 'here')!r})).execute('open_project', {{'path': os.getcwd()}})\n"
-        "print(json.dumps({'cwd': os.getcwd()}))\n"
     )
     done = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-c", _child_import(project, body)],
         cwd=project,
         env=env,
         capture_output=True,
@@ -313,7 +355,7 @@ def test_shared_font_config_does_not_open_an_outside_font(tmp_path):
         check=False,
     )
     assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout)["cwd"] == str(project)
+    _assert_cwd_unchanged(json.loads(done.stdout.strip().splitlines()[-1]), project)
     blob = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in cache.rglob("*")
@@ -413,54 +455,42 @@ def test_sandboxed_part_does_not_apply_shipped_font_config(tmp_path, config_home
     _assert_canary_absent(canary)
 
 
-def test_font_config_import_restores_the_caller_directory(tmp_path, monkeypatch):
+def test_geometry_import_does_not_change_the_working_directory(tmp_path):
+    outside = tmp_path / "outside"
+    canary = _canary(outside)
     project = tmp_path / "project"
     project.mkdir()
     (project / "local.txt").write_text("kept\n", encoding="utf-8")
-    monkeypatch.chdir(project)
-    from aicad.paths import aside_from_cwd
+    _writer(project / "write_canary.py", canary)
+    (project / "ezdxf.ini").write_text(
+        "\n".join(
+            [
+                "[core]",
+                "SUPPORT_DIRS = " + str(outside),
+                "[odafc-addon]",
+                "UNIX_EXEC_PATH = python3 " + str(project / "write_canary.py"),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg-config")
+    env["AICAD_CONFIG"] = str(tmp_path / "aicad-config")
+    done = subprocess.run(
+        [sys.executable, "-c", _child_import(project, "import aicad.kernel\nimport aicad.gears.solid\n")],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    payload = json.loads(done.stdout.strip().splitlines()[-1])
+    _assert_cwd_unchanged(payload, project)
+    from aicad.paths import packaged_font_config
 
-    with aside_from_cwd():
-        assert Path.cwd().resolve() == project.resolve()
-    assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
-
-    (project / "ezdxf.ini").write_text("[core]\n", encoding="utf-8")
-    import aicad.paths as paths
-
-    package = Path(paths.__file__).resolve().parent
-    # The geometry libraries are already loaded in this process, so a later
-    # import must not move the caller.
-    with aside_from_cwd():
-        assert Path.cwd().resolve() == project.resolve()
-        assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
-
-    import sys
-
-    removed = sys.modules.pop("ezdxf")
-    try:
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        with aside_from_cwd():
-            assert Path.cwd().resolve() == package
-            assert not Path("local.txt").exists()
-            os.chdir(elsewhere)
-        assert Path.cwd().resolve() == project.resolve()
-        assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
-        Path("after.txt").write_text("after\n", encoding="utf-8")
-        assert (project / "after.txt").read_text(encoding="utf-8") == "after\n"
-        assert not (package / "after.txt").exists()
-
-        with pytest.raises(RuntimeError, match="import failed"):
-            with aside_from_cwd():
-                raise RuntimeError("import failed")
-        assert Path.cwd().resolve() == project.resolve()
-        assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
-    finally:
-        sys.modules["ezdxf"] = removed
-
-    from aicad.library import _catalog_class
-
-    _catalog_class("bd_warehouse.fastener", "HexNut")
-    _catalog_class("bd_warehouse.fastener", "HexNut")
-    assert Path.cwd().resolve() == project.resolve()
-    assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
+    packaged = packaged_font_config().resolve()
+    assert any(Path(item).resolve() == packaged for item in payload["loaded"])
+    _assert_canary_absent(canary)

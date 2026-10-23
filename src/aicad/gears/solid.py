@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import math
 
-from aicad.paths import aside_from_cwd
+from aicad.paths import prepare_geometry_import
 
-with aside_from_cwd():
-    from build123d import Box, Cylinder, Face, Polyline, Pos, Rot, Solid
+prepare_geometry_import()
+from build123d import Box, Cylinder, Face, Polyline, Pos, Rot, Solid
 
 from aicad.errors import GeometryError
 from aicad.gears import geometry as geom

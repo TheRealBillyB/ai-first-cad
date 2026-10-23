@@ -18,29 +18,28 @@ from pathlib import Path
 
 import numpy as np
 
-from aicad.paths import aside_from_cwd
+from aicad.paths import prepare_geometry_import
 
-with aside_from_cwd():
-    from build123d import (
-        Axis,
-        Box,
-        Cylinder,
-        Face,
-        Plane,
-        CenterArc,
-        Line,
-        Polygon,
-        Pos,
-        Rot,
-        Sphere,
-        Vector,
-        make_face,
-        export_step,
-        export_stl,
-        extrude,
-        revolve,
-    )
-
+prepare_geometry_import()
+from build123d import (
+    Axis,
+    Box,
+    Cylinder,
+    Face,
+    Plane,
+    CenterArc,
+    Line,
+    Polygon,
+    Pos,
+    Rot,
+    Sphere,
+    Vector,
+    make_face,
+    export_step,
+    export_stl,
+    extrude,
+    revolve,
+)
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
