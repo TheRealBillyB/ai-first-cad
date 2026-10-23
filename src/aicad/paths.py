@@ -17,25 +17,32 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 _CWD_LOCK = threading.RLock()
 
 
+def _font_config_in_cwd() -> bool:
+    """True when this process would read a project ``ezdxf.ini`` on import."""
+    return os.path.isfile(os.path.join(os.getcwd(), "ezdxf.ini"))
+
+
 @contextmanager
 def aside_from_cwd():
-    """Import from the package directory, not the working directory.
+    """Import geometry libraries without applying a project font config.
 
-    The geometry libraries read ``ezdxf.ini`` from the working directory as
-    they are imported. That directory is often a project someone else shared.
-    The file can name a font folder outside the project, and the font scan
-    opens it. The import does not need the working directory.
+    Those libraries read ``ezdxf.ini`` from the working directory the first
+    time they are imported. When that file is present, the import runs from
+    this package's directory. The caller's directory is restored when the
+    import returns, including when the import fails, so a relative path the
+    caller opens afterward stays in the caller's directory. When the file is
+    absent, the working directory is not changed.
     """
     with _CWD_LOCK:
+        if not _font_config_in_cwd():
+            yield
+            return
         origin = os.getcwd()
         os.chdir(Path(__file__).resolve().parent)
         try:
             yield
         finally:
-            try:
-                os.chdir(origin)
-            except OSError:
-                pass
+            os.chdir(origin)
 
 
 def session_path_escapes(text: str) -> bool:

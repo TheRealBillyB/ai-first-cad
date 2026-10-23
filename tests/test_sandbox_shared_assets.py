@@ -410,3 +410,44 @@ def test_sandboxed_part_does_not_apply_shipped_font_config(tmp_path, config_home
 
     assert measure(shape).volume_mm3 == pytest.approx(1)
     _assert_canary_absent(canary)
+
+
+def test_font_config_import_restores_the_caller_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "local.txt").write_text("kept\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+    from aicad.paths import aside_from_cwd
+
+    with aside_from_cwd():
+        assert Path.cwd().resolve() == project.resolve()
+    assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
+
+    (project / "ezdxf.ini").write_text("[core]\n", encoding="utf-8")
+    import aicad.paths as paths
+
+    package = Path(paths.__file__).resolve().parent
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    with aside_from_cwd():
+        assert Path.cwd().resolve() == package
+        assert not Path("local.txt").exists()
+        os.chdir(elsewhere)
+    assert Path.cwd().resolve() == project.resolve()
+    assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
+    Path("after.txt").write_text("after\n", encoding="utf-8")
+    assert (project / "after.txt").read_text(encoding="utf-8") == "after\n"
+    assert not (package / "after.txt").exists()
+
+    with pytest.raises(RuntimeError, match="import failed"):
+        with aside_from_cwd():
+            raise RuntimeError("import failed")
+    assert Path.cwd().resolve() == project.resolve()
+    assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
+
+    from aicad.library import _catalog_class
+
+    _catalog_class("bd_warehouse.fastener", "HexNut")
+    _catalog_class("bd_warehouse.fastener", "HexNut")
+    assert Path.cwd().resolve() == project.resolve()
+    assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
