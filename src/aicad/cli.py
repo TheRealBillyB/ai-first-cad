@@ -21,6 +21,9 @@ def main(argv: list[str] | None = None) -> int:
     except AICADError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -91,7 +94,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     wall = commands.add_parser("check-wall", parents=[common], help="Estimate minimum wall thickness.")
     wall.add_argument("name")
-    wall.add_argument("--min", dest="min_wall", type=float, required=True, help="Threshold in mm.")
+    wall.add_argument(
+        "--min",
+        "--min-wall",
+        dest="min_wall",
+        type=float,
+        required=True,
+        help="Threshold in mm. --min-wall is the same flag inspect uses.",
+    )
     wall.add_argument("--samples", type=int, default=4)
 
     clearance = commands.add_parser(
@@ -476,3 +486,7 @@ def _emit(payload: dict) -> int:
     json.dump(payload, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

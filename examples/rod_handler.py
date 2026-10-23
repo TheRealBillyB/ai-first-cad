@@ -1184,7 +1184,11 @@ def main() -> None:
         ],
         "link_count": len(robot["links"]),
     }
-    print(" ", robot_brief["validation"].get("status"), robot_brief["note"][:180])
+    validation = robot_brief["validation"]
+    simulator = validation.get("mujoco", {}).get("status")
+    if simulator != "loaded":
+        simulator = validation.get("pybullet", {}).get("status")
+    print(" ", simulator, robot_brief["note"][:180])
 
     print("pictures")
     preview = document.render_assembly("rod_handler")

@@ -304,6 +304,11 @@ def solve_part(
             f"Very coarse mesh: target size {used_size:g} mm, {mesh['element_count']} elements, "
             f"smallest part dimension {smallest:g} mm. Peak stress from a mesh this coarse is a hint, not a measurement."
         )
+    thin_note = _thin_feature_mesh_note(mesh)
+    if thin_note:
+        mesh["thin_feature"] = True
+        if thin_note not in warnings:
+            warnings.append(thin_note)
     fixed_nodes = _nodes_for(mesh, [face["index"] for item in fixes for face in item["faces"]])
     if len(fixed_nodes) == 0:
         warnings.append(
@@ -1058,6 +1063,61 @@ def _von_mises(stress: np.ndarray) -> np.ndarray:
     )
 
 
+def _thin_feature_mesh_note(mesh: dict) -> str | None:
+    """Flag a mesh that does not resolve a thin region.
+
+    The bounding box of a hollow shell is the outside of the shell, so a mesh
+    size check against that box never sees the wall. A tet's smallest altitude
+    is the thickness of that element. When the thin end of the mesh is much
+    thinner than the element size, that region is one element through.
+    """
+    points = mesh.get("points")
+    elements = mesh.get("elements")
+    if points is None or elements is None or len(elements) == 0:
+        return None
+    corners = np.asarray(elements)[:, :4]
+    pts = np.asarray(points, dtype=np.float64)[corners]
+    pairs = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
+    lengths = np.stack(
+        [np.linalg.norm(pts[:, a] - pts[:, b], axis=1) for a, b in pairs],
+        axis=1,
+    )
+    longest = lengths.max(axis=1)
+    volumes = _tet_volumes(pts)
+    face_index = ((0, 1, 2), (0, 3, 1), (1, 3, 2), (2, 3, 0))
+    areas = []
+    for a, b, c in face_index:
+        areas.append(0.5 * np.linalg.norm(np.cross(pts[:, b] - pts[:, a], pts[:, c] - pts[:, a]), axis=1))
+    area = np.maximum(np.stack(areas, axis=1), 1e-12)
+    altitude = np.where(volumes[:, None] > 0, 3.0 * volumes[:, None] / area, 1e9)
+    min_altitude = altitude.min(axis=1)
+    flatness = longest / np.maximum(min_altitude, 1e-12)
+
+    # The 5th percentile is a region, not one short tet at a hole. On the
+    # motor-mount mesh at 1.5 mm that percentile is about 0.7 mm, above
+    # 1.5/3, so the 2.4 mm gusset still passes. A 0.05 mm foil and a 0.3 mm
+    # rib sit under a third of the mesh size asked for.
+    used = float(mesh.get("mesh_size_mm") or 0.0)
+    if used > 0:
+        thin = float(np.percentile(min_altitude, 5))
+        if thin < used / 3.0:
+            return (
+                f"Coarse mesh for a thin feature: the thinner elements are {thin:.3g} mm through, "
+                f"less than a third of the {used:g} mm mesh size. "
+                "There are not enough elements through the thickness. "
+                "A safety factor from this mesh is not a pass."
+            )
+    worst = float(np.percentile(flatness, 95))
+    if worst > 25:
+        return (
+            f"Coarse mesh for a thin feature: the 95th percentile element aspect ratio is {worst:.0f} "
+            "(longest edge over the through-thickness altitude). "
+            "There are not enough elements through the thickness. "
+            "A safety factor from this mesh is not a pass."
+        )
+    return None
+
+
 def _review(mesh, vm, strength: float, target: float, warnings: list[str], safety: float) -> dict:
     elements = mesh["elements"][:, :4]
     points = mesh["points"]
@@ -1294,6 +1354,7 @@ def _public_mesh(mesh: dict, mesh_size: float) -> dict[str, object]:
         "order": order,
         "kind": "quadratic tetrahedra" if order == 2 else "linear tetrahedra" if order == 1 else None,
         "degraded": bool(mesh.get("degraded")),
+        "thin_feature": bool(mesh.get("thin_feature")),
         "notes": list(mesh.get("mesh_notes") or []),
         "simplifications": list(mesh.get("simplifications") or []),
     }

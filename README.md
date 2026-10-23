@@ -54,6 +54,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
+On Ubuntu or Debian, `python -m venv` needs the `python3-venv` package (`sudo apt-get install -y python3-venv`) before that first command. The package that matches your Python, such as `python3.12-venv`, is the one that provides `ensurepip`.
+
 The sketch solver is [python-solvespace](https://github.com/KmolYuan/solvespace), a wrapper around the SolveSpace geometric constraint solver. That solver is GPL-3.0-or-later. aicad is AGPL-3.0-or-later, and that GPL solver can be combined with it. If pip has no wheel for your Python, it compiles the solver and needs a C++ compiler plus Python headers (`python3-dev` and `g++` on Debian or Ubuntu).
 
 The mechanics solver is [CalculiX](https://www.calculix.de/) (`ccx`), which is GPL-2.0-only and runs as a separate program. Meshing uses [Gmsh](https://gmsh.info/), GPL-2.0-or-later, through the `gmsh` Python module that pip installs with aicad. Install the CalculiX binary separately:
@@ -164,7 +166,7 @@ The wall number is a sample, not a proof. The stress numbers are one linear mesh
 
 The report returns the peak nodal von Mises stress, the peak displacement, and the minimum safety factor (strength divided by that peak) with the node where it occurs. Metals are compared with yield. Plastics are compared with the tensile number. Pictures are front, right, top, isometric, and a contact sheet, for stress and for displacement. Blue is low and red is high. Each picture is scaled to itself, and the title carries the maximum, so two brackets are compared by the numbers in the title.
 
-`review.status` is `pass`, `fail`, or `inconclusive`. Pass means the safety factor meets the target on a mesh that is not flagged as coarse. A coarse mesh, or a fallback from quadratic tetrahedra to linear ones, keeps a high safety factor at `inconclusive`. A safety factor under the target is `fail` even on a coarse mesh, and the warning says the mesh is a hint. Overstressed regions are candidates for added material. Regions whose stress is a small fraction of the peak are candidates for removed material.
+`review.status` is `pass`, `fail`, or `inconclusive`. Pass means the safety factor meets the target on a mesh that is not flagged as coarse. A coarse mesh, a thin region whose elements are much smaller than the mesh size, or a fallback from quadratic tetrahedra to linear ones, keeps a high safety factor at `inconclusive`. A safety factor under the target is `fail` even on a coarse mesh, and the warning says the mesh is a hint. Overstressed regions are candidates for added material. Regions whose stress is a small fraction of the peak are candidates for removed material.
 
 Every report states the material, the loads, the supports, the mesh size, and that the model is linear and isotropic. A printed material uses an in-plane strength and the report says a printed part is weaker across layers, often about half. The same sentence is present for a metal, with no layer reduction applied. Warnings cover a part with nothing fixed, a load that matches no face, a load that shares nodes with the support, and a mesh that is very coarse or larger than a selected hole.
 
@@ -508,7 +510,7 @@ GitHub Actions runs `pytest` on every push and pull request (`.github/workflows/
 - On Linux, assistant scripts run in a confined process: the project folder only, no network unless you turn it on, and a time and memory limit. A design script stays off until you allow it. Opening a project does not run scripts stored in it. See [SECURITY.md](SECURITY.md). Windows and macOS do not run those scripts until they have their own confinement. The script can still change or delete files inside the project, so point it at a project you are willing to let it edit.
 - Sketch dimensions are the parametric hook. Changing `bolt_circle` rebuilds parts made from that sketch. There is still no 3D feature tree: a fillet, a gusset length, or an extrude height is a number in the step list or the script, not a feature you edit in place. A failed dimension change or a failed script replacement leaves the previous solid.
 - Structured operations are only axis-aligned boxes and cylinders. Fillets, chamfers, and rotated boxes belong in a script.
-- Wall thickness can still miss a thin spot that no ray and no slice crosses. A passing check is evidence, not a guarantee. Anything thinner than about 0.15 mm is below the ray step. A knife-edge gusset reads as a very thin wall, which is why the example gussets end in a 2.4 mm toe.
+- Wall thickness can still miss a thin spot that no ray and no slice crosses. A passing check is evidence, not a guarantee. The probe starts inside the face, at 0.01 mm or a smaller step when that would land on the opposite face. A wall thinner than the smallest step, 0.0004 mm, is an upper bound that cannot pass a minimum. A knife-edge gusset reads as a very thin wall, which is why the example gussets end in a 2.4 mm toe.
 - A section only shows the plane you asked for. Buried geometry between planes is still invisible until you cut there.
 - Clearance does not report how deep an interference goes, only its volume. Catalog screws omit threads, so a fit check is against the simple shank, not the major diameter.
 - The catalog is screws, nuts, washers, and one family of ball bearings. It is not a McMaster mirror. An arbitrary bought part is a STEP import.

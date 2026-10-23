@@ -55,6 +55,29 @@ pip install -e ".[dev,robot]"
 aicad --help
 ```
 
+### Linux
+
+1. Install Python 3.11 or newer. On Ubuntu or Debian the venv module is a separate package, so install it before creating the environment:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-venv
+```
+
+`python3-venv` is the package name. If that is not available, install the one that matches `python3 --version`, such as `python3.12-venv`. Without it, `python3 -m venv .venv` stops with `ensurepip is not available`.
+
+2. Open a terminal in the project folder and run:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e ".[dev,robot]"
+aicad --help
+```
+
+3. Strength and vibration checks also need CalculiX: `sudo apt-get install -y calculix-ccx`. If pip has to compile the sketch solver, install `build-essential` and `python3-dev` as well.
+
 ### What the extra installs are for
 
 - **CalculiX (`ccx`)** runs the strength check and the vibration check. Modeling, print prep, assemblies, and the robot export all work without it. On Ubuntu or Debian: `sudo apt-get install -y calculix-ccx`. On Windows and Mac, install a CalculiX build and make sure `ccx` is on your PATH. Until then, those two checks report that the solver is missing.

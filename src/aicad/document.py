@@ -75,6 +75,7 @@ class _Part:
         geometry_file: str | None = None,
         script_sha256: str | None = None,
         script_pending: bool = False,
+        rebuild_error: str | None = None,
     ):
         self.name = name
         self.source = source
@@ -90,10 +91,13 @@ class _Part:
         self.geometry_file = geometry_file
         self.script_sha256 = script_sha256
         self.script_pending = script_pending
+        self.rebuild_error = rebuild_error
 
     @property
     def shape(self) -> kernel.Shape:
         if self._shape is None:
+            if self.rebuild_error:
+                raise DocumentError(self.rebuild_error)
             raise DocumentError(_unbuilt_message(self.name))
         return self._shape
 
@@ -127,6 +131,7 @@ class Document:
         self._parts: dict[str, _Part] = {}
         self._sketches: dict[str, _Sketch] = {}
         self._assemblies: dict[str, dict] = {}
+        self.problems: list[str] = []
         self._lock = threading.RLock()
         self._load()
 
@@ -242,6 +247,7 @@ class Document:
                 "built": part._shape is not None,
                 "script_pending": part.script_pending,
                 "geometry_file": part.geometry_file,
+                "problem": part.rebuild_error,
             }
 
     def measure(self, name: str) -> Measurement:
@@ -261,7 +267,12 @@ class Document:
             estimate = kernel.estimate_wall_thickness(self._get(name).shape, samples)
             passed = None
             if min_wall_mm is not None:
-                passed = estimate.minimum_mm is not None and estimate.minimum_mm + 1e-9 >= min_wall_mm
+                # A capped reading is an upper bound. It must not pass a minimum.
+                passed = (
+                    estimate.minimum_mm is not None
+                    and not estimate.capped
+                    and estimate.minimum_mm + 1e-9 >= min_wall_mm
+                )
             return WallReport(
                 estimated_min_mm=estimate.minimum_mm,
                 threshold_mm=min_wall_mm,
@@ -422,6 +433,7 @@ class Document:
         """
         with self._lock:
             sketch = self._get_sketch(name)
+            kernel.finite_number(value, "dimension")
             stored = set_spec_dimension(sketch.spec, dimension, value)
             report = solve_sketch(stored, name)
             if report.status in _UNBUILDABLE:
@@ -555,13 +567,18 @@ class Document:
         position: list | tuple,
         rotation_deg: list | tuple | None = None,
     ) -> PartInfo:
-        """Move a part. The move replaces any previous placement; it does not stack."""
+        """Move a part. The move replaces any previous placement; it does not stack.
+
+        A bad position is rejected before the part changes, so a later save
+        cannot write the failed placement into the session.
+        """
         with self._lock:
             part = self._get(name)
             placed_at = _vec3(position, "position")
             rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
+            shape = kernel.place(part.base, placed_at, rotation)
             part.placement = {"position": list(placed_at), "rotation_deg": list(rotation)}
-            part.shape = kernel.place(part.base, placed_at, rotation)
+            part.shape = shape
             self._save()
             return self._info(part)
 
@@ -742,12 +759,9 @@ class Document:
             if found is None:
                 known = ", ".join(item["name"] for item in spec["joints"]) or "(none)"
                 raise GeometryError(f"No joint {joint!r} on {name!r}. Joints: {known}.")
-            try:
-                found["value"] = float(value)
-                if slide is not None:
-                    found["slide"] = float(slide)
-            except (TypeError, ValueError) as exc:
-                raise GeometryError("A joint value must be a number.") from exc
+            found["value"] = kernel.finite_number(value, "joint value", unit="deg")
+            if slide is not None:
+                found["slide"] = kernel.finite_number(slide, "joint slide")
             result = self._commit_assembly(spec)
             driven = next((row for row in result["solved"]["joints"] if row["name"] == joint), None)
             if driven and driven["driven"]:
@@ -977,7 +991,13 @@ class Document:
         payload = self._payload()
         path = self._session_path()
         temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        try:
+            text = json.dumps(payload, indent=2, allow_nan=False) + "\n"
+        except ValueError as exc:
+            raise DocumentError(
+                "The session has a number that is not finite, so it was not saved."
+            ) from exc
+        temporary.write_text(text, encoding="utf-8")
         temporary.replace(path)
 
     def _reload(self) -> None:
@@ -1006,19 +1026,27 @@ class Document:
         self._apply_payload(payload)
 
     def _apply_payload(self, payload: dict) -> None:
+        self.problems = []
         for record in payload.get("sketches", []):
             self._sketches[record["name"]] = _Sketch(record["name"], record["spec"])
         for record in payload.get("parts", []):
-            name = record["name"]
+            name = str(record.get("name") or "")
             source = record.get("source", "script")
             placement = record.get("placement") or _identity_placement()
             script_text = record.get("script") or ""
             script_pending = False
             try:
+                position = kernel.finite_vec3(placement.get("position", [0.0, 0.0, 0.0]), "position")
+                rotation = kernel.finite_vec3(
+                    placement.get("rotation_deg", [0.0, 0.0, 0.0]), "rotation_deg", unit="deg"
+                )
                 if source == "ops":
                     base = kernel.make_from_ops(record["ops"])
                 elif source == "step":
-                    base = kernel.import_step_file(self.workspace / record["step_file"])
+                    step_path = _project_file(
+                        self.workspace, record.get("step_file"), f"Part {name!r} step file"
+                    )
+                    base = kernel.import_step_file(step_path)
                 elif source == "library":
                     spec = record["library"]
                     base = kernel.adopt(
@@ -1044,10 +1072,16 @@ class Document:
                     source = "script"
                     script_pending = _script_hash(script_text) != record.get("script_sha256")
                     geometry = record.get("geometry_file")
-                    geometry_path = self.workspace / geometry if geometry else None
-                    if geometry_path is not None and geometry_path.is_file():
-                        base = kernel.import_step_file(geometry_path)
-                        base.features = feature_report_from_dict(record.get("features"))
+                    if geometry:
+                        geometry_path = _project_file(
+                            self.workspace, geometry, f"Part {name!r} geometry file"
+                        )
+                        if geometry_path.is_file():
+                            base = kernel.import_step_file(geometry_path)
+                            base.features = feature_report_from_dict(record.get("features"))
+                        else:
+                            base = None
+                            script_pending = True
                     else:
                         # A downloaded script is shown, not run.
                         base = None
@@ -1055,32 +1089,38 @@ class Document:
                 if base is None:
                     shape = None
                 else:
-                    shape = kernel.place(
-                        base,
-                        tuple(placement["position"]),
-                        tuple(placement["rotation_deg"]),
-                    )
+                    shape = kernel.place(base, position, rotation)
                     if source == "script":
                         shape.features = base.features
+                stored_placement = {
+                    "position": [position[0], position[1], position[2]],
+                    "rotation_deg": [rotation[0], rotation[1], rotation[2]],
+                }
+                rebuild_error = None
             except Exception as exc:
-                raise DocumentError(
-                    f"Could not rebuild part {name!r} from the session: {exc}"
-                ) from exc
+                message = f"Part {name!r} was not rebuilt: {exc}"
+                self.problems.append(message)
+                base = None
+                shape = None
+                stored_placement = _identity_placement()
+                script_pending = True
+                rebuild_error = message
             self._parts[name] = _Part(
                 name,
                 source,
                 shape,
                 script=record.get("script"),
                 ops=record.get("ops"),
-                step_file=record.get("step_file"),
+                step_file=record.get("step_file") if isinstance(record.get("step_file"), str) else None,
                 base=base,
-                placement=placement,
+                placement=stored_placement,
                 library_spec=record.get("library"),
                 sketch_name=record.get("sketch") if source == "sketch" else None,
                 sketch_steps=record.get("steps") if source == "sketch" else None,
                 geometry_file=record.get("geometry_file") if source == "script" else None,
                 script_sha256=record.get("script_sha256") if source == "script" else None,
                 script_pending=script_pending,
+                rebuild_error=rebuild_error,
             )
         self._assemblies.clear()
         for record in payload.get("assemblies", []):
@@ -1128,12 +1168,15 @@ def _identity_placement() -> dict[str, list[float]]:
 
 
 def _vec3(value, label: str) -> tuple[float, float, float]:
-    if not isinstance(value, (list, tuple)) or len(value) != 3:
-        raise GeometryError(f"{label} must be a list of three numbers.")
-    try:
-        return (float(value[0]), float(value[1]), float(value[2]))
-    except (TypeError, ValueError) as exc:
-        raise GeometryError(f"{label} must be a list of three numbers.") from exc
+    unit = "deg" if "rot" in label else "mm"
+    return kernel.finite_vec3(value, label, unit=unit)
+
+
+def _project_file(root: Path, raw: object, label: str) -> Path:
+    """A session path that stays inside the project. Absolute and ``..`` are not read."""
+    from aicad.paths import require_session_file
+
+    return require_session_file(root, raw, label, DocumentError)
 
 
 def _parse_plane(plane: dict) -> tuple[tuple[float, float, float], tuple[float, float, float]]:

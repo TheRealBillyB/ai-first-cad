@@ -168,6 +168,113 @@ def test_coarse_mesh_is_called_out_and_cannot_pass():
         assert report.review["status"] != "pass"
 
 
+def _foil():
+    return kernel.make_from_ops(
+        [
+            {"op": "add", "shape": "box", "size": [10, 10, 10]},
+            {"op": "cut", "shape": "box", "size": [9.9, 9.9, 9.9]},
+        ]
+    )
+
+
+def _foil_setup(mesh: float):
+    return {
+        "material": "pla",
+        "mesh_size_mm": mesh,
+        "target_safety_factor": 2.0,
+        "fixes": [{"name": "root", "select": {"kind": "plane", "normal": [-1, 0, 0]}}],
+        "loads": [
+            {
+                "name": "face",
+                "type": "force",
+                "vector": [0, 0, -20],
+                "select": {"kind": "plane", "normal": [1, 0, 0]},
+            }
+        ],
+    }
+
+
+@needs_solver
+def test_a_finer_foil_mesh_still_cannot_pass(tmp_path):
+    from aicad.fea import solve_part
+
+    report = solve_part(_foil(), _foil_setup(1.0), out_dir=tmp_path, part_name="foil")
+    assert report.status == "solved"
+    assert (report.min_safety_factor or 0) > 20
+    assert report.review["status"] == "inconclusive"
+    assert any("coarse mesh" in item.lower() for item in report.warnings)
+    assert report.mesh.get("degraded") is False
+    assert report.mesh.get("thin_feature") is True
+
+
+@needs_solver
+def test_a_thin_foil_under_the_target_still_fails(tmp_path):
+    from aicad.fea import solve_part
+
+    setup = _foil_setup(2.0)
+    setup["loads"][0]["vector"] = [0, 0, -2000]
+    report = solve_part(_foil(), setup, out_dir=tmp_path, part_name="foil")
+    assert report.status == "solved"
+    assert (report.min_safety_factor or 99) < 2
+    assert report.review["status"] == "fail"
+
+
+def test_example_bracket_meshes_are_not_flagged_as_thin_features():
+    pytest.importorskip("gmsh")
+    from aicad.fea import _mesh_solid, _thin_feature_mesh_note
+
+    for name in ("motor_mount.py", "motor_mount_buried_ribs.py"):
+        shape = kernel.make_from_script((ROOT / "examples" / name).read_text(encoding="utf-8"))
+        mesh = _mesh_solid(shape, 1.5, 2)
+        assert float(mesh["mesh_size_mm"]) == pytest.approx(1.5)
+        assert _thin_feature_mesh_note(mesh) is None
+
+
+def test_a_submillimetre_foil_mesh_is_still_too_coarse_for_the_wall():
+    pytest.importorskip("gmsh")
+    from aicad.fea import _mesh_solid, _thin_feature_mesh_note
+
+    mesh = _mesh_solid(_foil(), 0.4, 2)
+    note = _thin_feature_mesh_note(mesh)
+    assert note is not None
+    assert "coarse mesh" in note.lower()
+
+
+@needs_solver
+def test_a_thin_rib_on_a_thick_plate_cannot_pass(tmp_path):
+    from aicad.fea import solve_part
+
+    rib = kernel.make_from_ops(
+        [
+            {"op": "add", "shape": "box", "size": [30, 20, 4], "center": [0, 0, 2]},
+            {"op": "add", "shape": "box", "size": [0.3, 16, 4], "center": [0, 0, 6]},
+        ]
+    )
+    report = solve_part(
+        rib,
+        {
+            "material": "pla",
+            "mesh_size_mm": 2.0,
+            "target_safety_factor": 2.0,
+            "fixes": [{"name": "floor", "select": {"kind": "plane", "normal": [0, 0, -1]}}],
+            "loads": [
+                {
+                    "name": "rib",
+                    "type": "force",
+                    "vector": [5, 0, 0],
+                    "select": {"kind": "plane", "normal": [1, 0, 0], "at": [0.15, 0, 6]},
+                }
+            ],
+        },
+        out_dir=tmp_path,
+        part_name="rib",
+    )
+    assert report.status == "solved"
+    assert (report.min_safety_factor or 0) >= 2
+    assert report.review["status"] == "inconclusive"
+    assert any("coarse mesh" in item.lower() for item in report.warnings)
+
+
 @needs_solver
 def test_bolt_load_and_pressure_move_the_part(tmp_path):
     from aicad.fea import solve_part
