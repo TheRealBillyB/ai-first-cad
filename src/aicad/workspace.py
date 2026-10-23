@@ -743,6 +743,30 @@ def _cmd_modal_assembly(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("vibration", report)
 
 
+def _cmd_check_gears(workspace: Workspace, arguments: dict) -> dict:
+    spec = arguments.get("spec")
+    if spec is None:
+        spec = {
+            key: value
+            for key, value in arguments.items()
+            if key in {
+                "pinion",
+                "gear",
+                "assembly",
+                "centre_distance_mm",
+                "shaft_angle_deg",
+                "offset_mm",
+                "backlash_mm",
+                "steps",
+                "pinion_phase_deg",
+                "gear_phase_deg",
+            }
+        }
+    if not isinstance(spec, dict):
+        raise GeometryError("check_gears needs a spec for a gear pair or an assembly.")
+    return workspace._remember_panel("gears", workspace.document.check_gears(spec))
+
+
 def _cmd_bolts(workspace: Workspace, arguments: dict) -> dict:
     spec = arguments.get("spec")
     if not isinstance(spec, dict):
@@ -1340,6 +1364,28 @@ _add(Command(
         ["name"],
     ),
     _cmd_modal_assembly,
+))
+_add(Command(
+    "check_gears",
+    "Mesh and backlash of a gear pair, or every pair in an assembly. Reports centre distance, circumferential and normal backlash, contact ratio, undercut, and interference through one turn of the smaller gear.",
+    _obj(
+        {
+            "spec": {
+                "type": "object",
+                "description": "pinion and gear (specs or part names), optional assembly, centre_distance_mm, shaft_angle_deg, offset_mm, backlash_mm {min, max}, and steps.",
+            },
+            "pinion": {"description": "Gear spec or part name."},
+            "gear": {"description": "Mate spec or part name."},
+            "assembly": _string("Assembly whose gear pairs to check."),
+            "centre_distance_mm": _number("Actual centre distance. For a bevel, a signed axis offset from the intersecting mount."),
+            "shaft_angle_deg": _number("Actual shaft angle in degrees."),
+            "offset_mm": _number("Axis offset in millimetres. A hypoid checker reads this later."),
+            "backlash_mm": {"description": "{min, max} in millimetres, or circumferential and normal ranges."},
+            "steps": {"type": "integer", "description": "Samples over one full turn of the smaller gear. At least 8."},
+        },
+        [],
+    ),
+    _cmd_check_gears,
 ))
 _add(Command(
     "check_bolts",

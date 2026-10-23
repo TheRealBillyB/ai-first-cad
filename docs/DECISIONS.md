@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A gear mesh check reads the involute model and sweeps that tooth outline through one turn | Backlash and contact ratio are the pair geometry already used to place the gears. The outline is the flank the solid is drawn from, so the turn stays on that model. A hypoid pair registers into the same report later. |
 | The suite runs in several processes, and a new push cancels that pull request's older run | Geometry was most of the time. On Windows, sandboxed scripts still start one at a time so the shared firewall rules stay in place, and the network probe still runs first and fails closed. |
 | A geometry import keeps the project as the working directory | The image library's attach routine points the process at the base interpreter, then puts the project back. That request is refused, so a relative file in the project still opens and a plugin file there is not loaded. |
 | A relative project file can be missed only in the base interpreter directory | Native code is in that directory for a moment, and the file is not there. A changed file, or a miss from any other directory, still means the working directory moved. |

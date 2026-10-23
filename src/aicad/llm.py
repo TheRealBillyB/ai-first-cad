@@ -29,6 +29,7 @@ set_selection and in solve_mechanics or solve_modal selectors: {"ref": "..."}.
 
 solve_modal reports natural frequencies. Declare excitations with rpm or hz.
 check_bolts rates self-loosening from the slip margin. Read assumptions on both.
+check_gears reports centre distance, backlash, contact ratio, and interference for a gear pair.
 check_print reports overhangs and whether a part fits a named printer.
 fits_printer is a requirement with a printer id and an optional orientation.
 export_robot writes URDF and MJCF for an assembly.

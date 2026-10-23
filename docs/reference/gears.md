@@ -98,6 +98,22 @@ A keyway and a spline are not combined. A spline sets its own hole; `bore_mm` ha
 
 A bevel pair keeps both pitch apexes at the origin. The mate is rotated about Y by the shaft angle, after a spin about its own axis that puts a tooth space on the common pitch generator. In the placement record that is `[0, shaft_angle, spin]`, applied as X, then Y, then Z.
 
+## Mesh check
+
+`check_pair` and `check_gears` take one pair, or every gear relation in an assembly. The report compares the centre distance with the zero-backlash centre, gives circumferential and normal backlash against a range, the transverse and total contact ratio, undercut, and tooth interference.
+
+For a spur or helical pair the centre distance is the distance between the axes. Omit it to use the zero-backlash centre from the pair geometry above. Circumferential backlash is `2 a (inv α' − inv α)` on the operating pitch circle. Normal backlash is that arc times `cos α' cos βw`.
+
+For a bevel pair the centre distance is a signed axis offset. Zero keeps the pitch apexes together. Backlash is the mid-face virtual spur with that offset added to its centre. The sweep uses the virtual spur at the toe, the mid-face, and the heel, including the constant spiral angle unwrapped onto the back cone. It starts from the generated mesh phase and does not read a clocking of the two gears about the pitch generator.
+
+The smaller gear is turned through one full rotation in steps no coarser than 2 degrees, and the mate turns by the tooth ratio. At each step the tooth outlines on the line of centres are tested for overlap. A helical pair is also checked at both ends of the shorter face.
+
+The range is `{min, max}` in millimetres and applies to both backlash numbers, or separate `circumferential` and `normal` ranges. A pair fails when backlash is outside the range, the total contact ratio is below 1, a member is undercut, or the outlines interfere.
+
+An offset layout has no checker yet. `register_mesh_check("offset", checker)` is the plug-in for a hypoid pair, and it returns the same report.
+
+The command line is `aicad check-gears`. The assistant tool is `check_gears`.
+
 ## Not in this module
 
-Tolerance grades, backlash other than the zero-backlash nominal, a hypoid offset, a circular face-mill or face-hob path, and a gear-train load are not generated here.
+Tolerance grades, a hypoid offset, a circular face-mill or face-hob path, and a gear-train load are not generated here. Backlash other than the zero-backlash nominal is reported by the mesh check, not cut into the solid.

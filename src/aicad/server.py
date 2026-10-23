@@ -42,6 +42,7 @@ Wall thickness is the smaller of a ray estimate and a section estimate, and
 the result says which one was used. `section_part` shows a cross-section.
 `search_parts` and `insert_standard_part` bring in bearings, seals, fasteners, motors, and gearboxes.
 `create_gear` builds a spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width.
+`check_gears` reports centre distance, backlash, contact ratio, undercut, and interference through one turn of the smaller gear.
 Clearance between two parts reports interference volume or the gap.
 
 For a shape that should stay consistent when a size changes, use a sketch:
@@ -185,6 +186,12 @@ and `face_width_mm`. A bevel also needs `mate_teeth` or `ratio`, and
 `shaft_angle_deg` when the shafts are not at 90 degrees. A positive helix or
 spiral angle is right-hand. Optional `bore_mm`, `hub`, `keyway` (DIN 6885-1),
 and `spline` (ISO 14 or DIN 5480) cut the blank. Hypoid gears are not built.
+`check_gears` takes two gear specs or part names, or an assembly, and a backlash range
+`{min, max}` in millimetres. It compares the centre distance with the zero-backlash
+centre, reports circumferential and normal backlash, the contact ratio, undercut,
+and interference while the smaller gear turns through one full rotation. A bevel
+centre distance is a signed axis offset from the intersecting mount. An offset
+(hypoid) pair is refused until a checker for that layout is registered.
 
 ## Sketches
 
@@ -311,6 +318,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
+- `check_gears` checks a spur, helical, or bevel pair, or every gear pair in an assembly. Pass backlash_mm as `{min, max}`. The report has centre distance against the ideal, circumferential and normal backlash, contact ratio, undercut, and interference over one turn of the smaller gear. Read assumptions and limits.
 - `check_bolts` takes size, grade, axial_n, shear_n, and vibration (`mild`, `moderate`, `intense`). Slip under transverse load is the loosening mechanism. The countermeasures explain what a nyloc nut, a wedge washer, threadlocker, and safety wire do and do not do.
 - `check_fatigue` is a Goodman check of a stress you supply. It is not a cycle-by-cycle solve.
 - `export_drawing` writes a third-angle sheet (front, top, right, isometric) as PDF and DXF, with overall dimensions, a title block, and a scale. The sizes are the axis-aligned box of the posed solids. It is a layout drawing. It has no GD&T, no tolerances, and no threads. Read `result_label` and `limits`.
@@ -645,6 +653,21 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 rotation_deg=rotation_deg,
             )
         )
+
+    @mcp.tool()
+    def check_gears(spec: dict[str, Any]) -> dict:
+        """Mesh, backlash, contact ratio, and interference for a gear pair or an assembly.
+
+        spec.pinion and spec.gear are gear specs or the names of gear parts.
+        spec.assembly checks every gear relation, or every pair of gear instances
+        when the assembly has none. centre_distance_mm is the actual distance
+        between spur or helical axes. For a bevel it is a signed axis offset, and
+        zero is the intersecting mount. backlash_mm is {min, max} in millimetres
+        and applies to circumferential and normal backlash, or pass separate
+        circumferential and normal ranges. The smaller gear is turned through one
+        full rotation. Hypoid pairs are not checked.
+        """
+        return guard(lambda: run("check_gears", spec=spec))
 
     @mcp.tool()
     def place_part(
