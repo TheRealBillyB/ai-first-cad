@@ -23,10 +23,13 @@ from build123d import (
     Cylinder,
     Face,
     Plane,
+    CenterArc,
+    Line,
     Polygon,
     Pos,
     Rot,
     Vector,
+    make_face,
     export_step,
     export_stl,
     extrude,
@@ -1322,7 +1325,8 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
 
     ``z`` is the bottom of an extrusion or a cutter. A revolve spins the XY
     profile about the sketch X or Y axis. The profile must stay on one side of
-    that axis.
+    that axis. Consecutive points that are the ends of a sketch arc follow
+    that arc. A profile with only straight edges stays a polygon.
     """
     if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
         raise GeometryError(
@@ -1402,7 +1406,7 @@ def _polygon_prism(step: dict, geometry: dict, name: str):
     height = _positive(step.get("height"), f"{name} height")
     z = _optional_number(step.get("z", 0.0), f"{name} z")
     try:
-        face = Plane.XY * Polygon(*coords)
+        face = _profile_face(step, geometry, name, coords)
         solid = Pos(0, 0, z) * extrude(face, amount=height)
     except GeometryError:
         raise
@@ -1423,7 +1427,7 @@ def _revolve_profile(step: dict, geometry: dict, name: str):
     if angle > 360:
         raise GeometryError(f"{name}: revolve angle must be from 0 to 360 degrees.")
     radial = 0 if axis_name == "y" else 1
-    signs = [coord[radial] for coord in coords]
+    signs = [sample[radial] for sample in _profile_samples(step, geometry, coords)]
     if min(signs) < -1e-9 and max(signs) > 1e-9:
         raise GeometryError(
             f"{name}: the profile crosses the {axis_name.upper()} axis. "
@@ -1431,10 +1435,170 @@ def _revolve_profile(step: dict, geometry: dict, name: str):
         )
     axis = Axis.Y if axis_name == "y" else Axis.X
     try:
-        solid = revolve(Plane.XY * Polygon(*coords), axis=axis, revolution_arc=angle)
+        face = _profile_face(step, geometry, name, coords)
+        solid = revolve(face, axis=axis, revolution_arc=angle)
+    except GeometryError:
+        raise
     except Exception as exc:
         raise GeometryError(f"{name}: revolve failed. {exc}") from exc
     return solid
+
+
+def _profile_face(step: dict, geometry: dict, name: str, coords: list[tuple[float, float]]):
+    """A polygon when every edge is straight. An arc edge follows the circle."""
+    ids = step.get("points")
+    edges = _boundary_arcs(geometry)
+    if not isinstance(ids, list) or not _profile_uses_arc(ids, edges):
+        return Plane.XY * Polygon(*coords)
+    points = geometry.get("points") or {}
+    wire = None
+    count = len(ids)
+    for index in range(count):
+        left = ids[index]
+        right = ids[(index + 1) % count]
+        pair = frozenset((left, right))
+        matches = edges.get(pair) or []
+        if matches:
+            if len(matches) != 1:
+                raise GeometryError(f"{name}: more than one arc joins {left} and {right}.")
+            segment = _boundary_arc(matches[0], left, right, name)
+        else:
+            segment = Line(_point_xy(points, left), _point_xy(points, right))
+        wire = segment if wire is None else wire + segment
+    try:
+        return make_face(wire)
+    except GeometryError:
+        raise
+    except Exception as exc:
+        raise GeometryError(f"{name}: could not build a face from that profile. {exc}") from exc
+
+
+def _profile_uses_arc(ids: list, edges: dict) -> bool:
+    count = len(ids)
+    for index in range(count):
+        if frozenset((ids[index], ids[(index + 1) % count])) in edges:
+            return True
+    return False
+
+
+def _profile_samples(step: dict, geometry: dict, coords: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Profile points plus the high and low points of any arc on the boundary."""
+    samples = list(coords)
+    ids = step.get("points")
+    if not isinstance(ids, list):
+        return samples
+    edges = _boundary_arcs(geometry)
+    count = len(ids)
+    for index in range(count):
+        matches = edges.get(frozenset((ids[index], ids[(index + 1) % count]))) or []
+        if len(matches) == 1:
+            samples.extend(_arc_extrema(matches[0]))
+    return samples
+
+
+def _boundary_arcs(geometry: dict) -> dict[frozenset, list[dict]]:
+    arcs = geometry.get("arcs") or {}
+    points = geometry.get("points") or {}
+    grouped: dict[frozenset, list[dict]] = {}
+    if not isinstance(arcs, dict) or not isinstance(points, dict):
+        return grouped
+    for arc in arcs.values():
+        if not isinstance(arc, dict) or arc.get("construction"):
+            continue
+        start_id = arc.get("start_id") or _id_at(points, arc.get("start"))
+        end_id = arc.get("end_id") or _id_at(points, arc.get("end"))
+        if not isinstance(start_id, str) or not isinstance(end_id, str) or start_id == end_id:
+            continue
+        if start_id not in points or end_id not in points:
+            continue
+        stored = dict(arc)
+        stored["start_id"] = start_id
+        stored["end_id"] = end_id
+        grouped.setdefault(frozenset((start_id, end_id)), []).append(stored)
+    return grouped
+
+
+def _boundary_arc(arc: dict, walk_from: str, walk_to: str, name: str):
+    center = _xy_dict(arc.get("center"), f"{name} arc center")
+    start = _xy_dict(arc.get("start"), f"{name} arc start")
+    end = _xy_dict(arc.get("end"), f"{name} arc end")
+    try:
+        radius, start_angle, end_angle, sweep = _arc_sweep(center, start, end)
+    except GeometryError as exc:
+        raise GeometryError(f"{name}: {exc}") from exc
+    if walk_from == arc.get("start_id") and walk_to == arc.get("end_id"):
+        return CenterArc(center, radius, start_angle, sweep)
+    if walk_from == arc.get("end_id") and walk_to == arc.get("start_id"):
+        return CenterArc(center, radius, end_angle, -sweep)
+    raise GeometryError(f"{name}: the arc does not join {walk_from} and {walk_to}.")
+
+
+def _arc_sweep(center: tuple[float, float], start: tuple[float, float], end: tuple[float, float]):
+    """Radius, start angle, end angle, and the counterclockwise sweep in degrees."""
+    radius_start = math.hypot(start[0] - center[0], start[1] - center[1])
+    radius_end = math.hypot(end[0] - center[0], end[1] - center[1])
+    if radius_start <= 1e-3 or abs(radius_start - radius_end) > 1e-3:
+        raise GeometryError("arc endpoints are not on one circle.")
+    start_angle = math.degrees(math.atan2(start[1] - center[1], start[0] - center[0]))
+    end_angle = math.degrees(math.atan2(end[1] - center[1], end[0] - center[0]))
+    sweep = (end_angle - start_angle) % 360.0
+    if sweep < 1e-3 or sweep > 360.0 - 1e-3:
+        raise GeometryError("that arc has no sweep.")
+    return radius_start, start_angle, end_angle, sweep
+
+
+def _arc_extrema(arc: dict) -> list[tuple[float, float]]:
+    try:
+        center = _xy_dict(arc.get("center"), "center")
+        start = _xy_dict(arc.get("start"), "start")
+        end = _xy_dict(arc.get("end"), "end")
+        radius, start_angle, _end_angle, sweep = _arc_sweep(center, start, end)
+    except GeometryError:
+        return []
+    found = []
+    for degrees in (0.0, 90.0, 180.0, 270.0):
+        delta = (degrees - start_angle) % 360.0
+        if delta <= sweep + 1e-6:
+            radians = math.radians(degrees)
+            found.append((center[0] + radius * math.cos(radians), center[1] + radius * math.sin(radians)))
+    return found
+
+
+def _point_xy(points: dict, point_id: str) -> tuple[float, float]:
+    return _xy_dict(points.get(point_id), point_id)
+
+
+def _xy_dict(point, label: str) -> tuple[float, float]:
+    if not isinstance(point, dict):
+        raise GeometryError(f"{label} is missing.")
+    try:
+        return (float(point["x"]), float(point["y"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GeometryError(f"{label} is missing.") from exc
+
+
+def _id_at(points: dict, coord) -> str | None:
+    if not isinstance(coord, dict):
+        return None
+    try:
+        x = float(coord["x"])
+        y = float(coord["y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    found = None
+    for point_id, point in points.items():
+        if not isinstance(point, dict):
+            continue
+        try:
+            near = abs(float(point["x"]) - x) <= 1e-6 and abs(float(point["y"]) - y) <= 1e-6
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not near:
+            continue
+        if found is not None:
+            return None
+        found = point_id
+    return found
 
 
 def _profile_points(step: dict, geometry: dict, name: str) -> list[tuple[float, float]]:
