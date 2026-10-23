@@ -8,6 +8,8 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A GIF frame waits a whole number of centiseconds | The file stores that delay in hundredths of a second, so the report uses the same wait and the picture length matches the file. |
+| An animation is a GIF from the software renderer, and a video only when ffmpeg is already on PATH | The frames stay headless and repeatable. A missing encoder still leaves the GIF and says why the video was not written. |
 | The suite runs in several processes, and a new push cancels that pull request's older run | Geometry was most of the time. On Windows, sandboxed scripts still start one at a time so the shared firewall rules stay in place, and the network probe still runs first and fails closed. |
 | A geometry import keeps the project as the working directory | The image library's attach routine points the process at the base interpreter, then puts the project back. That request is refused, so a relative file in the project still opens and a plugin file there is not loaded. |
 | A relative project file can be missed only in the base interpreter directory | Native code is in that directory for a moment, and the file is not there. A changed file, or a miss from any other directory, still means the working directory moved. |
