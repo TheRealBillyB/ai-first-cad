@@ -1,16 +1,17 @@
 """Run an assistant's Python in a separate process that cannot leave the project.
 
 Linux confines the process with Landlock (files, TCP, and signals) and a small
-seccomp filter (every other socket, and starting a new session). The process
-cap counts only that script's threads: a cgroup ``pids.max`` when this user can
-create one, and otherwise the parent stops the script's process tree. It is
-not the user-wide process limit, which also counts a browser and was stalling
-geometry. macOS uses ``sandbox-exec`` and ``setrlimit`` for CPU time. The
-parent watches the script's resident memory and stops it above the memory cap,
-because the address-space cap counts a system library cache and was stopping
-every script. Windows uses an AppContainer and a Job Object. CPU time, memory,
-and a wall-clock limit are set on that process. If those limits cannot be
-applied, the script is not run.
+seccomp filter. That filter accepts only the native instruction set. It refuses
+io_uring, ptrace, and cross-process memory, and it blocks every other socket
+and a new session. The process cap counts only that script's threads: a cgroup
+``pids.max`` when this user can create one, and otherwise the parent stops the
+script's process tree. It is not the user-wide process limit, which also counts
+a browser and was stalling geometry. macOS uses ``sandbox-exec`` and
+``setrlimit`` for CPU time. The parent watches the script's resident memory and
+stops it above the memory cap, because the address-space cap counts a system
+library cache and was stopping every script. Windows uses an AppContainer and a
+Job Object. CPU time, memory, and a wall-clock limit are set on that process.
+If those limits cannot be applied, the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
@@ -120,6 +121,34 @@ _ESCAPE_SYSCALLS = {
     "x86_64": (112, 109),
     "aarch64": (157, 154),
 }
+# Refused on every run, including when the network is on. io_uring can issue a
+# socket call this filter would not see. ptrace, cross-process memory, and
+# pidfd_getfd reach a process outside the script.
+_ISOLATION_SYSCALLS = {
+    "x86_64": (
+        101,  # ptrace
+        310,  # process_vm_readv
+        311,  # process_vm_writev
+        425,  # io_uring_setup
+        426,  # io_uring_enter
+        427,  # io_uring_register
+        438,  # pidfd_getfd
+    ),
+    "aarch64": (
+        117,  # ptrace
+        270,  # process_vm_readv
+        271,  # process_vm_writev
+        425,  # io_uring_setup
+        426,  # io_uring_enter
+        427,  # io_uring_register
+        438,  # pidfd_getfd
+    ),
+}
+# seccomp_data.arch. A 32-bit int 0x80 call on x86_64 is a different architecture
+# and a different syscall number, so a filter that only compares the native
+# number would let it through. x32 numbers set bit 30 on this same architecture.
+_AUDIT_ARCH = {"x86_64": 0xC000003E, "aarch64": 0xC00000B7}
+_X32_SYSCALL_BIT = 0x40000000
 # How often the macOS parent checks the script's resident memory.
 _MEMORY_POLL_SECONDS = 0.25
 _LANDLOCK_SCOPE_SIGNAL = 1 << 1
@@ -758,15 +787,25 @@ def _block_sockets(*, network: bool) -> None:
     if arch is None:
         raise ScriptError(sandbox_supported()[1])
     numbers = list(_ESCAPE_SYSCALLS[arch])
+    numbers.extend(_ISOLATION_SYSCALLS[arch])
     if not network:
         numbers.extend(_NET_SYSCALLS[arch])
-    # Load the syscall number, refuse the network ones, allow everything else.
+    # Refuse a different instruction set, then the listed native numbers.
     bpf_ld = 0x00 | 0x00 | 0x20
     bpf_jeq = 0x05 | 0x10 | 0x00
+    bpf_jset = 0x05 | 0x40 | 0x00
     bpf_ret = 0x06
     allow = 0x7FFF0000
     errno_eperm = 0x00050000 | 1
-    program = [_SockFilter(bpf_ld, 0, 0, 0)]
+    program = [
+        _SockFilter(bpf_ld, 0, 0, 4),
+        _SockFilter(bpf_jeq, 1, 0, _AUDIT_ARCH[arch]),
+        _SockFilter(bpf_ret, 0, 0, errno_eperm),
+        _SockFilter(bpf_ld, 0, 0, 0),
+    ]
+    if arch == "x86_64":
+        program.append(_SockFilter(bpf_jset, 0, 1, _X32_SYSCALL_BIT))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
     for number in numbers:
         program.append(_SockFilter(bpf_jeq, 0, 1, number))
         program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
