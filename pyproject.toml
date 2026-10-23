@@ -36,7 +36,7 @@ Homepage = "https://github.com/TheRealBillyB/ai-first-cad"
 where = ["src"]
 
 [tool.setuptools.package-data]
-aicad = ["py.typed", "app_static/*"]
+aicad = ["py.typed", "app_static/*", "data/*.ini"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

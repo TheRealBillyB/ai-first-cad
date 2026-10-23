@@ -748,8 +748,16 @@ def _iso_fastener(kind: str, fastener_type: str | None) -> bool:
     return fastener_type.strip().lower().replace(" ", "").replace("-", "") == expected
 
 
+def _load_bd_warehouse() -> None:
+    """Import bd_warehouse without reading a project font config or moving the process."""
+    from aicad.paths import prepare_geometry_import
+
+    prepare_geometry_import()
+
+
 def _bd_sizes(kind: str) -> list[str]:
     try:
+        _load_bd_warehouse()
         if kind == "socket_head_cap_screw":
             from bd_warehouse.fastener import SocketHeadCapScrew
 
@@ -768,6 +776,7 @@ def _bd_sizes(kind: str) -> list[str]:
 
 
 def _bd_screw(size: str, length: float, fastener_type: str | None):
+    _load_bd_warehouse()
     from bd_warehouse.fastener import SocketHeadCapScrew
 
     try:
@@ -777,6 +786,7 @@ def _bd_screw(size: str, length: float, fastener_type: str | None):
 
 
 def _bd_nut(size: str, fastener_type: str | None):
+    _load_bd_warehouse()
     from bd_warehouse.fastener import HexNut
 
     try:
@@ -786,6 +796,7 @@ def _bd_nut(size: str, fastener_type: str | None):
 
 
 def _bd_washer(size: str, fastener_type: str | None):
+    _load_bd_warehouse()
     from bd_warehouse.fastener import PlainWasher
 
     token = size.split("-", 1)[0] if "-" in size and size.upper().startswith("M") else size

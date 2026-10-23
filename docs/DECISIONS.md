@@ -78,6 +78,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Opening a session reports a bad part and still loads the others | One corrupt placement used to make every other part unreachable. |
 | A STEP path stored in the session has to stay inside the project | An absolute path or `..` was imported on open, and the file was outside the project. |
 | Notes returned to the assistant are wrapped as untrusted text, and an assistant export stays in the project | Project text is data. A tool result must not be able to write a STEP outside the folder. |
+| A drawing, bill of materials, or exploded view from the workspace stays in the project | Those commands were following a path outside the folder. |
 | A note is marked for every source except ui, cli, and api | Those three are the editor and see the file. Any other source, including one that does not exist yet, gets the project-text marker. |
 | Native geometry code cannot write on the MCP stdout | The STEP parser's error line was not JSON-RPC, and it landed on the protocol stream. |
 | Opening someone else's project does not create their notes or requirements file | Those files belong to that project. A missing one is not a template to write. |
@@ -85,6 +86,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | A parts-list picture uses a system font that contains the names | A Latin font draws a name such as 供水 as empty boxes. The list looks for an installed font that has the character, and it does not add a font package. |
 | An automatic explode gap stops at 1000000 mm | A huge model would otherwise ask for a gap the command rejects. |
 | Output files avoid Windows reserved device names | con.pdf is a device on Windows, so the file is named con_file and the report says so. |
+| A blueprint sheet id cannot be a Windows reserved device name | con.png is a device on Windows, so that sheet id is refused. |
 | Picture text is looked up in Linux, Windows, and macOS fonts | A missing font was falling back to a bitmap the assistant could not read. |
 | A sheet ratio can be smaller than 1:1000 | The usual list stops there, and a larger model still has to land on the page. The sheet names the ratio it used. |
 | A size below 1 mm is written out, and a still smaller size is labeled <0.001 | Drawing 0.04 mm as 0 was a false dimension. |
@@ -119,6 +121,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Plugin permissions are a declaration, not a sandbox | Once allowed, a pack runs in-process; the design-script sandbox is a separate control. |
 | A third-party plugin runs only after an explicit allow | Opening a design must not run an unverified pack, and the warning names the publisher and the permissions it declared. |
 | Plugin API version 1 is entry points plus a static manifest | The host can list a pack and warn before importing it, and a breaking change has to bump the version. |
+| A plugin export stays inside the project | The file was written at whatever path the caller passed. |
 | A verified check is a kernel property of the model; a rough estimate samples, meshes, or uses a handbook number | A pass has to say which of those it is, or the number gets quoted as a proof. |
 | A failed Gmsh mesh is retried finer, then healed, then defeatured, and a simplified mesh cannot pass | The thin-wall crash and the stiff linear-tet frequency both hid the real result. |
 | CalculiX stays a separate ccx process | CalculiX is GPL-2.0-only and cannot be linked into this AGPL program. |

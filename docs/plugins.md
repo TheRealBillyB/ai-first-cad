@@ -136,7 +136,7 @@ aicad saves that script as an ordinary part. Opening the design later shows the 
 
 ## An exporter
 
-Declare `"provides": ["exporter"]`. Return text or bytes. aicad writes the file at the path the person gave. Do not use the format names `step` or `stl`.
+Declare `"provides": ["exporter"]`. Return text or bytes. aicad writes the file inside the open project. A path outside that folder is refused. Do not use the format names `step` or `stl`.
 
 ```python
 def register(host) -> None:

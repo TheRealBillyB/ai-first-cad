@@ -442,7 +442,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         parts: list[str] | None = None,
         assembly: str | None = None,
         pose: str | None = None,
-        joints: dict[str, float] | None = None,
+        joints: dict | None = None,
         min_clearance_mm: float = 0.0,
     ) -> dict:
         """Check that parts fit inside an envelope.
@@ -454,6 +454,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
         With assembly, the check uses the posed instances. pose and joints
         select that pose for this call and do not change the stored assembly.
+        A cylindrical joint may be {value: degrees, slide: millimeters}.
         The report lists each part, anything that sticks out and where, the
         minimum signed clearance, and overlap between parts inside the envelope.
         """

@@ -364,7 +364,10 @@ class Document:
         (``shape`` box, cylinder, or sphere) or an ``outline`` extruded
         along an axis. With ``assembly``, the parts are the posed instances.
         ``pose`` and ``joints`` select that pose for this check and do not
-        change the stored assembly. ``min_clearance_mm`` is the required gap
+        change the stored assembly. A joint value is a number: degrees on a
+        revolute or cylindrical joint, millimetres on a prismatic joint. A
+        cylindrical joint also accepts ``{"value": degrees, "slide": millimetres}``.
+        ``min_clearance_mm`` is the required gap
         to the envelope wall. Zero allows a part to touch the wall.
         """
         with self._lock:
@@ -431,7 +434,15 @@ class Document:
             protruding = tuple(item.name for item in rows if item.protrudes)
             joint_values = None
             if solved is not None:
-                joint_values = {joint["name"]: joint["value"] for joint in solved["joints"]}
+                joint_values = {}
+                for joint in solved["joints"]:
+                    if joint["type"] == "cylindrical":
+                        joint_values[joint["name"]] = {
+                            "value": joint["value"],
+                            "slide": joint["slide"],
+                        }
+                    else:
+                        joint_values[joint["name"]] = joint["value"]
             passed = all(item.passed for item in rows) and not overlaps
             return PackagingReport(
                 passed=passed,
@@ -1788,8 +1799,24 @@ def _pack_vec(point: tuple[float, float, float]) -> Vec3:
     return Vec3(round_mm(point[0]), round_mm(point[1]), round_mm(point[2]))
 
 
-def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> dict[str, float]:
-    overrides: dict[str, float] = {}
+def _packaging_joint_value(name: str, value):
+    """A number, or a cylindrical ``{value, slide}`` override."""
+    if isinstance(value, dict):
+        cleaned = {}
+        if "value" in value:
+            cleaned["value"] = kernel.finite_number(value["value"], f"joint {name}", unit="deg")
+        if "slide" in value:
+            cleaned["slide"] = kernel.finite_number(value["slide"], f"joint {name} slide", unit="mm")
+        if not cleaned or any(key not in {"value", "slide"} for key in value):
+            raise GeometryError(
+                f"Joint {name} override is a number, or {{value: degrees, slide: millimetres}}."
+            )
+        return cleaned
+    return kernel.finite_number(value, f"joint {name}", unit="deg or mm")
+
+
+def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> dict:
+    overrides: dict = {}
     if pose is not None:
         if not isinstance(pose, str) or not pose.strip():
             raise GeometryError("pose must be a name.")
@@ -1801,7 +1828,7 @@ def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> d
         if not isinstance(joints, dict):
             raise GeometryError("joints must be an object of joint names and values.")
         for key, value in joints.items():
-            overrides[str(key)] = kernel.finite_number(value, f"joint {key}", unit="deg or mm")
+            overrides[str(key)] = _packaging_joint_value(key, value)
     known = {joint["name"] for joint in spec["joints"]}
     unknown = [name for name in overrides if name not in known]
     if unknown:
@@ -1844,13 +1871,11 @@ def _vec3(value, label: str) -> tuple[float, float, float]:
 def _step_import_source(root: Path, raw: str | Path) -> Path:
     """The file ``import_step`` reads.
 
-    An absolute path is a file the person chose. A path inside the project,
-    including a link, must still point at a file inside the project after
-    the link is followed.
+    An absolute path is a file the person chose. A relative path stays inside
+    the project after the link is followed.
     """
-    given = Path(raw)
-    if not given.is_absolute():
-        given = root / given
+    original = Path(raw)
+    given = original if original.is_absolute() else root / original
     source = given.resolve()
     root_resolved = root.resolve()
     try:
@@ -1858,8 +1883,9 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
         lexical_inside = ".." not in given.parts
     except ValueError:
         lexical_inside = False
-    if lexical_inside and not _path_inside(source, root_resolved):
-        raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
+    if not original.is_absolute() or lexical_inside:
+        if not _path_inside(source, root_resolved):
+            raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
     return source
 
 

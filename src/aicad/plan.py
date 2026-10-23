@@ -1089,6 +1089,7 @@ def _normalize_sheet(spec: dict, revision: dict) -> dict:
             "A sheet id is short lowercase letters, numbers, and underscores, such as 01_top. "
             f"{sheet_id!r} is not."
         )
+    _refuse_reserved_sheet_id(sheet_id)
     owns_sheet = any(sheet["id"] == sheet_id for sheet in revision["sheets"])
     if not owns_sheet and sheet_id in _ids(revision):
         raise PlanError(f"Id {sheet_id!r} is already used on this revision.")
@@ -1237,6 +1238,13 @@ def _render_revision(root: Path, plan: dict, revision: dict) -> None:
         )
 
 
+def _refuse_reserved_sheet_id(sheet_id: str) -> None:
+    from aicad.paths import is_reserved_device_name
+
+    if is_reserved_device_name(sheet_id):
+        raise PlanError(f"{sheet_id} is reserved on Windows. Pick another sheet id.")
+
+
 def _require_loaded_sheet(sheet: object, filename: str) -> None:
     """Reject a sheet id that cannot be drawn inside the project. The picture is not opened."""
     if not isinstance(sheet, dict):
@@ -1244,6 +1252,7 @@ def _require_loaded_sheet(sheet: object, filename: str) -> None:
     sheet_id = sheet.get("id")
     if not isinstance(sheet_id, str) or not _ITEM_ID.match(sheet_id):
         raise PlanError(f"{filename} has a sheet this version cannot read.")
+    _refuse_reserved_sheet_id(sheet_id)
 
 
 def _sheet_destination(root: Path, plan: dict, revision: dict, sheet: dict) -> tuple[Path, str]:
@@ -1261,6 +1270,7 @@ def _sheet_destination(root: Path, plan: dict, revision: dict, sheet: dict) -> t
         or not _ITEM_ID.match(sheet_id)
     ):
         raise PlanError("A plan sheet has to stay inside the project.")
+    _refuse_reserved_sheet_id(sheet_id)
     relative = f"plans/{plan_id}/v{version}/{sheet_id}.png"
     parent = _abs(root, f"plans/{plan_id}/v{version}")
     destination = parent / f"{sheet_id}.png"
