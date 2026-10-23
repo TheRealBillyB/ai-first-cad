@@ -22,7 +22,7 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setenv("AICAD_SERVER_TOKENS", str(tmp_path / "tokens"))
     workspace = tmp_path / "project"
     (workspace).mkdir()
-    (workspace / "notes.txt").write_text("hello\n", encoding="utf-8")
+    (workspace / "notes.txt").write_bytes(b"hello\n")
     running = make_server(workspace, "127.0.0.1", 0)
     thread = threading.Thread(target=running.serve_forever, daemon=True)
     thread.start()
@@ -80,8 +80,10 @@ def test_page_embeds_the_session_and_static_files_stay_open(server):
 
     port = int(server.server_address[1])
     token_file = Path(os.environ["AICAD_SERVER_TOKENS"]) / f"{port}.token"
+    from aicad.paths import file_is_user_private
+
     assert token_file.read_text(encoding="utf-8") == server.agent_token
-    assert token_file.stat().st_mode & 0o777 == 0o600
+    assert file_is_user_private(token_file)
 
 
 def test_rebinding_host_is_rejected_before_the_page_or_a_command(server):

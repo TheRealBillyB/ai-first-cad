@@ -364,21 +364,23 @@ def test_save_as_keeps_the_script_solid(tmp_path, monkeypatch):
 
 
 def test_save_as_reports_a_folder_it_cannot_write(tmp_path, monkeypatch):
-    if os.geteuid() == 0:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("the root user ignores a read-only folder")
+    from aicad.paths import allow_directory_write, deny_directory_write
+
     monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
     workspace = Workspace(tmp_path / "project")
     _box(workspace)
     locked = tmp_path / "locked"
     locked.mkdir()
-    locked.chmod(0o555)
+    deny_directory_write(locked)
     try:
         with pytest.raises(GeometryError, match="Could not save"):
             workspace.execute("save_project_as", {"path": str(locked), "name": "copy"})
         assert workspace.root == (tmp_path / "project").resolve()
         assert not (locked / "copy" / "session.json").exists()
     finally:
-        locked.chmod(0o755)
+        allow_directory_write(locked)
 
 
 def test_a_huge_size_or_move_is_refused(tmp_path, monkeypatch):

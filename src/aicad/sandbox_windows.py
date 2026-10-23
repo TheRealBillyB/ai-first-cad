@@ -108,6 +108,9 @@ _granted_traverse: set[tuple[str, str, str]] = set()
 _network_off_lock = threading.Lock()
 _network_off_holders = 0
 _network_off_sid: str | None = None
+# Rules left in place after the last network-off child. The next child with
+# the same package reuses them. A network-on script removes them first.
+_network_off_rules_sid: str | None = None
 _PACKAGE_SID_TEXT = re.compile(r"^S-1-15-2(?:-\d+)+$", re.IGNORECASE)
 # Inbound and outbound, every protocol. The old UDP-only name is removed
 # when present and is not installed again.
@@ -1846,30 +1849,44 @@ def _run_firewall_script(script: str) -> None:
 
 
 def _hold_network_block(sid_text: str) -> None:
-    """Install the container block. A second overlapping child reuses it."""
+    """Install the container block. A second overlapping child reuses it.
 
-    global _network_off_holders, _network_off_sid
+    The firewall rules stay after the last child so the next network-off
+    script does not call PowerShell again. The filter is installed for each
+    hold, because closing it drops the dynamic session.
+    """
+
+    global _network_off_holders, _network_off_sid, _network_off_rules_sid
     with _network_off_lock:
         if _network_off_holders and _network_off_sid != sid_text.upper():
             raise OSError(
                 "A script still has the network blocked, so this script was not started."
             )
         if _network_off_holders == 0:
-            _run_firewall_script(_firewall_script(sid_text, install=True))
+            wanted = sid_text.upper()
+            if _network_off_rules_sid != wanted:
+                _run_firewall_script(_firewall_script(sid_text, install=True))
+                _network_off_rules_sid = wanted
             try:
-                _install_wfp_block(sid_text)
+                if _wfp_engine is None:
+                    _install_wfp_block(sid_text)
             except Exception:
                 try:
                     _run_firewall_script(_firewall_script(install=False))
                 except OSError:
                     pass
+                _network_off_rules_sid = None
                 raise
-            _network_off_sid = sid_text.upper()
+            _network_off_sid = wanted
         _network_off_holders += 1
 
 
 def _release_network_block() -> None:
-    """Remove the block once the last network-off child has exited."""
+    """Drop the filter once the last network-off child has exited.
+
+    The firewall rules stay. The next network-off script with this package
+    reuses them. A network-on script removes them before it starts.
+    """
 
     global _network_off_holders, _network_off_sid
     with _network_off_lock:
@@ -1878,29 +1895,23 @@ def _release_network_block() -> None:
         _network_off_holders -= 1
         if _network_off_holders > 0:
             return
-        sid = _network_off_sid
         _network_off_sid = None
         _close_wfp_block()
-        try:
-            _run_firewall_script(_firewall_script(sid, install=False))
-        except OSError:
-            # The child has already finished. The next block installs by
-            # replacing these rules, and a network-on script refuses to start
-            # until that removal succeeds.
-            _network_off_sid = sid
 
 
 def _require_script_network_open() -> None:
     """A network-on script must not run while the shared container is blocked."""
 
-    global _network_off_sid
+    global _network_off_sid, _network_off_rules_sid
     with _network_off_lock:
         if _network_off_holders:
             raise OSError(
                 "A script still has the network blocked, so this script was not started."
             )
+        _close_wfp_block()
         _run_firewall_script(_firewall_script(install=False))
         _network_off_sid = None
+        _network_off_rules_sid = None
 
 
 def spawn(

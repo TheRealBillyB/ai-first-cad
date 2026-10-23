@@ -152,7 +152,7 @@ def test_step_external_file_outside_the_folder_is_not_opened(layout):
     canary = _canary(outside)
     before = _digest(secret)
     step = project / "extern.step"
-    _assembly_step(step, "../outside/secret.step", str(canary))
+    _assembly_step(step, "../outside/secret.step", canary.as_posix())
     _write_session(project, [{"name": "extern", "source": "step", "step_file": "extern.step"}])
     opened = _open(project)
     info = opened.list_parts()[0]

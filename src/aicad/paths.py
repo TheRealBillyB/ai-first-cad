@@ -56,6 +56,13 @@ def require_export_path(root: Path, raw: str | Path, label: str, error: type[Exc
     if not isinstance(text, str) or not text.strip() or "\x00" in text:
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
     expanded = str(Path(text.strip()).expanduser())
+    trimmed = _path_after_windows_trim(expanded)
+    # Win32 drops trailing dots and spaces before it creates the file.
+    # ``.. .`` is ``..`` after that, so the check uses the trimmed text.
+    if trimmed != expanded.replace("\\", "/") and (
+        session_path_escapes(trimmed) or _export_blocked(trimmed, root_resolved)
+    ):
+        raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
     if _export_blocked(expanded, root_resolved):
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
     candidate = Path(expanded)
@@ -65,6 +72,29 @@ def require_export_path(root: Path, raw: str | Path, label: str, error: type[Exc
     if not _is_inside(resolved, root_resolved):
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
     return resolved
+
+
+def _windows_trimmed_part(part: str) -> str:
+    """One path part after Win32 removes trailing dots and spaces.
+
+    ``.`` and ``..`` stay. ``.. .`` and ``...`` become ``..``, because the
+    extra dots and spaces are removed and the parent part is what remains.
+    """
+
+    if part in {".", ".."}:
+        return part
+    trimmed = part
+    while trimmed.endswith((" ", ".")) and trimmed not in {".", ".."}:
+        trimmed = trimmed[:-1]
+        if trimmed.endswith(" "):
+            trimmed = trimmed.rstrip(" ")
+    return trimmed
+
+
+def _path_after_windows_trim(text: str) -> str:
+    """The path Win32 keeps: each part loses its trailing dots and spaces."""
+
+    return "/".join(_windows_trimmed_part(part) for part in text.replace("\\", "/").split("/"))
 
 
 def _export_blocked(text: str, root: Path) -> bool:
@@ -141,6 +171,168 @@ def refuse_reserved_device(path: str | Path, root: Path | None, label: str, erro
     for part in parts:
         if is_reserved_device_name(part):
             raise error(f"{label} {part!r} is reserved on Windows.")
+
+
+def restrict_private_file(path: Path) -> None:
+    """Leave a secret file readable by this user only.
+
+    On Windows the mode passed to ``open`` is not an access list. ``stat``
+    then reports a writable file as mode ``0o666``. The access list is what
+    keeps the file private.
+    """
+
+    if os.name != "nt":
+        os.chmod(path, 0o600)
+        return
+    _windows_set_dacl(path, "D:P(A;;FA;;;OW)")
+
+
+def file_is_user_private(path: Path) -> bool:
+    """True when the file is owner-read/write, with no group or other access."""
+
+    if os.name != "nt":
+        return path.stat().st_mode & 0o777 == 0o600
+    text = _windows_dacl_text(path).upper()
+    if any(marker in text for marker in (";WD)", ";BU)", ";AU)", ";BA)", ";WD,", ";BU,", ";AU,", ";BA,")):
+        return False
+    return "(A;" in text
+
+
+def deny_directory_write(path: Path) -> None:
+    """Take write access off one directory. The caller restores it."""
+
+    if os.name != "nt":
+        path.chmod(0o555)
+        return
+    _windows_set_dacl(path, "D:P(A;;FRFX;;;OW)")
+
+
+def allow_directory_write(path: Path) -> None:
+    """Give this user write access to a directory ``deny_directory_write`` locked."""
+
+    if os.name != "nt":
+        path.chmod(0o755)
+        return
+    _windows_set_dacl(path, "D:P(A;;FA;;;OW)")
+
+
+def _windows_security():
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    return advapi32, kernel32
+
+
+def _windows_set_dacl(path: Path, sddl: str) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32, kernel32 = _windows_security()
+    descriptor = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, 1, ctypes.byref(descriptor), None
+    ):
+        raise OSError("Could not build the file access list.")
+    try:
+        present = wintypes.BOOL()
+        defaulted = wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        if not advapi32.GetSecurityDescriptorDacl(
+            descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)
+        ):
+            raise OSError("Could not read the file access list.")
+        status = advapi32.SetNamedSecurityInfoW(
+            str(path),
+            1,
+            0x4 | 0x80000000,
+            None,
+            None,
+            dacl,
+            None,
+        )
+        if status != 0:
+            raise OSError(f"Could not set the file access list (Windows error {status}).")
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _windows_dacl_text(path: Path) -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32, kernel32 = _windows_security()
+    descriptor = ctypes.c_void_p()
+    status = advapi32.GetNamedSecurityInfoW(
+        str(path),
+        1,
+        0x4,
+        None,
+        None,
+        None,
+        None,
+        ctypes.byref(descriptor),
+    )
+    if status != 0 or not descriptor:
+        raise OSError(f"Could not read the file access list (Windows error {status}).")
+    try:
+        text = ctypes.c_void_p()
+        if not advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor, 1, 0x4, ctypes.byref(text), None
+        ):
+            raise OSError("Could not read the file access list.")
+        try:
+            return ctypes.wstring_at(text) if text else ""
+        finally:
+            kernel32.LocalFree(text)
+    finally:
+        kernel32.LocalFree(descriptor)
 
 
 def _is_inside(path: Path, root: Path) -> bool:

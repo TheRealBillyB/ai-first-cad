@@ -481,14 +481,16 @@ def test_a_reserved_windows_name_is_refused(tmp_path):
 def test_a_blocked_output_path_is_a_clear_error(tmp_path):
     document = Document(tmp_path)
     _post(document)
+    from aicad.paths import allow_directory_write, deny_directory_write
+
     blocked = tmp_path / "locked"
     blocked.mkdir()
-    blocked.chmod(0o555)
+    deny_directory_write(blocked)
     try:
         with pytest.raises(GeometryError, match="Could not"):
             document.export_drawing("stand", out_dir=blocked)
     finally:
-        blocked.chmod(0o755)
+        allow_directory_write(blocked)
     parent = tmp_path / "notadir"
     parent.write_text("x", encoding="utf-8")
     with pytest.raises(GeometryError, match="Could not"):

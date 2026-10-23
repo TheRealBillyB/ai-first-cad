@@ -671,6 +671,7 @@ def test_windows_network_block_names_only_that_container():
 
     win._network_off_holders = 0
     win._network_off_sid = None
+    win._network_off_rules_sid = None
     original = win._run_firewall_script
     original_close = win._close_wfp_block
     original_install = win._install_wfp_block
@@ -690,12 +691,17 @@ def test_windows_network_block_names_only_that_container():
         assert len(calls) == 1
         assert closed == []
         win._release_network_block()
-        assert len(calls) == 2
+        assert len(calls) == 1
         assert closed == ["closed"]
-        assert "New-NetFirewallRule" not in calls[1]
         assert win._network_off_holders == 0
+        assert win._network_off_rules_sid == package.upper()
+        win._hold_network_block(package)
+        assert len(calls) == 1
+        win._release_network_block()
         win._require_script_network_open()
-        assert len(calls) == 3
+        assert len(calls) == 2
+        assert "New-NetFirewallRule" not in calls[-1]
+        assert win._network_off_rules_sid is None
 
         def boom(_sid):
             raise OSError("wfp failed")
@@ -712,6 +718,7 @@ def test_windows_network_block_names_only_that_container():
         win._install_wfp_block = original_install
         win._network_off_holders = 0
         win._network_off_sid = None
+        win._network_off_rules_sid = None
         win._wfp_engine = None
 
     spawn = inspect.getsource(win.spawn)

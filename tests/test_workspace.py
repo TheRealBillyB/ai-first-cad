@@ -253,8 +253,10 @@ def test_settings_file_keeps_the_key_out_of_the_public_view(tmp_path, monkeypatc
     assert saved["key_hint"] == "…1234"
     assert "sk-secret" not in json.dumps(saved)
     stored = json.loads(path.read_text(encoding="utf-8"))
+    from aicad.paths import file_is_user_private
+
     assert stored["api_key"] == "sk-secret-1234"
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert file_is_user_private(path)
     assert public_settings()["provider"] == "anthropic"
 
 

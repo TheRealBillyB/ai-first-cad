@@ -8,6 +8,9 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| Windows firewall rules stay up for the next network-off script | Installing them again for every script made the firewall call time out. A network-on script still removes them first. |
+| A Windows export is judged after trailing dots and spaces are removed | ``.. .`` is ``..`` once Win32 trims the name. That path is refused before anything is written. |
+| A secret file on Windows is an owner-only access list | The mode bits from stat stay world-writable on Windows. The access list is what keeps the file private. |
 | A Windows CPU stop is the job's user time | The process can exit without a signal this platform names. User time at the cap is that limit, and a short crash is not. |
 | A confined script reports plugin consent under the home config | The Windows child keeps library caches in the project. That folder is not the consent file. |
 | An unconnected Windows UDP check binds its socket before it sends | A blocked implicit bind is reported as an invalid argument, and that datagram was not sent. Binding first makes the refusal an access error. An invalid-argument result is still not a closed network. |

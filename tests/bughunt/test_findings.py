@@ -68,22 +68,35 @@ def test_bh_s02_script_cannot_signal_its_parent(tmp_path):
 
 def test_bh_s03_script_cannot_leave_a_detached_child(tmp_path):
     _sandbox_or_skip()
-    script = (
-        "import aicad.sandbox as sandbox\n"
-        "pid = sandbox.os.fork()\n"
-        "if pid == 0:\n"
-        "    sandbox.os.setsid()\n"
-        "    \n"
-        "    for fd in (0, 1, 2):\n"
-        "        try:\n"
-        "            sandbox.os.close(fd)\n"
-        "        except OSError:\n"
-        "            pass\n"
-        "    sandbox.os.system('sleep 2')\n"
-        "    open('phase2.txt', 'w').write('survived\\n')\n"
-        "    sandbox.os._exit(0)\n"
-        "part = Box(1, 1, 1)\n"
-    )
+    if sys.platform == "win32":
+        script = (
+            "import aicad.sandbox as sandbox\n"
+            "code = (\n"
+            "    'import time\\n'\n"
+            "    'from pathlib import Path\\n'\n"
+            "    'time.sleep(8)\\n'\n"
+            "    'Path(\"phase2.txt\").write_text(\"survived\\\\n\", encoding=\"utf-8\")\\n'\n"
+            ")\n"
+            "sandbox.subprocess.Popen([sandbox.sys.executable, '-c', code])\n"
+            "part = Box(1, 1, 1)\n"
+        )
+    else:
+        script = (
+            "import aicad.sandbox as sandbox\n"
+            "pid = sandbox.os.fork()\n"
+            "if pid == 0:\n"
+            "    sandbox.os.setsid()\n"
+            "    \n"
+            "    for fd in (0, 1, 2):\n"
+            "        try:\n"
+            "            sandbox.os.close(fd)\n"
+            "        except OSError:\n"
+            "            pass\n"
+            "    sandbox.os.system('sleep 2')\n"
+            "    open('phase2.txt', 'w').write('survived\\n')\n"
+            "    sandbox.os._exit(0)\n"
+            "part = Box(1, 1, 1)\n"
+        )
     run_part_script(script, tmp_path)
     time.sleep(4)
     assert not (tmp_path / "phase2.txt").exists()
