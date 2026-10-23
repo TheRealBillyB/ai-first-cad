@@ -469,21 +469,13 @@ def test_an_automatic_gap_is_capped_for_a_span_no_legal_part_can_reach():
         _gap(1_000_000.1, 10)
 
 
-def test_a_reserved_windows_name_is_renamed(tmp_path):
+def test_a_reserved_windows_name_is_refused(tmp_path):
     document = Document(tmp_path)
     _box(document, "base", [10, 10, 4], [0, 0, 2])
-    document.create_assembly({"name": "con", "instances": [{"name": "base", "part": "base"}], "joints": []})
-    report = document.export_drawing("con")
-    assert Path(report["files"]["pdf"]).name == "con_file.pdf"
-    assert Path(report["files"]["dxf"]).name == "con_file.dxf"
-    assert "Windows" in report["file_note"]
-    assert Path(report["files"]["png"]).parent.name == "con_file"
-    bom = document.bill_of_materials("con")
-    assert Path(bom["csv"]).name == "con_file.csv"
-    assert Path(bom["csv"]).read_bytes().startswith(b"\xef\xbb\xbf")
-    picture = document.exploded_view("con", gap_mm=15)
-    assert "con_file" in picture["views"][0]["path"]
-    assert "Windows" in picture["file_note"]
+    with pytest.raises(GeometryError, match="reserved"):
+        document.create_assembly({"name": "con", "instances": [{"name": "base", "part": "base"}], "joints": []})
+    assert list(tmp_path.rglob("con.pdf")) == []
+    assert list(tmp_path.rglob("con.csv")) == []
 
 
 def test_a_blocked_output_path_is_a_clear_error(tmp_path):

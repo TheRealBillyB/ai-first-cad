@@ -423,6 +423,8 @@ def test_pack_named_as_the_core_distribution_is_not_run_when_listed_or_allowed(t
     assert offer.distribution == "aicad"
     plugins.warning_text(offer)
     plugins._list_payload()
+    with pytest.raises(plugins.PluginConsentError):
+        plugins.load("h-core")
     plugins.allow("h-core", accept=True)
     assert "h_core_plugin" not in sys.modules
     _assert_absent(canary)
