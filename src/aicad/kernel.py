@@ -40,7 +40,7 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
 from OCP.GCPnts import GCPnts_QuasiUniformDeflection
-from OCP.GeomAbs import GeomAbs_SurfaceType
+from OCP.GeomAbs import GeomAbs_CurveType, GeomAbs_SurfaceType
 from OCP.BRepClass import BRepClass_FaceClassifier
 from OCP.HLRAlgo import HLRAlgo_Projector
 from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
@@ -528,6 +528,249 @@ def clearance_between(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Ve
     if overlap > _INTERFERENCE_VOLUME:
         distance = 0.0
     return round_mm(overlap), round_mm(distance), _vec(first), _vec(second)
+
+
+def aabb_gap_lower_bound(a: Shape, b: Shape) -> float:
+    """Lower bound on the surface gap, in millimeters.
+
+    Positive when the axis-aligned boxes are apart, by the largest per-axis
+    separation. Negative when the boxes overlap. A true gap cannot be smaller
+    than a positive result, so a broad phase can skip the boolean.
+    """
+    a_low, a_high = _aabb(a)
+    b_low, b_high = _aabb(b)
+    separations = [
+        max(a_low[index] - b_high[index], b_low[index] - a_high[index]) for index in range(3)
+    ]
+    return max(separations)
+
+
+# Edge-pair axes are exact and cheap while both solids have few edge directions.
+# Past this, directions are sampled and the depth is an upper bound.
+_PENETRATION_EDGE_BUDGET = 4096
+_PENETRATION_SAMPLES = 96
+
+
+def penetration_depth(a: Shape, b: Shape) -> dict:
+    """Minimum translation that separates two solids, in millimeters.
+
+    Convex polyhedra use the separating-axis theorem on their exact faces and
+    edges, so the depth is the real interference. Any other solid uses the
+    same theorem on the convex hull of its vertices or of a tessellation, which
+    can be deeper than a local notch. ``direction`` is a unit vector that moves
+    the second solid out of the first.
+    """
+    first = _solid_axes(a)
+    second = _solid_axes(b)
+    depth, direction, sampled = _separating_depth(first, second)
+    convex = bool(first["convex"] and second["convex"] and not first["meshed"] and not second["meshed"])
+    if depth <= 1e-9:
+        depth = _intersection_extent(a, b)
+        direction = [0.0, 0.0, 1.0]
+        method = "intersection_extent"
+    elif convex and not sampled:
+        method = "separating_axis"
+    elif sampled:
+        method = "separating_axis_sampled"
+    else:
+        method = "convex_hull"
+    return {
+        "penetration_depth_mm": round_mm(max(0.0, depth)),
+        "direction": [round_mm(component) for component in direction],
+        "depth_method": method,
+    }
+
+
+def _solid_axes(shape: Shape) -> dict:
+    planar = _planar_axes(shape)
+    if planar is not None:
+        return planar
+    return _mesh_axes(shape)
+
+
+def _planar_axes(shape: Shape) -> dict | None:
+    """Exact vertices, face normals, and edge directions when every face is planar."""
+    impl = shape.impl
+    vertices = [_xyz(vertex) for vertex in impl.vertices()]
+    if len(vertices) < 4:
+        return None
+    normals = []
+    planes = []
+    for face in impl.faces():
+        adaptor = BRepAdaptor_Surface(face.wrapped)
+        if adaptor.GetType() != GeomAbs_SurfaceType.GeomAbs_Plane:
+            return None
+        center = face.center()
+        origin = _xyz(center)
+        normal = _outward_normal(face, center)
+        if normal is None or abs(normal[0]) + abs(normal[1]) + abs(normal[2]) < 1e-12:
+            return None
+        normals.append(normal)
+        planes.append((origin, normal))
+    edges = []
+    for edge in impl.edges():
+        curve = BRepAdaptor_Curve(edge.wrapped)
+        if curve.GetType() != GeomAbs_CurveType.GeomAbs_Line:
+            return None
+        start = curve.Value(curve.FirstParameter())
+        end = curve.Value(curve.LastParameter())
+        edges.append((end.X() - start.X(), end.Y() - start.Y(), end.Z() - start.Z()))
+    return {
+        "vertices": np.asarray(vertices, dtype=np.float64),
+        "normals": normals,
+        "edges": edges,
+        "convex": _vertices_behind(vertices, planes),
+        "meshed": False,
+    }
+
+
+def _mesh_axes(shape: Shape) -> dict:
+    mesh = tessellate(shape)
+    points = np.asarray(mesh.vertices, dtype=np.float64)
+    normals = []
+    edges = []
+    for tri in mesh.triangles:
+        a, b, c = points[int(tri[0])], points[int(tri[1])], points[int(tri[2])]
+        normal = np.cross(b - a, c - a)
+        if float(np.linalg.norm(normal)) > 1e-12:
+            normals.append(normal)
+        edges.extend((b - a, c - b, a - c))
+    return {
+        "vertices": points,
+        "normals": normals,
+        "edges": edges,
+        "convex": False,
+        "meshed": True,
+    }
+
+
+def _vertices_behind(vertices: list[tuple[float, float, float]], planes: list[tuple]) -> bool:
+    """True when every vertex is on the inner side of every outward plane."""
+    for origin, normal in planes:
+        for vertex in vertices:
+            outside = sum((vertex[index] - origin[index]) * normal[index] for index in range(3))
+            if outside > 1e-5:
+                return False
+    return True
+
+
+def _separating_depth(first: dict, second: dict) -> tuple[float, list[float], bool]:
+    axes: list[np.ndarray] = []
+    seen: set[tuple[float, ...]] = set()
+
+    def add(vector) -> None:
+        arr = np.asarray(vector, dtype=np.float64).reshape(3)
+        length = float(np.linalg.norm(arr))
+        if length < 1e-12:
+            return
+        arr = arr / length
+        for component in arr:
+            if component < -1e-12:
+                arr = -arr
+                break
+            if component > 1e-12:
+                break
+        key = tuple(round(float(component), 8) for component in arr)
+        if key in seen:
+            return
+        seen.add(key)
+        axes.append(arr)
+
+    for normal in list(first["normals"]) + list(second["normals"]):
+        add(normal)
+    edges_a = _unique_dirs(first["edges"])
+    edges_b = _unique_dirs(second["edges"])
+    sampled = False
+    if len(edges_a) * len(edges_b) <= _PENETRATION_EDGE_BUDGET:
+        for edge_a in edges_a:
+            for edge_b in edges_b:
+                add(np.cross(edge_a, edge_b))
+    else:
+        sampled = True
+        for direction in _fibonacci_axes(_PENETRATION_SAMPLES):
+            add(direction)
+    for direction in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+        add(direction)
+    verts_a = first["vertices"]
+    verts_b = second["vertices"]
+    if len(verts_a) == 0 or len(verts_b) == 0 or not axes:
+        return 0.0, [0.0, 0.0, 1.0], sampled
+    center_a = verts_a.mean(axis=0)
+    center_b = verts_b.mean(axis=0)
+    best = float("inf")
+    best_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    for axis in axes:
+        projected_a = verts_a @ axis
+        projected_b = verts_b @ axis
+        overlap = float(min(projected_a.max(), projected_b.max()) - max(projected_a.min(), projected_b.min()))
+        if overlap < best:
+            best = overlap
+            if float(np.dot(center_b - center_a, axis)) >= 0.0:
+                best_axis = axis
+            else:
+                best_axis = -axis
+    if best == float("inf"):
+        best = 0.0
+    return best, [float(component) for component in best_axis], sampled
+
+
+def _unique_dirs(vectors) -> list[np.ndarray]:
+    unique = []
+    seen: set[tuple[float, ...]] = set()
+    for vector in vectors:
+        arr = np.asarray(vector, dtype=np.float64).reshape(3)
+        length = float(np.linalg.norm(arr))
+        if length < 1e-12:
+            continue
+        arr = arr / length
+        for component in arr:
+            if component < -1e-12:
+                arr = -arr
+                break
+            if component > 1e-12:
+                break
+        key = tuple(round(float(component), 8) for component in arr)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(arr)
+    return unique
+
+
+def _fibonacci_axes(count: int) -> list[tuple[float, float, float]]:
+    golden = math.pi * (3.0 - math.sqrt(5.0))
+    axes = []
+    for index in range(count):
+        height = 1.0 - (2.0 * index + 1.0) / count
+        radius = math.sqrt(max(0.0, 1.0 - height * height))
+        theta = golden * index
+        axes.append((math.cos(theta) * radius, height, math.sin(theta) * radius))
+    return axes
+
+
+def _intersection_extent(a: Shape, b: Shape) -> float:
+    """Smallest side of the intersection box. Used when the axis test misses a hit."""
+    common = a.impl & b.impl
+    if common is None:
+        return 0.0
+    try:
+        if float(common.volume) <= 0:
+            return 0.0
+        box = common.bounding_box()
+    except Exception:
+        return 0.0
+    size = (
+        float(box.max.X) - float(box.min.X),
+        float(box.max.Y) - float(box.min.Y),
+        float(box.max.Z) - float(box.min.Z),
+    )
+    return min(size)
+
+
+def _xyz(point) -> tuple[float, float, float]:
+    if hasattr(point, "X"):
+        return (float(point.X), float(point.Y), float(point.Z))
+    return (float(point[0]), float(point[1]), float(point[2]))
 
 
 def solid_inertia(shape: Shape) -> dict:

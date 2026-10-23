@@ -859,6 +859,18 @@ def _cmd_run_motion(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("motion", report)  # noqa: SLF001
 
 
+def _cmd_run_motion_study(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.run_motion_study(
+        arguments["name"],
+        sequence=arguments.get("sequence"),
+        study=arguments.get("study"),
+        steps=arguments.get("steps"),
+        clearance_mm=arguments.get("clearance_mm"),
+    )
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("motion_study", report)  # noqa: SLF001
+
+
 def _cmd_check_cables(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.check_cables(
         arguments["name"],
@@ -1320,7 +1332,7 @@ _add(Command(
     _cmd_update_assembly,
     undo=True,
 ))
-_add(Command("list_assemblies", "List assemblies with joint values, poses, and motion names. Does not test collisions.", _obj({}, []), _cmd_list_assemblies))
+_add(Command("list_assemblies", "List assemblies with joint values, poses, motion names, and motion studies. Does not test collisions.", _obj({}, []), _cmd_list_assemblies))
 _add(Command("get_assembly", "Solve an assembly and return joint frames and instance origins.", _ASSEMBLY, _cmd_get_assembly))
 _add(Command(
     "set_joint",
@@ -1349,6 +1361,24 @@ _add(Command(
     "Sweep a joint or play keyframes. Reports collisions and renders an isometric frame for each sample.",
     _MOTION,
     _cmd_run_motion,
+))
+_add(Command(
+    "run_motion_study",
+    "Drive joints through a timeline of expressions or keyframes, with gear couplings, and report collisions and joint-limit violations.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "sequence": _string("Named study on the assembly."),
+            "study": {
+                "type": "object",
+                "description": "Inline study with drivers, couplings, duration_s, steps, and clearance_mm.",
+            },
+            "steps": _number("Poses to solve, including both ends. Overrides the study."),
+            "clearance_mm": _number("Minimum allowed gap in millimeters. A smaller gap is interference."),
+        },
+        ["name"],
+    ),
+    _cmd_run_motion_study,
 ))
 _add(Command(
     "check_cables",

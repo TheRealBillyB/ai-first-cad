@@ -50,6 +50,7 @@ _LOUD = {
     "check_cables",
     "estimate_power",
     "run_motion",
+    "run_motion_study",
     "check_requirements",
 }
 # Undoable edits that are notes or requirements, not a shape the camera should chase.
