@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="aicad-token" content="__AICAD_TOKEN__" />
   <title>aicad workspace</title>
+  <link rel="icon" href="/favicon.ico" type="image/png" />
   <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
@@ -14,7 +16,12 @@
       <button type="button" id="nav-assembly">Assembly</button>
       <button type="button" id="nav-docs">Documents</button>
     </nav>
+    <button type="button" id="open-project">Open</button>
+    <button type="button" id="save-project">Save</button>
+    <button type="button" id="save-as">Save as</button>
+    <span id="project-name" class="project-name"></span>
     <div class="grow"></div>
+    <button type="button" id="live" class="on" title="Follow an assistant as they edit">Live</button>
     <button type="button" id="undo" title="Undo">Undo</button>
     <button type="button" id="redo" title="Redo">Redo</button>
     <span id="who" class="who"></span>
@@ -33,6 +40,13 @@
       <ul id="sketch-list"></ul>
       <h3>Features</h3>
       <ul id="feature-list"></ul>
+      <h3>Shape</h3>
+      <div id="shape-editor" class="shape-editor"></div>
+      <!-- Plan & Sketch fills #plan-body. Leave this mount in place. -->
+      <section id="plan-mount" class="plan-mount">
+        <h3>Plan</h3>
+        <div id="plan-body"><p class="muted">Nothing planned yet. A plan and a rough sketch will show here before a model starts.</p></div>
+      </section>
     </aside>
 
     <section class="stage">
@@ -40,8 +54,11 @@
         <div class="seg" id="pick-mode">
           <button type="button" data-mode="face" class="on">Faces</button>
           <button type="button" data-mode="edge">Edges</button>
+          <button type="button" data-mode="move">Move</button>
+          <button type="button" data-mode="measure">Measure</button>
         </div>
         <button type="button" id="fit">Fit</button>
+        <button type="button" id="measure-clear" hidden>Clear measure</button>
         <span id="selection-readout">Nothing selected</span>
         <div class="grow"></div>
         <div class="seg" id="stage-mode">
@@ -51,9 +68,12 @@
       </div>
       <div class="viewport">
         <canvas id="view"></canvas>
+        <canvas id="overlay"></canvas>
         <canvas id="sketch-canvas" hidden></canvas>
-        <div id="empty" class="empty">Create a sketch, extrude it, and the solid shows up here. An assistant using the chat changes the same document.</div>
+        <div id="empty" class="empty">The parts in this project show up here. Move one, or change a size on the left. With Live on, an assistant's edits show up here too.</div>
         <div id="sketch-status" class="sketch-status" hidden></div>
+        <div id="measure-readout" class="measure-readout" hidden></div>
+        <ol id="activity" class="activity" hidden></ol>
       </div>
       <div id="sketch-tools" class="sketch-tools" hidden>
         <div class="seg" id="draw-tools">

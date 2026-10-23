@@ -80,10 +80,13 @@ def test_open_project_loads_script_text_and_does_not_run_it(tmp_path, config_hom
     (other / "session.json").write_text(json.dumps(session), encoding="utf-8")
     workspace = Workspace(tmp_path / "here")
     opened = workspace.execute("open_project", {"path": str(other)})
-    assert opened["parts"][0]["built"] is False
+    assert opened["parts"] == ["evil"]
+    assert workspace.document.list_parts()[0].built is False
     assert not (other / "marker.txt").exists()
     saved = workspace.execute("save_project", {})
-    assert Path(saved["path"]).is_file()
+    saved_path = Path(saved["path"])
+    session_file = saved_path if saved_path.name == "session.json" else saved_path / "session.json"
+    assert session_file.is_file()
     assert workspace.execute("design_script_status", {})["enabled"] is False
 
 

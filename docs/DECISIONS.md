@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| The workspace server does not trust a source field | The browser session is the person, and MCP is the assistant. A program on this computer can still act as the person. |
 | A thin region is coarse when its elements are thinner than a third of the mesh size | Aspect ratio alone still passed a 0.05 mm foil at 0.4 mm and a 0.3 mm rib. The 2.4 mm gusset at 1.5 mm stays measurable. |
 | A wall probe that only lands on the opposite face is not used; a smaller step is tried | A step of exactly 0.01 mm sits on the inner face of a 0.01 mm wall, so that wall was reported as unmeasurable. |
 | A STEP path and an assistant export are judged with Windows and POSIX rules, and native stdout goes to `os.devnull` | A drive letter, a UNC path, or a backslash `..` has to be outside the project on every machine, and the descriptor restore has to work where the null device is `nul`. |
@@ -30,6 +31,14 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | An exploded view follows the joints | A slide moves on its axis, a hinge comes off its pin, and a catalog fastener lifts out. The gap is not a dimension. |
 | A drawing uses OpenCascade hidden-line removal | The edges come from the kernel already in use, so the sheet does not add a solver. |
 | A dimensioned sheet is a layout drawing, not a shop drawing | Overall sizes are the kernel's axis-aligned box of the posed solids. GD&T and tolerances stay off the sheet. |
+| Save As copies the saved script solid | The solid lives in `.aicad/geometry`. The copy has to open without running the script. |
+| A size or a placement stays within a million millimeters | The viewport stores coordinates in 32-bit floats, and a huge box next to a normal part makes the normal part disappear. |
+| A new project folder uses a Windows folder name | Save As rejects a trailing space or dot, a reserved name such as CON, and characters Windows forbids, so the copy can be created there. |
+| Live mode follows the assistant, not the person at the screen | A recording should frame the part an assistant just changed; the person's own drag should leave the camera where they put it. |
+| Measure is two clicks, and a third click adds the angle | Distance is the line between the first two points, and the angle is at the second point, so the same command works from a click or from coordinates. |
+| A size slider edits the number the solid was built from | An operation size, a sketch dimension, an extrude height, or a catalog length rebuilds the solid; a script or a STEP file has a placement and no such number. |
+| Open, Save, and Save As are folders, and undo stays the history | A project is the folder on disk, and named versions would be a second history beside the undo stack. |
+| `#plan-mount` and `#plan-body` are filled by `plan.js` | `plan.js` sends the workspace session token. |
 
 ## 2026-10-21
 

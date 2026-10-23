@@ -94,7 +94,13 @@ aicad app --workspace ./aicad_workspace
 
 On Windows the same line works in PowerShell. A browser tab opens at `http://127.0.0.1:8765`. The folder `aicad_workspace` is the project: parts, notes, pictures, and exports. Closing the terminal stops the app.
 
-The left side is the parts list. The middle is the part. The right side is Inspect, Section, Features, FEA, Vibration, Bolts, Print, and Checks. Along the top you can switch to Sketch, Assemblies, and Documents.
+The left side is the parts list. The middle is the model. The right side is Inspect, Section, Features, FEA, Vibration, Bolts, Print, and Checks. Along the top you can switch to Sketch, Assemblies, and Documents.
+
+Open, Save, and Save As are the project folder. Save writes the folder you already have open. Save As copies it to a new folder. Recent projects are listed in Open.
+
+Move drags a part. The numbers under Shape change a size, and the solid rebuilds. Measure is two clicks for a distance, and a third click for the angle. Undo puts the last change back.
+
+Live, in the header, is for watching an assistant. Leave it on and the view follows the assistant's edits: the new part shows up, the camera frames it, and a short note says what happened.
 
 ![The shelf in the app](docs/images/app_shelf.png)
 

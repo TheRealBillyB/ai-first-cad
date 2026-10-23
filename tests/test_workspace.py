@@ -127,7 +127,8 @@ def test_documents_and_requirements_undo_together(tmp_path):
     assert "Keep the plate thin" in text
 
 
-def test_http_command_and_mesh_share_the_document(tmp_path):
+def test_http_command_and_mesh_share_the_document(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_SERVER_TOKENS", str(tmp_path / "tokens"))
     server = make_server(tmp_path, "127.0.0.1", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -161,7 +162,11 @@ def test_http_command_and_mesh_share_the_document(tmp_path):
             source="mcp",
         )
         connection = HTTPConnection(host, port, timeout=30)
-        connection.request("GET", "/api/mesh?part=plate")
+        connection.request(
+            "GET",
+            "/api/mesh?part=plate",
+            headers={"Origin": f"http://127.0.0.1:{port}", "X-Aicad-Token": server.page_token},
+        )
         body = json.loads(connection.getresponse().read().decode("utf-8"))
         connection.close()
         assert body["ok"] is True
@@ -169,6 +174,8 @@ def test_http_command_and_mesh_share_the_document(tmp_path):
         assert any(face["ref"].startswith("plane/") for face in body["result"]["faces"])
         state = client.execute("get_state")
         assert state["parts"][0]["name"] == "plate"
+        assert state["activity"]
+        assert {item["source"] for item in state["activity"]} == {"agent"}
         # The browser and an attached assistant see the same revision.
         assert server.workspace.state()["revision"] == state["revision"]
     finally:

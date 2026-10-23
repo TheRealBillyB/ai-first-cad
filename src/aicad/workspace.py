@@ -59,6 +59,7 @@ class Workspace:
         self._sketch_cache_revision = -1
         self._script_network_once = False
         self._script_network_all = os.environ.get("AICAD_SCRIPT_NETWORK") == "1"
+        self._activity: list[dict] = []
         self._ensure_project_files()
 
     def listen(self, callback: Callable[[dict], None]) -> Callable[[], None]:
@@ -73,7 +74,11 @@ class Workspace:
         return unsubscribe
 
     def execute(self, name: str, arguments: dict | None = None, source: str = "api") -> dict:
-        """Run one command. ``source`` is ``ui``, ``chat``, ``mcp``, or ``api``."""
+        """Run one command. ``source`` is ``ui``, ``agent``, ``chat``, or ``api``.
+
+        The workspace server sets this from the connection. A browser session
+        is ``ui``. MCP is ``agent``. The request body cannot choose it.
+        """
         if name == "undo":
             return self.undo(source)
         if name == "redo":
@@ -113,12 +118,7 @@ class Workspace:
                 for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power", "vibration", "bolts", "fatigue", "print", "robot", "drawing", "bom", "exploded"):
                     self.panels.pop(panel, None)
             self.event_id += 1
-            event = {
-                "event": self.event_id,
-                "revision": self.geometry_revision,
-                "command": name,
-                "source": source,
-            }
+            event = self._event(name, arguments, result, source)
             listeners = list(self._listeners)
         for listener in listeners:
             listener(event)
@@ -132,16 +132,12 @@ class Workspace:
             self._restore(self._undo.pop())
             self.geometry_revision += 1
             self.event_id += 1
-            event = {
-                "event": self.event_id,
-                "revision": self.geometry_revision,
-                "command": "undo",
-                "source": source,
-            }
+            result = {"undone": True, "revision": self.geometry_revision}
+            event = self._event("undo", {}, result, source)
             listeners = list(self._listeners)
         for listener in listeners:
             listener(event)
-        return {"undone": True, "revision": self.geometry_revision}
+        return result
 
     def redo(self, source: str = "ui") -> dict:
         with self._lock:
@@ -151,16 +147,12 @@ class Workspace:
             self._restore(self._redo.pop())
             self.geometry_revision += 1
             self.event_id += 1
-            event = {
-                "event": self.event_id,
-                "revision": self.geometry_revision,
-                "command": "redo",
-                "source": source,
-            }
+            result = {"redone": True, "revision": self.geometry_revision}
+            event = self._event("redo", {}, result, source)
             listeners = list(self._listeners)
         for listener in listeners:
             listener(event)
-        return {"redone": True, "revision": self.geometry_revision}
+        return result
 
     def state(self) -> dict:
         with self._lock:
@@ -185,13 +177,20 @@ class Workspace:
                 self._sketch_cache = sketches
                 self._sketch_cache_revision = self.geometry_revision
             sketches = self._sketch_cache
+            parts = []
+            for part in self.document.list_parts():
+                payload = part.to_dict()
+                payload["placement"] = copy.deepcopy(self.document._get(part.name).placement)  # noqa: SLF001
+                parts.append(payload)
             return {
                 "units": "mm",
                 "revision": self.geometry_revision,
                 "event": self.event_id,
                 "can_undo": bool(self._undo),
                 "can_redo": bool(self._redo),
-                "parts": [part.to_dict() for part in self.document.list_parts()],
+                "project": {"path": str(self.root), "name": self.root.name},
+                "activity": copy.deepcopy(self._activity),
+                "parts": parts,
                 "assemblies": self.document.list_assemblies(),
                 "sketches": sketches,
                 "selection": copy.deepcopy(self.selection),
@@ -279,6 +278,18 @@ class Workspace:
                 shape = self.document._get(name).shape  # noqa: SLF001 — the mesh is a view of the live solid
                 cached = kernel.viewport_mesh(shape)
                 cached["part"] = name
+                self._mesh_cache[key] = cached
+            return cached
+
+    def scene_mesh(self) -> dict:
+        """Every part in one mesh, for the model view."""
+        with self._lock:
+            key = ("scene", self.geometry_revision)
+            cached = self._mesh_cache.get(key)
+            if cached is None:
+                from aicad.studio import build_scene
+
+                cached = build_scene(self)
                 self._mesh_cache[key] = cached
             return cached
 
@@ -386,6 +397,24 @@ class Workspace:
         payload = attach_sheet(payload, self.root / "renders" / "sheets", key, root=self.root)
         self.panels[key] = {"revision": self.geometry_revision, "payload": payload}
         return payload
+
+    def _event(self, name: str, arguments: dict, result: dict, source: str) -> dict:
+        from aicad.studio import note_for
+
+        note = note_for(name, arguments, result)
+        if note["record"]:
+            entry = dict(note["entry"])
+            entry["source"] = source
+            self._activity.append(entry)
+            if len(self._activity) > 12:
+                del self._activity[:-12]
+        return {
+            "event": self.event_id,
+            "revision": self.geometry_revision,
+            "command": name,
+            "source": source,
+            **note["event"],
+        }
 
 
 def _obj(properties: dict, required: list[str]) -> dict:
@@ -578,6 +607,9 @@ def _cmd_insert(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_place(workspace: Workspace, arguments: dict) -> dict:
+    from aicad.studio import reject_placement
+
+    reject_placement(arguments.get("position"), arguments.get("rotation_deg"))
     info = workspace.document.place_part(arguments["name"], arguments["position"], arguments.get("rotation_deg"))
     return {"part": info.to_dict()}
 
@@ -1406,6 +1438,10 @@ _add(Command(
     _cmd_run_design_script,
     undo=True,
 ))
+
+from aicad.studio import register as _register_studio  # noqa: E402
+
+_register_studio(_add)
 
 
 __all__ = ["COMMANDS", "Command", "Workspace"]
