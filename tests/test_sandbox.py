@@ -220,6 +220,248 @@ def test_windows_acl_calls_match_their_declared_types():
     }
 
 
+def test_windows_launch_attributes_point_at_the_container_and_the_job():
+    """CreateProcess has to receive the container, the job, and the handle list."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    from aicad import sandbox_windows as win
+
+    class Adv:
+        def ConvertStringSidToSidW(self, text, out):
+            assert text == "S-1-15-3-1"
+            out._obj.value = 0x99
+            return 1
+
+    rows, alive, capability = win._confinement_attributes(
+        sid=0x1234,
+        job=0x55,
+        handles=(1, 2, 3),
+        lpac=True,
+        network=True,
+        advapi32=Adv(),
+    )
+    assert alive
+    assert capability.value == 0x99
+    by_id = {attribute: (address, size) for attribute, address, size in rows}
+    security_address, security_size = by_id[win._PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES]
+    assert security_size == ctypes.sizeof(win._SecurityCapabilities)
+    security = ctypes.cast(security_address, ctypes.POINTER(win._SecurityCapabilities)).contents
+    assert security.AppContainerSid == 0x1234
+    assert security.CapabilityCount == 1
+    capability_row = ctypes.cast(security.Capabilities, ctypes.POINTER(win._SidAndAttributes)).contents
+    assert capability_row.Sid == 0x99
+    assert capability_row.Attributes == 0x4
+    job_address, job_size = by_id[win._PROC_THREAD_ATTRIBUTE_JOB_LIST]
+    assert job_size == ctypes.sizeof(wintypes.HANDLE)
+    assert ctypes.cast(job_address, ctypes.POINTER(ctypes.c_void_p)).contents.value == 0x55
+    handle_address, handle_size = by_id[win._PROC_THREAD_ATTRIBUTE_HANDLE_LIST]
+    assert handle_size == ctypes.sizeof(wintypes.HANDLE) * 3
+    handle_values = ctypes.cast(handle_address, ctypes.POINTER(ctypes.c_void_p * 3)).contents
+    assert list(handle_values) == [1, 2, 3]
+    policy_address, policy_size = by_id[win._PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY]
+    assert policy_size == ctypes.sizeof(wintypes.DWORD)
+    assert ctypes.cast(policy_address, ctypes.POINTER(wintypes.DWORD)).contents.value == (
+        win._PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT
+    )
+    plain, _plain_alive, plain_capability = win._confinement_attributes(
+        sid=0x1234,
+        job=0x55,
+        handles=(1, 2, 3),
+        lpac=False,
+        network=False,
+    )
+    assert plain_capability is None
+    assert win._PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY not in {row[0] for row in plain}
+
+    restype, argtypes = win._update_attribute_signature()
+    seen = []
+
+    @ctypes.CFUNCTYPE(restype, *argtypes)
+    def stub(attribute_list, flags, attribute, value, size, previous, returned):
+        seen.append((attribute, value, size, previous, returned))
+        return 1
+
+    attribute_list = ctypes.create_string_buffer(64)
+    win._apply_attributes(type("Kernel", (), {"UpdateProcThreadAttribute": staticmethod(stub)})(), attribute_list, rows)
+    assert [item[0] for item in seen] == [row[0] for row in rows]
+    assert all(item[1] for item in seen)
+    assert [item[2] for item in seen] == [row[2] for row in rows]
+    assert all(item[3] is None for item in seen)
+
+    startup = win._startup_info(attribute_list, 1, 2, 3)
+    assert startup.StartupInfo.cb == ctypes.sizeof(win._StartupInfoEx)
+    assert startup.lpAttributeList == ctypes.addressof(attribute_list)
+    flags = win._creation_flags(breakaway=True)
+    assert flags & win._CREATE_SUSPENDED
+    assert flags & win._EXTENDED_STARTUPINFO_PRESENT
+    assert flags & win._CREATE_UNICODE_ENVIRONMENT
+    assert flags & win._CREATE_BREAKAWAY_FROM_JOB
+    plain_flags = win._creation_flags(breakaway=False)
+    assert plain_flags & win._CREATE_SUSPENDED
+    assert not plain_flags & win._CREATE_BREAKAWAY_FROM_JOB
+
+
+def test_windows_suspended_process_is_resumed_only_in_the_job_and_container():
+    """A suspended process that missed the job or the container is not resumed."""
+
+    import ctypes
+
+    from aicad import sandbox_windows as win
+
+    class Api:
+        def __init__(self, *, assign=True, in_job=False, open_token=True, container=1, resume=1):
+            self.calls = []
+            self.assign = assign
+            self.in_job = in_job
+            self.open_token = open_token
+            self.container = container
+            self.resume = resume
+
+        def AssignProcessToJobObject(self, job, process):
+            self.calls.append("AssignProcessToJobObject")
+            return int(self.assign)
+
+        def IsProcessInJob(self, process, job, flag):
+            self.calls.append("IsProcessInJob")
+            flag._obj.value = int(self.in_job)
+            return 1
+
+        def OpenProcessToken(self, process, access, token):
+            self.calls.append("OpenProcessToken")
+            if not self.open_token:
+                return 0
+            token._obj.value = 42
+            return 1
+
+        def GetTokenInformation(self, token, info_class, info, length, returned):
+            self.calls.append("GetTokenInformation")
+            assert info_class == win._TokenIsAppContainer
+            info._obj.value = self.container
+            returned._obj.value = 4
+            return 1
+
+        def CloseHandle(self, handle):
+            self.calls.append("CloseHandle")
+            return 1
+
+        def TerminateProcess(self, process, code):
+            self.calls.append("TerminateProcess")
+            return 1
+
+        def ResumeThread(self, thread):
+            self.calls.append("ResumeThread")
+            return self.resume
+
+    process = win._ProcessInformation()
+    process.hProcess = 7
+    process.hThread = 8
+
+    ready = Api()
+    win._commit_suspended(ready, ready, 0x55, process)
+    assert ready.calls.index("AssignProcessToJobObject") < ready.calls.index("ResumeThread")
+    assert "TerminateProcess" not in ready.calls
+    assert "IsProcessInJob" not in ready.calls
+
+    already = Api(assign=False, in_job=True)
+    win._commit_suspended(already, already, 0x55, process)
+    assert already.calls.index("IsProcessInJob") < already.calls.index("ResumeThread")
+    assert "TerminateProcess" not in already.calls
+
+    missed_job = Api(assign=False, in_job=False)
+    with pytest.raises(OSError, match="not in the Job Object"):
+        win._commit_suspended(missed_job, missed_job, 0x55, process)
+    assert "ResumeThread" not in missed_job.calls
+    assert missed_job.calls[-1] == "TerminateProcess"
+    assert "OpenProcessToken" not in missed_job.calls
+
+    missed_container = Api(container=0)
+    with pytest.raises(OSError, match="not an AppContainer"):
+        win._commit_suspended(missed_container, missed_container, 0x55, process)
+    assert "ResumeThread" not in missed_container.calls
+    assert "TerminateProcess" in missed_container.calls
+
+    unread_token = Api(open_token=False)
+    with pytest.raises(OSError, match="not started"):
+        win._commit_suspended(unread_token, unread_token, 0x55, process)
+    assert "ResumeThread" not in unread_token.calls
+
+    stuck = Api(resume=0xFFFFFFFF)
+    with pytest.raises(OSError, match="Could not resume"):
+        win._commit_suspended(stuck, stuck, 0x55, process)
+    assert stuck.calls.index("ResumeThread") < stuck.calls.index("TerminateProcess")
+
+    class Creator:
+        def __init__(self, codes):
+            self.codes = list(codes)
+            self.flags = []
+
+        def CreateProcessW(self, *args):
+            self.flags.append(args[5])
+            code = self.codes.pop(0)
+            self.last_error = code
+            return code == 0
+
+    denied = Creator([win._ERROR_ACCESS_DENIED, 0])
+    win._start_suspended(
+        denied,
+        "python.exe",
+        ctypes.create_unicode_buffer("python.exe"),
+        ctypes.create_string_buffer(4),
+        "C:\\work",
+        win._StartupInfoEx(),
+        win._ProcessInformation(),
+    )
+    assert denied.flags[0] & win._CREATE_BREAKAWAY_FROM_JOB
+    assert denied.flags[0] & win._CREATE_SUSPENDED
+    assert denied.flags[0] & win._EXTENDED_STARTUPINFO_PRESENT
+    assert not denied.flags[1] & win._CREATE_BREAKAWAY_FROM_JOB
+    assert denied.flags[1] & win._CREATE_SUSPENDED
+
+    other = Creator([87])
+    with pytest.raises(OSError, match="Could not start"):
+        win._start_suspended(
+            other,
+            "python.exe",
+            ctypes.create_unicode_buffer("python.exe"),
+            ctypes.create_string_buffer(4),
+            "C:\\work",
+            win._StartupInfoEx(),
+            win._ProcessInformation(),
+        )
+    assert len(other.flags) == 1
+
+
+def test_windows_script_starts_from_the_base_interpreter(monkeypatch):
+    from aicad import sandbox_windows as win
+
+    venv = r"D:\a\ai-first-cad\.venv\Scripts\python.exe"
+    base = r"C:\hostedtoolcache\windows\Python\3.11.9\x64\python.exe"
+    monkeypatch.setattr(sys, "executable", venv)
+    monkeypatch.setattr(sys, "_base_executable", base, raising=False)
+    command, env = win._command_for_container([venv, "-P", "-c", "print(1)"], {"PATH": "x"})
+    assert command == [base, "-P", "-c", "print(1)"]
+    assert env["__PYVENV_LAUNCHER__"] == venv
+    assert env["PATH"] == "x"
+    same, same_env = win._command_for_container([base, "-c", "print(1)"], {})
+    assert same == [base, "-c", "print(1)"]
+    assert "__PYVENV_LAUNCHER__" not in same_env
+    other, other_env = win._command_for_container([r"C:\Tools\other.exe"], {})
+    assert other == [r"C:\Tools\other.exe"]
+    assert "__PYVENV_LAUNCHER__" not in other_env
+
+
+def test_windows_probe_requires_the_confinement_check():
+    from aicad import sandbox_windows as win
+
+    source = win._probe_source()
+    assert "identity_failures" in source
+    assert "sandbox-ok" in source
+    assert "if failed" in source
+    assert str(win._PROBE_MEMORY_BYTES) in source
+
+
 def test_windows_script_keeps_library_caches_in_the_project(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     from aicad import sandbox as sandbox_mod

@@ -12,6 +12,11 @@ There is no in-process fallback. A job cannot block OpenProcess on a
 process outside the job. The container can open a process only when that
 process grants the container, and this aicad process does not. aicad does
 not add its own deny entry: that change stopped later scripts from finishing.
+
+The script is the base interpreter. The virtual-environment redirector
+starts a second process in a job of its own, so the script would not stay
+in the sandbox job. The new process stays suspended until that job holds
+it and its token is an AppContainer.
 """
 
 from __future__ import annotations
@@ -34,7 +39,12 @@ _CREATE_SUSPENDED = 0x00000004
 _CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _CREATE_NO_WINDOW = 0x08000000
 _EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+# Leave the runner's job when it allows it, then enter only the sandbox job.
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+_ERROR_ACCESS_DENIED = 5
 _STARTF_USESTDHANDLES = 0x00000100
+_PROBE_CPU_SECONDS = 30
+_PROBE_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
 
 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
@@ -68,6 +78,12 @@ _FILE_ATTRIBUTE_NORMAL = 0x80
 _mode: str | None = None
 _mode_error: str | None = None
 _sid_string: str | None = None
+# One loaded library per process. A new WinDLL() drops the prototypes set below,
+# and a handle returned as a C int is not a pointer-sized HANDLE.
+_kernel32_lib: ctypes.WinDLL | None = None
+_userenv_lib: ctypes.WinDLL | None = None
+_advapi32_lib: ctypes.WinDLL | None = None
+_bound = False
 # The availability probe starts a container. Later tests in this process reuse it.
 _probe_done = False
 _probe_result: str | None = None
@@ -235,23 +251,62 @@ class _AclSizeInformation(ctypes.Structure):
 
 
 def _kernel32() -> ctypes.WinDLL:
-    return ctypes.WinDLL("kernel32", use_last_error=True)
+    global _kernel32_lib
+    if _kernel32_lib is None:
+        _kernel32_lib = ctypes.WinDLL("kernel32", use_last_error=True)
+    return _kernel32_lib
 
 
 def _userenv() -> ctypes.WinDLL:
-    return ctypes.WinDLL("userenv", use_last_error=True)
+    global _userenv_lib
+    if _userenv_lib is None:
+        _userenv_lib = ctypes.WinDLL("userenv", use_last_error=True)
+    return _userenv_lib
 
 
 def _advapi32() -> ctypes.WinDLL:
-    return ctypes.WinDLL("advapi32", use_last_error=True)
+    global _advapi32_lib
+    if _advapi32_lib is None:
+        _advapi32_lib = ctypes.WinDLL("advapi32", use_last_error=True)
+    return _advapi32_lib
 
 
 def _win_error(prefix: str) -> str:
-    code = ctypes.get_last_error()
-    return f"{prefix} (Windows error {code})."
+    return f"{prefix} (Windows error {_last_error()})."
+
+
+def _last_error(kernel32=None) -> int:
+    if kernel32 is not None:
+        recorded = getattr(kernel32, "last_error", None)
+        if recorded is not None:
+            return int(recorded) & 0xFFFFFFFF
+    getter = getattr(ctypes, "get_last_error", None)
+    if getter is None:
+        return 0
+    return int(getter()) & 0xFFFFFFFF
+
+
+def _update_attribute_signature() -> tuple[object, list[object]]:
+    """Argument types for UpdateProcThreadAttribute. Tests call this prototype."""
+
+    return (
+        wintypes.BOOL,
+        [
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+        ],
+    )
 
 
 def _bind() -> None:
+    global _bound
+    if _bound:
+        return
     kernel32 = _kernel32()
     kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -274,6 +329,8 @@ def _bind() -> None:
     kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
     kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
     kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
     kernel32.ResumeThread.restype = wintypes.DWORD
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
@@ -289,16 +346,9 @@ def _bind() -> None:
         ctypes.POINTER(ctypes.c_size_t),
     ]
     kernel32.InitializeProcThreadAttributeList.restype = wintypes.BOOL
-    kernel32.UpdateProcThreadAttribute.argtypes = [
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_size_t),
-    ]
-    kernel32.UpdateProcThreadAttribute.restype = wintypes.BOOL
+    update_restype, update_argtypes = _update_attribute_signature()
+    kernel32.UpdateProcThreadAttribute.argtypes = update_argtypes
+    kernel32.UpdateProcThreadAttribute.restype = update_restype
     kernel32.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
     kernel32.DeleteProcThreadAttributeList.restype = None
     kernel32.CreateProcessW.argtypes = [
@@ -379,6 +429,7 @@ def _bind() -> None:
     advapi32.GetTokenInformation.restype = wintypes.BOOL
     kernel32.LocalFree.argtypes = [ctypes.c_void_p]
     kernel32.LocalFree.restype = ctypes.c_void_p
+    _bound = True
 
 
 def _sid_to_string(sid: ctypes.c_void_p) -> str:
@@ -948,6 +999,240 @@ def _environment_block(env: dict[str, str]) -> ctypes.Array:
     return buffer
 
 
+def _command_for_container(
+    command: list[str], env: dict[str, str]
+) -> tuple[list[str], dict[str, str]]:
+    """Run the base interpreter when this process is a virtual-environment redirector.
+
+    The redirector starts another Python and puts that child in a new job.
+    The sandbox has to start the interpreter that will run the script.
+    ``__PYVENV_LAUNCHER__`` keeps the environment's own prefix.
+    """
+
+    copied = dict(env)
+    if not command:
+        return list(command), copied
+    base = getattr(sys, "_base_executable", None) or ""
+    current = command[0]
+    if not base:
+        return list(command), copied
+    if os.path.normcase(os.path.normpath(base)) == os.path.normcase(os.path.normpath(current)):
+        return list(command), copied
+    if os.path.normcase(os.path.normpath(current)) != os.path.normcase(
+        os.path.normpath(sys.executable)
+    ):
+        return list(command), copied
+    copied["__PYVENV_LAUNCHER__"] = current
+    return [base, *command[1:]], copied
+
+
+def _creation_flags(*, breakaway: bool) -> int:
+    flags = (
+        _CREATE_SUSPENDED
+        | _CREATE_UNICODE_ENVIRONMENT
+        | _CREATE_NO_WINDOW
+        | _EXTENDED_STARTUPINFO_PRESENT
+    )
+    if breakaway:
+        flags |= _CREATE_BREAKAWAY_FROM_JOB
+    return flags
+
+
+def _confinement_attributes(
+    *,
+    sid: ctypes.c_void_p | int,
+    job: int,
+    handles: tuple[int, int, int],
+    lpac: bool,
+    network: bool,
+    advapi32=None,
+) -> tuple[list[tuple[int, int, int]], list[object], ctypes.c_void_p | None]:
+    """Attribute rows for CreateProcess. The returned objects keep the buffers alive."""
+
+    alive: list[object] = []
+    security = _SecurityCapabilities()
+    security.AppContainerSid = sid
+    security.CapabilityCount = 0
+    security.Capabilities = None
+    capability_sid: ctypes.c_void_p | None = None
+    if network:
+        if advapi32 is None:
+            advapi32 = _advapi32()
+        capability_sid = ctypes.c_void_p()
+        if not advapi32.ConvertStringSidToSidW("S-1-15-3-1", ctypes.byref(capability_sid)):
+            raise OSError(_win_error("Could not look up the network capability"))
+        capabilities = _SidAndAttributes()
+        capabilities.Sid = capability_sid
+        capabilities.Attributes = 0x4  # SE_GROUP_ENABLED
+        cap_ptr = ctypes.pointer(capabilities)
+        security.Capabilities = ctypes.cast(cap_ptr, ctypes.c_void_p)
+        security.CapabilityCount = 1
+        alive.append(capabilities)
+        alive.append(cap_ptr)
+    alive.append(security)
+    rows = [
+        (
+            _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+            ctypes.addressof(security),
+            ctypes.sizeof(security),
+        )
+    ]
+    job_list = (wintypes.HANDLE * 1)(job)
+    alive.append(job_list)
+    rows.append(
+        (_PROC_THREAD_ATTRIBUTE_JOB_LIST, ctypes.addressof(job_list), ctypes.sizeof(job_list))
+    )
+    handle_list = (wintypes.HANDLE * 3)(handles[0], handles[1], handles[2])
+    alive.append(handle_list)
+    rows.append(
+        (
+            _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            ctypes.addressof(handle_list),
+            ctypes.sizeof(handle_list),
+        )
+    )
+    if lpac:
+        policy = wintypes.DWORD(_PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT)
+        alive.append(policy)
+        rows.append(
+            (
+                _PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+                ctypes.addressof(policy),
+                ctypes.sizeof(policy),
+            )
+        )
+    return rows, alive, capability_sid
+
+
+def _apply_attributes(kernel32, attribute_list, rows: Sequence[tuple[int, int, int]]) -> None:
+    messages = {
+        _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: "Could not attach the AppContainer",
+        _PROC_THREAD_ATTRIBUTE_JOB_LIST: "Could not put the script in the Job Object",
+        _PROC_THREAD_ATTRIBUTE_HANDLE_LIST: "Could not pass the script's output handles",
+        _PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: (
+            "Could not request the stricter AppContainer"
+        ),
+    }
+    for attribute, address, size in rows:
+        if not kernel32.UpdateProcThreadAttribute(
+            attribute_list,
+            0,
+            attribute,
+            ctypes.c_void_p(address),
+            size,
+            None,
+            None,
+        ):
+            raise OSError(_win_error(messages.get(attribute, "Could not set a process attribute")))
+
+
+def _startup_info(attribute_list, stdin: int, stdout: int, stderr: int) -> _StartupInfoEx:
+    startup = _StartupInfoEx()
+    startup.StartupInfo.cb = ctypes.sizeof(startup)
+    startup.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
+    startup.StartupInfo.hStdInput = stdin
+    startup.StartupInfo.hStdOutput = stdout
+    startup.StartupInfo.hStdError = stderr
+    startup.lpAttributeList = ctypes.c_void_p(ctypes.addressof(attribute_list))
+    return startup
+
+
+def _start_suspended(
+    kernel32,
+    application: str,
+    command_line,
+    environment,
+    cwd: str,
+    startup: _StartupInfoEx,
+    process: _ProcessInformation,
+) -> None:
+    """Create the process suspended. Retry without breakaway when the parent job forbids it."""
+
+    last = "Could not start the sandboxed script."
+    for breakaway in (True, False):
+        created = kernel32.CreateProcessW(
+            application,
+            command_line,
+            None,
+            None,
+            True,
+            _creation_flags(breakaway=breakaway),
+            ctypes.cast(environment, ctypes.c_void_p),
+            cwd,
+            ctypes.byref(startup),
+            ctypes.byref(process),
+        )
+        if created:
+            return
+        code = _last_error(kernel32)
+        last = f"Could not start the sandboxed script (Windows error {code})."
+        if breakaway and code == _ERROR_ACCESS_DENIED:
+            continue
+        raise OSError(last)
+    raise OSError(last)
+
+
+def _process_in_job(kernel32, process: int, job: int) -> bool:
+    flag = wintypes.BOOL(False)
+    if not kernel32.IsProcessInJob(process, job, ctypes.byref(flag)):
+        return False
+    return bool(flag.value)
+
+
+def _process_is_appcontainer(kernel32, advapi32, process: int) -> tuple[bool, str]:
+    """Whether this suspended process token is an AppContainer."""
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+        return False, _win_error("Could not read the script token")
+    try:
+        value = wintypes.DWORD(0)
+        returned = wintypes.DWORD(0)
+        ok = advapi32.GetTokenInformation(
+            token,
+            _TokenIsAppContainer,
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+            ctypes.byref(returned),
+        )
+        if not ok:
+            return False, _win_error("Could not read the AppContainer flag")
+        if int(value.value) != 1:
+            return False, "the process is not an AppContainer"
+        return True, ""
+    finally:
+        if token.value:
+            kernel32.CloseHandle(token)
+
+
+def _commit_suspended(kernel32, advapi32, job: int, process: _ProcessInformation) -> None:
+    """Put a suspended process in the job, require the container, then resume it.
+
+    A process that is not in the job, or whose token is not an AppContainer,
+    is terminated. It is not resumed.
+    """
+
+    assigned = bool(kernel32.AssignProcessToJobObject(job, process.hProcess))
+    in_job = assigned or _process_in_job(kernel32, process.hProcess, job)
+    reasons: list[str] = []
+    if not in_job:
+        reasons.append(_win_error("the process is not in the Job Object"))
+    else:
+        contained, detail = _process_is_appcontainer(kernel32, advapi32, process.hProcess)
+        if not contained:
+            reasons.append(detail)
+    if reasons:
+        kernel32.TerminateProcess(process.hProcess, 1)
+        raise OSError(
+            "Windows did not confine the script ("
+            + "; ".join(reasons)
+            + "). The script was not started."
+        )
+    if kernel32.ResumeThread(process.hThread) == 0xFFFFFFFF:
+        kernel32.TerminateProcess(process.hProcess, 1)
+        raise OSError(_win_error("Could not resume the sandboxed script"))
+
+
 def _launch(
     command: list[str],
     *,
@@ -962,27 +1247,22 @@ def _launch(
 ) -> _ProcessInformation:
     kernel32 = _kernel32()
     advapi32 = _advapi32()
+    command, env = _command_for_container(command, env)
     stdin = _open_inherited("NUL", _GENERIC_READ, _OPEN_EXISTING)
     stdout = _open_inherited(str(stdout_path), _GENERIC_WRITE, _CREATE_ALWAYS)
     stderr = _open_inherited(str(stderr_path), _GENERIC_WRITE, _CREATE_ALWAYS)
-    capability_sid = ctypes.c_void_p()
-    capabilities = None
+    capability_sid = None
     try:
-        security = _SecurityCapabilities()
-        security.AppContainerSid = sid
-        security.CapabilityCount = 0
-        security.Capabilities = None
-        if network:
-            # internetClient. Without this capability the container has no network.
-            if not advapi32.ConvertStringSidToSidW("S-1-15-3-1", ctypes.byref(capability_sid)):
-                raise OSError(_win_error("Could not look up the network capability"))
-            capabilities = _SidAndAttributes()
-            capabilities.Sid = capability_sid
-            capabilities.Attributes = 0x4  # SE_GROUP_ENABLED
-            security.Capabilities = ctypes.cast(ctypes.pointer(capabilities), ctypes.c_void_p)
-            security.CapabilityCount = 1
-
-        attribute_count = 4 if lpac else 3
+        # internetClient is added only when the script was given the network.
+        rows, alive, capability_sid = _confinement_attributes(
+            sid=sid,
+            job=job,
+            handles=(stdin, stdout, stderr),
+            lpac=lpac,
+            network=network,
+            advapi32=advapi32,
+        )
+        attribute_count = len(rows)
         size = ctypes.c_size_t(0)
         kernel32.InitializeProcThreadAttributeList(None, attribute_count, 0, ctypes.byref(size))
         attributes = ctypes.create_string_buffer(size.value)
@@ -991,85 +1271,31 @@ def _launch(
         ):
             raise OSError(_win_error("Could not prepare the process attributes"))
         try:
-            if not kernel32.UpdateProcThreadAttribute(
-                attributes,
-                0,
-                _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-                ctypes.byref(security),
-                ctypes.sizeof(security),
-                None,
-                None,
-            ):
-                raise OSError(_win_error("Could not attach the AppContainer"))
-            job_list = (wintypes.HANDLE * 1)(job)
-            if not kernel32.UpdateProcThreadAttribute(
-                attributes,
-                0,
-                _PROC_THREAD_ATTRIBUTE_JOB_LIST,
-                job_list,
-                ctypes.sizeof(job_list),
-                None,
-                None,
-            ):
-                raise OSError(_win_error("Could not put the script in the Job Object"))
-            handles = (wintypes.HANDLE * 3)(stdin, stdout, stderr)
-            if not kernel32.UpdateProcThreadAttribute(
-                attributes,
-                0,
-                _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                handles,
-                ctypes.sizeof(handles),
-                None,
-                None,
-            ):
-                raise OSError(_win_error("Could not pass the script's output handles"))
-            policy = wintypes.DWORD(_PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT)
-            if lpac and not kernel32.UpdateProcThreadAttribute(
-                attributes,
-                0,
-                _PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
-                ctypes.byref(policy),
-                ctypes.sizeof(policy),
-                None,
-                None,
-            ):
-                raise OSError(_win_error("Could not request the stricter AppContainer"))
-
-            startup = _StartupInfoEx()
-            startup.StartupInfo.cb = ctypes.sizeof(_StartupInfoEx)
-            startup.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
-            startup.StartupInfo.hStdInput = stdin
-            startup.StartupInfo.hStdOutput = stdout
-            startup.StartupInfo.hStdError = stderr
-            startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
-
+            _apply_attributes(kernel32, attributes, rows)
+            startup = _startup_info(attributes, stdin, stdout, stderr)
             command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
             environment = _environment_block(env)
             process = _ProcessInformation()
-            created = kernel32.CreateProcessW(
+            _start_suspended(
+                kernel32,
                 command[0],
                 command_line,
-                None,
-                None,
-                True,
-                _CREATE_SUSPENDED
-                | _CREATE_UNICODE_ENVIRONMENT
-                | _CREATE_NO_WINDOW
-                | _EXTENDED_STARTUPINFO_PRESENT,
-                ctypes.cast(environment, ctypes.c_void_p),
+                environment,
                 cwd,
-                ctypes.byref(startup),
-                ctypes.byref(process),
+                startup,
+                process,
             )
-            if not created:
-                raise OSError(_win_error("Could not start the sandboxed script"))
-            if kernel32.ResumeThread(process.hThread) == 0xFFFFFFFF:
-                kernel32.TerminateJobObject(job, 1)
+            try:
+                _commit_suspended(kernel32, advapi32, job, process)
+            except Exception:
                 kernel32.CloseHandle(process.hThread)
                 kernel32.CloseHandle(process.hProcess)
-                raise OSError(_win_error("Could not resume the sandboxed script"))
+                raise
             return process
         finally:
+            # CreateProcess has copied the attribute pointers. The buffers in
+            # ``alive`` stay reachable until this function returns.
+            del alive
             kernel32.DeleteProcThreadAttributeList(attributes)
     finally:
         kernel32.CloseHandle(stdin)
@@ -1235,11 +1461,25 @@ def spawn(
         _advapi32().FreeSid(sid)
 
 
+def _probe_source() -> str:
+    """Probe program. A process that only prints is not confined."""
+
+    return (
+        "import aicad\n"
+        "from aicad.sandbox_windows import identity_failures\n"
+        f"failed = identity_failures({_PROBE_MEMORY_BYTES})\n"
+        "if failed:\n"
+        "    raise SystemExit('confinement: ' + '; '.join(failed))\n"
+        "print('sandbox-ok')\n"
+    )
+
+
 def _probe_command(workspace: Path) -> list[str]:
     script = workspace / "probe.py"
     # The real script imports aicad. A probe that only prints can succeed in a
-    # container that then fails to load the geometry libraries.
-    script.write_text("import aicad\nprint('sandbox-ok')\n", encoding="utf-8")
+    # container that then fails to load the geometry libraries. The same
+    # confinement check the script uses has to pass before this counts.
+    script.write_text(_probe_source(), encoding="utf-8")
     # -P matches the script process: the working directory is not an import path.
     return [sys.executable, "-P", "-B", "-u", str(script)]
 
@@ -1257,7 +1497,7 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
             package = _package_sid(mode == "lpac")
             grant_read_paths(read_paths, sid_text, package)
             grant_workspace(root, sid_text, package)
-            job = _create_job(30, 2 * 1024 * 1024 * 1024)
+            job = _create_job(_PROBE_CPU_SECONDS, _PROBE_MEMORY_BYTES)
             try:
                 stdout_path = root / "stdout.txt"
                 stderr_path = root / "stderr.txt"
@@ -1394,7 +1634,12 @@ def identity_failures(memory_bytes: int) -> list[str]:
         )
     except OSError:
         ok = False
-    if not ok or is_container.value != 1:
+    if not ok:
+        failures.append(
+            "the AppContainer check did not complete "
+            f"(Windows error {_last_error()})"
+        )
+    elif int(is_container.value) != 1:
         failures.append("the process is not an AppContainer")
 
     in_job = wintypes.BOOL(False)
@@ -1402,7 +1647,13 @@ def identity_failures(memory_bytes: int) -> list[str]:
         in_job_ok = bool(kernel32.IsProcessInJob(-1, None, ctypes.byref(in_job)))
     except OSError:
         in_job_ok = False
-    if not in_job_ok or not in_job.value:
+    if not in_job_ok:
+        failures.append(
+            "the Job Object check did not complete "
+            f"(Windows error {_last_error()})"
+        )
+        return failures
+    if not in_job.value:
         failures.append("the process is not in a Job Object")
         return failures
     info = _JobExtendedLimit()
