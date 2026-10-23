@@ -3,13 +3,15 @@
 The canary is one file, SANDBOX_CANARY.txt, containing CANARY_HIT. Opening the
 project must not create it. A module shipped in the project must not run in
 place of the sandbox. A script that does run stays inside the project, off the
-network, and cannot use a child process to leave.
+network, and cannot use a child process to leave. On Linux the syscall filter
+also refuses another instruction set, io_uring, and cross-process memory.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import platform
 import sys
 from pathlib import Path
 
@@ -17,7 +19,7 @@ import pytest
 
 from aicad.document import Document
 from aicad.kernel import measure
-from aicad.sandbox import _child_env, _pythonpath_for_child, run_part_script
+from aicad.sandbox import _child_env, _pythonpath_for_child, run_part_script, sandbox_supported
 from aicad.workspace import Workspace
 
 _PART_CANARY = (
@@ -197,3 +199,74 @@ part = Box(1, 1, 1)
         assert "write:blocked:" in text
         assert "symlink:blocked:" in text
         assert "subprocess:blocked:" in text
+
+
+@pytest.mark.sandbox_linux
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux seccomp filter")
+def test_linux_filter_blocks_indirect_sockets_and_cross_process_memory(tmp_path, config_home):
+    supported, reason = sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        vm_nr = 310
+        setup_nr = 425
+        ia32 = True
+    elif machine in ("aarch64", "arm64"):
+        vm_nr = 270
+        setup_nr = 425
+        ia32 = False
+    else:
+        pytest.skip(machine)
+    script = f"""
+import aicad.sandbox as sandbox
+libc = sandbox.ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = sandbox.ctypes.c_long
+libc.syscall.argtypes = [sandbox.ctypes.c_long] * 7
+lines = []
+
+def call(*args):
+    rc = libc.syscall(*args)
+    return int(rc), sandbox.ctypes.get_errno()
+
+params = sandbox.ctypes.create_string_buffer(256)
+rc, err = call({setup_nr}, 1, sandbox.ctypes.addressof(params), 0, 0, 0, 0)
+lines.append("io_uring:%s:%s" % (rc, err))
+local = sandbox.ctypes.create_string_buffer(8)
+remote = sandbox.ctypes.create_string_buffer(b"abcdefgh")
+
+class Iovec(sandbox.ctypes.Structure):
+    _fields_ = [("base", sandbox.ctypes.c_uint64), ("len", sandbox.ctypes.c_uint64)]
+
+local_iov = Iovec(sandbox.ctypes.addressof(local), 8)
+remote_iov = Iovec(sandbox.ctypes.addressof(remote), 8)
+rc, err = call({vm_nr}, sandbox.os.getpid(), sandbox.ctypes.addressof(local_iov), 1, sandbox.ctypes.addressof(remote_iov), 1, 0)
+lines.append("vm:%s:%s" % (rc, err))
+"""
+    if ia32:
+        script += """
+code = bytes([
+    0xB8, 0x67, 0x01, 0x00, 0x00,
+    0xBB, 0x02, 0x00, 0x00, 0x00,
+    0xB9, 0x02, 0x00, 0x00, 0x00,
+    0x31, 0xD2,
+    0xCD, 0x80,
+    0xC3,
+])
+mem, err = call(9, 0, 4096, 7, 0x22, -1, 0)
+if mem < 0:
+    lines.append("ia32:mmap:%s" % err)
+else:
+    sandbox.ctypes.memmove(mem, code, len(code))
+    fn = sandbox.ctypes.CFUNCTYPE(sandbox.ctypes.c_long)(mem)
+    fd = int(fn())
+    lines.append("ia32:socket" if fd >= 0 else "ia32:denied:%s" % fd)
+"""
+    script += "open('isolation.txt', 'w', encoding='utf-8').write('\\n'.join(lines) + '\\n')\npart = Box(1, 1, 1)\n"
+    run_part_script(script, tmp_path)
+    text = (tmp_path / "isolation.txt").read_text(encoding="utf-8")
+    assert "io_uring:-1:1" in text
+    assert "vm:-1:1" in text
+    if ia32:
+        assert "ia32:denied:" in text
+        assert "ia32:socket" not in text
