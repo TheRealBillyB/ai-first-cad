@@ -19,6 +19,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from aicad import explode, kernel
+from aicad.blueprint import png_size
 from aicad.errors import GeometryError
 from aicad.honesty import VERIFIED_CHECK, finish
 OMITS = [
@@ -284,8 +285,7 @@ def parse_scale(text: str) -> tuple[int, int]:
 
 
 def _png_view(path: Path) -> dict:
-    with Image.open(path) as image:
-        width, height = image.size
+    width, height = png_size(path)
     return {"name": "drawing", "path": str(path.resolve()), "width": width, "height": height}
 
 

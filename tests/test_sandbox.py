@@ -592,3 +592,155 @@ def test_unexpected_errors_become_tool_errors(tmp_path, config_home):
             asyncio.run(server.call_tool("list_parts", {}))
     finally:
         COMMANDS["list_parts"] = saved
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux Landlock sandbox")
+def test_script_cannot_create_special_files_outside_the_project(tmp_path):
+    """A symlink, named pipe, or socket node outside the project is a write escape.
+
+    Landlock only blocks the file actions it is told to handle. Leaving out
+    the special-file actions makes mkfifo, symlink, and a socket node succeed
+    in a directory the script can write, such as /tmp.
+    """
+    import os
+    import uuid
+
+    tag = uuid.uuid4().hex
+    fifo = f"/tmp/aicad-outside-fifo-{tag}"
+    link = f"/tmp/aicad-outside-link-{tag}"
+    sock = f"/tmp/aicad-outside-sock-{tag}"
+    script = f"""
+import aicad.sandbox as sandbox
+notes = []
+def attempt(label, action):
+    try:
+        action()
+        notes.append(label + ":created")
+    except OSError as exc:
+        notes.append(label + ":denied:%s" % exc.errno)
+attempt("fifo", lambda: sandbox.os.mkfifo({fifo!r}))
+attempt("symlink", lambda: sandbox.os.symlink("/etc/passwd", {link!r}))
+attempt("socket", lambda: sandbox.os.mknod({sock!r}, 0o140666))
+sandbox.os.mkfifo("inside.fifo")
+notes.append("inside:" + ("created" if sandbox.os.path.exists("inside.fifo") else "missing"))
+open("nodes.txt", "w", encoding="utf-8").write("\\n".join(notes))
+part = Box(1, 1, 1)
+"""
+    try:
+        run_part_script(script, tmp_path)
+        text = (tmp_path / "nodes.txt").read_text(encoding="utf-8")
+        assert "fifo:denied:" in text
+        assert "symlink:denied:" in text
+        assert "socket:denied:" in text
+        assert "inside:created" in text
+        assert ":created" not in text.replace("inside:created", "")
+        assert not os.path.exists(fifo)
+        assert not os.path.lexists(link)
+        assert not os.path.exists(sock)
+    finally:
+        for path in (fifo, link, sock):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux seccomp sandbox")
+def test_script_cannot_send_udp_through_io_uring(tmp_path):
+    """io_uring can socket() and sendto() without those syscalls.
+
+    Landlock blocks TCP only. A UDP packet sent through io_uring leaves the
+    machine when the socket filter does not cover io_uring.
+    """
+    import socket
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    script = f"""
+import aicad.sandbox as sandbox
+ctypes = sandbox.ctypes
+os = sandbox.os
+mmap = sandbox._REAL_IMPORT("mmap")
+socket = sandbox._REAL_IMPORT("socket")
+struct = sandbox._REAL_IMPORT("struct")
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+
+class SqOff(ctypes.Structure):
+    _fields_ = [("head", ctypes.c_uint32), ("tail", ctypes.c_uint32), ("ring_mask", ctypes.c_uint32),
+                ("ring_entries", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("dropped", ctypes.c_uint32),
+                ("array", ctypes.c_uint32), ("resv1", ctypes.c_uint32), ("user_addr", ctypes.c_uint64)]
+
+class CqOff(ctypes.Structure):
+    _fields_ = [("head", ctypes.c_uint32), ("tail", ctypes.c_uint32), ("ring_mask", ctypes.c_uint32),
+                ("ring_entries", ctypes.c_uint32), ("overflow", ctypes.c_uint32), ("cqes", ctypes.c_uint32),
+                ("flags", ctypes.c_uint32), ("resv1", ctypes.c_uint32), ("user_addr", ctypes.c_uint64)]
+
+class Params(ctypes.Structure):
+    _fields_ = [("sq_entries", ctypes.c_uint32), ("cq_entries", ctypes.c_uint32), ("flags", ctypes.c_uint32),
+                ("sq_thread_cpu", ctypes.c_uint32), ("sq_thread_idle", ctypes.c_uint32), ("features", ctypes.c_uint32),
+                ("wq_fd", ctypes.c_uint32), ("resv", ctypes.c_uint32 * 3), ("sq_off", SqOff), ("cq_off", CqOff)]
+
+def attempt():
+    params = Params()
+    ring = libc.syscall(425, 8, ctypes.byref(params))
+    if ring < 0:
+        return "setup-denied:%s" % ctypes.get_errno()
+    try:
+        sq_sz = params.sq_off.array + params.sq_entries * 4
+        cq_sz = params.cq_off.cqes + params.cq_entries * 16
+        sqe_sz = params.sq_entries * 64
+        sq = mmap.mmap(ring, sq_sz, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=0)
+        cq = mmap.mmap(ring, cq_sz, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=0x8000000)
+        sqes = mmap.mmap(ring, sqe_sz, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=0x10000000)
+        def submit(opcode, fd, off, addr, length):
+            mask = struct.unpack_from("I", sq, params.sq_off.ring_mask)[0]
+            tail = struct.unpack_from("I", sq, params.sq_off.tail)[0]
+            index = tail & mask
+            slot = index * 64
+            raw = bytearray(sqe_sz)
+            struct.pack_into("<BBHI", raw, slot, opcode, 0, 0, fd & 0xFFFFFFFF)
+            struct.pack_into("<Q", raw, slot + 8, off & 0xFFFFFFFFFFFFFFFF)
+            struct.pack_into("<Q", raw, slot + 16, addr & 0xFFFFFFFFFFFFFFFF)
+            struct.pack_into("<I", raw, slot + 24, length & 0xFFFFFFFF)
+            struct.pack_into("<Q", raw, slot + 32, 1)
+            sqes.seek(0)
+            sqes.write(raw)
+            struct.pack_into("I", sq, params.sq_off.array + index * 4, index)
+            struct.pack_into("I", sq, params.sq_off.tail, (tail + 1) & 0xFFFFFFFF)
+            entered = libc.syscall(426, ring, 1, 1, 0, 0)
+            if entered < 0:
+                return "enter-denied:%s" % ctypes.get_errno()
+            head = struct.unpack_from("I", cq, params.cq_off.head)[0]
+            cmask = struct.unpack_from("I", cq, params.cq_off.ring_mask)[0]
+            cqe_off = params.cq_off.cqes + (head & cmask) * 16
+            _user, res, _flags = struct.unpack_from("<QiI", cq, cqe_off)
+            struct.pack_into("I", cq, params.cq_off.head, head + 1)
+            return res
+        sock = submit(45, socket.AF_INET, socket.SOCK_DGRAM, 0, 0)
+        if isinstance(sock, str) or sock < 0:
+            return "socket:%s" % sock
+        addr = struct.pack("=HH4s8s", socket.AF_INET, socket.htons({port}), socket.inet_aton("127.0.0.1"), b"\\0" * 8)
+        buf = ctypes.create_string_buffer(addr)
+        conn = submit(16, int(sock), len(addr), ctypes.addressof(buf), 0)
+        if isinstance(conn, str) or (isinstance(conn, int) and conn < 0):
+            return "connect:%s" % conn
+        payload = ctypes.create_string_buffer(b"iouring-udp")
+        sent = submit(26, int(sock), 0, ctypes.addressof(payload), len(b"iouring-udp"))
+        return "sent:%s" % sent
+    finally:
+        os.close(ring)
+
+open("iouring.txt", "w", encoding="utf-8").write(attempt())
+part = Box(1, 1, 1)
+"""
+    try:
+        run_part_script(script, tmp_path)
+        note = (tmp_path / "iouring.txt").read_text(encoding="utf-8")
+        assert not note.startswith("sent"), note
+        listener.settimeout(0.2)
+        with pytest.raises(TimeoutError):
+            listener.recv(64)
+    finally:
+        listener.close()
