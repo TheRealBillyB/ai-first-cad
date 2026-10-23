@@ -261,6 +261,26 @@ In the workspace app the Assembly page lists joints, poses, and motions. Apply s
 
 `examples/rod_handler.py` is the same job drawn as a mechanism: a bolted slew base, plate links with lightening holes and gussets, pins and bushings, and a hydraulic cylinder on the shoulder, the elbow, and the jaw. The jaw closes on NQ and HQ rod. A cylinder relation keeps each rod eye on its clevis. The write-up of what the checks caught, and what changed, is [examples/rod_handler_notes.md](examples/rod_handler_notes.md).
 
+The same assembly can be written out as a layout sheet, a parts count, and an exploded picture. These read the posed solids. They do not change a solver.
+
+They are not buttons in the Workspace app yet. Ask your AI. It has the same three tools: `export_drawing`, `bill_of_materials`, and `exploded_view`. Or run the CLI:
+
+```bash
+aicad export-drawing rod_handler --exploded --workspace examples/rod_handler_workspace
+aicad bill-of-materials rod_handler --workspace examples/rod_handler_workspace
+aicad exploded-view rod_handler --workspace examples/rod_handler_workspace
+```
+
+The sheet is third-angle, A3, PDF and DXF, with the overall box of the posed assembly, a title block, and a scale. The usual ratios run from 10:1 to 1:1000. A larger assembly uses a smaller ratio, and the sheet says which one. It is a layout drawing. It has no GD&T, no tolerances, and no threads. The count is a CSV of parts, catalog fasteners, and hoses, written as UTF-8 with a byte order mark so Excel keeps the names. Quantities are exact. A mass is volume times a handbook density, and there are no prices. The exploded picture pulls a slide along its axis, a hinge off its pin, and a catalog fastener out along its axis. The gap is not a dimension, and the picture is not a disassembly procedure. A Windows reserved name such as `con` is written as `con_file`, and the report says so.
+
+On the rod handler at its stored pose the sheet is 1:20, including the isometric, because that view fits. The exploded isometric is 1:50 so the opened joints fit, and the view says so. The overall box is 1252 by 946.1 by 482.4 mm. That box is the space the swung arm occupies, not the length of a link. The list is 18 lines and 31 items, including eight M20 screws as one line and two hoses with no mass. The picture opens each joint by 227.8 mm.
+
+![Rod handler layout sheet, third angle, with overall dimensions](examples/renders/rod_handler_drawing.png)
+
+![Rod handler exploded along its joints](examples/renders/rod_handler_exploded.png)
+
+![Rod handler bill of materials](examples/renders/rod_handler_bom.png)
+
 ## Vibration and bolted joints
 
 ```bash

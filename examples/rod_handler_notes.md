@@ -53,3 +53,15 @@ At the reach pose the jaw barrel is a child of the forearm, and the viewport mes
 ## Robot export
 
 The export writes a URDF and a MuJoCo file, 29 links and 8 moving joints. MuJoCo loaded the file and took 5 steps. Cylinder relations are comments in the robot file. A simulator will not keep the rod eye on the clevis unless something else does. PyBullet is not installed here, so that check was skipped and the URDF was still written.
+
+## The sheet, the list, and the picture
+
+The stored pose, before the lift, is what these three outputs read. They use the assembly the script builds. They do not run the stress or frequency checks.
+
+The layout sheet is third angle on A3, written as PDF and DXF. Front, top, and right show dashed hidden lines. The isometric leaves them out. At this pose the sheet fits at 1:20, including the isometric. On the exploded sheet the isometric drops to 1:50 so the opened joints fit, and the view says so. The three dimensions are the axis-aligned box of the posed solids: 1252 mm wide, 946.1 mm deep, and 482.4 mm high. The arm is swung, so those numbers are the space it occupies, not the length of the upper link or the forearm. The title block says this is a layout drawing. It has no GD&T, no tolerances, no threads, no surface finish, no welds, and no section views.
+
+The bill of materials is 18 lines and 31 items. Modeled parts are one line each, except four bushings and four clevis pins, which add up. The eight slew bolts are one line: ISO 4762 socket-head cap screw M20-2.5 × 60, quantity 8, line mass about 1.67 kg. That mass is each solid's volume times the steel density, totaled for the line. It is not a weighed mass. The shoulder hose and the elbow hose are lines with no mass, because a route is not a solid. The eye coupon and the longer rod lengths are parts in the file and are not instances of this assembly, so they are not on the list. There are no prices.
+
+The exploded picture opens every joint by 227.8 mm, about 18% of the longest side of the assembly. The base stays. The turret and the links slide off their pins. The eight M20 screws drop out along −Z, which is out of the plate along the bolt axis. The gap is for the picture. It is not an assembly dimension, and the picture is not a procedure.
+
+Today, ask your AI for the sheet, the list, or the picture, or run `aicad export-drawing`, `aicad bill-of-materials`, and `aicad exploded-view`. The same three names are `export_drawing`, `bill_of_materials`, and `exploded_view` on the Python API and the MCP server. They are not buttons in the Workspace app yet. Buttons there wait until the workspace shows them. Each report carries `result_kind` and `result_label`. The sizes and the explode shifts are a verified check of the model. The mass column is a rough estimate. The pictures are `examples/renders/rod_handler_drawing.png`, `examples/renders/rod_handler_exploded.png`, and `examples/renders/rod_handler_bom.png`.

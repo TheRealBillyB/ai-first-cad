@@ -97,6 +97,14 @@ the resources `aicad://parts`, `aicad://parts/{name}`, `aicad://assemblies`,
 `aicad://assemblies/{name}`, `aicad://sketches`, `aicad://results`, and
 `aicad://session`. `save_project` writes session.json. `open_project` switches
 the folder. `undo` and `redo` step the same history the app uses.
+
+`export_drawing` is a third-angle layout sheet, PDF and DXF, with overall
+dimensions, a title block, and a scale. It is not a shop drawing: no GD&T,
+no tolerances, no threads. `bill_of_materials` counts parts, catalog
+fasteners, and hoses, and writes a CSV. It has no prices. A mass on that
+list is a handbook estimate. `exploded_view` pulls the parts apart along
+the joints for a picture. The gap is not a dimension. Read `result_kind`,
+`result_label`, and `limits` on each of those reports.
 """.strip()
 
 _GUIDE = """
@@ -274,6 +282,9 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
 - `check_bolts` takes size, grade, axial_n, shear_n, and vibration (`mild`, `moderate`, `intense`). Slip under transverse load is the loosening mechanism. The countermeasures explain what a nyloc nut, a wedge washer, threadlocker, and safety wire do and do not do.
 - `check_fatigue` is a Goodman check of a stress you supply. It is not a cycle-by-cycle solve.
+- `export_drawing` writes a third-angle sheet (front, top, right, isometric) as PDF and DXF, with overall dimensions, a title block, and a scale. The sizes are the axis-aligned box of the posed solids. It is a layout drawing. It has no GD&T, no tolerances, and no threads. Read `result_label` and `limits`.
+- `bill_of_materials` counts parts, catalog fasteners, bearings, hoses, and cables, and writes a CSV. The quantities are a count. A mass is an estimate from volume and handbook density. It has no prices. Read `result_label` and `limits`.
+- `exploded_view` pulls parts apart along their joints and returns a picture. The grounded part stays. Pass `on_drawing` to put that view on the sheet. The gap is not a dimension. Read `result_label` and `limits`.
 - `check_print` reports overhang area, a best orientation among the six axis poses, and printer fit. `list_printers` names the beds. A requirement of kind `fits_printer` uses `printer` and optional `orientation`.
 - `export_robot` writes URDF and MJCF next to STL meshes. Joint origins are the zero pose. A cylindrical joint becomes a revolute plus a prismatic.
 """.strip()
@@ -834,6 +845,73 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("check_fatigue", spec=spec))
 
     @mcp.tool()
+    def export_drawing(
+        name: str,
+        scale: str | None = None,
+        exploded: bool = False,
+        gap_mm: float | None = None,
+        path: str | None = None,
+    ) -> list[str | Image]:
+        """Write a dimensioned third-angle sheet of an assembly as PDF and DXF.
+
+        Views are front, top, right side, and isometric. Dimensions are the
+        overall width, depth, and height of the posed assembly. The title
+        block carries the scale. This is a layout drawing: no GD&T, no
+        tolerances, no threads, no sections. Read result_label and limits.
+        scale is a ratio such as "1:2" or "2:1". exploded draws the isometric
+        view with the parts pulled apart. gap_mm is that opening per joint.
+        """
+        return guard(
+            lambda: _images(
+                run(
+                    "export_drawing",
+                    name=name,
+                    scale=scale,
+                    exploded=exploded,
+                    gap_mm=gap_mm,
+                    path=path,
+                )
+            )
+        )
+
+    @mcp.tool()
+    def bill_of_materials(name: str, path: str | None = None) -> list[str | Image]:
+        """Count parts, catalog fasteners, and hoses or cables, and write a CSV.
+
+        Identical catalog screws of the same size and length are one line.
+        There are no prices and no suppliers. mass_estimate_kg is volume times
+        the handbook density, not a weighed mass. Read result_label and limits.
+        """
+        return guard(lambda: _images(run("bill_of_materials", name=name, path=path)))
+
+    @mcp.tool()
+    def exploded_view(
+        name: str,
+        gap_mm: float | None = None,
+        on_drawing: bool = False,
+        path: str | None = None,
+    ) -> list[str | Image]:
+        """Render the assembly with the parts pulled apart along the joints.
+
+        The grounded part stays. A slide moves along its axis, a hinge slides
+        off its pin, and a catalog fastener lifts out along its axis. The gap
+        adds up along the tree. It is a picture, not a disassembly procedure,
+        and the gap is not a dimension. on_drawing also writes the layout sheet
+        with that isometric view. Read result_label, the move reasons, and limits.
+        """
+        return guard(
+            lambda: _images(
+                run(
+                    "exploded_view",
+                    name=name,
+                    gap_mm=gap_mm,
+                    on_drawing=on_drawing,
+                    path=path,
+                )
+            )
+        )
+
+    @mcp.tool()
     def get_state() -> dict:
         """Parts, assemblies, sketches, the current selection, requirement checks, and the latest panels."""
         return guard(lambda: run("get_state"))
@@ -1002,6 +1080,9 @@ def _with_images(payload: dict, views) -> list[str | Image]:
 
 
 _VIEW_RANK = {
+    "drawing": 0,
+    "exploded": 1,
+    "bom": 2,
     "contact": 0,
     "stress_contact": 0,
     "mode1_contact": 0,

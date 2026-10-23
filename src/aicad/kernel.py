@@ -33,18 +33,23 @@ from build123d import (
     import_step,
     revolve,
 )
-from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
+from OCP.GCPnts import GCPnts_QuasiUniformDeflection
 from OCP.GeomAbs import GeomAbs_SurfaceType
 from OCP.BRepClass import BRepClass_FaceClassifier
+from OCP.HLRAlgo import HLRAlgo_Projector
+from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
 from OCP.BRepClass3d import BRepClass3d_SolidClassifier
-from OCP.TopAbs import TopAbs_IN, TopAbs_ON
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_IN, TopAbs_ON
+from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
-from OCP.gp import gp_Dir, gp_Lin, gp_Pnt, gp_Trsf
+from OCP.TopoDS import TopoDS
+from OCP.gp import gp_Ax2, gp_Dir, gp_Lin, gp_Pnt, gp_Trsf
 
 from aicad.errors import GeometryError, ScriptError
 from aicad.refs import edge_ref, face_ref
@@ -185,6 +190,18 @@ class Shape:
 
     def feature_report(self) -> FeatureReport:
         return self.features if self.features is not None else untracked_features()
+
+
+@dataclass(frozen=True)
+class ProjectedCurve:
+    """One polyline from a hidden-line view, in millimetres on the page.
+
+    ``kind`` is ``visible``, ``smooth`` (a tangent edge, drawn thin), or
+    ``hidden``. X is to the right and Y is up.
+    """
+
+    kind: str
+    points: tuple[tuple[float, float], ...]
 
 
 @dataclass
@@ -1065,6 +1082,182 @@ def place(shape: Shape, position: tuple[float, float, float], rotation_deg: tupl
         return shape
     moved = Pos(px, py, pz) * Rot(rx, ry, rz) * shape.impl
     return Shape(_require_solid(moved), features=shape.feature_report())
+
+
+def compound(shapes: list[Shape]) -> Shape:
+    """Group solids without fusing them, so a view can hide one behind another."""
+    if not shapes:
+        raise GeometryError("There is no solid to draw.")
+    if len(shapes) == 1:
+        return shapes[0]
+    from build123d import Compound as BuildCompound
+
+    try:
+        made = BuildCompound(children=[shape.impl for shape in shapes])
+    except Exception as exc:
+        raise GeometryError(f"Could not combine the solids for a view: {exc}") from exc
+    return Shape(made)
+
+
+def view_frame(
+    look: tuple[float, float, float], up: tuple[float, float, float]
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Screen axes for an orthographic view.
+
+    ``look`` points from the camera into the scene. ``up`` is the hint for the
+    top of the page. The returned pair is ``(right, up)``, both unit vectors.
+    A later hidden-line picture uses the same pair, so a dimension sits on the
+    outline it measures.
+    """
+    look_v = _unit3(float(look[0]), float(look[1]), float(look[2]))
+    up_v = _unit3(float(up[0]), float(up[1]), float(up[2]))
+    if look_v == [0.0, 0.0, 0.0] or up_v == [0.0, 0.0, 0.0]:
+        raise GeometryError("A view needs a direction to look and a direction for up.")
+    dot = look_v[0] * up_v[0] + look_v[1] * up_v[1] + look_v[2] * up_v[2]
+    up_v = _unit3(
+        up_v[0] - dot * look_v[0],
+        up_v[1] - dot * look_v[1],
+        up_v[2] - dot * look_v[2],
+    )
+    if up_v == [0.0, 0.0, 0.0]:
+        raise GeometryError("The up direction is parallel to the viewing direction.")
+    right = _unit3(
+        look_v[1] * up_v[2] - look_v[2] * up_v[1],
+        look_v[2] * up_v[0] - look_v[0] * up_v[2],
+        look_v[0] * up_v[1] - look_v[1] * up_v[0],
+    )
+    return (tuple(right), tuple(up_v))  # type: ignore[return-value]
+
+
+def project_points(
+    points: list[tuple[float, float, float]] | list[list[float]],
+    look: tuple[float, float, float],
+    up: tuple[float, float, float],
+) -> list[tuple[float, float]]:
+    """Orthographic screen coordinates. X is right, Y is up, in millimetres."""
+    right, screen_up = view_frame(look, up)
+    projected = []
+    for point in points:
+        projected.append(
+            (
+                point[0] * right[0] + point[1] * right[1] + point[2] * right[2],
+                point[0] * screen_up[0] + point[1] * screen_up[1] + point[2] * screen_up[2],
+            )
+        )
+    return projected
+
+
+def project_view(
+    shape: Shape,
+    look: tuple[float, float, float],
+    up: tuple[float, float, float],
+    *,
+    hidden: bool = True,
+) -> list[ProjectedCurve]:
+    """Hidden-line picture of a solid or a compound.
+
+    OpenCascade removes the hidden lines. ``hidden`` false keeps only what is
+    in front, which is how the isometric view stays readable. Smooth tangent
+    edges, such as where a fillet meets a face, come back as ``smooth``.
+    The picture is orthographic. It is not a dimensioned drawing by itself.
+    """
+    right, _screen_up = view_frame(look, up)
+    try:
+        diagonal = float(shape.impl.bounding_box().diagonal)
+    except Exception as exc:
+        raise GeometryError(f"The solid has no bounding box to project: {exc}") from exc
+    deflection = min(0.35, max(0.08, diagonal * 0.0008))
+    try:
+        algorithm = HLRBRep_Algo()
+        algorithm.Add(shape.impl.wrapped)
+        axes = gp_Ax2(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(*look_unit(look)), gp_Dir(*right))
+        algorithm.Projector(HLRAlgo_Projector(axes))
+        algorithm.Update()
+        algorithm.Hide()
+        extracted = HLRBRep_HLRToShape(algorithm)
+    except Exception as exc:
+        raise GeometryError(f"Could not project the solid: {exc}") from exc
+
+    groups = [
+        ("visible", "VCompound"),
+        ("visible", "OutLineVCompound"),
+        ("smooth", "Rg1LineVCompound"),
+    ]
+    if hidden:
+        groups.extend(
+            [
+                ("hidden", "HCompound"),
+                ("hidden", "OutLineHCompound"),
+                ("hidden", "Rg1LineHCompound"),
+            ]
+        )
+    curves: list[ProjectedCurve] = []
+    for kind, method_name in groups:
+        getter = getattr(extracted, method_name, None)
+        if getter is None:
+            continue
+        try:
+            projected = getter()
+        except Exception:
+            continue
+        if projected is None or projected.IsNull():
+            continue
+        curves.extend(_sample_projected(projected, kind, deflection))
+    return curves
+
+
+def look_unit(look: tuple[float, float, float]) -> tuple[float, float, float]:
+    vector = _unit3(float(look[0]), float(look[1]), float(look[2]))
+    if vector == [0.0, 0.0, 0.0]:
+        raise GeometryError("A view needs a direction to look.")
+    return (vector[0], vector[1], vector[2])
+
+
+def _sample_projected(shape, kind: str, deflection: float) -> list[ProjectedCurve]:
+    """Read HLR edges. Projector Y points down the page, so screen Y is flipped."""
+    curves: list[ProjectedCurve] = []
+    explorer = TopExp_Explorer(shape, TopAbs_EDGE)
+    while explorer.More():
+        try:
+            edge = TopoDS.Edge(explorer.Current())
+            curve = BRepAdaptor_Curve(edge)
+            sampled = GCPnts_QuasiUniformDeflection(curve, deflection)
+            if sampled.IsDone() and sampled.NbPoints() >= 2:
+                points: list[tuple[float, float]] = []
+                for index in range(1, sampled.NbPoints() + 1):
+                    point = sampled.Value(index)
+                    _append_projected(points, (float(point.X()), -float(point.Y())))
+                if len(points) >= 2:
+                    curves.append(
+                        ProjectedCurve(
+                            kind,
+                            tuple((round(x, 3), round(y, 3)) for x, y in points),
+                        )
+                    )
+        except Exception:
+            pass
+        explorer.Next()
+    return curves
+
+
+def _append_projected(points: list[tuple[float, float]], point: tuple[float, float]) -> None:
+    if not points:
+        points.append(point)
+        return
+    if (point[0] - points[-1][0]) ** 2 + (point[1] - points[-1][1]) ** 2 < 1e-8:
+        return
+    if len(points) >= 2 and _projected_collinear(points[-2], points[-1], point):
+        points[-1] = point
+        return
+    points.append(point)
+
+
+def _projected_collinear(
+    a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]
+) -> bool:
+    area = abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+    span = math.hypot(c[0] - a[0], c[1] - a[1])
+    return span < 1e-9 or area / span < 0.02
 
 
 def transform_shape(shape: Shape, matrix: list[list[float]]) -> Shape:

@@ -95,7 +95,7 @@ Write the files a physics simulator already understands, such as URDF and MJCF, 
 
 ## Later
 
-- **Drawings.** Technical drawings with tolerances, GD&T (the standard language for how far a size and a form may vary), and a bill of materials.
+- **Drawings.** A layout sheet and a parts count are in. Still later: tolerances, GD&T (the standard language for how far a size and a form may vary), and prices on the bill of materials.
 - **History you can see.** Visual version history, and diffs an assistant can compare, so "what changed, and did it get better?" has a picture as well as a sentence.
 - **Electronics.** Board layout through an existing tool, with KiCad the likely one, under the same "reuse the engine" rule.
 
