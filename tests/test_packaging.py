@@ -460,6 +460,7 @@ def test_the_command_line_and_workspace_return_the_same_check(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-m",
             "aicad",
             "check-packaging",

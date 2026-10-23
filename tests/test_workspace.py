@@ -262,7 +262,7 @@ def test_cli_app_help_lists_the_workspace(tmp_path):
     import subprocess
     import sys
 
-    completed = subprocess.run([sys.executable, "-m", "aicad", "app", "--help"], check=False, capture_output=True, text=True)
+    completed = subprocess.run([sys.executable, "-P", "-m", "aicad", "app", "--help"], check=False, capture_output=True, text=True)
     assert completed.returncode == 0
     assert "--no-browser" in completed.stdout
     assert (ROOT / "src" / "aicad" / "app_static" / "index.html").is_file()

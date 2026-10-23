@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| The program is started with the `aicad` command or `python -P` | The working directory is a project folder, so that start keeps the folder off the import path. |
 | A plugin ships with aicad only when its metadata directory is this install's | The package name is not that check, so another package with the same name still needs an allow. |
 | One unreadable entry-point file does not hide the other plugins | That package is skipped and listed with a warning. The rest are still listed. |
 | The syscall filter rejects other architectures and io_uring | A 32-bit socket call and io_uring both opened a socket while the network was off. |
