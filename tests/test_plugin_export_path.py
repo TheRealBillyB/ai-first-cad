@@ -52,8 +52,13 @@ def test_a_plugin_export_cannot_leave_the_project(tmp_path, monkeypatch):
         export_with("toy", "note", "box", "../outside/SANDBOX_CANARY.txt", document=document)
     with pytest.raises(PluginError, match="outside the project"):
         export_with("toy", "note", "box", "folder\\..\\..\\outside\\SANDBOX_CANARY.txt", document=document)
+    for reserved in ("NUL", "COM1", "exports/CON/box.txt", "CONOUT$.txt", "CONIN$"):
+        with pytest.raises(PluginError, match="reserved"):
+            export_with("toy", "note", "box", reserved, document=document)
     assert not outside.exists()
     assert loaded["count"] == 0
+    assert not (project / "NUL").exists()
+    assert not (project / "CONOUT$.txt").exists()
 
     written = export_with("toy", "note", "box", "exports/box.txt", document=document)
     path = Path(written["path"])

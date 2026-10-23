@@ -299,7 +299,7 @@ _SUPERSCRIPT_DIGITS = str.maketrans(
         "\u2079": "9",
     }
 )
-_RESERVED_DEVICES = frozenset({"nul", "con", "prn", "aux"})
+_RESERVED_DEVICES = frozenset({"nul", "con", "prn", "aux", "conin$", "conout$"})
 
 
 def is_reserved_device_name(component: str) -> bool:

@@ -601,8 +601,9 @@ def export_with(
         raise PluginError(
             f"Format {format!r} is built in. Plugin exporters cannot replace STEP or STL."
         )
-    from aicad.paths import require_export_path
+    from aicad.paths import refuse_reserved_device, require_export_path
 
+    refuse_reserved_device(path, Path(document.workspace), "Export path", PluginError)
     destination = require_export_path(Path(document.workspace), path, "Export path", PluginError)
     loaded = load(plugin, consent_path=consent_path)
     spec = loaded._exporter(format)

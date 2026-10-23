@@ -387,6 +387,9 @@ DEVICES = [
     "LPT\u2079",
     "exports/NUL/box.step",
     "renders/CON/box.png",
+    "CONIN$",
+    "CONOUT$",
+    "CONOUT$.txt",
 ]
 
 
