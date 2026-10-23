@@ -364,14 +364,23 @@ def test_save_as_keeps_the_script_solid(tmp_path, monkeypatch):
 
 
 def test_save_as_reports_a_folder_it_cannot_write(tmp_path, monkeypatch):
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        pytest.skip("the root user ignores a read-only folder")
-    from aicad.paths import allow_directory_write, deny_directory_write
-
     monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
     workspace = Workspace(tmp_path / "project")
     _box(workspace)
     locked = tmp_path / "locked"
+    if os.name == "nt":
+        # An access-list deny does not stop this token from creating a folder.
+        # A file in that place cannot become the parent of the copy.
+        locked.write_bytes(b"x")
+        with pytest.raises(GeometryError, match="Could not save"):
+            workspace.execute("save_project_as", {"path": str(locked), "name": "copy"})
+        assert workspace.root == (tmp_path / "project").resolve()
+        assert locked.read_bytes() == b"x"
+        return
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("the root user ignores a read-only folder")
+    from aicad.paths import allow_directory_write, deny_directory_write
+
     locked.mkdir()
     deny_directory_write(locked)
     try:

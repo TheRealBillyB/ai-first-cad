@@ -8,6 +8,8 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| Windows firewall rules are remembered for the next process | Installing them again after the sandbox tests made the firewall call time out. The package id is recorded, and a network-on script removes the rules and that record. |
+| A Windows save reports a destination that cannot be created | An access-list deny does not stop this token from creating a folder. A file in that place cannot become the copy's parent, and the open project stays put. |
 | A Windows folder lock denies creates for that user | An Owner Rights allow did not stop a new folder. The user is denied creating a file, creating a folder, and traversing, and can still restore the access list. |
 | A Windows folder with write access removed cannot gain a child | Read and execute still allowed a new folder. Creating a file or a folder is denied, and the owner can still restore the access list. |
 | Windows firewall rules stay up for the next network-off script | Installing them again for every script made the firewall call time out. A network-on script still removes them first. |

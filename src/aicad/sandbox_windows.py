@@ -111,6 +111,9 @@ _network_off_sid: str | None = None
 # Rules left in place after the last network-off child. The next child with
 # the same package reuses them. A network-on script removes them first.
 _network_off_rules_sid: str | None = None
+# The next process has no memory of that. The marker is the package id of
+# the rules still installed, so it does not call the firewall again.
+_network_off_marker_path: Path | None = None
 _PACKAGE_SID_TEXT = re.compile(r"^S-1-15-2(?:-\d+)+$", re.IGNORECASE)
 # Inbound and outbound, every protocol. The old UDP-only name is removed
 # when present and is not installed again.
@@ -1848,12 +1851,50 @@ def _run_firewall_script(script: str) -> None:
         )
 
 
+def _network_off_marker() -> Path:
+    if _network_off_marker_path is not None:
+        return _network_off_marker_path
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or os.environ.get("TMP")
+    if not base:
+        import tempfile
+
+        base = tempfile.gettempdir()
+    return Path(base) / "aicad" / "script-network-off-sid"
+
+
+def _recorded_rules_sid() -> str | None:
+    try:
+        text = _network_off_marker().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if _PACKAGE_SID_TEXT.fullmatch(text) is None:
+        return None
+    return text.upper()
+
+
+def _record_rules_sid(sid: str) -> None:
+    try:
+        path = _network_off_marker()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(sid.upper() + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def _forget_recorded_rules() -> None:
+    try:
+        _network_off_marker().unlink(missing_ok=True)
+    except OSError:
+        return
+
+
 def _hold_network_block(sid_text: str) -> None:
     """Install the container block. A second overlapping child reuses it.
 
-    The firewall rules stay after the last child so the next network-off
-    script does not call PowerShell again. The filter is installed for each
-    hold, because closing it drops the dynamic session.
+    The firewall rules stay after the last child, and a marker remembers the
+    package id for the next process, so PowerShell is not called again. The
+    filter is installed for each hold, because closing it drops the dynamic
+    session.
     """
 
     global _network_off_holders, _network_off_sid, _network_off_rules_sid
@@ -1865,7 +1906,9 @@ def _hold_network_block(sid_text: str) -> None:
         if _network_off_holders == 0:
             wanted = sid_text.upper()
             if _network_off_rules_sid != wanted:
-                _run_firewall_script(_firewall_script(sid_text, install=True))
+                if _recorded_rules_sid() != wanted:
+                    _run_firewall_script(_firewall_script(sid_text, install=True))
+                    _record_rules_sid(wanted)
                 _network_off_rules_sid = wanted
             try:
                 if _wfp_engine is None:
@@ -1875,6 +1918,7 @@ def _hold_network_block(sid_text: str) -> None:
                     _run_firewall_script(_firewall_script(install=False))
                 except OSError:
                     pass
+                _forget_recorded_rules()
                 _network_off_rules_sid = None
                 raise
             _network_off_sid = wanted
@@ -1909,6 +1953,7 @@ def _require_script_network_open() -> None:
                 "A script still has the network blocked, so this script was not started."
             )
         _close_wfp_block()
+        _forget_recorded_rules()
         _run_firewall_script(_firewall_script(install=False))
         _network_off_sid = None
         _network_off_rules_sid = None

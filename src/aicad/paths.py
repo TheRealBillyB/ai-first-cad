@@ -227,7 +227,7 @@ _WIN_BUILTIN_USERS_SID = 27
 def deny_directory_write(path: Path) -> None:
     """Take write access off one directory. The caller restores it.
 
-    A new file or a new folder in that directory is refused.
+    A new file in that directory is refused.
     """
 
     if os.name != "nt":
