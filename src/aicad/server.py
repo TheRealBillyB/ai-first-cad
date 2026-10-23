@@ -289,6 +289,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `check_wall_thickness` reports a ray estimate and a section estimate, and which one won.
 - `section_part` shows internal geometry that the outside views hide.
 - `check_clearance` on two parts reports interference, or the gap if they are apart.
+- `check_packaging` checks that parts fit inside an envelope. The envelope is a part, a primitive (`shape` box, cylinder, or sphere), or an `outline` extruded along an axis. Pass `assembly`, and optionally `pose` or `joints`, to use the posed solids without changing the stored pose. The report has pass or fail per part, the parts that stick out (how far, and a point), the minimum signed wall clearance, and part-to-part overlap inside the envelope.
 - `inspect_part` renders front, back, left, right, top, bottom, and isometric views.
 - `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
@@ -420,6 +421,39 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """
         return guard(
             lambda: run("check_clearance", part_a=part_a, part_b=part_b, min_clearance_mm=min_clearance_mm)
+        )
+
+    @mcp.tool()
+    def check_packaging(
+        envelope: str | dict[str, Any],
+        parts: list[str] | None = None,
+        assembly: str | None = None,
+        pose: str | None = None,
+        joints: dict[str, float] | None = None,
+        min_clearance_mm: float = 0.0,
+    ) -> dict:
+        """Check that parts fit inside an envelope.
+
+        envelope is a part or instance name, or an object. A primitive uses
+        shape box, cylinder, or sphere. An outline is a list of [x, y] points
+        with axis and limit [low, high] or length. min_clearance_mm is the
+        required gap to the wall. 0 allows the part to touch the wall.
+
+        With assembly, the check uses the posed instances. pose and joints
+        select that pose for this call and do not change the stored assembly.
+        The report lists each part, anything that sticks out and where, the
+        minimum signed clearance, and overlap between parts inside the envelope.
+        """
+        return guard(
+            lambda: run(
+                "check_packaging",
+                envelope=envelope,
+                parts=parts,
+                assembly=assembly,
+                pose=pose,
+                joints=joints,
+                min_clearance_mm=min_clearance_mm,
+            )
         )
 
     @mcp.tool()
