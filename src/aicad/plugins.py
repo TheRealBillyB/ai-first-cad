@@ -11,6 +11,12 @@ does not allow or load a plugin. A design script cannot allow, revoke, or
 load one either. The permission names are a declaration the warning shows.
 They are not a sandbox: once allowed, the package runs in this process.
 
+A plugin ships with aicad only when its metadata directory is the one next
+to this copy of aicad. The package name is not that check. Another package
+with the same name still needs an allow, so its top-level code does not run
+until then. If one package's entry points cannot be read, that package is
+skipped and listed with a warning. The other packages are still listed.
+
 A plugin cannot replace a built-in check, the standard-part catalog, or STEP
 and STL export. Reports and files it produces are marked as coming from the
 plugin.
@@ -41,7 +47,6 @@ PERMISSIONS = ("project_files", "network", "checks")
 PROVIDES = ("analysis", "parts", "exporter")
 _RESERVED_FORMATS = frozenset({"step", "stl"})
 _TOKEN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-_CORE_DISTRIBUTION = "aicad"
 _CALL_WORKSPACE: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "aicad_plugin_workspace",
     default=None,
@@ -235,17 +240,28 @@ class LoadedPlugin:
 
 
 def discover() -> tuple[PluginOffer, ...]:
-    """List installed plugins. This reads entry points and manifests. It does not import them."""
-    found = importlib.metadata.entry_points(group=ENTRY_GROUP)
+    """List installed plugins. This reads entry points and manifests. It does not import them.
+
+    A package whose entry points cannot be read is skipped and reported.
+    The other packages are still listed.
+    """
     grouped: dict[str, list] = {}
     order: list[str] = []
-    for entry in found:
-        key = _distribution_key(entry)
-        if key not in grouped:
-            order.append(key)
-            grouped[key] = []
-        grouped[key].append(entry)
     offers: list[PluginOffer] = []
+    for dist in importlib.metadata.distributions():
+        try:
+            entries, problem = _group_entries(dist)
+        except Exception:
+            continue
+        if problem is not None:
+            offers.append(problem)
+            continue
+        for entry in entries:
+            key = _distribution_key(entry)
+            if key not in grouped:
+                order.append(key)
+                grouped[key] = []
+            grouped[key].append(entry)
     for key in order:
         group = grouped[key]
         if len(group) > 1:
@@ -868,7 +884,7 @@ def _offer_from_entry_point(entry) -> PluginOffer:
         summary=fields["summary"],
         permissions=fields["permissions"],
         provides=fields["provides"],
-        third_party=distribution != _CORE_DISTRIBUTION,
+        third_party=not _is_core_distribution(getattr(entry, "dist", None)),
         stamp=stamp,
         entry=entry.value,
         problem=None,
@@ -885,23 +901,101 @@ def _broken(entry, problem: str) -> PluginOffer:
         summary="",
         permissions=(),
         provides=(),
-        third_party=distribution != _CORE_DISTRIBUTION,
+        third_party=not _is_core_distribution(getattr(entry, "dist", None)),
         stamp="",
         entry=getattr(entry, "value", "") or "",
         problem=problem,
     )
 
 
-def _distribution_identity(entry) -> tuple[str, str]:
-    dist = getattr(entry, "dist", None)
-    if dist is None:
-        return "", ""
+def _core_metadata_dirs() -> frozenset[Path]:
+    """Metadata directories that belong to this copy of aicad.
+
+    They sit next to this file. A distribution is recognized by that
+    location, not by its package name.
+    """
+    package_dir = Path(__file__).resolve().parent
+    parent = package_dir.parent
+    version = getattr(sys.modules.get("aicad"), "__version__", None)
+    names = ["aicad.egg-info", "aicad.dist-info"]
+    if isinstance(version, str) and version and all(part not in version for part in ("/", "\\", "..")):
+        names.append(f"aicad-{version}.dist-info")
+        names.append(f"aicad-{version}.egg-info")
+    found: list[Path] = []
+    for name in names:
+        candidate = parent / name
+        if candidate.is_dir():
+            found.append(candidate.resolve())
+    return frozenset(found)
+
+
+def _is_core_distribution(dist) -> bool:
+    """True when ``dist`` is the metadata for this install."""
+    raw = getattr(dist, "_path", None)
+    if raw is None:
+        return False
+    try:
+        resolved = Path(raw).resolve()
+    except OSError:
+        return False
+    return resolved in _core_metadata_dirs()
+
+
+def _group_entries(dist) -> tuple[list, PluginOffer | None]:
+    """Entry points in this group for one distribution.
+
+    A file that cannot be parsed skips that distribution and returns a
+    warning. It does not stop the scan of the others.
+    """
+    try:
+        text = dist.read_text("entry_points.txt")
+    except Exception:
+        return [], None
+    if not text:
+        return [], None
+    try:
+        parsed = list(importlib.metadata.EntryPoints._from_text_for(text, dist))
+    except Exception:
+        if ENTRY_GROUP not in text:
+            return [], None
+        return [], _unreadable_distribution(dist)
+    return [item for item in parsed if item.group == ENTRY_GROUP], None
+
+
+def _unreadable_distribution(dist) -> PluginOffer:
+    distribution, version = _dist_name_version(dist)
+    return PluginOffer(
+        name=distribution or "unknown",
+        distribution=distribution,
+        version=version,
+        publisher="",
+        summary="",
+        permissions=(),
+        provides=(),
+        third_party=not _is_core_distribution(dist),
+        stamp="",
+        entry="",
+        problem=(
+            "This package's entry points could not be read, so it was skipped. "
+            "Nothing was imported."
+        ),
+    )
+
+
+def _dist_name_version(dist) -> tuple[str, str]:
     try:
         name = _normalize_dist_name(dist.metadata["Name"])
         version = str(dist.version)
     except Exception:
         return "", ""
     return name, version
+
+
+def _distribution_identity(entry) -> tuple[str, str]:
+    dist = getattr(entry, "dist", None)
+    if dist is None:
+        return "", ""
+    return _dist_name_version(dist)
 
 
 def _distribution_key(entry) -> str:
