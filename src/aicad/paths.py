@@ -191,13 +191,22 @@ def session_path_escapes(text: str) -> bool:
 
 
 def require_session_file(root: Path, raw: object, label: str, error: type[Exception]) -> Path:
-    """A session path that stays inside ``root``. The file is not opened here."""
+    """A session path that stays inside ``root``. The file is not opened here.
+
+    Win32 removes trailing dots and spaces from each part before it opens the
+    file. ``.. .`` is ``..`` after that, so the trimmed text is judged the same
+    way an export path is.
+    """
     if not isinstance(raw, str) or not raw.strip():
         raise error(f"{label} is missing.")
-    if "\x00" in raw or session_path_escapes(raw.strip()):
+    text = raw.strip()
+    if "\x00" in text or session_path_escapes(text):
+        raise error(f"{label} {raw!r} is outside the project. It was not read.")
+    trimmed = _path_after_windows_trim(text)
+    if trimmed != text.replace("\\", "/") and session_path_escapes(trimmed):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
     root_resolved = Path(root).resolve()
-    full = (root_resolved / raw.strip()).resolve()
+    full = (root_resolved / text).resolve()
     if not _is_inside(full, root_resolved):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
     return full
