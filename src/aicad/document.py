@@ -1242,10 +1242,9 @@ class Document:
                     f"Could not write the exploded picture for {spec['name']}. {exc.strerror or exc}."
                 ) from exc
             frame = pictures["frames"][0]
-            from PIL import Image
+            from aicad.blueprint import png_size
 
-            with Image.open(frame["path"]) as image:
-                width, height = image.size
+            width, height = png_size(frame["path"])
             report = {key: value for key, value in planned.items() if key != "offsets"}
             report["views"] = [
                 {"name": "exploded", "path": frame["path"], "width": width, "height": height}
