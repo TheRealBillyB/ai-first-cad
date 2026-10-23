@@ -57,6 +57,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Opening a session reports a bad part and still loads the others | One corrupt placement used to make every other part unreachable. |
 | A STEP path stored in the session has to stay inside the project | An absolute path or `..` was imported on open, and the file was outside the project. |
 | Notes returned to the assistant are wrapped as untrusted text, and an assistant export stays in the project | Project text is data. A tool result must not be able to write a STEP outside the folder. |
+| A note is marked for every source except ui, cli, and api | Those three are the editor and see the file. Any other source, including one that does not exist yet, gets the project-text marker. |
 | Native geometry code cannot write on the MCP stdout | The STEP parser's error line was not JSON-RPC, and it landed on the protocol stream. |
 | Opening someone else's project does not create their notes or requirements file | Those files belong to that project. A missing one is not a template to write. |
 | `check-wall` accepts `--min-wall`, the same flag as `inspect` | The two commands were spelling one threshold differently. |
