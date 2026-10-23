@@ -349,14 +349,14 @@ def test_cli_materials_and_fea(tmp_path):
     setup.write_text(json.dumps(_cantilever(2.0, mesh=2.0)), encoding="utf-8")
     workspace = tmp_path / "ws"
     ran = subprocess.run(
-        [sys.executable, "-m", "aicad", "ops", str(ops), "--name", "beam", "--workspace", str(workspace)],
+        [sys.executable, "-P", "-m", "aicad", "ops", str(ops), "--name", "beam", "--workspace", str(workspace)],
         check=False,
         capture_output=True,
         text=True,
     )
     assert ran.returncode == 0, ran.stderr
     listed = subprocess.run(
-        [sys.executable, "-m", "aicad", "materials", "--workspace", str(workspace)],
+        [sys.executable, "-P", "-m", "aicad", "materials", "--workspace", str(workspace)],
         check=False,
         capture_output=True,
         text=True,
@@ -366,6 +366,7 @@ def test_cli_materials_and_fea(tmp_path):
     solved = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-m",
             "aicad",
             "fea",

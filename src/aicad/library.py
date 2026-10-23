@@ -631,7 +631,12 @@ def _matches_for_kind(kind: str, text: str) -> list[dict[str, object]]:
         return []
     sizes = _sizes(kind)
     wanted = [size for size in sizes if _size_matches(kind, size, text)]
-    if not wanted and _kind_mentioned(kind, text):
+    # A kind word with no size, such as "screw", lists a short sample.
+    # A size that is not in the table, such as "M3-0.8 screw", does not.
+    named_kind = any(_kind_mentioned(item, text) for item in _KINDS)
+    if wanted and named_kind and not _kind_mentioned(kind, text):
+        return []
+    if not wanted and _kind_mentioned(kind, text) and not _query_asks_for_size(text):
         wanted = sizes[:8]
     matches = []
     for size in wanted:
@@ -667,12 +672,13 @@ def _size_mentioned(kind: str, text: str) -> bool:
 
 
 def _size_matches(kind: str, size: str, text: str) -> bool:
+    """True when a query token is this size, or a fastener's series head.
+
+    ``m3`` matches screw ``M3-0.5`` and washer ``M3``. It does not match
+    ``M30`` or ``M3.5``. ``M3-0.8`` does not match washer ``M3``.
+    """
     if kind in _FASTENERS:
-        tokens = set()
-        for part in text.split():
-            tokens.add(part.upper())
-            if "-" in part:
-                tokens.add(part.split("-", 1)[0].upper())
+        tokens = {part.upper() for part in text.split()}
         head = size.split("-", 1)[0].upper()
         return head in tokens or size.upper() in tokens
     folded = "".join(text.lower().split()).replace("×", "x").replace("*", "x")
@@ -689,6 +695,10 @@ def _size_matches(kind: str, size: str, text: str) -> bool:
             if target == size and alias.lower() in folded:
                 return True
     return False
+
+
+def _query_asks_for_size(text: str) -> bool:
+    return any(any(character.isdigit() for character in token) for token in text.split())
 
 
 def _sizes(kind: str) -> list[str]:
@@ -748,8 +758,16 @@ def _iso_fastener(kind: str, fastener_type: str | None) -> bool:
     return fastener_type.strip().lower().replace(" ", "").replace("-", "") == expected
 
 
+def _load_bd_warehouse() -> None:
+    """Import bd_warehouse without reading a project font config or moving the process."""
+    from aicad.paths import prepare_geometry_import
+
+    prepare_geometry_import()
+
+
 def _bd_sizes(kind: str) -> list[str]:
     try:
+        _load_bd_warehouse()
         if kind == "socket_head_cap_screw":
             from bd_warehouse.fastener import SocketHeadCapScrew
 
@@ -768,6 +786,7 @@ def _bd_sizes(kind: str) -> list[str]:
 
 
 def _bd_screw(size: str, length: float, fastener_type: str | None):
+    _load_bd_warehouse()
     from bd_warehouse.fastener import SocketHeadCapScrew
 
     try:
@@ -777,6 +796,7 @@ def _bd_screw(size: str, length: float, fastener_type: str | None):
 
 
 def _bd_nut(size: str, fastener_type: str | None):
+    _load_bd_warehouse()
     from bd_warehouse.fastener import HexNut
 
     try:
@@ -786,6 +806,7 @@ def _bd_nut(size: str, fastener_type: str | None):
 
 
 def _bd_washer(size: str, fastener_type: str | None):
+    _load_bd_warehouse()
     from bd_warehouse.fastener import PlainWasher
 
     token = size.split("-", 1)[0] if "-" in size and size.upper().startswith("M") else size

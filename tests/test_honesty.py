@@ -90,7 +90,7 @@ def test_blueprint_sheet_is_blue_and_the_cli_json_carries_it(tmp_path):
     assert "Verified check" in " ".join(sheet_lines(payload))
 
     completed = subprocess.run(
-        [sys.executable, "-m", "aicad", "measure", "box", "--workspace", str(tmp_path)],
+        [sys.executable, "-P", "-m", "aicad", "measure", "box", "--workspace", str(tmp_path)],
         check=False,
         capture_output=True,
         text=True,

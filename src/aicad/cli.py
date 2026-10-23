@@ -137,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     packaging.add_argument(
         "--joints",
         default=None,
-        help="JSON object of joint values for this check only. Degrees or millimeters.",
+        help="JSON object of joint values for this check only. Degrees, millimeters, or {value, slide} for a cylindrical joint.",
     )
     packaging.add_argument(
         "--min",
