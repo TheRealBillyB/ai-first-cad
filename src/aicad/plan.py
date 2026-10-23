@@ -665,6 +665,59 @@ def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
             _drop_orphan_sheets(root_path, plan)
 
 
+def ledger_snapshot(root: str | Path) -> dict:
+    """Approvals and answers recorded for this project, for undo.
+
+    The ledger lives outside the project. Only records whose workspace is
+    this folder are copied. Other projects in the same ledger stay out.
+    """
+    root_key = str(Path(root).resolve())
+    ledger = _load_ledger()
+    return {
+        "approvals": {
+            key: copy.deepcopy(record)
+            for key, record in ledger["approvals"].items()
+            if isinstance(record, dict) and record.get("workspace") == root_key
+        },
+        "entries": {
+            key: copy.deepcopy(record)
+            for key, record in ledger["entries"].items()
+            if isinstance(record, dict) and record.get("workspace") == root_key
+        },
+    }
+
+
+def restore_ledger_snapshot(root: str | Path, saved: dict) -> None:
+    """Put this project's ledger records back. Other projects are left as they are.
+
+    An empty change does not create the ledger file.
+    """
+    if not isinstance(saved, dict):
+        return
+    root_key = str(Path(root).resolve())
+    ledger = _load_ledger()
+    approvals = {
+        key: record
+        for key, record in ledger["approvals"].items()
+        if not (isinstance(record, dict) and record.get("workspace") == root_key)
+    }
+    entries = {
+        key: record
+        for key, record in ledger["entries"].items()
+        if not (isinstance(record, dict) and record.get("workspace") == root_key)
+    }
+    for key, record in (saved.get("approvals") or {}).items():
+        if isinstance(key, str) and isinstance(record, dict) and record.get("workspace") == root_key:
+            approvals[key] = copy.deepcopy(record)
+    for key, record in (saved.get("entries") or {}).items():
+        if isinstance(key, str) and isinstance(record, dict) and record.get("workspace") == root_key:
+            entries[key] = copy.deepcopy(record)
+    restored = {"format": 1, "approvals": approvals, "entries": entries}
+    if restored == ledger:
+        return
+    _save_ledger(restored)
+
+
 def _load_ledger() -> dict:
     path = approvals_path()
     if not path.is_file():
