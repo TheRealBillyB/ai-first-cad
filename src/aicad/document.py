@@ -187,13 +187,14 @@ class Document:
     def import_step(self, name: str, path: str | Path) -> PartInfo:
         with self._lock:
             self._require_new_name(name)
-            from aicad.paths import publish_bytes
+            from aicad.paths import publish_bytes, refuse_reserved_device
             from aicad.sandbox import require_in_project
 
             require_in_project(path, self.workspace, writing=False)
             source = _step_import_source(self.workspace, path)
             shape = kernel.import_step_file(source)
             relative = f"imports/{name}.step"
+            refuse_reserved_device(relative, None, "Import copy", GeometryError)
             destination = _project_file(self.workspace, self.workspace / relative, "Imported STEP")
             publish_bytes(destination, source.read_bytes())
             note = f"# Imported STEP, copied to {relative}\n"
@@ -544,6 +545,9 @@ class Document:
 
             require_in_project(path, self.workspace, writing=True)
             part = self._get(name)
+            from aicad.paths import refuse_reserved_device
+
+            refuse_reserved_device(path, self.workspace, "Export path", GeometryError)
             destination = _project_file(self.workspace, path, "Export path", allow_absolute_outside=True)
             kind = kind.lower()
             if kind == "step":
@@ -1758,25 +1762,16 @@ def _assembly_name(spec: dict) -> str:
     return spec["name"]
 
 
-_WINDOWS_RESERVED = {
-    "CON",
-    "PRN",
-    "AUX",
-    "NUL",
-    *(f"COM{index}" for index in range(1, 10)),
-    *(f"LPT{index}" for index in range(1, 10)),
-}
-
-
 def _output_stem(name: str) -> tuple[str, str]:
-    """A file stem Windows can create, and the original name when it was reserved.
+    """A file stem that is not a Windows device name.
 
-    ``con.pdf`` is a device, not a file. The second value is empty when the
-    name is safe to use as a file.
+    The second value stays empty. A reserved name is refused.
     """
+    from aicad.paths import is_reserved_device_name
+
     stem = str(name).strip().rstrip(" .") or "assembly"
-    if stem.upper() in _WINDOWS_RESERVED:
-        return f"{stem}_file", stem
+    if is_reserved_device_name(stem):
+        raise GeometryError(f"{stem} is reserved on Windows. Pick another name.")
     return stem, ""
 
 
@@ -1809,11 +1804,15 @@ def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> d
 
 
 def _validate_name(name: str) -> None:
+    from aicad.paths import is_reserved_device_name
+
     if not isinstance(name, str) or not _NAME.match(name):
         raise GeometryError(
             "Part names must start with a letter or underscore and contain only "
             "letters, numbers, underscores, and hyphens (64 characters max)."
         )
+    if is_reserved_device_name(name):
+        raise GeometryError(f"{name} is reserved on Windows. Pick another name.")
 
 
 def _copy_spec(spec: Sketch | dict) -> dict:
