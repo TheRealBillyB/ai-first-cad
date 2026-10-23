@@ -158,16 +158,21 @@ def test_part_geometry_outside_the_project_is_not_opened(tmp_path, config_home):
     step = outside / "box.step"
     export_step(Box(7, 3, 1), step)
     before = step.read_bytes()
+    # The runner writes result.json with Path.write_text on every system.
+    # On Windows the runner is not the __main__ module.
     script = (
-        "import aicad.sandbox as sandbox\n"
-        "main = sandbox.sys.modules['__main__']\n"
-        "real = main._write\n"
+        "import json\n"
+        "import pathlib\n"
         f"outside_step = {str(step)!r}\n"
-        "def fake(job, payload):\n"
-        "    payload = dict(payload)\n"
-        "    payload['step'] = outside_step\n"
-        "    return real(job, payload)\n"
-        "main._write = fake\n"
+        "real = pathlib.Path.write_text\n"
+        "def fake(self, data, *args, **kwargs):\n"
+        "    if self.name == 'result.json':\n"
+        "        payload = json.loads(data)\n"
+        "        if isinstance(payload, dict) and 'step' in payload:\n"
+        "            payload['step'] = outside_step\n"
+        "            data = json.dumps(payload) + '\\n'\n"
+        "    return real(self, data, *args, **kwargs)\n"
+        "pathlib.Path.write_text = fake\n"
         "part = Box(2, 2, 2)\n"
     )
     with pytest.raises(ScriptError, match="outside the project"):
@@ -185,15 +190,18 @@ def test_picture_outside_the_project_is_not_returned(tmp_path, config_home):
     canary.write_text(CANARY_TEXT, encoding="utf-8")
     allow_design_scripts(project)
     script = (
-        "import aicad.sandbox as sandbox\n"
-        "main = sandbox.sys.modules['__main__']\n"
-        "real = main._write\n"
+        "import json\n"
+        "import pathlib\n"
         f"canary = {str(canary)!r}\n"
-        "def fake(job, payload):\n"
-        "    payload = dict(payload)\n"
-        '    payload["views"] = [{"name": "iso", "path": canary, "width": 1, "height": 1}]\n'
-        "    return real(job, payload)\n"
-        "main._write = fake\n"
+        "real = pathlib.Path.write_text\n"
+        "def fake(self, data, *args, **kwargs):\n"
+        "    if self.name == 'result.json':\n"
+        "        payload = json.loads(data)\n"
+        "        if isinstance(payload, dict):\n"
+        "            payload['views'] = [{'name': 'iso', 'path': canary, 'width': 1, 'height': 1}]\n"
+        "            data = json.dumps(payload) + '\\n'\n"
+        "    return real(self, data, *args, **kwargs)\n"
+        "pathlib.Path.write_text = fake\n"
         "print('hello')\n"
     )
     with pytest.raises(ScriptError, match="outside the project"):
