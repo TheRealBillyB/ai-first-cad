@@ -16,6 +16,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Interference starts with the axis-aligned boxes and only then intersects the solids | A pair whose boxes are farther apart than the clearance cannot touch, so the boolean runs on the pairs that can. |
 | Penetration depth is the separating-axis translation, and the volume is the boolean | The depth is exact for convex solids. A non-convex solid reports the convex-hull depth, and the volume stays the real intersection. |
 | A joint command past its stop is held at the stop and recorded | The pose stays on the limit, and the study says which step reached it. |
+| Catalog parts are rows in dimension tables, and a joint may name a mate on those parts | Adding a designation is a new row, and the assembly stores the mate name so the anchor stays the catalog frame. |
 
 ## 2026-10-22
 
@@ -65,6 +66,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | A parts-list picture uses a system font that contains the names | A Latin font draws a name such as 供水 as empty boxes. The list looks for an installed font that has the character, and it does not add a font package. |
 | An automatic explode gap stops at 1000000 mm | A huge model would otherwise ask for a gap the command rejects. |
 | Output files avoid Windows reserved device names | con.pdf is a device on Windows, so the file is named con_file and the report says so. |
+| A blueprint sheet id cannot be a Windows reserved device name | con.png is a device on Windows, so that sheet id is refused. |
 | Picture text is looked up in Linux, Windows, and macOS fonts | A missing font was falling back to a bitmap the assistant could not read. |
 | A sheet ratio can be smaller than 1:1000 | The usual list stops there, and a larger model still has to land on the page. The sheet names the ratio it used. |
 | A size below 1 mm is written out, and a still smaller size is labeled <0.001 | Drawing 0.04 mm as 0 was a false dimension. |

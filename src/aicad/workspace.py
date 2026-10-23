@@ -1172,7 +1172,12 @@ _add(Command(
     _cmd_update_sketch,
     undo=True,
 ))
-_add(Command("get_sketch", "Solve a stored sketch and return status, free entities, dimensions, and geometry.", _PART, _cmd_get_sketch))
+_add(Command(
+    "get_sketch",
+    "Solve a stored sketch and return status, free entities, dimensions, and geometry.",
+    _obj({"name": _string("Sketch name.")}, ["name"]),
+    _cmd_get_sketch,
+))
 _add(Command(
     "set_dimension",
     "Change one named sketch dimension and regenerate solids made from that sketch.",
@@ -1196,8 +1201,8 @@ _add(Command(
 ))
 _add(Command(
     "search_parts",
-    "Search screws, nuts, washers, and bearings.",
-    _obj({"query": _string("Text such as M3 or 608.")}, []),
+    "Search bearings, seals, fasteners, motors, and gearboxes by designation.",
+    _obj({"query": _string("Text such as M5, 608, 30205, 20x35x7, or NEMA17.")}, []),
     _cmd_search,
 ))
 _add(Command(
@@ -1217,7 +1222,7 @@ _add(Command(
 ))
 _add(Command(
     "insert_standard_part",
-    "Insert a catalog part and place it.",
+    "Insert a catalog part by designation and place it.",
     _obj(
         {
             "name": _string("New part name."),

@@ -1,8 +1,10 @@
 """Geometry kernel adapter.
 
 build123d and OpenCascade are imported here. ``aicad.library`` imports
-bd_warehouse, and ``aicad.sketch`` imports the SolveSpace solver. The rest of
-aicad talks to plain records and to :class:`Shape`.
+bd_warehouse for fastener sizes that are not in the local tables.
+``aicad.catalog_build`` imports build123d to build those tables.
+``aicad.sketch`` imports the SolveSpace solver. The rest of aicad talks to
+plain records and to :class:`Shape`.
 """
 
 from __future__ import annotations
