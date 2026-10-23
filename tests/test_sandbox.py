@@ -672,11 +672,19 @@ def test_windows_network_block_names_only_that_container():
     win._network_off_holders = 0
     win._network_off_sid = None
     win._network_off_rules_sid = None
+    win._wfp_engine = None
     original = win._run_firewall_script
     original_close = win._close_wfp_block
     original_install = win._install_wfp_block
     win._run_firewall_script = record
-    win._close_wfp_block = lambda: closed.append("closed")
+
+    def fake_close():
+        closed.append("closed")
+        # Match the real close: the next hold must see no open filter,
+        # or it skips the installer the failure case replaces.
+        win._wfp_engine = None
+
+    win._close_wfp_block = fake_close
     try:
         win._hold_network_block(package.lower())
         win._hold_network_block(package)
