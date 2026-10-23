@@ -1121,7 +1121,7 @@ _add(Command(
             "pose": _string("Named pose for this check. The stored assembly is left unchanged."),
             "joints": {
                 "type": "object",
-                "description": "Joint values for this check only. Revolute values are degrees. Prismatic values are millimeters.",
+                "description": "Joint values for this check only. Revolute values are degrees. Prismatic values are millimeters. A cylindrical joint is a number of degrees, or {value: degrees, slide: millimeters}.",
             },
             "min_clearance_mm": _number("Required gap to the envelope wall. 0 allows a part to touch the wall."),
         },
