@@ -505,6 +505,17 @@ def _cmd_clearance(workspace: Workspace, arguments: dict) -> dict:
     ).to_dict()
 
 
+def _cmd_packaging(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.check_packaging(
+        arguments["envelope"],
+        parts=arguments.get("parts"),
+        assembly=arguments.get("assembly"),
+        pose=arguments.get("pose"),
+        joints=arguments.get("joints"),
+        min_clearance_mm=float(arguments.get("min_clearance_mm") or 0.0),
+    ).to_dict()
+
+
 def _cmd_render(workspace: Workspace, arguments: dict) -> dict:
     views = workspace.document.render(arguments["name"])
     return {"views": [view.to_dict() for view in views]}
@@ -1062,6 +1073,31 @@ _add(Command(
     "Interference volume or gap between two parts.",
     _obj({"part_a": _string("First part."), "part_b": _string("Second part."), "min_clearance_mm": _number("Required gap.")}, ["part_a", "part_b"]),
     _cmd_clearance,
+))
+_add(Command(
+    "check_packaging",
+    "Check that parts fit inside an envelope. Reports wall clearance, protrusion, and part-to-part overlap.",
+    _obj(
+        {
+            "envelope": {
+                "description": "Part or instance name, or an object: a primitive {shape, size|radius, height, center, axis} or an outline {outline, axis, origin, limit|length}.",
+            },
+            "parts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Part or instance names. With an assembly, the default is every instance except the envelope.",
+            },
+            "assembly": _string("Assembly to pose. Omit to use each part's stored placement."),
+            "pose": _string("Named pose for this check. The stored assembly is left unchanged."),
+            "joints": {
+                "type": "object",
+                "description": "Joint values for this check only. Revolute values are degrees. Prismatic values are millimeters.",
+            },
+            "min_clearance_mm": _number("Required gap to the envelope wall. 0 allows a part to touch the wall."),
+        },
+        ["envelope"],
+    ),
+    _cmd_packaging,
 ))
 _add(Command("render_part", "Render the standard shaded views.", _PART, _cmd_render))
 _add(Command(
