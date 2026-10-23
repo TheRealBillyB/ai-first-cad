@@ -230,20 +230,17 @@ def solve_part(
     """
     if not isinstance(setup, dict):
         raise GeometryError("A mechanics setup is an object with material, fixes, and loads.")
-    available, reason = fea_available()
-    if not available:
-        raise GeometryError(reason)
     material = lookup_material(str(setup.get("material", "")))
     measurement = kernel.measure(shape)
     size = measurement.bounding_box.size
     diagonal = math.sqrt(size.x**2 + size.y**2 + size.z**2)
     smallest = min(size.x, size.y, size.z)
     mesh_size = _optional_float(setup.get("mesh_size_mm"), max(smallest / 6.0, 0.4))
-    if mesh_size is None or mesh_size <= 0:
-        raise GeometryError("mesh_size_mm must be a positive length, in millimeters.")
+    if mesh_size is None or not math.isfinite(mesh_size) or mesh_size <= 0:
+        raise GeometryError("mesh_size_mm must be a positive finite length, in millimeters.")
     target = _optional_float(setup.get("target_safety_factor"), 2.0)
-    if target is None or target <= 0:
-        raise GeometryError("target_safety_factor must be positive.")
+    if target is None or not math.isfinite(target) or target <= 0:
+        raise GeometryError("target_safety_factor must be a positive finite number.")
     catalog = kernel.describe_faces(shape)
     fixes_in = _as_list(setup.get("fixes", []), "fixes")
     loads_in = _as_list(setup.get("loads", []), "loads")
@@ -255,6 +252,9 @@ def solve_part(
 
     fixes = [_bind_support(item, catalog, index) for index, item in enumerate(fixes_in)]
     loads = [_bind_load(item, catalog, index) for index, item in enumerate(loads_in)]
+    available, reason = fea_available()
+    if not available:
+        raise GeometryError(reason)
     for item in fixes + loads:
         if not item["faces"]:
             warnings.append(
@@ -341,6 +341,17 @@ def solve_part(
         return _unsolved(
             part_name, material, mesh_size, fixes, loads, warnings, target, "not_solved",
             "Nothing was solved. The loads did not land on the mesh.",
+            mesh=mesh,
+        )
+    fixed_ids = {int(node) for node in fixed_nodes}
+    if loaded_nodes <= fixed_ids:
+        warnings.append(
+            "Every loaded node is on a fixed face. The load goes straight into the support, "
+            "so the stress is not a result."
+        )
+        return _unsolved(
+            part_name, material, mesh_size, fixes, loads, warnings, target, "not_solved",
+            "Nothing was solved. The load is on the held face.",
             mesh=mesh,
         )
     wasted = loaded_nodes.intersection(fixed_nodes)
@@ -463,14 +474,16 @@ def _bind_load(item: dict, catalog: list[dict], index: int) -> dict:
         zero = _distance(vector, (0, 0, 0)) < 1e-12
     elif kind == "pressure":
         magnitude = _optional_float(item.get("magnitude"), None)
-        if magnitude is None:
-            raise GeometryError(f"Pressure {name!r} needs magnitude, in MPa. Positive pressure pushes into the face.")
+        if magnitude is None or not math.isfinite(magnitude):
+            raise GeometryError(
+                f"Pressure {name!r} needs a finite magnitude, in MPa. Positive pressure pushes into the face."
+            )
         zero = abs(magnitude) < 1e-15
     else:
         axial = _optional_float(item.get("axial"), None)
-        if axial is None:
+        if axial is None or not math.isfinite(axial):
             raise GeometryError(
-                f"Bolt load {name!r} needs axial, in newtons, along the hole axis. "
+                f"Bolt load {name!r} needs a finite axial force, in newtons, along the hole axis. "
                 "Positive follows the axis (upward for a vertical hole)."
             )
         zero = abs(axial) < 1e-15
@@ -995,16 +1008,19 @@ def _apply_load(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
     if load["kind"] == "pressure":
         magnitude = float(spec["magnitude"])
         for face in faces:
-            nodes = _nodes_for(mesh, [face["index"]])
-            if len(nodes) == 0:
-                continue
-            area = max(float(face["area_mm2"]), 1e-9)
-            # Positive pressure compresses: force is opposite the outward normal.
-            normal = np.array(face["normal"] or [0, 0, 1], dtype=np.float64)
-            total = -magnitude * area * normal
-            share = total / len(nodes)
-            forces[nodes] += share
-            touched.update(int(node) for node in nodes)
+            if face["kind"] == "plane" and face.get("normal"):
+                nodes = _nodes_for(mesh, [face["index"]])
+                if len(nodes) == 0:
+                    continue
+                area = max(float(face["area_mm2"]), 1e-9)
+                # Positive pressure compresses: force is opposite the outward normal.
+                normal = np.array(face["normal"], dtype=np.float64)
+                total = -magnitude * area * normal
+                share = total / len(nodes)
+                forces[nodes] += share
+                touched.update(int(node) for node in nodes)
+            else:
+                touched.update(_apply_curved_pressure(mesh, face, magnitude, forces))
         return touched
     if load["kind"] == "force":
         vector = np.array(_vec(spec["vector"], load["name"]), dtype=np.float64)
@@ -1019,6 +1035,36 @@ def _apply_load(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
             continue
         forces[nodes] += vector / len(nodes)
         touched.update(int(node) for node in nodes)
+    return touched
+
+
+def _apply_curved_pressure(mesh: dict, face: dict, magnitude: float, forces: np.ndarray) -> set[int]:
+    """Push each triangle of a curved face along its own outward normal.
+
+    A cylinder or a cone has one catalog normal, taken at the face center. Using
+    that normal for the whole area turns pressure into one large force. The
+    triangle normals cancel around a closed hole, and each node is pushed into
+    the material when the magnitude is positive.
+    """
+    shape = (mesh.get("surface_of_face") or {}).get("shape")
+    nodes = _nodes_for(mesh, [face["index"]])
+    if shape is None or len(nodes) == 0:
+        return set()
+    deflection = max(0.15, float(mesh.get("mesh_size_mm") or 1.0) * 0.35)
+    triangles = kernel.face_pressure_triangles(shape, int(face["index"]), deflection)
+    if not triangles:
+        return set()
+    points = mesh["points"]
+    node_points = points[nodes]
+    touched: set[int] = set()
+    for area, normal, corners in triangles:
+        load = -magnitude * area * np.array(normal, dtype=np.float64)
+        share = load / 3.0
+        for corner in corners:
+            delta = node_points - np.array(corner, dtype=np.float64)
+            nearest = int(nodes[int(np.argmin(np.einsum("ij,ij->i", delta, delta)))])
+            forces[nearest] += share
+            touched.add(nearest)
     return touched
 
 
@@ -1135,9 +1181,15 @@ def _review(mesh, vm, strength: float, target: float, warnings: list[str], safet
         "coarse mesh" in item.lower() or "linear tetrahedra" in item.lower() or "simplified" in item.lower()
         for item in warnings
     )
-    if safety >= target and not coarse:
+    # A huge displacement is a floating body or a load outside the linear model.
+    # A near-zero stress is a load that never entered the part. Neither one is a pass.
+    untrustworthy = coarse or any(
+        "do not trust" in item.lower() or "essentially zero" in item.lower()
+        for item in warnings
+    )
+    if safety >= target and not untrustworthy:
         status = "pass"
-    elif safety >= target and coarse:
+    elif safety >= target and untrustworthy:
         status = "inconclusive"
     else:
         status = "fail"
@@ -1176,8 +1228,9 @@ def _review(mesh, vm, strength: float, target: float, warnings: list[str], safet
         )
     elif status == "inconclusive":
         quiet = (
-            "The safety factor clears the target, but the mesh is coarse, linear, or simplified, "
-            "so this is not a pass."
+            "The safety factor clears the target, but this is not a pass. The mesh may be coarse, "
+            "linear, or simplified, the displacement may be too large for a linear solve, or the "
+            "stress is not a real load path."
         )
     else:
         quiet = "The hot spot is inside the target safety factor. Quiet regions could lose material."
@@ -1256,6 +1309,8 @@ def _assumptions(material, mesh, fixes, loads, target, mesh_size) -> list[str]:
         f"The design review uses a target safety factor of {target:g} on this load case, not on a factored copy of it.",
         "A total force or bolt load is shared equally by the nodes on the selected faces. "
         "Positive pressure pushes into the face, opposite the outward normal. "
+        "On a curved face that normal is local to each triangle, so pressure on a round hole "
+        "does not become one sideways force. "
         "A bolt load is an axial force along the hole, not a thread or a contact patch.",
     ]
     if material["printed"]:
@@ -1451,9 +1506,12 @@ def _vec(value, label: str) -> tuple[float, float, float]:
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         raise GeometryError(f"{label} must be a list of three numbers.")
     try:
-        return (float(value[0]), float(value[1]), float(value[2]))
+        result = (float(value[0]), float(value[1]), float(value[2]))
     except (TypeError, ValueError) as exc:
         raise GeometryError(f"{label} must be a list of three numbers.") from exc
+    if not all(math.isfinite(component) for component in result):
+        raise GeometryError(f"{label} must be a list of three finite numbers.")
+    return result
 
 
 def _unit(vector: tuple[float, float, float]) -> tuple[float, float, float]:
