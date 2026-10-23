@@ -25,6 +25,9 @@ from aicad.requirements import evaluate, normalize
 
 _DOC_NAME = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}\.md$")
 _UNDO_LIMIT = 40
+# ui, cli, and api read a note as the file. Other sources, including agent
+# and chat, get the same project-text marker.
+_PERSON_SOURCES = frozenset({"ui", "cli", "api"})
 
 
 @dataclass(frozen=True)
@@ -108,7 +111,7 @@ class Workspace:
                     result = attach_sheet(result, self.root / "renders" / "sheets", name, root=self.root)
                     if name in {"check_requirements", "get_requirements", "set_requirements"} and result.get("sheet"):
                         self.requirements_sheet = result["sheet"]
-                    if source in ("mcp", "chat") and name == "read_document":
+                    if name == "read_document" and source not in _PERSON_SOURCES:
                         result = _fence_note(result)
             except Exception:
                 if command.undo:
