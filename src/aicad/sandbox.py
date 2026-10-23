@@ -1,22 +1,21 @@
 """Run an assistant's Python in a separate process that cannot leave the project.
 
 Linux confines the process with Landlock (files, TCP, and signals) and a small
-seccomp filter (every other socket, and starting a new session). The process
-cap counts only that script's threads: a cgroup ``pids.max`` when this user can
-create one, and otherwise the parent stops the script's process tree. It is
-not the user-wide process limit, which also counts a browser and was stalling
-geometry. macOS uses ``sandbox-exec`` and ``setrlimit`` for CPU time. The
-parent watches the script's resident memory and stops it above the memory cap,
-because the address-space cap counts a system library cache and was stopping
-every script. Windows uses an AppContainer and a Job Object. CPU time, memory,
-and a wall-clock limit are set on that process. If those limits cannot be
-applied, the script is not run.
+seccomp filter. That filter accepts only the native instruction set. It refuses
+io_uring, ptrace, and cross-process memory, and it blocks every other socket
+and a new session. The process cap counts only that script's threads: a cgroup
+``pids.max`` when this user can create one, and otherwise the parent stops the
+script's process tree. It is not the user-wide process limit, which also counts
+a browser and was stalling geometry. macOS uses ``sandbox-exec`` and
+``setrlimit`` for CPU time. The parent watches the script's resident memory and
+stops it above the memory cap, because the address-space cap counts a system
+library cache and was stopping every script. Windows uses an AppContainer and a
+Job Object. CPU time, memory, and a wall-clock limit are set on that process.
+If those limits cannot be applied, the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
 ``part``, use the same confined process so an assistant cannot skip it.
-The project folder is not placed on the child interpreter's import path, so
-a module shipped in a shared project cannot run before those limits.
 """
 
 from __future__ import annotations
@@ -944,25 +943,39 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     return roots
 
 
-def _without_project_pythonpath(workspace: Path, raw: str) -> str:
-    """Absolute import entries that are not this project.
+def _pythonpath_for_child(workspace: Path, raw: str | None) -> str | None:
+    """Drop import entries that would load Python from the project.
 
-    A relative entry is resolved in the parent, then stored as an absolute
-    path. The child uses the project as its working directory, and a relative
-    entry would be resolved there.
+    The child uses the project as its working directory. An empty entry,
+    ``.``, or the project path itself would import a file named ``aicad``
+    from that folder before the sandbox is applied. A project folder that
+    is itself named ``aicad`` is the same problem when its parent is on the
+    path.
     """
+    if not raw:
+        return None
     root = workspace.resolve()
     kept: list[str] = []
     for entry in raw.split(os.pathsep):
-        if entry == "" or entry == ".":
+        text = entry.strip()
+        if text in ("", ".", ".."):
             continue
         try:
-            resolved = Path(entry).expanduser().resolve()
+            candidate = Path(text).expanduser().resolve()
         except OSError:
+            kept.append(entry)
             continue
-        if resolved == root or _inside(resolved, root):
+        if candidate == root:
             continue
-        kept.append(str(resolved))
+        if root.name == "aicad":
+            try:
+                if (candidate / "aicad").resolve() == root:
+                    continue
+            except OSError:
+                pass
+        kept.append(entry)
+    if not kept:
+        return None
     return os.pathsep.join(kept)
 
 
@@ -975,6 +988,14 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
         if key in ("AICAD_CONFIG", "AICAD_SETTINGS", "AICAD_PLUGIN_CONSENT", "XDG_CONFIG_HOME"):
             continue
         env[key] = value
+    safe_path = _pythonpath_for_child(workspace, env.get("PYTHONPATH"))
+    if safe_path is None:
+        env.pop("PYTHONPATH", None)
+    else:
+        env["PYTHONPATH"] = safe_path
+    # Do not prepend the working directory to sys.path. The working directory
+    # is the project, and a module there would run before the sandbox.
+    env["PYTHONSAFEPATH"] = "1"
     env["AICAD_SANDBOX_CHILD"] = "1"
     env["AICAD_WORKSPACE"] = str(workspace)
     env["AICAD_JOB"] = str(job)
@@ -1000,18 +1021,6 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
         env["XDG_CONFIG_HOME"] = cache
         env["XDG_DATA_HOME"] = cache
         env["MPLCONFIGDIR"] = cache
-    # -P on the command does the same thing. The variable covers a child that
-    # starts another interpreter. A module in the project must not be imported
-    # while the process is still unrestricted.
-    env["PYTHONSAFEPATH"] = "1"
-    env.pop("PYTHONSTARTUP", None)
-    raw_path = env.get("PYTHONPATH")
-    if raw_path is not None:
-        cleaned = _without_project_pythonpath(workspace, raw_path)
-        if cleaned:
-            env["PYTHONPATH"] = cleaned
-        else:
-            env.pop("PYTHONPATH", None)
     return env
 
 
@@ -1215,10 +1224,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     (job / "job.json").write_text(json.dumps(spec) + "\n", encoding="utf-8")
     if script is not None:
         (job / "script.py").write_text(script, encoding="utf-8")
-    # -P keeps the project folder off sys.path. Without it, python -m imports
-    # aicad from that folder before the limits are applied.
+    # -P is the same rule as PYTHONSAFEPATH: the project is the working
+    # directory, and it must not be the first place Python imports from.
     if sys.platform == "win32":
-        command = [sys.executable, "-B", "-u", "-P", "-c", _WINDOWS_CHILD_BOOT, str(job)]
+        command = [sys.executable, "-P", "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job)]
     else:
         command = [sys.executable, "-P", "-m", "aicad.sandbox_run", str(job)]
     profile_path: Path | None = None

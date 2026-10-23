@@ -8,7 +8,6 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
-| The script process does not put the project folder on its import path | A module named aicad in a shared project otherwise runs before the limits. |
 | The syscall filter rejects other architectures and io_uring | A 32-bit socket call and io_uring both opened a socket while the network was off. |
 
 ## 2026-10-22

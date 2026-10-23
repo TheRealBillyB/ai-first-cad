@@ -812,7 +812,7 @@ def _probe_command(workspace: Path) -> list[str]:
     # The real script imports aicad. A probe that only prints can succeed in a
     # container that then fails to load the geometry libraries.
     script.write_text("import aicad\nprint('sandbox-ok')\n", encoding="utf-8")
-    return [sys.executable, "-B", "-u", "-P", str(script)]
+    return [sys.executable, "-B", "-u", str(script)]
 
 
 def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:

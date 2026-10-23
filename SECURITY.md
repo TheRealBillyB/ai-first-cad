@@ -33,7 +33,9 @@ A script the assistant sends runs in a separate process. That process can read a
 
 A design script, one program that calls several steps, stays off until you allow it with `aicad allow-scripts` or the button in the app. The app shows a warning before you do. Each of those runs is appended to `.aicad/script_log.jsonl` in the project. That log sits in the project folder, so a later script can edit it. It is a record you can read, not a lock. A script that only builds one solid (`part = ...`) uses the same confined process. It does not need the allow step.
 
-Opening a project does not run Python stored in it. A module in that folder is not imported on open, and the script process does not put the project folder on its import path. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data.
+Opening a project does not run Python stored in it. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data.
+
+The sandbox process uses the project folder as its working directory. That folder is not placed on Python's import path, and an import path entry that points at the project is removed before the process starts. A module or package shipped in the project cannot run in place of the sandbox. The limits are applied before the script runs.
 
 Plugins are separate. Installed packs are listed from entry points without importing them. A third-party pack runs only after you allow the publisher, the version, and the permissions it declared. Opening a design does not allow or load a plugin. A design script cannot allow or load a plugin either. That refusal is a flag in the running script process, not an environment variable the script can clear. The warning is written by aicad, and the permission list is a declaration, not a sandbox. See [docs/plugins.md](docs/plugins.md).
 
