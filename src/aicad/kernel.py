@@ -25,11 +25,14 @@ from build123d import (
     Cylinder,
     Face,
     Plane,
+    CenterArc,
+    Line,
     Polygon,
     Pos,
     Rot,
     Sphere,
     Vector,
+    make_face,
     export_step,
     export_stl,
     extrude,
@@ -75,6 +78,11 @@ _NAME_IN_SCRIPT = "part"
 MAX_MM = 1_000_000.0
 _WALL_PROBES_MM = (0.01, 0.002, 0.0004)
 _WALL_HIT_FLOOR_MM = 1e-4
+# A cone's opposite wall is not parallel. 0.5 still rejects a face the ray only grazes.
+_WALL_ALIGNMENT = 0.5
+# Parameter-domain edges, where a cone apex or a knife tip sits. The regular
+# grid is (i+0.5)/n and never lands on that border.
+_WALL_BORDER = (0.02, 0.98)
 
 
 def finite_number(
@@ -358,39 +366,29 @@ def measure(shape: Shape) -> Measurement:
 
 
 def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEstimate:
-    """Estimate minimum wall thickness from rays and from planar sections.
+    """Estimate minimum wall thickness from face-normal rays.
 
-    The reported minimum is the smaller of the two. ``method`` says which one
-    produced it, or ``ray+section`` when they agree within 0.05 mm. A reading
-    that could not step into the solid is an upper bound and is marked capped,
-    so a later threshold cannot treat it as a pass.
+    A ray is the local thickness. ``method`` is ``ray+section`` when a planar
+    section agrees within 0.05 mm. An axis-aligned slice of a round or rotated
+    solid is a shorter chord than that thickness, and that chord does not lower
+    the estimate. A reading that could not step into the solid is an upper bound
+    and is marked capped, so a later threshold cannot treat it as a pass.
     """
     ray_mm, accepted, used, point, ray_capped = _ray_wall_thickness(shape, samples_per_edge)
     section_mm, section_count, section_capped = _section_wall_thickness(shape)
-    minimum, capped = _thinnest(ray_mm, ray_capped, section_mm, section_capped)
-    if ray_mm is None and section_mm is None:
-        method = "none"
-    elif ray_mm is None:
-        method = "section"
-    elif section_mm is None:
-        method = "ray"
-    elif abs(ray_mm - section_mm) <= 0.05:
-        method = "ray+section"
-    elif section_mm < ray_mm:
-        method = "section"
-    else:
-        method = "ray"
-    if method == "section":
+    minimum, capped, method = _thinnest(ray_mm, ray_capped, section_mm, section_capped)
+    if method != "ray" and method != "ray+section":
         point = None
     note = (
         f"Minimum came from {method}. "
         f"Ray samples: {_mm(ray_mm)} mm. "
         f"Planar sections ({section_count} slices): {_mm(section_mm)} mm. "
-        "Rays start 0.01 mm inside a face and keep a hit only when the segment "
-        "stays in the solid. Sections slice the part at 25%, 50%, and 75% of its "
-        "extent along X, Y, and Z and measure the width between roughly parallel "
-        "edges in that plane. The smaller number is the estimate. Either method "
-        "can miss a thin spot it does not cross."
+        "Rays start 0.01 mm inside a face, including the border of the face where a "
+        "taper comes to a point, and keep a hit only when the segment stays in the solid. "
+        "Sections slice the part at 25%, 50%, and 75% of its extent along X, Y, and Z. "
+        "A section width shorter than the ray reading is a chord of that slice, not a "
+        "thinner wall, and it does not lower the estimate. Either method can miss a thin "
+        "spot it does not cross."
     )
     if capped:
         note += (
@@ -416,23 +414,28 @@ def _thinnest(
     ray_capped: bool,
     section_mm: float | None,
     section_capped: bool,
-) -> tuple[float | None, bool]:
-    """The smaller reading. An upper bound wins when the other reading is the far side."""
-    pairs = [
-        (ray_mm, ray_capped),
-        (section_mm, section_capped),
-    ]
-    known = [(value, capped) for value, capped in pairs if value is not None]
-    if not known:
-        return None, False
-    value, capped = min(known, key=lambda item: item[0])
-    if capped:
-        return value, True
-    # A large "measurement" next to a capped upper bound is the far wall of a cavity.
-    bounds = [other for other, other_capped in known if other_capped]
-    if bounds and value > 0.5 and min(bounds) < value:
-        return min(bounds), True
-    return value, False
+) -> tuple[float | None, bool, str]:
+    """Local thickness, whether it is only an upper bound, and which method produced it.
+
+    A capped reading is an upper bound from a probe that never entered the solid.
+    It wins over a larger number, which is often the far side of a cavity. An
+    uncapped ray is a thickness along the surface normal. A shorter section is
+    not used in its place: that reading is the width of one axis-aligned slice.
+    """
+    if section_mm is not None and section_capped and (ray_mm is None or section_mm < ray_mm):
+        return section_mm, True, "section"
+    if ray_mm is not None and ray_capped and (section_mm is None or ray_mm <= section_mm):
+        return ray_mm, True, "ray"
+    if ray_mm is not None and not ray_capped:
+        if section_mm is not None and not section_capped and abs(ray_mm - section_mm) <= 0.05:
+            return ray_mm, False, "ray+section"
+        return ray_mm, False, "ray"
+    if section_mm is not None:
+        # No ray confirmed this width, so a later threshold cannot treat it as a pass.
+        return section_mm, True, "section"
+    if ray_mm is not None:
+        return ray_mm, ray_capped, "ray"
+    return None, False, "none"
 
 
 def _ray_wall_thickness(
@@ -450,32 +453,42 @@ def _ray_wall_thickness(
     thinnest_measured: float | None = None
     accepted = 0
 
+    def consider(face, u: float, v: float, *, record_miss: bool) -> None:
+        nonlocal accepted, thinnest_measured, thinnest_point
+        try:
+            point = face.position_at(u, v)
+            normal = face.normal_at(u, v)
+        except Exception:
+            return
+        if normal.length < 1e-9 or not face.is_inside(point):
+            return
+        inward, probe = _inward_probe(impl, point, normal)
+        if inward is None or probe is None:
+            # A border sample that cannot enter is not evidence the whole part is thin.
+            # The regular grid still records that miss.
+            if record_miss:
+                missed.append(_WALL_PROBES_MM[-1])
+            return
+        origin = point + inward * probe
+        distance = _first_parallel_hit(impl, origin, inward, probe)
+        if distance is None:
+            return
+        thickness = distance + probe
+        accepted += 1
+        measured.append(thickness)
+        if thinnest_measured is None or thickness < thinnest_measured:
+            thinnest_measured = thickness
+            thinnest_point = _vec(point)
+
     for face in impl.faces():
         for i in range(n):
             for j in range(n):
-                u = (i + 0.5) / n
-                v = (j + 0.5) / n
-                try:
-                    point = face.position_at(u, v)
-                    normal = face.normal_at(u, v)
-                except Exception:
-                    continue
-                if normal.length < 1e-9 or not face.is_inside(point):
-                    continue
-                inward, probe = _inward_probe(impl, point, normal)
-                if inward is None or probe is None:
-                    missed.append(_WALL_PROBES_MM[-1])
-                    continue
-                origin = point + inward * probe
-                distance = _first_parallel_hit(impl, origin, inward, probe)
-                if distance is None:
-                    continue
-                thickness = distance + probe
-                accepted += 1
-                measured.append(thickness)
-                if thinnest_measured is None or thickness < thinnest_measured:
-                    thinnest_measured = thickness
-                    thinnest_point = _vec(point)
+                consider(face, (i + 0.5) / n, (j + 0.5) / n, record_miss=True)
+        for u in _WALL_BORDER:
+            for v in _WALL_BORDER:
+                consider(face, u, v, record_miss=False)
+            consider(face, u, 0.5, record_miss=False)
+            consider(face, 0.5, u, record_miss=False)
     minimum, capped = _combine_wall_samples(measured, missed)
     if capped:
         thinnest_point = None
@@ -1711,6 +1724,56 @@ def viewport_mesh(shape: Shape) -> dict:
     }
 
 
+def face_pressure_triangles(
+    shape: Shape, face_index: int, deflection: float
+) -> list[tuple[float, tuple[float, float, float], tuple[tuple[float, float, float], ...]]]:
+    """Tessellate one face for a pressure load.
+
+    Each item is ``(area_mm2, outward_unit_normal, three_vertices)``. The normal
+    points out of the material, matching :func:`describe_faces`. A curved face
+    needs these triangles: one normal at the face center times the whole area
+    is a single force, and a round hole then gets a sideways load instead of
+    pressure.
+    """
+    faces = list(shape.impl.faces())
+    if face_index < 0 or face_index >= len(faces) or deflection <= 0:
+        return []
+    face = faces[face_index]
+    try:
+        vertices, triangles = face.tessellate(deflection)
+    except Exception:
+        return []
+    found = []
+    for tri in triangles:
+        try:
+            corners = tuple(
+                (float(vertices[int(index)].X), float(vertices[int(index)].Y), float(vertices[int(index)].Z))
+                for index in tri
+            )
+        except Exception:
+            continue
+        if len(corners) != 3:
+            continue
+        a, b, c = corners
+        ax, ay, az = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+        bx, by, bz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+        nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+        length = math.sqrt(nx * nx + ny * ny + nz * nz)
+        area = 0.5 * length
+        if area < 1e-12 or length < 1e-12:
+            continue
+        normal = (nx / length, ny / length, nz / length)
+        center = ((a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0)
+        try:
+            reference = face.normal_at(Vector(*center))
+            if normal[0] * reference.X + normal[1] * reference.Y + normal[2] * reference.Z < 0:
+                normal = (-normal[0], -normal[1], -normal[2])
+        except Exception:
+            pass
+        found.append((area, normal, corners))
+    return found
+
+
 def distance_point_to_face(shape: Shape, face_index: int, point: tuple[float, float, float]) -> float:
     """Shortest distance from a point to a face, in millimeters."""
     faces = list(shape.impl.faces())
@@ -1902,7 +1965,7 @@ def _first_parallel_hit(impl, origin, direction, probe: float) -> float | None:
                 aligned = abs(hit_normal.normalized().dot(direction))
             except Exception:
                 aligned = 0.0
-            if aligned > 0.7:
+            if aligned > _WALL_ALIGNMENT:
                 midpoint = origin + direction * (parameter * 0.5)
                 if _strictly_inside(impl, midpoint) and (best is None or parameter < best):
                     best = parameter
@@ -2288,7 +2351,8 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
 
     ``z`` is the bottom of an extrusion or a cutter. A revolve spins the XY
     profile about the sketch X or Y axis. The profile must stay on one side of
-    that axis.
+    that axis. Consecutive points that are the ends of a sketch arc follow
+    that arc. A profile with only straight edges stays a polygon.
     """
     if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
         raise GeometryError(
@@ -2368,7 +2432,7 @@ def _polygon_prism(step: dict, geometry: dict, name: str):
     height = _positive(step.get("height"), f"{name} height")
     z = _optional_number(step.get("z", 0.0), f"{name} z")
     try:
-        face = Plane.XY * Polygon(*coords)
+        face = _profile_face(step, geometry, name, coords)
         solid = Pos(0, 0, z) * extrude(face, amount=height)
     except GeometryError:
         raise
@@ -2389,7 +2453,7 @@ def _revolve_profile(step: dict, geometry: dict, name: str):
     if angle > 360:
         raise GeometryError(f"{name}: revolve angle must be from 0 to 360 degrees.")
     radial = 0 if axis_name == "y" else 1
-    signs = [coord[radial] for coord in coords]
+    signs = [sample[radial] for sample in _profile_samples(step, geometry, coords)]
     if min(signs) < -1e-9 and max(signs) > 1e-9:
         raise GeometryError(
             f"{name}: the profile crosses the {axis_name.upper()} axis. "
@@ -2397,10 +2461,170 @@ def _revolve_profile(step: dict, geometry: dict, name: str):
         )
     axis = Axis.Y if axis_name == "y" else Axis.X
     try:
-        solid = revolve(Plane.XY * Polygon(*coords), axis=axis, revolution_arc=angle)
+        face = _profile_face(step, geometry, name, coords)
+        solid = revolve(face, axis=axis, revolution_arc=angle)
+    except GeometryError:
+        raise
     except Exception as exc:
         raise GeometryError(f"{name}: revolve failed. {exc}") from exc
     return solid
+
+
+def _profile_face(step: dict, geometry: dict, name: str, coords: list[tuple[float, float]]):
+    """A polygon when every edge is straight. An arc edge follows the circle."""
+    ids = step.get("points")
+    edges = _boundary_arcs(geometry)
+    if not isinstance(ids, list) or not _profile_uses_arc(ids, edges):
+        return Plane.XY * Polygon(*coords)
+    points = geometry.get("points") or {}
+    wire = None
+    count = len(ids)
+    for index in range(count):
+        left = ids[index]
+        right = ids[(index + 1) % count]
+        pair = frozenset((left, right))
+        matches = edges.get(pair) or []
+        if matches:
+            if len(matches) != 1:
+                raise GeometryError(f"{name}: more than one arc joins {left} and {right}.")
+            segment = _boundary_arc(matches[0], left, right, name)
+        else:
+            segment = Line(_point_xy(points, left), _point_xy(points, right))
+        wire = segment if wire is None else wire + segment
+    try:
+        return make_face(wire)
+    except GeometryError:
+        raise
+    except Exception as exc:
+        raise GeometryError(f"{name}: could not build a face from that profile. {exc}") from exc
+
+
+def _profile_uses_arc(ids: list, edges: dict) -> bool:
+    count = len(ids)
+    for index in range(count):
+        if frozenset((ids[index], ids[(index + 1) % count])) in edges:
+            return True
+    return False
+
+
+def _profile_samples(step: dict, geometry: dict, coords: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Profile points plus the high and low points of any arc on the boundary."""
+    samples = list(coords)
+    ids = step.get("points")
+    if not isinstance(ids, list):
+        return samples
+    edges = _boundary_arcs(geometry)
+    count = len(ids)
+    for index in range(count):
+        matches = edges.get(frozenset((ids[index], ids[(index + 1) % count]))) or []
+        if len(matches) == 1:
+            samples.extend(_arc_extrema(matches[0]))
+    return samples
+
+
+def _boundary_arcs(geometry: dict) -> dict[frozenset, list[dict]]:
+    arcs = geometry.get("arcs") or {}
+    points = geometry.get("points") or {}
+    grouped: dict[frozenset, list[dict]] = {}
+    if not isinstance(arcs, dict) or not isinstance(points, dict):
+        return grouped
+    for arc in arcs.values():
+        if not isinstance(arc, dict) or arc.get("construction"):
+            continue
+        start_id = arc.get("start_id") or _id_at(points, arc.get("start"))
+        end_id = arc.get("end_id") or _id_at(points, arc.get("end"))
+        if not isinstance(start_id, str) or not isinstance(end_id, str) or start_id == end_id:
+            continue
+        if start_id not in points or end_id not in points:
+            continue
+        stored = dict(arc)
+        stored["start_id"] = start_id
+        stored["end_id"] = end_id
+        grouped.setdefault(frozenset((start_id, end_id)), []).append(stored)
+    return grouped
+
+
+def _boundary_arc(arc: dict, walk_from: str, walk_to: str, name: str):
+    center = _xy_dict(arc.get("center"), f"{name} arc center")
+    start = _xy_dict(arc.get("start"), f"{name} arc start")
+    end = _xy_dict(arc.get("end"), f"{name} arc end")
+    try:
+        radius, start_angle, end_angle, sweep = _arc_sweep(center, start, end)
+    except GeometryError as exc:
+        raise GeometryError(f"{name}: {exc}") from exc
+    if walk_from == arc.get("start_id") and walk_to == arc.get("end_id"):
+        return CenterArc(center, radius, start_angle, sweep)
+    if walk_from == arc.get("end_id") and walk_to == arc.get("start_id"):
+        return CenterArc(center, radius, end_angle, -sweep)
+    raise GeometryError(f"{name}: the arc does not join {walk_from} and {walk_to}.")
+
+
+def _arc_sweep(center: tuple[float, float], start: tuple[float, float], end: tuple[float, float]):
+    """Radius, start angle, end angle, and the counterclockwise sweep in degrees."""
+    radius_start = math.hypot(start[0] - center[0], start[1] - center[1])
+    radius_end = math.hypot(end[0] - center[0], end[1] - center[1])
+    if radius_start <= 1e-3 or abs(radius_start - radius_end) > 1e-3:
+        raise GeometryError("arc endpoints are not on one circle.")
+    start_angle = math.degrees(math.atan2(start[1] - center[1], start[0] - center[0]))
+    end_angle = math.degrees(math.atan2(end[1] - center[1], end[0] - center[0]))
+    sweep = (end_angle - start_angle) % 360.0
+    if sweep < 1e-3 or sweep > 360.0 - 1e-3:
+        raise GeometryError("that arc has no sweep.")
+    return radius_start, start_angle, end_angle, sweep
+
+
+def _arc_extrema(arc: dict) -> list[tuple[float, float]]:
+    try:
+        center = _xy_dict(arc.get("center"), "center")
+        start = _xy_dict(arc.get("start"), "start")
+        end = _xy_dict(arc.get("end"), "end")
+        radius, start_angle, _end_angle, sweep = _arc_sweep(center, start, end)
+    except GeometryError:
+        return []
+    found = []
+    for degrees in (0.0, 90.0, 180.0, 270.0):
+        delta = (degrees - start_angle) % 360.0
+        if delta <= sweep + 1e-6:
+            radians = math.radians(degrees)
+            found.append((center[0] + radius * math.cos(radians), center[1] + radius * math.sin(radians)))
+    return found
+
+
+def _point_xy(points: dict, point_id: str) -> tuple[float, float]:
+    return _xy_dict(points.get(point_id), point_id)
+
+
+def _xy_dict(point, label: str) -> tuple[float, float]:
+    if not isinstance(point, dict):
+        raise GeometryError(f"{label} is missing.")
+    try:
+        return (float(point["x"]), float(point["y"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GeometryError(f"{label} is missing.") from exc
+
+
+def _id_at(points: dict, coord) -> str | None:
+    if not isinstance(coord, dict):
+        return None
+    try:
+        x = float(coord["x"])
+        y = float(coord["y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    found = None
+    for point_id, point in points.items():
+        if not isinstance(point, dict):
+            continue
+        try:
+            near = abs(float(point["x"]) - x) <= 1e-6 and abs(float(point["y"]) - y) <= 1e-6
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not near:
+            continue
+        if found is not None:
+            return None
+        found = point_id
+    return found
 
 
 def _profile_points(step: dict, geometry: dict, name: str) -> list[tuple[float, float]]:

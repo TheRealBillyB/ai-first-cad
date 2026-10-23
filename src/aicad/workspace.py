@@ -1,7 +1,8 @@
 """The command layer shared by the workspace UI, the in-app assistant, and MCP.
 
 Every change to a document goes through :meth:`Workspace.execute`. Undo stores
-the session, the markdown notes, and the requirements, then restores them.
+the session, the markdown notes, the requirements, the plan files, and this
+project's plan approval records, then restores them.
 Listeners hear the same event whether a person or an assistant ran the command.
 """
 
@@ -19,7 +20,7 @@ from typing import Any
 from aicad import kernel
 from aicad.document import Document
 from aicad.errors import AICADError, GeometryError
-from aicad.plan import plan_files, restore_plan_files
+from aicad.plan import ledger_snapshot, plan_files, restore_ledger_snapshot, restore_plan_files
 from aicad.refs import resolve_edge
 from aicad.requirements import evaluate, normalize
 
@@ -345,6 +346,7 @@ class Workspace:
             "requirements": copy.deepcopy(self._requirements),
             "selection": copy.deepcopy(self.selection),
             "plans": plan_files(self.root),
+            "plan_ledger": ledger_snapshot(self.root),
         }
 
     def _restore(self, snapshot: dict) -> None:
@@ -361,6 +363,8 @@ class Workspace:
         self.selection = copy.deepcopy(snapshot["selection"])
         if "plans" in snapshot:
             restore_plan_files(self.root, snapshot["plans"])
+        if "plan_ledger" in snapshot:
+            restore_ledger_snapshot(self.root, snapshot["plan_ledger"])
         self._mesh_cache.clear()
         self._requirement_cache.clear()
         self.panels.clear()
