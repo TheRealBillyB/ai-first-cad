@@ -53,6 +53,7 @@ from OCP.TopoDS import TopoDS
 from OCP.gp import gp_Ax2, gp_Dir, gp_Lin, gp_Pnt, gp_Trsf
 
 from aicad.errors import GeometryError, ScriptError
+from aicad.paths import session_path_escapes
 from aicad.refs import edge_ref, face_ref
 from aicad.models import (
     BoundingBox,
@@ -1294,9 +1295,22 @@ def export_stl_file(
         raise GeometryError(f"Could not write STL file {path}.")
 
 
+# Entity names that make the STEP reader open another file. The check is
+# case-insensitive. A comment cannot hide a name: the text is searched with
+# comments removed as well as raw.
+_STEP_EXTERNAL_MARKERS = (
+    "document_file",
+    "applied_document_reference",
+    "applied_external_identification_assignment",
+    "product_definition_with_associated_documents",
+    "external_source",
+)
+
+
 def import_step_file(path: Path) -> Shape:
     if not path.is_file():
         raise GeometryError(f"STEP file not found: {path}")
+    _refuse_step_file_outside_folder(path)
     try:
         # The STEP parser logs through C stdout. That descriptor is the MCP
         # stream when `aicad serve` is running, so the bytes never reach it.
@@ -1309,6 +1323,214 @@ def import_step_file(path: Path) -> Shape:
     except GeometryError as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
     return Shape(solid)
+
+
+def _refuse_step_file_outside_folder(path: Path) -> None:
+    """Refuse a STEP file that names a path outside the file's own folder.
+
+    An assembly file can point at another STEP file. The reader opens that
+    path. A name with a drive, a leading slash, a backslash climb, or ``..``
+    would leave the folder, so the file is not read at all.
+    """
+    try:
+        text = path.read_text(encoding="latin-1")
+    except OSError as exc:
+        raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
+    try:
+        code, values = _step_code_and_strings(text)
+    except ValueError as exc:
+        if _step_mentions_external(text):
+            raise GeometryError(
+                f"Could not read STEP file {path}: it names other files in a form that was not accepted."
+            ) from exc
+        return
+    if not _step_mentions_external(text, code):
+        return
+    folder = path.resolve().parent
+    for value in values:
+        if _step_string_leaves_folder(folder, value):
+            raise GeometryError(
+                f"Could not read STEP file {path}: it refers to a file outside its folder. It was not read."
+            )
+
+
+def _step_code_and_strings(text: str) -> tuple[str, list[str]]:
+    """STEP text with comments removed, and every decoded string value."""
+    code: list[str] = []
+    values: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end < 0:
+                raise ValueError("unclosed comment")
+            code.append(" ")
+            index = end + 2
+            continue
+        if text[index] == "'":
+            raw, index = _read_step_literal(text, index)
+            while True:
+                cursor = index
+                while cursor < length and text[cursor] in " \t\r\n":
+                    cursor += 1
+                while cursor < length and text.startswith("/*", cursor):
+                    end = text.find("*/", cursor + 2)
+                    if end < 0:
+                        raise ValueError("unclosed comment")
+                    cursor = end + 2
+                    while cursor < length and text[cursor] in " \t\r\n":
+                        cursor += 1
+                if cursor < length and text[cursor] == "'":
+                    nxt, index = _read_step_literal(text, cursor)
+                    raw += nxt
+                    continue
+                index = cursor
+                break
+            values.append(_decode_step_string(raw))
+            code.append("''")
+            continue
+        code.append(text[index])
+        index += 1
+    return "".join(code), values
+
+
+def _read_step_literal(text: str, index: int) -> tuple[str, int]:
+    """Content of one quoted literal. A doubled quote is an apostrophe."""
+    index += 1
+    chars: list[str] = []
+    length = len(text)
+    while index < length:
+        if text[index] == "'":
+            if index + 1 < length and text[index + 1] == "'":
+                chars.append("'")
+                index += 2
+                continue
+            return "".join(chars), index + 1
+        chars.append(text[index])
+        index += 1
+    raise ValueError("unterminated string")
+
+
+def _step_mentions_external(text: str, code: str | None = None) -> bool:
+    """True when the file uses an entity that makes the reader open another file."""
+    for blob in (text, code):
+        if blob is None:
+            continue
+        folded = blob.lower()
+        if any(marker in folded for marker in _STEP_EXTERNAL_MARKERS):
+            return True
+    if code is not None:
+        return False
+    try:
+        stripped = _strip_step_comments(text)
+    except ValueError:
+        return False
+    folded = stripped.lower()
+    return any(marker in folded for marker in _STEP_EXTERNAL_MARKERS)
+
+
+def _strip_step_comments(text: str) -> str:
+    parts: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end < 0:
+                raise ValueError("unclosed comment")
+            parts.append(" ")
+            index = end + 2
+            continue
+        parts.append(text[index])
+        index += 1
+    return "".join(parts)
+
+
+def _decode_step_string(raw: str) -> str:
+    """Decode ISO 10303-21 character escapes the way the STEP reader does.
+
+    Newlines are removed, because the reader drops them before it uses the
+    text as a file name. ``\\\\`` is one backslash. An unknown escape is
+    refused so a directive cannot hide a path.
+    """
+    out: list[str] = []
+    index = 0
+    length = len(raw)
+    hex_digits = "0123456789abcdefABCDEF"
+    while index < length:
+        char = raw[index]
+        if char in "\n\r":
+            index += 1
+            continue
+        if char != "\\":
+            out.append(char)
+            index += 1
+            continue
+        if index + 1 < length and raw[index + 1] == "\\":
+            out.append("\\")
+            index += 2
+            continue
+        token = raw[index:].lower()
+        if token.startswith("\\x2\\") or token.startswith("\\x4\\"):
+            width = 4 if token.startswith("\\x2\\") else 8
+            index += 4
+            digits: list[str] = []
+            while index < length and not raw.lower().startswith("\\x0\\", index):
+                digits.append(raw[index])
+                index += 1
+            if not raw.lower().startswith("\\x0\\", index):
+                raise ValueError("unclosed character escape")
+            index += 4
+            blob = "".join(digits)
+            if not blob or len(blob) % width != 0 or any(char not in hex_digits for char in blob):
+                raise ValueError("bad character escape")
+            for start in range(0, len(blob), width):
+                code = int(blob[start : start + width], 16)
+                if code > 0x10FFFF:
+                    raise ValueError("bad character escape")
+                out.append(chr(code))
+            continue
+        if token.startswith("\\x\\"):
+            pair = raw[index + 3 : index + 5]
+            if len(pair) != 2 or any(char not in hex_digits for char in pair):
+                raise ValueError("bad character escape")
+            out.append(chr(int(pair, 16)))
+            index += 5
+            continue
+        if token.startswith("\\s\\"):
+            if index + 3 >= length:
+                raise ValueError("bad character escape")
+            out.append(chr(ord(raw[index + 3]) + 128))
+            index += 4
+            continue
+        if token.startswith("\\n\\") or token.startswith("\\t\\"):
+            if token.startswith("\\t\\"):
+                out.append("\t")
+            index += 3
+            continue
+        if len(token) >= 4 and token[1] == "p" and token[3] == "\\":
+            index += 4
+            continue
+        raise ValueError("bad character escape")
+    return "".join(out)
+
+
+def _step_string_leaves_folder(folder: Path, value: str) -> bool:
+    """True when a decoded STEP string names something outside ``folder``."""
+    if "\x00" in value:
+        return True
+    normalized = value.replace("\\", "/").replace("\n", "").replace("\r", "")
+    if normalized == "":
+        return False
+    if session_path_escapes(normalized):
+        return True
+    candidate = (folder / normalized).resolve()
+    try:
+        candidate.relative_to(folder)
+    except ValueError:
+        return True
+    return False
 
 
 def tessellate(shape: Shape) -> TriangleMesh:
