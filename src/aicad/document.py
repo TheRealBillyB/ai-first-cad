@@ -826,6 +826,11 @@ class Document:
 
         clean = gears_mod.normalize_spec(spec)
         base = kernel.adopt(gears_mod.build_gear(clean))
+        previous = self._parts.get(name)
+        if position is None and previous is not None:
+            position = previous.placement["position"]
+        if rotation_deg is None and previous is not None:
+            rotation_deg = previous.placement["rotation_deg"]
         placed_at = _vec3(position or [0, 0, 0], "position")
         rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
         shape = kernel.place(base, placed_at, rotation)
