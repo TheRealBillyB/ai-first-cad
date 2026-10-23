@@ -104,14 +104,15 @@ def _child_import(project: Path, body: str) -> str:
         "stop = threading.Event()\n"
         "def watch():\n"
         "    while not stop.is_set():\n"
-        "        samples.append(os.getcwd())\n"
+        "        here = os.getcwd()\n"
+        "        samples.append(here)\n"
         "        try:\n"
         "            text = open('local.txt', encoding='utf-8').read()\n"
         "        except OSError as exc:\n"
-        "            errors.append(repr(exc))\n"
+        "            errors.append({'cwd': here, 'error': repr(exc)})\n"
         "        else:\n"
         "            if text != 'kept\\n':\n"
-        "                errors.append(text)\n"
+        "                errors.append({'cwd': here, 'error': text})\n"
         "thread = threading.Thread(target=watch, daemon=True)\n"
         "thread.start()\n"
         "while not samples:\n"
@@ -157,7 +158,25 @@ def _assert_cwd_unchanged(payload: dict, project: Path) -> None:
         if key not in allowed:
             moved.append(item)
     assert moved == []
-    assert payload["errors"] == []
+    # A relative open misses local.txt only while native code is in the
+    # interpreter directory. A changed file, or a miss from anywhere else,
+    # means the project directory was left.
+    unexpected = []
+    for item in payload["errors"]:
+        if not isinstance(item, dict):
+            unexpected.append(item)
+            continue
+        if item.get("error") == "kept\n":
+            continue
+        try:
+            key = os.path.normcase(str(Path(item.get("cwd", "")).resolve()))
+        except OSError:
+            unexpected.append(item)
+            continue
+        missing = str(item.get("error", "")).startswith("FileNotFoundError")
+        if not (missing and key in allowed):
+            unexpected.append(item)
+    assert unexpected == []
     project_ini = (project / "ezdxf.ini").resolve()
     for item in payload["loaded"]:
         assert Path(item).resolve() != project_ini
