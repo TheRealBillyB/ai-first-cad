@@ -372,6 +372,7 @@ def test_cli_writes_the_bill_of_materials(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-m",
             "aicad",
             "bill-of-materials",

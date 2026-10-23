@@ -2198,8 +2198,9 @@ def _probe_command(workspace: Path) -> list[str]:
     # container that then fails to load the geometry libraries. The same
     # confinement check the script uses has to pass before this counts.
     script.write_text(_probe_source(), encoding="utf-8")
-    # -P matches the script process: the working directory is not an import path.
-    return [sys.executable, "-P", "-B", "-u", str(script)]
+    # -P keeps the project folder, which is both the working directory and the
+    # script directory, off sys.path. The script path is absolute.
+    return [sys.executable, "-P", "-B", "-u", str(script.resolve())]
 
 
 def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:

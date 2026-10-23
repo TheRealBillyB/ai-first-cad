@@ -322,7 +322,7 @@ def test_bh_f11_check_wall_accepts_min_wall(tmp_path):
 
 def test_bh_f14_cli_module_runs(tmp_path):
     completed = subprocess.run(
-        [sys.executable, "-m", "aicad.cli", "insert", "badbrg", "--kind", "ball_bearing", "--size", "nope", "--workspace", str(tmp_path)],
+        [sys.executable, "-P", "-m", "aicad.cli", "insert", "badbrg", "--kind", "ball_bearing", "--size", "nope", "--workspace", str(tmp_path)],
         capture_output=True,
         text=True,
         check=False,

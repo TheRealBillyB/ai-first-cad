@@ -88,11 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(_ccx_message(hints))
     print()
-    print("aicad is installed. Turn the environment on, then try `aicad --help`.")
-    if sys.platform == "win32":
-        print(r"    .\.venv\Scripts\Activate.ps1")
-    else:
-        print("    source .venv/bin/activate")
+    print(_ready_message(python))
     return 0
 
 
@@ -171,6 +167,24 @@ def _passwordless_sudo() -> bool:
     return completed.returncode == 0
 
 
+def _ready_message(python: Path) -> str:
+    """How to start aicad after install. The console command, or python -P."""
+
+    command = python.with_name("aicad.exe" if sys.platform == "win32" else "aicad")
+    if sys.platform == "win32":
+        activate = r".\.venv\Scripts\Activate.ps1"
+    else:
+        activate = "source .venv/bin/activate"
+    return "\n".join(
+        (
+            "aicad is installed. Turn the environment on, then try `aicad --help`.",
+            f"    {activate}",
+            f"Or run `{command}` without activating it.",
+            "Do not run `python -m aicad` from a project folder. For development, use `python -P -m aicad`.",
+        )
+    )
+
+
 def _ccx_message(hints) -> str:
     return hints.ccx_status().message
 
@@ -182,8 +196,11 @@ def _check(hints, *, require_ccx: bool) -> int:
         print()
         print(hints.ccx_hint())
         return 1
+    # -I ignores the working directory and PYTHONPATH. This check is the
+    # copy installed in the virtual environment, not a folder named aicad
+    # next to install.py.
     imported = subprocess.run(
-        [str(python), "-c", "import aicad; print('aicad', aicad.__version__)"],
+        [str(python), "-I", "-c", "import aicad; print('aicad', aicad.__version__)"],
         cwd=ROOT,
         check=False,
         capture_output=True,
