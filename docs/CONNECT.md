@@ -50,7 +50,7 @@ A client that only speaks HTTP or server-sent events cannot attach yet. That tra
 
 ## Same window as the app
 
-Start the app with the `aicad` command. Do not run `python -m aicad` from a project folder. For development, use `python -P -m aicad`.
+Start the app with the `aicad` command. Do not run `python -m aicad` from a project folder. For development, use `python -P -m aicad`. A folder named aicad in the working directory does not replace the installed package.
 
 Start the app first:
 

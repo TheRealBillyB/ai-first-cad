@@ -10,6 +10,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | --- | --- |
 | A plugin ships with aicad only when its metadata directory is this install's | The package name is not that check, so another package with the same name still needs an allow. |
 | One unreadable entry-point file does not hide the other plugins | That package is skipped and listed with a warning. The rest are still listed. |
+| The installed aicad package is the one Python imports | A working directory with a folder of that name was being imported instead. |
 | The syscall filter rejects other architectures and io_uring | A 32-bit socket call and io_uring both opened a socket while the network was off. |
 | A pose matrix is the exact rigid transform | Rounding the rotation shears the solid, and the boolean then reports no volume for a real overlap. |
 | A motion study is a timeline of drivers and gear couplings, posed by the joint solver | Later checks read one record of poses, collisions, and limit hits. |

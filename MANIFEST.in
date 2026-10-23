@@ -1,0 +1,3 @@
+include packaging/build_meta.py
+include packaging/aicad_install_path.py
+include packaging/aicad_install_path.pth

@@ -172,3 +172,37 @@ def test_module_mode_of_the_cli_module_does_not_import_json(tmp_path):
     (project / "json.py").write_text(_canary_source(outside), encoding="utf-8")
     completed = _run([sys.executable, "-m", "aicad.cli", "--help"], project, project_on_path=True)
     _assert_help(completed, outside)
+
+
+def _shadow_package(project: Path, outside: Path) -> None:
+    package = project / "aicad"
+    package.mkdir()
+    (package / "__init__.py").write_text(_canary_source(outside), encoding="utf-8")
+    (package / "cli.py").write_text(_canary_source(outside), encoding="utf-8")
+
+
+def test_a_project_package_named_aicad_is_not_imported(tmp_path):
+    project = _project(tmp_path)
+    outside = _outside(tmp_path)
+    _shadow_package(project, outside)
+    completed = _run(
+        [sys.executable, "-c", "import aicad; print(aicad.__file__)"],
+        project,
+        project_on_path=True,
+    )
+    _assert_canary_absent(completed, outside)
+    assert completed.returncode == 0, completed.stderr
+    loaded = Path(completed.stdout.strip())
+    assert loaded.is_file()
+    assert loaded != (project / "aicad" / "__init__.py").resolve()
+    completed = _run([sys.executable, "-m", "aicad", "--help"], project, project_on_path=True)
+    _assert_help(completed, outside)
+    completed = _run(
+        [sys.executable, "-c", "import aicad.cli; print(aicad.cli.__file__)"],
+        project,
+    )
+    _assert_canary_absent(completed, outside)
+    assert completed.returncode == 0, completed.stderr
+    assert Path(completed.stdout.strip()) != (project / "aicad" / "cli.py").resolve()
+    completed = _run([str(_console_script()), "--help"], project)
+    _assert_help(completed, outside)

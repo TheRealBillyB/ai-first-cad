@@ -43,6 +43,17 @@ def _same_directory(entry: str, cwd: str) -> bool:
         return False
 
 
+def _loaded_from(entry: str, directory: str) -> bool:
+    """True when the already-imported module is the copy in ``directory``."""
+    import os
+
+    module = sys.modules.get(entry)
+    loaded = getattr(module, "__file__", None)
+    if not isinstance(loaded, str) or not loaded:
+        return True
+    return _same_directory(os.path.dirname(loaded), directory)
+
+
 def _imported_shadows(cwd: str) -> list[str]:
     import os
 
@@ -61,7 +72,10 @@ def _imported_shadows(cwd: str) -> list[str]:
                 labels.append(entry)
             continue
         if entry.isidentifier() and os.path.isdir(path) and entry in sys.modules:
-            labels.append(entry + "/")
+            # Other names keep the name check. aicad is this install when the
+            # loaded file is not the project folder.
+            if entry != "aicad" or _loaded_from(entry, path):
+                labels.append(entry + "/")
     labels.sort()
     return labels
 

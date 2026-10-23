@@ -51,7 +51,7 @@ Open a new terminal after installing it and run `ccx`. Until that command is fou
 
 ## Open the app
 
-Start with the `aicad` command. Do not run `python -m aicad` from a project folder. For development, use `python -P -m aicad`.
+Start with the `aicad` command. Do not run `python -m aicad` from a project folder. For development, use `python -P -m aicad`. A folder named aicad in the working directory does not replace the installed package.
 
 From the project folder, with the virtual environment activated:
 

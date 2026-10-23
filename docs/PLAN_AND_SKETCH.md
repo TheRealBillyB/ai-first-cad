@@ -47,7 +47,7 @@ The research cites the usual 305 mm wall-cabinet depth, 18 mm sheet in the 32 mm
 
 Two assumptions are still open: studs at 400 mm, and a 12 kg spread load. Two questions are open: 400 mm or 600 mm studs, and light things or a row of books.
 
-Start with the `aicad` command. Do not run `python -m aicad` from a project folder. For development, use `python -P -m aicad`.
+Start with the `aicad` command. Do not run `python -m aicad` from a project folder. For development, use `python -P -m aicad`. A folder named aicad in the working directory does not replace the installed package.
 
 Load it into a project:
 

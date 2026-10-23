@@ -1,0 +1,1 @@
+import importlib.util, pathlib, sys; exec("p=next(pathlib.Path(e)/'aicad_install_path.py' for e in sys.path if (pathlib.Path(e)/'aicad_install_path.pth').is_file()); s=importlib.util.spec_from_file_location('_aicad_install_path', p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.install()", {"importlib": importlib, "pathlib": pathlib, "sys": sys})
