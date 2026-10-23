@@ -655,6 +655,8 @@ def test_windows_network_block_names_only_that_container():
     assert "S-1-15-3-1" not in script
     assert "Remove-NetFirewallRule" in script
     assert script.endswith("exit 0\n")
+    runner = inspect.getsource(win._run_firewall_script)
+    assert '"timeout": 120' in runner
     removal = win._firewall_script(install=False)
     assert "New-NetFirewallRule" not in removal
     assert "Remove-NetFirewallRule" in removal

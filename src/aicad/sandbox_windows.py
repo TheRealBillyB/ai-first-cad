@@ -1834,7 +1834,8 @@ def _run_firewall_script(script: str) -> None:
     kwargs: dict = {
         "capture_output": True,
         "text": True,
-        "timeout": 30,
+        # Later calls get slower. A timeout is still a missing block.
+        "timeout": 120,
         "check": False,
         "stdin": subprocess.DEVNULL,
     }

@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A slow Windows firewall command still has to finish the block | After earlier scripts the command can take longer than 30 seconds. The wait is longer, and the script still does not start when the block is missing. |
 | The program is started with the `aicad` command or `python -P` | The working directory is a project folder, so that start keeps the folder off the import path. |
 | Catalog parts are rows in dimension tables, and a joint may name a mate on those parts | Adding a designation is a new row, and the assembly stores the mate name so the anchor stays the catalog frame. |
 | A recorded Windows package id is not the network block | The next process reads both rules before it reuses them. A missing rule is installed again, and the record stays in the user profile, outside the project and outside folders a script can write. |
