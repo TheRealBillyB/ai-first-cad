@@ -1,8 +1,9 @@
 """Run an assistant's Python in a separate process that cannot leave the project.
 
 Linux confines the process with Landlock (files, TCP, and signals) and a small
-seccomp filter (every other socket, and starting a new session). The process
-cap counts only that script's threads: a cgroup ``pids.max`` when this user can
+seccomp filter (every other socket, io_uring, and starting a new session).
+Landlock also refuses a symlink, named pipe, socket node, or device node
+outside the project. The process cap counts only that script's threads: a cgroup ``pids.max`` when this user can
 create one, and otherwise the parent stops the script's process tree. It is
 not the user-wide process limit, which also counts a browser and was stalling
 geometry. macOS uses ``sandbox-exec`` and ``setrlimit`` for CPU time. The
@@ -86,8 +87,13 @@ _FS_READ = 1 << 2
 _FS_READ_DIR = 1 << 3
 _FS_REMOVE_DIR = 1 << 4
 _FS_REMOVE_FILE = 1 << 5
+_FS_MAKE_CHAR = 1 << 6
 _FS_MAKE_DIR = 1 << 7
 _FS_MAKE_REG = 1 << 8
+_FS_MAKE_SOCK = 1 << 9
+_FS_MAKE_FIFO = 1 << 10
+_FS_MAKE_BLOCK = 1 << 11
+_FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13
 _FS_TRUNCATE = 1 << 14
 _NET_BIND = 1 << 0
@@ -101,10 +107,15 @@ _WORK_ACCESS = (
     | _FS_REMOVE_FILE
     | _FS_MAKE_DIR
     | _FS_MAKE_REG
+    | _FS_MAKE_SOCK
+    | _FS_MAKE_FIFO
+    | _FS_MAKE_SYM
     | _FS_REFER
     | _FS_TRUNCATE
 )
-_HANDLED_FS = _WORK_ACCESS | _FS_EXECUTE
+# Device nodes are handled and never granted. Symlinks, pipes, and socket
+# nodes are granted only on the project folder, below.
+_HANDLED_FS = _WORK_ACCESS | _FS_EXECUTE | _FS_MAKE_CHAR | _FS_MAKE_BLOCK
 
 _LANDLOCK = {"x86_64": (444, 445, 446), "aarch64": (444, 445, 446)}
 _SECCOMP = {"x86_64": 317, "aarch64": 277}
@@ -116,9 +127,13 @@ _NET_SYSCALLS = {
 # the parent kills when the tool returns. Classic seccomp BPF has no counter,
 # so this filter cannot limit how often clone or fork is called. The process
 # cap is the cgroup pids controller, or the parent counting this tree's threads.
+# io_uring_setup, io_uring_enter, and io_uring_register. A script can open a
+# UDP socket and send on it through io_uring without calling socket or sendto,
+# and Landlock only blocks TCP. The same numbers are the generic table on
+# aarch64 and the x86_64 table.
 _ESCAPE_SYSCALLS = {
-    "x86_64": (112, 109),
-    "aarch64": (157, 154),
+    "x86_64": (112, 109, 425, 426, 427),
+    "aarch64": (157, 154, 425, 426, 427),
 }
 # How often the macOS parent checks the script's resident memory.
 _MEMORY_POLL_SECONDS = 0.25
