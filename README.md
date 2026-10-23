@@ -529,7 +529,7 @@ python examples/vibration_arm.py  # modes, resonance, and bolted-joint loosening
 python examples/print_and_robot.py  # overhang map, printer fit, URDF, and MJCF
 ```
 
-GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/workflows/tests.yml`). Windows and macOS run when someone starts that workflow, once a week on Monday, or when a pull request has the `cross-platform` label. The job is `python install.py`, then the test suite. Ubuntu installs CalculiX that way. Windows and macOS run the same tests; strength checks skip there when `ccx` is not on the runner, and the message says so. Each operating system runs its own script-sandbox tests. A slicer is optional: the print tests cover the skip path, and a machine with PrusaSlicer exercises the gcode comments.
+GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/workflows/tests.yml`). Windows and macOS run on every pull request, on every push to main, and when someone starts the workflow manually. The job is `python install.py`, then the test suite. Ubuntu installs CalculiX that way. Windows and macOS run the same tests; strength checks skip there when `ccx` is not on the runner, and the message says so. Each operating system runs its own script-sandbox tests. A slicer is optional: the print tests cover the skip path, and a machine with PrusaSlicer exercises the gcode comments.
 
 `src/aicad/kernel.py` imports build123d and OpenCascade. `src/aicad/library.py` imports bd_warehouse. `src/aicad/sketch.py` imports the SolveSpace solver. `src/aicad/fea.py` imports Gmsh and runs the `ccx` binary. The rest of aicad talks to plain records.
 

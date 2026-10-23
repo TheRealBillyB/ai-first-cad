@@ -1,84 +1,47 @@
 name: tests
 
-# Ubuntu runs on every push and pull request. Windows and macOS run on manual
-# dispatch, a weekly schedule, or the cross-platform label to keep CI fast.
+# Ubuntu runs on every push and pull request. Windows and macOS run on every
+# pull request, on every push to main, and when the workflow is started manually.
 on:
   push:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
-  schedule:
-    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+  actions: write
 
 jobs:
   pytest:
+    name: pytest (ubuntu-latest)
+    # Ubuntu stays on 3.12, which is what the Linux suite was written against.
+    uses: ./.github/workflows/pytest-suite.yml
+    with:
+      os: ubuntu-latest
+      python-version: "3.12"
+      job-timeout: 25
+
+  pytest-cross:
     name: pytest (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.job-timeout }}
     if: >-
-      matrix.os == 'ubuntu-latest'
-      || github.event_name == 'workflow_dispatch'
-      || github.event_name == 'schedule'
-      || (github.event_name == 'pull_request'
-          && contains(github.event.pull_request.labels.*.name, 'cross-platform'))
+      github.event_name == 'workflow_dispatch'
+      || github.event_name == 'pull_request'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Ubuntu stays on 3.12, which is what the Linux suite was written against.
           # Windows and macOS use 3.11 because the sketch solver publishes wheels
           # for 3.11 and not for 3.12. 3.12 on those systems would have to compile it.
           # The job clock is a backstop. A single test is stopped sooner by pytest-timeout.
-          - os: ubuntu-latest
-            python: "3.12"
-            job-timeout: 25
           - os: windows-latest
             python: "3.11"
             job-timeout: 40
           - os: macos-latest
             python: "3.11"
             job-timeout: 25
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install aicad
-        run: python install.py
-
-      - name: Check the install and CalculiX
-        run: python install.py --check
-
-      - name: Run the Windows sandbox tests
-        if: matrix.os == 'windows-latest'
-        timeout-minutes: 15
-        shell: bash
-        env:
-          PYTHONUNBUFFERED: "1"
-          PYTHONFAULTHANDLER: "1"
-        run: |
-          # These run on their own first. A confinement failure shows up here,
-          # and this step stops after 15 minutes instead of holding the whole job.
-          exec .venv/Scripts/pytest.exe -ra --tb=short --durations=15 --timeout=180 \
-            tests/test_sandbox.py tests/test_sandbox_findings.py
-
-      - name: Run the test suite
-        shell: bash
-        env:
-          PYTHONUNBUFFERED: "1"
-          PYTHONFAULTHANDLER: "1"
-        run: |
-          # -s and a line-buffered interpreter so a failure is in the log
-          # even when the job is stopped before pytest prints its summary.
-          if [ -x .venv/bin/pytest ]; then
-            PY=.venv/bin/pytest
-          else
-            PY=.venv/Scripts/pytest.exe
-          fi
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            exec "$PY" -ra --tb=short --durations=15 \
-              --ignore=tests/test_sandbox.py --ignore=tests/test_sandbox_findings.py
-          fi
-          exec "$PY" -ra --tb=short --durations=15
+    uses: ./.github/workflows/pytest-suite.yml
+    with:
+      os: ${{ matrix.os }}
+      python-version: ${{ matrix.python }}
+      job-timeout: ${{ matrix.job-timeout }}

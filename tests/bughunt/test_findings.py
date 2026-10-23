@@ -36,10 +36,6 @@ def config_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest.mark.xfail(
-    reason="BH-S01: a design script can clear AICAD_SANDBOX_CHILD and skip the plugin consent gate",
-    strict=False,
-)
 def test_bh_s01_design_script_cannot_clear_the_plugin_gate(tmp_path, config_home):
     _sandbox_or_skip()
     allow_design_scripts(tmp_path)
@@ -56,10 +52,6 @@ def test_bh_s01_design_script_cannot_clear_the_plugin_gate(tmp_path, config_home
     assert "PluginConsentError" in str(payload.get("stdout"))
 
 
-@pytest.mark.xfail(
-    reason="BH-S02: a sandboxed script can signal its parent (signal 0 was delivered)",
-    strict=False,
-)
 def test_bh_s02_script_cannot_signal_its_parent(tmp_path):
     _sandbox_or_skip()
     script = (
@@ -75,10 +67,6 @@ def test_bh_s02_script_cannot_signal_its_parent(tmp_path):
     assert (tmp_path / "signal.txt").read_text(encoding="utf-8").startswith("denied")
 
 
-@pytest.mark.xfail(
-    reason="BH-S03: a script can leave a detached child running after the tool returns",
-    strict=False,
-)
 def test_bh_s03_script_cannot_leave_a_detached_child(tmp_path):
     _sandbox_or_skip()
     script = (
@@ -258,10 +246,6 @@ def test_bh_f05_corrupt_requirements_do_not_switch_the_open_project(tmp_path, co
     assert workspace.root.resolve() == home.resolve()
 
 
-@pytest.mark.xfail(
-    reason="BH-F06: a design script that fails still consumes the one-shot network grant",
-    strict=False,
-)
 def test_bh_f06_a_failed_script_keeps_the_network_grant(tmp_path, config_home):
     _sandbox_or_skip()
     allow_design_scripts(tmp_path)

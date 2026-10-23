@@ -4,6 +4,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 Add a new date as a section at the top. Add a row at the top of that day's table. Keep the rationale to one line.
 
+## 2026-10-23
+
+| Decision | Rationale |
+| --- | --- |
+| Windows and macOS tests run on every pull request and on every push to main | Manual dispatch still starts the workflow. The weekly schedule and the cross-platform label no longer select those jobs. |
+
 ## 2026-10-22
 
 | Decision | Rationale |
