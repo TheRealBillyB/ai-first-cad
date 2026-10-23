@@ -9,8 +9,11 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+import numpy as np
+
 from aicad import kernel
 from aicad.document import Document
+from aicad.errors import GeometryError
 from aicad.fea import fea_available, select_faces
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -388,3 +391,141 @@ def test_missing_solver_message_names_ccx(monkeypatch):
     available, reason = fea_available()
     assert available is False
     assert "ccx" in reason
+
+
+def test_pressure_on_a_round_hole_is_not_one_sideways_force():
+    pytest.importorskip("gmsh")
+    from aicad.fea import _apply_load, _mesh_solid
+
+    plate = kernel.make_from_ops(
+        [
+            {"op": "add", "shape": "box", "size": [20, 20, 6], "center": [0, 0, 3]},
+            {"op": "cut", "shape": "cylinder", "radius": 3, "height": 10, "center": [0, 0, 3]},
+        ]
+    )
+    faces = kernel.describe_faces(plate)
+    hole = [face for face in faces if face["kind"] == "cylinder"]
+    assert len(hole) == 1
+    area = float(hole[0]["area_mm2"])
+    mesh = _mesh_solid(plate, 2.0, 1)
+    forces = np.zeros((len(mesh["points"]), 3))
+    _apply_load(
+        mesh,
+        {"kind": "pressure", "name": "bore", "spec": {"magnitude": 10}, "faces": hole},
+        forces,
+    )
+    resultant = forces.sum(axis=0)
+    # 10 MPa on the whole lateral area, applied along one normal, is about 1130 N.
+    assert float(np.linalg.norm(resultant)) < 0.02 * 10 * area
+
+    cube = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10], "center": [0, 0, 5]}])
+    top = [face for face in kernel.describe_faces(cube) if face["kind"] == "plane" and face["normal"][2] > 0.9]
+    mesh = _mesh_solid(cube, 2.5, 1)
+    forces = np.zeros((len(mesh["points"]), 3))
+    _apply_load(
+        mesh,
+        {"kind": "pressure", "name": "top", "spec": {"magnitude": 1}, "faces": top},
+        forces,
+    )
+    planar = forces.sum(axis=0)
+    assert planar[0] == pytest.approx(0, abs=1e-6)
+    assert planar[1] == pytest.approx(0, abs=1e-6)
+    assert planar[2] == pytest.approx(-100, rel=0.02)
+
+
+@needs_solver
+def test_a_load_on_the_fixed_face_is_not_a_pass():
+    from aicad.fea import solve_part
+
+    report = solve_part(
+        _beam(),
+        {
+            "material": "steel",
+            "mesh_size_mm": 3,
+            "target_safety_factor": 2,
+            "fixes": [{"name": "end", "select": {"kind": "plane", "normal": [1, 0, 0]}}],
+            "loads": [
+                {
+                    "name": "same",
+                    "type": "force",
+                    "vector": [0, 0, -100],
+                    "select": {"kind": "plane", "normal": [1, 0, 0]},
+                }
+            ],
+        },
+        part_name="beam",
+    )
+    assert report.status == "not_solved"
+    assert report.min_safety_factor is None
+    assert report.review["status"] != "pass"
+
+
+@needs_solver
+def test_a_disconnected_body_cannot_pass():
+    from aicad.fea import solve_part
+
+    shape = kernel.make_from_script(
+        "part = Compound(children=[Box(10, 10, 10), Pos(40, 0, 0) * Box(10, 10, 10)])\n"
+    )
+    report = solve_part(
+        shape,
+        {
+            "material": "steel",
+            "mesh_size_mm": 3,
+            "target_safety_factor": 2,
+            "fixes": [{"name": "left", "select": {"kind": "plane", "normal": [-1, 0, 0], "at": [-5, 0, 0]}}],
+            "loads": [
+                {
+                    "name": "right",
+                    "type": "force",
+                    "vector": [0, 0, -20],
+                    "select": {"kind": "plane", "normal": [1, 0, 0], "at": [45, 0, 0]},
+                }
+            ],
+        },
+        part_name="two",
+    )
+    assert report.review["status"] != "pass"
+    if report.status == "solved":
+        assert report.max_displacement_mm > 1
+        assert any("do not trust" in item.lower() for item in report.warnings)
+
+
+def test_non_finite_mechanics_inputs_are_rejected():
+    from aicad.fea import solve_part
+
+    beam = _beam()
+    base = {
+        "material": "steel",
+        "fixes": [{"name": "root", "select": {"kind": "plane", "normal": [-1, 0, 0]}}],
+        "loads": [
+            {
+                "name": "tip",
+                "type": "force",
+                "vector": [0, 0, -10],
+                "select": {"kind": "plane", "normal": [1, 0, 0]},
+            }
+        ],
+    }
+    with pytest.raises(GeometryError, match="mesh_size_mm"):
+        solve_part(beam, {**base, "mesh_size_mm": float("nan")})
+    with pytest.raises(GeometryError, match="target_safety_factor"):
+        solve_part(beam, {**base, "target_safety_factor": float("inf")})
+    with pytest.raises(GeometryError, match="finite"):
+        bad = {**base, "loads": [{**base["loads"][0], "vector": [float("nan"), 0, -10]}]}
+        solve_part(beam, bad)
+    with pytest.raises(GeometryError, match="finite"):
+        solve_part(
+            beam,
+            {
+                **base,
+                "loads": [
+                    {
+                        "name": "squeeze",
+                        "type": "pressure",
+                        "magnitude": float("nan"),
+                        "select": {"kind": "plane", "normal": [1, 0, 0]},
+                    }
+                ],
+            },
+        )
