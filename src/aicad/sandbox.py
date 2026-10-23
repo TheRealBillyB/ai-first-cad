@@ -48,15 +48,23 @@ WARNING = (
     "project does not turn it on."
 )
 
-# Windows starts the child through this snippet. ``python -m`` imports aicad
-# before main() runs, so an import error never reaches the child's handler.
-# A partial native import can then hang until the wall-clock limit.
+# Windows starts the child through this snippet. Loading the runner by name
+# imports aicad before main() runs, so an import error never reaches the
+# child's handler. A partial native import can then hang until the wall-clock
+# limit. The runner file is an argument, so the project folder is not where
+# that import starts.
 _WINDOWS_CHILD_BOOT = r"""
-import json, os, sys, traceback
+import importlib.util, json, os, sys, traceback
 from pathlib import Path
 job = Path(sys.argv[1])
+runner = Path(sys.argv[2])
 try:
-    from aicad.sandbox_run import main
+    spec = importlib.util.spec_from_file_location("aicad.sandbox_run", runner)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load {runner}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    main = module.main
 except Exception as exc:
     try:
         detail = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
@@ -1242,6 +1250,31 @@ def _kill_process_tree(leader: int, seen: set[int], lock: threading.Lock) -> Non
         _kill_pid(pid)
 
 
+def _sandbox_runner() -> Path:
+    """This install's sandbox_run.py. The child loads that file, not a name from the project."""
+
+    import importlib.util
+
+    spec = importlib.util.find_spec("aicad.sandbox_run")
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    if not isinstance(origin, str) or not origin:
+        raise ScriptError("The sandbox runner is not a file in this install.")
+    return Path(origin).resolve()
+
+
+def _child_command(job: Path) -> list[str]:
+    """Python command for one sandbox child.
+
+    ``-P`` leaves the working directory off ``sys.path``. The runner argument
+    is the installed file, so the child does not look the module up by name.
+    """
+
+    runner = str(_sandbox_runner())
+    if sys.platform == "win32":
+        return [sys.executable, "-P", "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job), runner]
+    return [sys.executable, "-P", "-B", "-u", runner, str(job)]
+
+
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
@@ -1263,10 +1296,9 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         (job / "script.py").write_text(script, encoding="utf-8")
     # -P is the same rule as PYTHONSAFEPATH: the project is the working
     # directory, and it must not be the first place Python imports from.
-    if sys.platform == "win32":
-        command = [sys.executable, "-P", "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job)]
-    else:
-        command = [sys.executable, "-P", "-m", "aicad.sandbox_run", str(job)]
+    # The runner is this install's file, not a module name looked up from
+    # the working directory.
+    command = _child_command(job)
     profile_path: Path | None = None
     if sys.platform == "darwin":
         from aicad.sandbox_macos import build_profile, command_prefix

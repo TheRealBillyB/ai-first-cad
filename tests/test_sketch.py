@@ -335,7 +335,7 @@ def test_cli_dimension_changes_the_part(tmp_path):
         encoding="utf-8",
     )
     workspace = tmp_path / "ws"
-    base = [sys.executable, "-m", "aicad"]
+    base = [sys.executable, "-P", "-m", "aicad"]
     workspace_arg = ["--workspace", str(workspace)]
     created = subprocess.run(
         [*base, "sketch", "plate", "--file", str(spec), *workspace_arg],

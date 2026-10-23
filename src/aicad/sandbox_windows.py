@@ -812,7 +812,9 @@ def _probe_command(workspace: Path) -> list[str]:
     # The real script imports aicad. A probe that only prints can succeed in a
     # container that then fails to load the geometry libraries.
     script.write_text("import aicad\nprint('sandbox-ok')\n", encoding="utf-8")
-    return [sys.executable, "-B", "-u", str(script)]
+    # -P keeps the project folder, which is both the working directory and the
+    # script directory, off sys.path. The script path is absolute.
+    return [sys.executable, "-P", "-B", "-u", str(script.resolve())]
 
 
 def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
