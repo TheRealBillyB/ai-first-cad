@@ -33,7 +33,7 @@ A script the assistant sends runs in a separate process. That process can read a
 
 A design script, one program that calls several steps, stays off until you allow it with `aicad allow-scripts` or the button in the app. The app shows a warning before you do. Each of those runs is appended to `.aicad/script_log.jsonl` in the project. That log sits in the project folder, so a later script can edit it. It is a record you can read, not a lock. A script that only builds one solid (`part = ...`) uses the same confined process. It does not need the allow step.
 
-Opening a project does not run Python stored in it. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data.
+Opening a project does not run Python stored in it. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data. Importing a STEP file reads that file and does not open another path named inside it.
 
 The sandbox process uses the project folder as its working directory. That folder is not placed on Python's import path. An import path entry that is the project, or a directory inside it, is removed before the process starts. A relative entry is made absolute from the program that launched the script, so it is not read from the project. A module or package shipped in the project cannot run in place of the sandbox. The limits are applied before the script runs.
 

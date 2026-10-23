@@ -218,17 +218,23 @@ def test_step_split_external_name_outside_the_folder_is_not_opened(layout):
     _assert_canary_absent(outside, scratch)
 
 
-def test_step_external_file_in_the_same_folder_is_read(layout):
+def test_step_external_file_in_the_same_folder_is_not_opened(layout):
+    """A name in the same folder is not opened. Only the STEP file itself is read."""
     project, outside, scratch, _secret = layout
     sibling = project / "sibling.step"
     export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [5, 5, 5]}]), sibling)
+    before = _digest(sibling)
     step = project / "local.step"
     _assembly_step(step, "sibling.step", "missing-local.step")
     _write_session(project, [{"name": "local", "source": "step", "step_file": "local.step"}])
     opened = _open(project)
     info = opened.list_parts()[0]
-    assert info.built is True
-    assert info.volume_mm3 == pytest.approx(125)
+    assert info.built is False
+    assert info.volume_mm3 != pytest.approx(125)
+    with pytest.raises(GeometryError):
+        import_step_file(step)
+    assert _digest(sibling) == before
+    assert not (project / "missing-local.step").exists()
     _assert_canary_absent(outside, scratch)
 
 

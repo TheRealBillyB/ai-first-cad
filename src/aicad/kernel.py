@@ -34,7 +34,6 @@ from build123d import (
     export_step,
     export_stl,
     extrude,
-    import_step,
     revolve,
 )
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
@@ -1551,9 +1550,9 @@ def export_stl_file(
         raise GeometryError(f"Could not write STL file {path}.")
 
 
-# Entity names that make the STEP reader open another file. The check is
-# case-insensitive. A comment cannot hide a name: the text is searched with
-# comments removed as well as raw.
+# Entity names that point at another file. The check is case-insensitive.
+# A comment cannot hide a name: the text is searched with comments removed
+# as well as raw.
 _STEP_EXTERNAL_MARKERS = (
     "document_file",
     "applied_document_reference",
@@ -1564,6 +1563,12 @@ _STEP_EXTERNAL_MARKERS = (
 
 
 def import_step_file(path: Path) -> Shape:
+    """Read one STEP file into a solid.
+
+    Only this file is opened. A name inside it that points at another file is
+    not followed, so a shared part cannot read or write outside the project
+    by naming some other path.
+    """
     if not path.is_file():
         raise GeometryError(f"STEP file not found: {path}")
     _refuse_step_file_outside_folder(path)
@@ -1571,7 +1576,9 @@ def import_step_file(path: Path) -> Shape:
         # The STEP parser logs through C stdout. That descriptor is the MCP
         # stream when `aicad serve` is running, so the bytes never reach it.
         with divert_native_stdio(stderr=True):
-            imported = import_step(path)
+            imported = _read_step_shape(path)
+    except GeometryError:
+        raise
     except Exception as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
     try:
@@ -1581,12 +1588,29 @@ def import_step_file(path: Path) -> Shape:
     return Shape(solid)
 
 
+def _read_step_shape(path: Path):
+    """Read the solids in ``path`` and do not open any other file it names."""
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_Reader
+    from build123d.topology import Shape as BuildShape
+
+    reader = STEPControl_Reader()
+    status = reader.ReadFile(str(path))
+    if status != IFSelect_RetDone or reader.TransferRoots() < 1:
+        raise GeometryError(f"Could not read STEP file {path}.")
+    shape = reader.OneShape()
+    if shape.IsNull():
+        raise GeometryError(f"Could not read STEP file {path}.")
+    return BuildShape.cast(shape)
+
+
 def _refuse_step_file_outside_folder(path: Path) -> None:
     """Refuse a STEP file that names a path outside the file's own folder.
 
-    An assembly file can point at another STEP file. The reader opens that
-    path. A name with a drive, a leading slash, a backslash climb, or ``..``
-    would leave the folder, so the file is not read at all.
+    An assembly file can name another STEP file. A name with a drive, a
+    leading slash, a backslash, or ``..`` would leave the folder, so the
+    file is not read at all. A name that stays in the folder is not opened
+    either: only this file is read.
     """
     try:
         text = path.read_text(encoding="latin-1")
@@ -1669,7 +1693,7 @@ def _read_step_literal(text: str, index: int) -> tuple[str, int]:
 
 
 def _step_mentions_external(text: str, code: str | None = None) -> bool:
-    """True when the file uses an entity that makes the reader open another file."""
+    """True when the file uses an entity that names another file."""
     for blob in (text, code):
         if blob is None:
             continue
