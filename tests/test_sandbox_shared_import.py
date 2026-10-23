@@ -2,8 +2,9 @@
 
 The canary is one file, SANDBOX_CANARY.txt, containing CANARY_HIT. Pasting or
 dropping a part, a bill-of-materials row, or a URL must not create it outside
-the project, and must not open a network connection. A STEP, SVG, or drawing
-that names another file or an address is opened as itself only.
+the project, and must not open a network connection. A STEP file is read as
+itself only. A name in it that leaves its folder is refused. A STEP, SVG, or
+drawing that names an address does not open a connection.
 """
 
 from __future__ import annotations
@@ -121,17 +122,17 @@ def test_dropped_step_does_not_read_or_write_outside_the_project(watch: _Watch):
     dropped = watch.outside / "dropped.step"
     _craft_step(base, dropped, str(watch.hidden))
     _craft_step(base, watch.outside / "also.step", str(watch.canary))
+    hidden_before = watch.hidden.read_bytes()
     document = Document(watch.project)
-    info = document.import_step("dropped", dropped)
-    assert info.built is True
-    assert document.measure("dropped").volume_mm3 == pytest.approx(8)
-    named = document.import_step("canaryref", watch.outside / "also.step")
-    assert named.built is True
-    assert document.measure("canaryref").volume_mm3 == pytest.approx(8)
-    copied = watch.project / "imports" / "dropped.step"
-    assert copied.is_file()
+    with pytest.raises(GeometryError, match="outside its folder"):
+        document.import_step("dropped", dropped)
+    with pytest.raises(GeometryError, match="outside its folder"):
+        document.import_step("canaryref", watch.outside / "also.step")
+    assert document.list_parts() == []
+    assert not (watch.project / "imports").exists()
+    assert watch.hidden.read_bytes() == hidden_before
     reopened = Document(watch.project)
-    assert reopened.measure("dropped").volume_mm3 == pytest.approx(8)
+    assert reopened.list_parts() == []
     watch.assert_quiet()
 
 
@@ -141,14 +142,16 @@ def test_opening_a_project_ignores_a_relative_step_reference(watch: _Watch):
     base = _base_step(imports)
     shared = imports / "shared.step"
     _craft_step(base, shared, "../../outside/hidden.step")
+    hidden_before = watch.hidden.read_bytes()
     _session(watch.project, [{"name": "shared", "source": "step", "step_file": "imports/shared.step"}])
     document = Document(watch.project)
-    assert document.list_parts()[0].built is True
-    assert document.measure("shared").volume_mm3 == pytest.approx(8)
+    assert document.list_parts()[0].built is False
+    assert any("outside its folder" in problem for problem in document.problems)
     home = Workspace(watch.root / "here")
     opened = home.open_project(watch.project)
     assert opened["parts"][0]["name"] == "shared"
-    assert home.document.measure("shared").volume_mm3 == pytest.approx(8)
+    assert home.document.list_parts()[0].built is False
+    assert watch.hidden.read_bytes() == hidden_before
     watch.assert_quiet()
 
 

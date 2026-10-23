@@ -835,35 +835,49 @@ async function onSketchClick(event) {
     if (!ui.rectStart) { ui.rectStart = [x, y]; return; }
     const [x0, y0] = ui.rectStart;
     ui.rectStart = null;
-    await commitSketch(rectangleSpec(x0, y0, x, y));
+    appendRectangle(spec, x0, y0, x, y);
+    await commitSketch(spec);
   }
 }
 
-function rectangleSpec(x0, y0, x1, y1) {
-  const width = Math.max(0.5, Math.abs(x1 - x0));
-  const height = Math.max(0.5, Math.abs(y1 - y0));
-  return {
-    plane: "xy",
-    entities: [
-      { id: "p0", type: "point", at: [round(x0), round(y0)] },
-      { id: "p1", type: "point", at: [round(x1), round(y0)] },
-      { id: "p2", type: "point", at: [round(x1), round(y1)] },
-      { id: "p3", type: "point", at: [round(x0), round(y1)] },
-      { id: "bottom", type: "line", start: "p0", end: "p1" },
-      { id: "right", type: "line", start: "p1", end: "p2" },
-      { id: "top", type: "line", start: "p2", end: "p3" },
-      { id: "left", type: "line", start: "p3", end: "p0" },
-    ],
-    constraints: [
-      { type: "fix", entity: "p0" },
-      { type: "horizontal", entity: "bottom" },
-      { type: "horizontal", entity: "top" },
-      { type: "vertical", entity: "right" },
-      { type: "vertical", entity: "left" },
-      { type: "distance", a: "p0", b: "p1", value: round(width), name: "width" },
-      { type: "distance", a: "p0", b: "p3", value: round(height), name: "height" },
-    ],
-  };
+function appendRectangle(spec, x0, y0, x1, y1) {
+  spec.plane = spec.plane || "xy";
+  spec.entities = spec.entities || [];
+  spec.constraints = spec.constraints || [];
+  const width = round(Math.max(0.5, Math.abs(x1 - x0)));
+  const height = round(Math.max(0.5, Math.abs(y1 - y0)));
+  const empty = spec.entities.length === 0;
+  const p0 = empty ? "p0" : freshId("p", spec);
+  spec.entities.push({ id: p0, type: "point", at: [round(x0), round(y0)] });
+  const p1 = empty ? "p1" : freshId("p", spec);
+  spec.entities.push({ id: p1, type: "point", at: [round(x1), round(y0)] });
+  const p2 = empty ? "p2" : freshId("p", spec);
+  spec.entities.push({ id: p2, type: "point", at: [round(x1), round(y1)] });
+  const p3 = empty ? "p3" : freshId("p", spec);
+  spec.entities.push({ id: p3, type: "point", at: [round(x0), round(y1)] });
+  const bottom = empty ? "bottom" : freshId("l", spec);
+  spec.entities.push({ id: bottom, type: "line", start: p0, end: p1 });
+  const right = empty ? "right" : freshId("l", spec);
+  spec.entities.push({ id: right, type: "line", start: p1, end: p2 });
+  const top = empty ? "top" : freshId("l", spec);
+  spec.entities.push({ id: top, type: "line", start: p2, end: p3 });
+  const left = empty ? "left" : freshId("l", spec);
+  spec.entities.push({ id: left, type: "line", start: p3, end: p0 });
+  spec.constraints.push({ type: "fix", entity: p0 });
+  spec.constraints.push({ type: "horizontal", entity: bottom });
+  spec.constraints.push({ type: "horizontal", entity: top });
+  spec.constraints.push({ type: "vertical", entity: right });
+  spec.constraints.push({ type: "vertical", entity: left });
+  spec.constraints.push({ type: "distance", a: p0, b: p1, value: width, name: uniqueConstraintName(spec, "width") });
+  spec.constraints.push({ type: "distance", a: p0, b: p3, value: height, name: uniqueConstraintName(spec, "height") });
+}
+
+function uniqueConstraintName(spec, base) {
+  const used = new Set((spec.constraints || []).map((item) => item.name).filter(Boolean));
+  if (!used.has(base)) return base;
+  let index = 1;
+  while (used.has(base + index)) index += 1;
+  return base + index;
 }
 
 function round(value) { return Math.round(value * 1000) / 1000; }
@@ -902,19 +916,30 @@ async function buildSolid() {
   const height = Number($("extrude-height").value);
   const op = $("extrude-op").value;
   const name = $("extrude-name").value.trim() || "part";
-  const circles = (spec.entities || []).filter((entity) => entity.type === "circle").map((entity) => entity.id);
-  let step;
-  if (circles.length && op !== "revolve") {
-    step = { op: op === "cut" ? "cut" : "extrude", circle: circles[0], height, name: op };
+  const entities = spec.entities || [];
+  const circles = entities.filter((entity) => entity.type === "circle" && !entity.construction).map((entity) => entity.id);
+  const loop = loopPoints(spec);
+  let steps;
+  if (op === "revolve") {
+    if (loop.length < 3) throw new Error("A revolve needs a profile of at least three points.");
+    steps = [{ op: "revolve", points: loop, axis: "y", name: "revolve" }];
+  } else if (op === "cut") {
+    if (circles.length) steps = [{ op: "cut", circle: circles[0], height, name: "cut" }];
+    else if (loop.length >= 3) steps = [{ op: "cut", points: loop, height, name: "cut" }];
+    else throw new Error("A cut needs a circle or a profile of at least three points.");
+  } else if (loop.length >= 3) {
+    steps = [{ op: "extrude", points: loop, height, name: "extrude" }];
+    circles.forEach((circle) => {
+      steps.push({ op: "cut", circle, height: height + 2, z: -1, name: "cut_" + circle });
+    });
+  } else if (circles.length) {
+    steps = [{ op: "extrude", circle: circles[0], height, name: "extrude" }];
   } else {
-    const points = ["p0", "p1", "p2", "p3"].filter((id) => (spec.entities || []).some((entity) => entity.id === id));
-    const loop = points.length >= 3 ? points : loopPoints(spec);
-    if (op === "revolve") step = { op: "revolve", points: loop, axis: "y", name: "revolve" };
-    else step = { op: op === "cut" ? "cut" : "extrude", points: loop, height, name: op };
+    throw new Error("Extrude needs a profile of at least three points, or a circle.");
   }
   const exists = (ui.state.parts || []).some((part) => part.name === name);
-  if (exists) await command("update_part_from_sketch", { name, sketch: ui.sketchName, steps: [step] });
-  else await command("create_part_from_sketch", { name, sketch: ui.sketchName, steps: [step] });
+  if (exists) await command("update_part_from_sketch", { name, sketch: ui.sketchName, steps });
+  else await command("create_part_from_sketch", { name, sketch: ui.sketchName, steps });
   ui.viewAssembly = null;
   ui.part = name;
   ui.stage = "solid";
@@ -923,17 +948,29 @@ async function buildSolid() {
 }
 
 function loopPoints(spec) {
-  const lines = (spec.entities || []).filter((entity) => entity.type === "line");
-  if (!lines.length) return [];
-  const chain = [lines[0].start, lines[0].end];
-  const used = new Set([lines[0].id]);
-  let cursor = lines[0].end;
-  while (used.size < lines.length) {
-    const next = lines.find((line) => !used.has(line.id) && (line.start === cursor || line.end === cursor));
+  const edges = (spec.entities || []).filter((entity) =>
+    (entity.type === "line" || entity.type === "arc") && !entity.construction
+  );
+  let best = [];
+  edges.forEach((edge, index) => {
+    const chain = walkChain(edges, index);
+    if (chain.length > best.length) best = chain;
+  });
+  return best;
+}
+
+function walkChain(edges, startIndex) {
+  const first = edges[startIndex];
+  const chain = [first.start, first.end];
+  const used = new Set([first.id]);
+  let cursor = first.end;
+  while (used.size < edges.length) {
+    const next = edges.find((edge) => !used.has(edge.id) && (edge.start === cursor || edge.end === cursor));
     if (!next) break;
     used.add(next.id);
     cursor = next.start === cursor ? next.end : next.start;
-    if (cursor !== chain[0]) chain.push(cursor);
+    if (cursor === chain[0]) break;
+    chain.push(cursor);
   }
   return chain;
 }
@@ -1731,9 +1768,10 @@ function rangeFor(item) {
   }
   let range;
   if (item.kind === "angle") range = { min: 0, max: 360, step: 1 };
-  else if (item.kind === "offset") {
+  else if (item.kind === "offset" || item.kind === "signed") {
     const span = Math.max(40, Math.abs(value) * 2);
-    range = { min: Math.round((value - span) * 10) / 10, max: Math.round((value + span) * 10) / 10, step: 0.5 };
+    const step = item.kind === "signed" ? 0.1 : 0.5;
+    range = { min: Math.round((value - span) * 10) / 10, max: Math.round((value + span) * 10) / 10, step };
   } else {
     const max = Math.max(value * 2, value + 10, 1);
     const min = Math.min(0.2, Math.max(value, 0.05));
