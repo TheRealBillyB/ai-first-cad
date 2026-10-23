@@ -135,6 +135,77 @@ def test_gear_ratio_and_limit_clamp():
     assert solved["warnings"]
 
 
+def test_gear_follows_the_driver_stop():
+    """A driver held at its stop must not leave the driven gear at the unclamped command."""
+    spec = {
+        "name": "jaws",
+        "instances": [
+            {"name": "body", "part": "body"},
+            {"name": "left", "part": "jaw"},
+            {"name": "right", "part": "jaw"},
+        ],
+        "joints": [
+            {
+                "name": "left",
+                "type": "revolute",
+                "parent": "body",
+                "child": "left",
+                "axis": [0, 0, 1],
+                "value": 90,
+                "max": 10,
+            },
+            {
+                "name": "right",
+                "type": "revolute",
+                "parent": "body",
+                "child": "right",
+                "axis": [0, 0, 1],
+                "value": 0,
+            },
+        ],
+        "relations": [{"name": "mesh", "type": "gear", "driver": "left", "driven": "right", "ratio": -1}],
+    }
+    solved = solve(spec)
+    values = {joint["name"]: joint for joint in solved["joints"]}
+    assert values["left"]["commanded"] == pytest.approx(90)
+    assert values["left"]["value"] == pytest.approx(10)
+    assert values["right"]["commanded"] == pytest.approx(-10)
+    assert values["right"]["value"] == pytest.approx(-10)
+    frames = {item["name"]: item["matrix"] for item in solved["instances"]}
+    angle = math.radians(-10)
+    assert transform_point(frames["right"], [10, 0, 0]) == pytest.approx(
+        [10 * math.cos(angle), 10 * math.sin(angle), 0.0],
+        abs=1e-3,
+    )
+
+
+def test_cylindrical_slide_override_is_a_number_not_a_crash():
+    spec = {
+        "name": "screw",
+        "instances": [
+            {"name": "base", "part": "base"},
+            {"name": "screw", "part": "link"},
+        ],
+        "joints": [
+            {
+                "name": "ram",
+                "type": "cylindrical",
+                "parent": "base",
+                "child": "screw",
+                "axis": [0, 0, 1],
+                "value": 0,
+                "slide": 0,
+            }
+        ],
+    }
+    solved = solve(spec, {"ram": {"value": 90, "slide": 25}})
+    frames = {item["name"]: item["matrix"] for item in solved["instances"]}
+    assert transform_point(frames["screw"], [10, 0, 0]) == pytest.approx([0.0, 10.0, 25.0], abs=1e-3)
+    row = next(joint for joint in solved["joints"] if joint["name"] == "ram")
+    assert row["value"] == pytest.approx(90)
+    assert row["slide"] == pytest.approx(25)
+
+
 def test_four_bar_open_branch_at_zero():
     spec = {
         "name": "bar",
