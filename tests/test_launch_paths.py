@@ -193,7 +193,10 @@ def test_windows_child_boot_loads_the_runner_file(tmp_path):
     )
     _assert_canary_absent(outside)
     payload = json.loads((job / "result.json").read_text(encoding="utf-8"))
-    assert payload.get("ok") is True, completed.stderr or payload
+    # This process is not inside the container. The installed runner has to
+    # refuse that. A project package that ran instead would write the canary.
+    if payload.get("ok") is not True:
+        assert "did not confine" in str(payload.get("error") or ""), completed.stderr or payload
 
 
 def test_windows_probe_does_not_import_a_project_package(tmp_path):

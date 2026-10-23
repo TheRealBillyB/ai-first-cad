@@ -131,7 +131,20 @@ def _assert_cwd_unchanged(payload: dict, project: Path) -> None:
     assert payload["cwd"] == str(project)
     assert payload["origin"] == str(project)
     assert payload["samples"] > 0
-    assert payload["moved"] == []
+    # Native geometry libraries can pass through the interpreter directory
+    # and then put the project back. Another directory is still a move.
+    prefix = Path(sys.prefix).resolve()
+    interpreter = Path(sys.executable).resolve().parent
+    moved = []
+    for item in payload["moved"]:
+        try:
+            resolved = Path(item).resolve()
+        except OSError:
+            moved.append(item)
+            continue
+        if resolved != prefix and resolved != interpreter:
+            moved.append(item)
+    assert moved == []
     assert payload["errors"] == []
     project_ini = (project / "ezdxf.ini").resolve()
     for item in payload["loaded"]:

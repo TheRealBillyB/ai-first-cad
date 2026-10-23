@@ -8,6 +8,8 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| The child loader does not run a script that is outside the container | Loading the installed runner file is not confinement. Windows still requires an AppContainer in a job, and macOS still requires its profile. |
+| A geometry import may pass through the interpreter directory | Native libraries change that directory and put the project back. A relative file in the project still has to open, and no other directory counts as staying put. |
 | A slow Windows firewall command still has to finish the block | After earlier scripts the command can take longer than 30 seconds. The wait is longer, and the script still does not start when the block is missing. |
 | The program is started with the `aicad` command or `python -P` | The working directory is a project folder, so that start keeps the folder off the import path. |
 | Catalog parts are rows in dimension tables, and a joint may name a mate on those parts | Adding a designation is a new row, and the assembly stores the mate name so the anchor stays the catalog frame. |
