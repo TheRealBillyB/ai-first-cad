@@ -141,11 +141,15 @@ def build_parser() -> argparse.ArgumentParser:
     section.add_argument("--normal", help="x,y,z normal of an arbitrary plane")
 
     catalog = commands.add_parser(
-        "catalog", parents=[common], help="Search standard fasteners, nuts, washers, and bearings."
+        "catalog",
+        parents=[common],
+        help="Search bearings, seals, fasteners, motors, and gearboxes.",
     )
     catalog.add_argument("query", nargs="?", default="")
 
-    insert = commands.add_parser("insert", parents=[common], help="Insert a catalog part and place it.")
+    insert = commands.add_parser(
+        "insert", parents=[common], help="Insert a catalog part by designation and place it."
+    )
     insert.add_argument("name")
     insert.add_argument("--kind", required=True)
     insert.add_argument("--size", required=True)

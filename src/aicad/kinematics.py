@@ -92,6 +92,13 @@ def normalize(spec: dict) -> dict:
             record["max"] = float(joint["max"])
         if "min" in record and "max" in record and record["min"] > record["max"]:
             raise GeometryError(f"Joint {jname!r} has min greater than max.")
+        for side in ("parent", "child"):
+            mate_name = joint.get(f"{side}_mate")
+            if mate_name in (None, ""):
+                continue
+            if not isinstance(mate_name, str) or not mate_name.strip():
+                raise GeometryError(f"Joint {jname!r} {side}_mate must be a mate name.")
+            record[f"{side}_mate"] = mate_name.strip()
         joints.append(record)
     _roots_and_cycles(seen, joints)
     relations = []
