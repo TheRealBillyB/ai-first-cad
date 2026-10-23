@@ -35,8 +35,6 @@ Git adds the line when you pass `-s`:
 git commit -s
 ```
 
-Pass `-s` only. Do not sign the commit with GPG or SSH.
-
 The trailer has to match the commit's author name and email:
 
 ```text
