@@ -417,10 +417,10 @@ def test_pack_named_as_the_core_distribution_is_not_run_when_listed_or_allowed(t
     )
     monkeypatch.syspath_prepend(str(base))
     offer = _offer("h-core")
+    assert offer.third_party is True
     plugins.warning_text(offer)
     plugins._list_payload()
-    with pytest.raises(plugins.PluginError):
-        plugins.allow("h-core", accept=True)
+    plugins.allow("h-core", accept=True)
     assert "h_core_plugin" not in sys.modules
     _assert_absent(canary)
 

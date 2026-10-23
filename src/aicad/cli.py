@@ -441,6 +441,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     simulate_from.add_argument("name")
 
+    gear = commands.add_parser(
+        "gear",
+        parents=[common],
+        help="Create or replace a spur, helical, straight bevel, or spiral bevel gear.",
+    )
+    gear.add_argument("name")
+    gear.add_argument("--file", type=Path, default=None, help="JSON gear spec. Flags override it.")
+    gear.add_argument("--type", default=None, help="spur, helical, straight_bevel, or spiral_bevel.")
+    gear.add_argument("--module", type=float, default=None, help="Normal module, or outer transverse module for a bevel.")
+    gear.add_argument("--teeth", type=int, default=None)
+    gear.add_argument("--pressure-angle", type=float, default=None)
+    gear.add_argument("--helix-angle", type=float, default=None, help="Degrees. Positive is right-hand.")
+    gear.add_argument("--spiral-angle", type=float, default=None, help="Mean spiral angle, degrees. Positive is right-hand.")
+    gear.add_argument("--face-width", type=float, default=None)
+    gear.add_argument("--profile-shift", type=float, default=None)
+    gear.add_argument("--shaft-angle", type=float, default=None)
+    gear.add_argument("--mate-teeth", type=int, default=None)
+    gear.add_argument("--bore", type=float, default=None)
+    gear.add_argument("--rack", default=None, help="ISO 53 basic rack A, B, C, or D.")
+    gear.add_argument("--hand", default=None, choices=["right", "left"])
+    gear.add_argument("--at", default=None, help="Position x,y,z in mm.")
+    gear.add_argument("--rot", default=None, help="Rotation about X, Y, Z in degrees.")
+
     from aicad.plugins import add_cli
 
     add_cli(commands, common)
@@ -545,6 +568,34 @@ def _dispatch(args: argparse.Namespace) -> int:
             rotation_deg=_triple(args.rot, "--rot"),
         )
         return emit(info.to_dict())
+    if args.command == "gear":
+        spec = _json_object(args.file) if args.file is not None else {}
+        overrides = {
+            "type": args.type,
+            "module_mm": args.module,
+            "teeth": args.teeth,
+            "pressure_angle_deg": args.pressure_angle,
+            "helix_angle_deg": args.helix_angle,
+            "spiral_angle_deg": args.spiral_angle,
+            "face_width_mm": args.face_width,
+            "profile_shift": args.profile_shift,
+            "shaft_angle_deg": args.shaft_angle,
+            "mate_teeth": args.mate_teeth,
+            "bore_mm": args.bore,
+            "rack": args.rack,
+            "hand": args.hand,
+        }
+        for key, value in overrides.items():
+            if value is not None:
+                spec[key] = value
+        position = _triple(args.at, "--at") if args.at else None
+        rotation = _triple(args.rot, "--rot") if args.rot else None
+        names = {part.name for part in document.list_parts()}
+        if args.name in names:
+            report = document.update_gear(args.name, spec, position, rotation)
+        else:
+            report = document.create_gear(args.name, spec, position, rotation)
+        return emit(report)
     if args.command == "place":
         info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
         return emit(info.to_dict())

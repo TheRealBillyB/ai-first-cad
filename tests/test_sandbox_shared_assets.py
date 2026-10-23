@@ -297,6 +297,7 @@ def test_shared_font_config_does_not_open_an_outside_font(tmp_path):
         "import json, os\n"
         "from pathlib import Path\n"
         f"os.chdir({str(project)!r})\n"
+        "import aicad.gears.solid\n"
         "from aicad.document import Document\n"
         "from aicad.workspace import Workspace\n"
         "Document(Path(os.getcwd()))\n"
@@ -427,23 +428,35 @@ def test_font_config_import_restores_the_caller_directory(tmp_path, monkeypatch)
     import aicad.paths as paths
 
     package = Path(paths.__file__).resolve().parent
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
+    # The geometry libraries are already loaded in this process, so a later
+    # import must not move the caller.
     with aside_from_cwd():
-        assert Path.cwd().resolve() == package
-        assert not Path("local.txt").exists()
-        os.chdir(elsewhere)
-    assert Path.cwd().resolve() == project.resolve()
-    assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
-    Path("after.txt").write_text("after\n", encoding="utf-8")
-    assert (project / "after.txt").read_text(encoding="utf-8") == "after\n"
-    assert not (package / "after.txt").exists()
+        assert Path.cwd().resolve() == project.resolve()
+        assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
 
-    with pytest.raises(RuntimeError, match="import failed"):
+    import sys
+
+    removed = sys.modules.pop("ezdxf")
+    try:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
         with aside_from_cwd():
-            raise RuntimeError("import failed")
-    assert Path.cwd().resolve() == project.resolve()
-    assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
+            assert Path.cwd().resolve() == package
+            assert not Path("local.txt").exists()
+            os.chdir(elsewhere)
+        assert Path.cwd().resolve() == project.resolve()
+        assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
+        Path("after.txt").write_text("after\n", encoding="utf-8")
+        assert (project / "after.txt").read_text(encoding="utf-8") == "after\n"
+        assert not (package / "after.txt").exists()
+
+        with pytest.raises(RuntimeError, match="import failed"):
+            with aside_from_cwd():
+                raise RuntimeError("import failed")
+        assert Path.cwd().resolve() == project.resolve()
+        assert Path("local.txt").read_text(encoding="utf-8") == "kept\n"
+    finally:
+        sys.modules["ezdxf"] = removed
 
     from aicad.library import _catalog_class
 

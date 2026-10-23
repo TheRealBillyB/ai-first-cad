@@ -9,6 +9,7 @@ project or touches the file.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -27,14 +28,15 @@ def aside_from_cwd():
     """Import geometry libraries without applying a project font config.
 
     Those libraries read ``ezdxf.ini`` from the working directory the first
-    time they are imported. When that file is present, the import runs from
-    this package's directory. The caller's directory is restored when the
-    import returns, including when the import fails, so a relative path the
-    caller opens afterward stays in the caller's directory. When the file is
-    absent, the working directory is not changed.
+    time they are imported. When that file is present and the libraries are
+    not already loaded, the import runs from this package's directory. The
+    caller's directory is restored when the import returns, including when
+    the import fails, so a relative path the caller opens afterward stays in
+    the caller's directory. When the file is absent, or the libraries are
+    already loaded, the working directory is not changed.
     """
     with _CWD_LOCK:
-        if not _font_config_in_cwd():
+        if sys.modules.get("ezdxf") is not None or not _font_config_in_cwd():
             yield
             return
         origin = os.getcwd()

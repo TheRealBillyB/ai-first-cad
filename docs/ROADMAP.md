@@ -66,7 +66,7 @@ Requirements are checked against every design. The first kinds of goal: it holds
 
 **Planned.**
 
-- **Gear generator.** Builds spur, helical, straight bevel, spiral bevel, and hypoid gears from module, tooth count, pressure angle, and face width.
+- **Gear generator.** Done. Spur and helical gears from ISO 21771 and the ISO 53 basic rack, and straight and spiral bevel gears from ISO 23509 pitch cones with the AGMA 2005 virtual cylindrical gear. Module, tooth count, pressure angle, face width, helix or spiral angle, and profile shift. Bores, hubs, DIN 6885-1 keyways, and ISO 14 or DIN 5480 splines are optional. Hypoid gears remain a separate item.
 - **Hypoid gears.** Generates a true hypoid gear from offset, spiral angle, and ratio, with tooth geometry produced by simulating the generating and cutting process rather than an approximation.
 - **Gear mesh and backlash check.** Verifies that a gear pair meshes with a specified backlash and does not interfere through a full rotation.
 - **Gear-train solver.** Computes speed ratios and torques through a train of gears, including planetary arrangements.
