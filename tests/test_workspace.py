@@ -260,6 +260,15 @@ def test_settings_file_keeps_the_key_out_of_the_public_view(tmp_path, monkeypatc
     assert public_settings()["provider"] == "anthropic"
 
 
+def test_get_sketch_names_a_sketch():
+    from aicad.workspace import COMMANDS
+
+    description = COMMANDS["get_sketch"].parameters["properties"]["name"]["description"]
+    assert description == "Sketch name."
+    sketch = next(spec for spec in tool_specs() if spec["name"] == "get_sketch")
+    assert sketch["parameters"]["properties"]["name"]["description"] == "Sketch name."
+
+
 def test_cli_app_help_lists_the_workspace(tmp_path):
     import subprocess
     import sys

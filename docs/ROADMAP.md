@@ -31,7 +31,7 @@ A Python library, a command-line tool (`aicad`), and an MCP server (`aicad serve
 
 - **Section views.** Cut the part on a plane and get a picture of the profile, the cut area, and the thinnest width in that plane.
 - **Feature contribution.** Each added or subtracted shape reports how much material was new, already buried, or actually removed. An added shape is flagged when at least half of its volume was already inside the part. A cut is flagged when it removes nothing. This came from the example bracket: the first ribs spanned a band that sat almost entirely inside the boss, so only the tips stuck out. The old ribs are kept as an example that should fail.
-- **A parts library.** Socket-head screws, hex nuts, plain washers, and deep-groove ball bearings, built from published sizes by [bd_warehouse](https://github.com/gumyr/bd_warehouse). A STEP file from somewhere else (a McMaster-Carr download, a motor, a plate) can be imported and placed. Clearance works against any of these. Bought parts outside that set come in as STEP files.
+- **A parts library.** ISO 4762 socket-head screws, ISO 4032 nuts, ISO 7089 washers, ISO 15 deep-groove bearings, ISO 355 tapered roller bearings, DIN 3760 / ISO 6194 radial shaft seals, NEMA ICS 16 stepper faces, and a small set of published gearboxes. Common sizes are rows in the catalog tables. Fastener sizes outside those tables still come from [bd_warehouse](https://github.com/gumyr/bd_warehouse). A STEP file from somewhere else (a McMaster-Carr download, a plate) can be imported and placed. Clearance works against any of these.
 - **The bracket, redrawn.** The current example uses three gussets with a blunt toe. The feature report does not flag them. The buried-rib version remains so the check still has a failure to show.
 
 ### Sketches driven by constraints
@@ -74,7 +74,7 @@ Requirements are checked against every design. The first kinds of goal: it holds
 - **Kinematics.** Solves forward and inverse kinematics for a serial chain of joints, including the joint angles that reach a target pose.
 - **Positional error budget.** Estimates the end-point position error of a jointed mechanism from link deflection (using the strength check), gear backlash, joint stiffness, and encoder resolution, and reports pass or fail against a tolerance.
 - **Cable and pulley routing.** Routes cables over pulleys and guides through joints, and checks how cable length and tension change across a joint's range of motion.
-- **Standard parts library.** Inserts bearings, seals, fasteners, small motors, and gearboxes by catalog designation.
+- **Standard parts library.** **Done.** Inserts bearings, seals, fasteners, small motors, and gearboxes by catalog designation.
 - **Animated renders.** Renders a motion study to a GIF or a video for documentation.
 
 ### Assemblies and motion
