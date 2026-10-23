@@ -35,6 +35,8 @@ A design script, one program that calls several steps, stays off until you allow
 
 Opening a project does not run Python stored in it. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data.
 
+The sandbox process uses the project folder as its working directory. That folder is not placed on Python's import path, and an import path entry that points at the project is removed before the process starts. A module or package shipped in the project cannot run in place of the sandbox. The limits are applied before the script runs.
+
 Plugins are separate. Installed packs are listed from entry points without importing them. A third-party pack runs only after you allow the publisher, the version, and the permissions it declared. Opening a design does not allow or load a plugin. A design script cannot allow or load a plugin either. That refusal is a flag in the running script process, not an environment variable the script can clear. The warning is written by aicad, and the permission list is a declaration, not a sandbox. See [docs/plugins.md](docs/plugins.md).
 
 A one-shot network grant is used up only when the design script finishes without an error. If the script fails, the next run still has the grant.

@@ -61,6 +61,22 @@ A person designs the part here: sketch, extrude, select a face, edit a dimension
 
 Requirements are checked against every design. The first kinds of goal: it holds this load, it fits the printer bed, it stays under this mass.
 
+### Gears, mechanisms, and checks
+
+**Planned.**
+
+- **Gear generator.** Builds spur, helical, straight bevel, spiral bevel, and hypoid gears from module, tooth count, pressure angle, and face width.
+- **Hypoid gears.** Generates a true hypoid gear from offset, spiral angle, and ratio, with tooth geometry produced by simulating the generating and cutting process rather than an approximation.
+- **Gear mesh and backlash check.** Verifies that a gear pair meshes with a specified backlash and does not interfere through a full rotation.
+- **Gear-train solver.** Computes speed ratios and torques through a train of gears, including planetary arrangements.
+- **Motion study.** Drives assembly joints through angles or paths over time, and reports collisions and joint-limit violations.
+- **Kinematics.** Solves forward and inverse kinematics for a serial chain of joints, including the joint angles that reach a target pose.
+- **Positional error budget.** Estimates the end-point position error of a jointed mechanism from link deflection (using the strength check), gear backlash, joint stiffness, and encoder resolution, and reports pass or fail against a tolerance.
+- **Cable and pulley routing.** Routes cables over pulleys and guides through joints, and checks how cable length and tension change across a joint's range of motion.
+- **Packaging check.** Verifies that a set of parts fits inside a target envelope or outline.
+- **Standard parts library.** Inserts bearings, seals, fasteners, small motors, and gearboxes by catalog designation.
+- **Animated renders.** Renders a motion study to a GIF or a video for documentation.
+
 ### Assemblies and motion
 
 Parts joined by real joints. A revolute joint is a hinge. A prismatic joint is a slider. Gears, and other joint types, belong here too.
