@@ -59,7 +59,9 @@ An assembly places several parts with joints (fixed, revolute, prismatic,
 cylindrical), gear, linkage, or cylinder relations, named poses, and motions.
 A cylinder relation sets a barrel angle and a rod extension from a revolute.
 `run_motion` sweeps those joints and reports collisions, with a picture per
-frame. `check_cables` measures length, strain, bend radius, and pinching.
+frame. `run_motion_study` drives joints from expressions or keyframes, applies
+gear couplings, and reports collisions and joint-limit violations.
+`check_cables` measures length, strain, bend radius, and pinching.
 `estimate_power` turns gravity and payloads into joint torque and then into
 hydraulic pressure and flow, or motor current and a rough battery figure.
 Read the assumptions on those reports. Cables are kinematic polylines.
@@ -287,6 +289,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
 - `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
+- `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
 - `check_cables` routes polylines through waypoints fixed on parts. It reports length change, strain, bend-radius violations, and pinching. It does not simulate a flexible body.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
@@ -729,7 +732,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         or cylinder {driver, driven, stroke, moving_anchor, retracted_mm}.
         A linkage is a planar four-bar map, not a closed spatial loop. A cylinder
         keeps the rod eye on the moving clevis without adding a joint cycle.
-        poses, motions, cables, and actuators live on the same spec.
+        poses, motions, studies, cables, and actuators live on the same spec.
         """
         return guard(lambda: run("create_assembly", spec=spec))
 
@@ -738,7 +741,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """Replace an assembly with a new spec.
 
         The spec is the same object create_assembly takes: name, instances,
-        joints, relations, poses, motions, cables, and actuators. Parts it
+        joints, relations, poses, motions, studies, cables, and actuators. Parts it
         names must already be in the document. If the spec does not solve,
         the previous assembly is left as it was.
         """
@@ -751,7 +754,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def list_assemblies() -> dict:
-        """List assemblies, joint values, poses, and motion names."""
+        """List assemblies, joint values, poses, motion names, and motion studies."""
         return guard(lambda: run("list_assemblies"))
 
     @mcp.tool()
@@ -774,6 +777,39 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         Parent and child of a joint are allowed to touch.
         """
         return guard(lambda: _images(run("run_motion", name=name, sequence=sequence, motion=motion)))
+
+    @mcp.tool()
+    def run_motion_study(
+        name: str,
+        sequence: str | None = None,
+        study: dict[str, Any] | None = None,
+        steps: int | None = None,
+        clearance_mm: float | None = None,
+    ) -> dict:
+        """Drive joints over time and report collisions and joint-limit violations.
+
+        sequence names a study stored on the assembly. study is an inline
+        timeline: duration_s, steps, clearance_mm, drivers, and couplings.
+        A driver is {joint, expression} with t in seconds, or
+        {joint, keyframes: [{time_s, value}]}. A cylindrical joint may also
+        set slide. A coupling is {type: gear, driver, driven, ratio, offset}
+        and means driven = ratio * driver + offset.
+        The record schema is motion_study.v1. Each step has the pose matrix
+        of every instance, collisions with interference volume and penetration
+        depth, and any joint that was held at a stop. Parts that share a joint
+        are allowed to touch. Boxes farther apart than the clearance are not
+        intersected.
+        """
+        return guard(
+            lambda: run(
+                "run_motion_study",
+                name=name,
+                sequence=sequence,
+                study=study,
+                steps=steps,
+                clearance_mm=clearance_mm,
+            )
+        )
 
     @mcp.tool()
     def check_cables(name: str, sequence: str | None = None, motion: dict[str, Any] | None = None) -> dict:

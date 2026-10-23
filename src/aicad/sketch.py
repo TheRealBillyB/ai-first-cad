@@ -652,6 +652,9 @@ class _Solver:
                     "center": points_of(self, record["center"]),
                     "start": points_of(self, record["start"]),
                     "end": points_of(self, record["end"]),
+                    "center_id": record["center"],
+                    "start_id": record["start"],
+                    "end_id": record["end"],
                     "construction": record.get("construction", False),
                 }
         return {"points": points, "lines": lines, "circles": circles, "arcs": arcs}

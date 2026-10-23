@@ -1,7 +1,8 @@
 """The command layer shared by the workspace UI, the in-app assistant, and MCP.
 
 Every change to a document goes through :meth:`Workspace.execute`. Undo stores
-the session, the markdown notes, and the requirements, then restores them.
+the session, the markdown notes, the requirements, the plan files, and this
+project's plan approval records, then restores them.
 Listeners hear the same event whether a person or an assistant ran the command.
 """
 
@@ -19,7 +20,7 @@ from typing import Any
 from aicad import kernel
 from aicad.document import Document
 from aicad.errors import AICADError, GeometryError
-from aicad.plan import plan_files, restore_plan_files
+from aicad.plan import ledger_snapshot, plan_files, restore_ledger_snapshot, restore_plan_files
 from aicad.refs import resolve_edge
 from aicad.requirements import evaluate, normalize
 
@@ -345,6 +346,7 @@ class Workspace:
             "requirements": copy.deepcopy(self._requirements),
             "selection": copy.deepcopy(self.selection),
             "plans": plan_files(self.root),
+            "plan_ledger": ledger_snapshot(self.root),
         }
 
     def _restore(self, snapshot: dict) -> None:
@@ -361,6 +363,8 @@ class Workspace:
         self.selection = copy.deepcopy(snapshot["selection"])
         if "plans" in snapshot:
             restore_plan_files(self.root, snapshot["plans"])
+        if "plan_ledger" in snapshot:
+            restore_ledger_snapshot(self.root, snapshot["plan_ledger"])
         self._mesh_cache.clear()
         self._requirement_cache.clear()
         self.panels.clear()
@@ -870,6 +874,18 @@ def _cmd_run_motion(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("motion", report)  # noqa: SLF001
 
 
+def _cmd_run_motion_study(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.run_motion_study(
+        arguments["name"],
+        sequence=arguments.get("sequence"),
+        study=arguments.get("study"),
+        steps=arguments.get("steps"),
+        clearance_mm=arguments.get("clearance_mm"),
+    )
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("motion_study", report)  # noqa: SLF001
+
+
 def _cmd_check_cables(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.check_cables(
         arguments["name"],
@@ -1356,7 +1372,7 @@ _add(Command(
     _cmd_update_assembly,
     undo=True,
 ))
-_add(Command("list_assemblies", "List assemblies with joint values, poses, and motion names. Does not test collisions.", _obj({}, []), _cmd_list_assemblies))
+_add(Command("list_assemblies", "List assemblies with joint values, poses, motion names, and motion studies. Does not test collisions.", _obj({}, []), _cmd_list_assemblies))
 _add(Command("get_assembly", "Solve an assembly and return joint frames and instance origins.", _ASSEMBLY, _cmd_get_assembly))
 _add(Command(
     "set_joint",
@@ -1385,6 +1401,24 @@ _add(Command(
     "Sweep a joint or play keyframes. Reports collisions and renders an isometric frame for each sample.",
     _MOTION,
     _cmd_run_motion,
+))
+_add(Command(
+    "run_motion_study",
+    "Drive joints through a timeline of expressions or keyframes, with gear couplings, and report collisions and joint-limit violations.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "sequence": _string("Named study on the assembly."),
+            "study": {
+                "type": "object",
+                "description": "Inline study with drivers, couplings, duration_s, steps, and clearance_mm.",
+            },
+            "steps": _number("Poses to solve, including both ends. Overrides the study."),
+            "clearance_mm": _number("Minimum allowed gap in millimeters. A smaller gap is interference."),
+        },
+        ["name"],
+    ),
+    _cmd_run_motion_study,
 ))
 _add(Command(
     "check_cables",

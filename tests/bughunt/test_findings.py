@@ -1,7 +1,6 @@
 """Reproductions from the 2026-10-21 bug hunt.
 
-A test that still carries xfail is a finding that is not fixed yet.
-The others are the behavior the product should have, and they pass.
+These are the behavior the product should have.
 """
 
 from __future__ import annotations
