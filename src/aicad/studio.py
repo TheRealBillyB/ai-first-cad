@@ -51,6 +51,7 @@ _LOUD = {
     "check_cables",
     "estimate_power",
     "run_motion",
+    "run_motion_study",
     "check_requirements",
 }
 # Undoable edits that are notes or requirements, not a shape the camera should chase.
@@ -509,7 +510,7 @@ def register(add) -> None:
             {
                 "name": _string("Part name."),
                 "parameter": _string("Parameter id from list_parameters, such as op/0/size.x or dimension/width."),
-                "value": _number("New size, in millimeters, or degrees for an angle."),
+                "value": _number("New value. Millimeters for a length, offset, or signed distance. Degrees for an angle."),
             },
             ["name", "parameter", "value"],
         ),
@@ -747,12 +748,23 @@ def _dimension_parameters(workspace, sketch_name) -> list[dict]:
     if not isinstance(sketch_name, str):
         return []
     spec = workspace.document._get_sketch(sketch_name).spec  # noqa: SLF001
-    parameters = []
+    entities = {
+        entity.get("id"): entity
+        for entity in spec.get("entities") or []
+        if isinstance(entity, dict) and entity.get("id")
+    }
+    parameters: dict[str, dict] = {}
+    order: list[str] = []
     for constraint in spec.get("constraints") or []:
         if not isinstance(constraint, dict) or not constraint.get("name"):
             continue
         if "value" in constraint:
-            kind = "angle" if constraint.get("type") == "angle" else "length"
+            if constraint.get("type") == "angle":
+                kind = "angle"
+            elif _signed_distance(constraint, entities):
+                kind = "signed"
+            else:
+                kind = "length"
             value = constraint["value"]
         elif "diameter" in constraint:
             kind = "length"
@@ -760,16 +772,33 @@ def _dimension_parameters(workspace, sketch_name) -> list[dict]:
         else:
             continue
         unit = "deg" if kind == "angle" else "mm"
-        parameters.append(
-            {
-                "id": f"dimension/{constraint['name']}",
-                "label": str(constraint["name"]),
-                "value": float(value),
-                "unit": unit,
-                "kind": kind,
-            }
-        )
-    return parameters
+        identifier = f"dimension/{constraint['name']}"
+        item = {
+            "id": identifier,
+            "label": str(constraint["name"]),
+            "value": float(value),
+            "unit": unit,
+            "kind": kind,
+        }
+        existing = parameters.get(identifier)
+        if existing is None:
+            parameters[identifier] = item
+            order.append(identifier)
+        elif kind == "signed":
+            # Several insets often share one name. One of them being signed
+            # means the whole parameter is a signed distance.
+            existing["kind"] = "signed"
+    return [parameters[identifier] for identifier in order]
+
+
+def _signed_distance(constraint: dict, entities: dict) -> bool:
+    """A point-to-line distance is signed. A point-to-point distance is a length."""
+    if constraint.get("type") != "distance":
+        return False
+    ends = [entities.get(constraint.get("a")), entities.get(constraint.get("b"))]
+    if any(not isinstance(entity, dict) for entity in ends):
+        return False
+    return {entity.get("type") for entity in ends} == {"point", "line"}
 
 
 def _scalar(identifier: str, label: str, value, kind: str) -> dict | None:

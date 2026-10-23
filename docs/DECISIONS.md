@@ -9,6 +9,11 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Decision | Rationale |
 | --- | --- |
 | The syscall filter rejects other architectures and io_uring | A 32-bit socket call and io_uring both opened a socket while the network was off. |
+| A pose matrix is the exact rigid transform | Rounding the rotation shears the solid, and the boolean then reports no volume for a real overlap. |
+| A motion study is a timeline of drivers and gear couplings, posed by the joint solver | Later checks read one record of poses, collisions, and limit hits. |
+| Interference starts with the axis-aligned boxes and only then intersects the solids | A pair whose boxes are farther apart than the clearance cannot touch, so the boolean runs on the pairs that can. |
+| Penetration depth is the separating-axis translation, and the volume is the boolean | The depth is exact for convex solids. A non-convex solid reports the convex-hull depth, and the volume stays the real intersection. |
+| A joint command past its stop is held at the stop and recorded | The pose stays on the limit, and the study says which step reached it. |
 
 ## 2026-10-22
 
@@ -51,6 +56,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Opening a session reports a bad part and still loads the others | One corrupt placement used to make every other part unreachable. |
 | A STEP path stored in the session has to stay inside the project | An absolute path or `..` was imported on open, and the file was outside the project. |
 | Notes returned to the assistant are wrapped as untrusted text, and an assistant export stays in the project | Project text is data. A tool result must not be able to write a STEP outside the folder. |
+| A note is marked for every source except ui, cli, and api | Those three are the editor and see the file. Any other source, including one that does not exist yet, gets the project-text marker. |
 | Native geometry code cannot write on the MCP stdout | The STEP parser's error line was not JSON-RPC, and it landed on the protocol stream. |
 | Opening someone else's project does not create their notes or requirements file | Those files belong to that project. A missing one is not a template to write. |
 | `check-wall` accepts `--min-wall`, the same flag as `inspect` | The two commands were spelling one threshold differently. |

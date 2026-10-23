@@ -30,6 +30,7 @@ _CHECKS = frozenset(
         "render",
         "render_assembly",
         "run_motion",
+        "run_motion_study",
         "section",
         "solve_assembly_modal",
         "solve_mechanics",

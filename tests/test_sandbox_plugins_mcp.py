@@ -384,6 +384,12 @@ def test_project_text_cannot_expand_or_rename_tools(tmp_path, config_home):
     raw = workspace.execute("read_document", {"name": "tools.md"}, source="ui")
     assert raw["markdown"] == note
     assert "untrusted" not in raw
+    cli = workspace.execute("read_document", {"name": "tools.md"}, source="cli")
+    assert cli["markdown"] == note
+    assert "untrusted" not in cli
+    marked = workspace.execute("read_document", {"name": "tools.md"}, source="extension")
+    assert marked["untrusted"] is True
+    assert "UNTRUSTED PROJECT TEXT" in marked["markdown"]
 
     fenced = workspace.execute(
         "read_document",

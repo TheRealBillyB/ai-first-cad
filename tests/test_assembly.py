@@ -661,3 +661,49 @@ def test_fixed_actuator_is_rejected(tmp_path):
                 "actuators": [{"kind": "electric", "joint": "weld", "torque_constant_nm_per_a": 0.1}],
             }
         )
+
+
+def test_prismatic_limit_is_millimetres_and_a_hinge_can_pass_a_full_turn(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [10, 10, 10], [0, 0, 0])
+    _box(document, "block", [10, 10, 10], [0, 0, 0])
+    document.create_assembly(
+        {
+            "name": "ram",
+            "instances": [{"name": "base", "part": "base"}, {"name": "block", "part": "block"}],
+            "joints": [
+                {
+                    "name": "travel",
+                    "type": "prismatic",
+                    "parent": "base",
+                    "child": "block",
+                    "axis": [0, 0, 1],
+                    "value": 0,
+                }
+            ],
+        }
+    )
+    with pytest.raises(GeometryError, match="mm") as caught:
+        document.set_joint("ram", "travel", 1_000_001)
+    message = str(caught.value)
+    assert "deg" not in message
+    assert "1000001" in message
+    document.create_assembly(
+        {
+            "name": "hinge",
+            "instances": [{"name": "base", "part": "base"}, {"name": "block", "part": "block"}],
+            "joints": [
+                {
+                    "name": "spin",
+                    "type": "revolute",
+                    "parent": "base",
+                    "child": "block",
+                    "axis": [0, 0, 1],
+                    "value": 0,
+                }
+            ],
+        }
+    )
+    moved = document.set_joint("hinge", "spin", 1_000_001)
+    stored = next(joint for joint in moved["assembly"]["joints"] if joint["name"] == "spin")
+    assert stored["value"] == pytest.approx(1_000_001)
