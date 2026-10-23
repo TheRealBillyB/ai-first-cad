@@ -50,13 +50,13 @@ Two assumptions are still open: studs at 400 mm, and a 12 kg spread load. Two qu
 Load it into a project:
 
 ```bash
-python -m aicad start-plan shelf --file examples/plan_shelf.json --workspace plan_demo
+aicad start-plan shelf --file examples/plan_shelf.json --workspace plan_demo
 ```
 
 The title comes from the file. Ask to see it before anyone approves:
 
 ```bash
-python -m aicad start-model-from-plan shelf --workspace plan_demo
+aicad start-model-from-plan shelf --workspace plan_demo
 ```
 
 That command refuses. The sentence says the plan is still a draft, that modeling stays off, and that nothing was modeled. Simulation says the same kind of thing.
@@ -64,7 +64,7 @@ That command refuses. The sentence says the plan is still a draft, that modeling
 Open the app on that project:
 
 ```bash
-python -m aicad app --workspace plan_demo
+aicad app --workspace plan_demo
 ```
 
 Click **Plan**. The sheet is the blue blueprint. The right side is the research, the assumptions, and the questions.
@@ -74,7 +74,7 @@ Click **Plan**. The sheet is the blue blueprint. The right side is the research,
 Suppose you answer that the studs are 600 mm apart. The 480 mm plate was drawn for 400 mm centers, so the assistant should not quietly overwrite v1. It opens v2 and says what changed:
 
 ```bash
-python -m aicad revise-plan shelf --workspace plan_demo \
+aicad revise-plan shelf --workspace plan_demo \
   --changed "Studs are 600 mm, from your answer. The plate went from 480 mm to 640 mm."
 ```
 
@@ -103,8 +103,8 @@ Do this yourself in the app, the way you would if someone else had drawn the she
 1. From the repo, load the example and open the app:
 
    ```bash
-   python -m aicad start-plan shelf --file examples/plan_shelf.json --workspace plan_demo
-   python -m aicad app --workspace plan_demo
+   aicad start-plan shelf --file examples/plan_shelf.json --workspace plan_demo
+   aicad app --workspace plan_demo
    ```
 
 2. Click **Plan**. You should see **Wall shelf bracket**, status **draft**, revision **v1**, and a blue sheet with a top view and a side view. Gold dimensions read 480 mm, 280 mm, 320 mm clear, 140 mm, and 18 mm. The banner says modeling is closed.
@@ -124,7 +124,7 @@ Do this yourself in the app, the way you would if someone else had drawn the she
 9. Optional, back in the terminal, so you can see the same gate the assistant hits:
 
    ```bash
-   python -m aicad start-model-from-plan shelf --workspace plan_demo
+   aicad start-model-from-plan shelf --workspace plan_demo
    ```
 
    After step 7 this prints the dimensions. If you run it before step 7, it refuses.
