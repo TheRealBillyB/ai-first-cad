@@ -1476,8 +1476,9 @@ def _descendants(leader: int) -> set[int]:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=2,
             )
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
             return set()
         for line in completed.stdout.splitlines():
             parts = line.split()
@@ -1577,6 +1578,37 @@ def _kill_process_tree(leader: int, seen: set[int], lock: threading.Lock) -> Non
         pass
     for pid in targets:
         _kill_pid(pid)
+
+
+def _close_child_pipes(proc: subprocess.Popen) -> None:
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is None:
+            continue
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def _stop_child(proc: subprocess.Popen, seen: set[int], seen_lock: threading.Lock, *, reap_seconds: float = 5) -> None:
+    """Kill a sandbox child and do not wait forever for it to disappear.
+
+    The first signal is the process group. If the process is still alive, it
+    is signalled again and the pipes are closed. The waits are bounded, so a
+    child that does not die cannot hold the test until the job is cancelled.
+    """
+    _kill_process_tree(proc.pid, seen, seen_lock)
+    try:
+        proc.communicate(timeout=reap_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _kill_process_tree(proc.pid, seen, seen_lock)
+    _close_child_pipes(proc)
+    try:
+        proc.wait(timeout=reap_seconds)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _sandbox_runner() -> Path:
@@ -1720,8 +1752,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         try:
             stdout_b, stderr_b = proc.communicate(timeout=wall)
         except subprocess.TimeoutExpired:
-            _kill_process_tree(proc.pid, seen, seen_lock)
-            proc.communicate()
+            _stop_child(proc, seen, seen_lock)
             shutil.rmtree(job, ignore_errors=True)
             raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.") from None
         _kill_process_tree(proc.pid, seen, seen_lock)
