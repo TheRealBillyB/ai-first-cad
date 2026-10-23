@@ -197,6 +197,48 @@ def test_bill_of_materials_counts_parts_fasteners_and_a_hose(tmp_path):
     assert Path(report["views"][0]["path"]).is_file()
 
 
+def test_handbook_material_aliases_share_a_bom_line():
+    from aicad.bom import build_bom
+
+    spec = {
+        "name": "mix",
+        "instances": [
+            {"name": "plate_a", "part": "plate", "material": "Steel"},
+            {"name": "plate_b", "part": "plate", "material": "mild steel"},
+            {"name": "plate_c", "part": "plate", "material": "aluminum"},
+            {"name": "plate_d", "part": "plate", "material": "aluminum_6061"},
+            {"name": "link_a", "part": "link", "material": "Steel"},
+            {"name": "peg_a", "part": "peg", "material": "Oak"},
+            {"name": "peg_b", "part": "peg", "material": "oak"},
+            {"name": "screw_a", "part": "screw_a", "material": "Steel"},
+            {"name": "screw_b", "part": "screw_b", "material": "mild steel"},
+            {"name": "screw_c", "part": "screw_c", "material": "steel"},
+        ],
+    }
+    records = {
+        "screw_a": {"library": {"kind": "socket_head_cap_screw", "size": "M5-0.8", "length": 16}},
+        "screw_b": {"library": {"kind": "socket_head_cap_screw", "size": "M5-0.8", "length": 16}},
+        "screw_c": {"library": {"kind": "socket_head_cap_screw", "size": "M6-1.0", "length": 16}},
+    }
+    report = build_bom(spec, {}, records)
+    parts = {
+        (row["part"], row["material"]): row["quantity"]
+        for row in report["rows"]
+        if row["category"] == "part"
+    }
+    assert parts[("plate", "steel")] == 2
+    assert parts[("plate", "aluminum_6061")] == 2
+    assert parts[("link", "steel")] == 1
+    assert parts[("peg", "Oak")] == 2
+    fasteners = [row for row in report["rows"] if row["category"] == "fastener"]
+    assert len(fasteners) == 2
+    m5 = next(row for row in fasteners if row["size"] == "M5-0.8")
+    assert m5["quantity"] == 2
+    assert m5["material"] == "steel"
+    m6 = next(row for row in fasteners if row["size"] == "M6-1.0")
+    assert m6["quantity"] == 1
+
+
 def test_exploded_view_pulls_a_slide_along_its_axis_and_can_sit_on_the_drawing(tmp_path):
     document = Document(tmp_path)
     _box(document, "base", [20, 20, 10], [0, 0, 5])

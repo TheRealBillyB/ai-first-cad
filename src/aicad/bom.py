@@ -26,7 +26,7 @@ OMITS = [
     "payload_kg, which is a load on a part and not another item",
 ]
 ASSUMPTIONS = [
-    "One row is one part name, or one catalog size and length, at one material.",
+    "One row is one part name, or one catalog size and length, at one material. A different spelling or a handbook alias of that material stays on the same row.",
     "Two instances of the same part add up. Two screws of the same size and length add up.",
     "A catalog screw, nut, or washer is a fastener. A catalog bearing is a standard part.",
     "A hose or a cable is a route on the assembly. It is not a solid, so it has no mass here.",
@@ -50,21 +50,23 @@ def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, di
         record = records.get(part) or {}
         library_spec = record.get("library")
         material = str(instance.get("material") or "steel")
+        group_key, material_label = _material_identity(material)
         if library_spec:
-            row = _catalog_row(part, library_spec, material, shapes.get(part))
+            row = _catalog_row(part, library_spec, material_label, shapes.get(part))
         else:
-            row = _part_row(part, str(record.get("source") or "part"), material, shapes.get(part))
+            row = _part_row(part, str(record.get("source") or "part"), material_label, shapes.get(part))
         # Catalog rows group by what you would order. Modeled parts group by name.
+        # Handbook aliases and spelling share one material key.
         if library_spec:
             key = (
                 row["category"],
                 row["size"] or "",
                 row["length_mm"] if row["length_mm"] is not None else "",
                 row["standard"] or "",
-                row["material"] or "",
+                group_key,
             )
         else:
-            key = ("part", row["part"], row["material"] or "")
+            key = ("part", row["part"], group_key)
         current = grouped.get(key)
         if current is None:
             row["instances"] = [instance["name"]]
@@ -105,7 +107,7 @@ def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, di
             "payload_kg is a load on a part, not another item.",
         ],
         "assumptions": [
-            "One row is one part name, or one catalog size and length, at one material.",
+            "One row is one part name, or one catalog size and length, at one material. A different spelling or a handbook alias of that material stays on the same row.",
             "Two instances of the same part add up. Two screws of the same size and length add up.",
             "A catalog screw, nut, or washer is a fastener. A catalog bearing is a standard part.",
             "A hose or a cable is a route on the assembly. It is not a solid.",
@@ -232,6 +234,22 @@ def render_table(report: dict, path: Path) -> dict:
             draw.text((start, y), _fit(str(value), font, limit), fill=ink, font=font)
     _save_png(path, image)
     return {"name": "bom", "path": str(path.resolve()), "width": image.width, "height": image.height}
+
+
+def _material_identity(material: str) -> tuple[str, str]:
+    """Return ``(group key, label)`` for one instance material.
+
+    A handbook name uses the handbook id, so ``Steel`` and ``mild steel``
+    share ``steel``. An unknown name keeps the first spelling and groups by
+    case-folded text, so ``Oak`` and ``oak`` share a row.
+    """
+    text = str(material or "").strip()
+    try:
+        found = lookup_material(text)
+    except GeometryError:
+        return text.casefold(), text
+    canonical = str(found["id"])
+    return canonical, canonical
 
 
 def _part_row(part: str, source: str, material: str, shape: kernel.Shape | None) -> dict:

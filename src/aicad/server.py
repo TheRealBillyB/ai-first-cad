@@ -41,6 +41,7 @@ is more than the part needs. Each operation can include a `name`.
 Wall thickness is the smaller of a ray estimate and a section estimate, and
 the result says which one was used. `section_part` shows a cross-section.
 `search_parts` and `insert_standard_part` bring in real fasteners and bearings.
+`create_gear` builds a spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width.
 Clearance between two parts reports interference volume or the gap.
 
 For a shape that should stay consistent when a size changes, use a sketch:
@@ -59,7 +60,9 @@ An assembly places several parts with joints (fixed, revolute, prismatic,
 cylindrical), gear, linkage, or cylinder relations, named poses, and motions.
 A cylinder relation sets a barrel angle and a rod extension from a revolute.
 `run_motion` sweeps those joints and reports collisions, with a picture per
-frame. `check_cables` measures length, strain, bend radius, and pinching.
+frame. `run_motion_study` drives joints from expressions or keyframes, applies
+gear couplings, and reports collisions and joint-limit violations.
+`check_cables` measures length, strain, bend radius, and pinching.
 `estimate_power` turns gravity and payloads into joint torque and then into
 hydraulic pressure and flow, or motor current and a rough battery figure.
 Read the assumptions on those reports. Cables are kinematic polylines.
@@ -166,6 +169,15 @@ deep-groove ball bearings (including the 608 bearing as size `M8-22-7`).
 of the head is on local z=0. Nuts, washers, and bearings sit on z=0.
 `import_step` plus `place_part` brings in an arbitrary STEP file, such as a
 McMaster-Carr download. Then `check_clearance` against your part.
+
+## Gears
+
+`create_gear` builds an external spur, helical, straight bevel, or spiral
+bevel. The spec uses millimeters: `module_mm`, `teeth`, `pressure_angle_deg`,
+and `face_width_mm`. A bevel also needs `mate_teeth` or `ratio`, and
+`shaft_angle_deg` when the shafts are not at 90 degrees. A positive helix or
+spiral angle is right-hand. Optional `bore_mm`, `hub`, `keyway` (DIN 6885-1),
+and `spline` (ISO 14 or DIN 5480) cut the blank. Hypoid gears are not built.
 
 ## Sketches
 
@@ -282,10 +294,12 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `check_wall_thickness` reports a ray estimate and a section estimate, and which one won.
 - `section_part` shows internal geometry that the outside views hide.
 - `check_clearance` on two parts reports interference, or the gap if they are apart.
+- `check_packaging` checks that parts fit inside an envelope. The envelope is a part, a primitive (`shape` box, cylinder, or sphere), or an `outline` extruded along an axis. Pass `assembly`, and optionally `pose` or `joints`, to use the posed solids without changing the stored pose. The report has pass or fail per part, the parts that stick out (how far, and a point), the minimum signed wall clearance, and part-to-part overlap inside the envelope.
 - `inspect_part` renders front, back, left, right, top, bottom, and isometric views.
 - `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
 - `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
+- `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
 - `check_cables` routes polylines through waypoints fixed on parts. It reports length change, strain, bend-radius violations, and pinching. It does not simulate a flexible body.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
@@ -413,6 +427,39 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """
         return guard(
             lambda: run("check_clearance", part_a=part_a, part_b=part_b, min_clearance_mm=min_clearance_mm)
+        )
+
+    @mcp.tool()
+    def check_packaging(
+        envelope: str | dict[str, Any],
+        parts: list[str] | None = None,
+        assembly: str | None = None,
+        pose: str | None = None,
+        joints: dict[str, float] | None = None,
+        min_clearance_mm: float = 0.0,
+    ) -> dict:
+        """Check that parts fit inside an envelope.
+
+        envelope is a part or instance name, or an object. A primitive uses
+        shape box, cylinder, or sphere. An outline is a list of [x, y] points
+        with axis and limit [low, high] or length. min_clearance_mm is the
+        required gap to the wall. 0 allows the part to touch the wall.
+
+        With assembly, the check uses the posed instances. pose and joints
+        select that pose for this call and do not change the stored assembly.
+        The report lists each part, anything that sticks out and where, the
+        minimum signed clearance, and overlap between parts inside the envelope.
+        """
+        return guard(
+            lambda: run(
+                "check_packaging",
+                envelope=envelope,
+                parts=parts,
+                assembly=assembly,
+                pose=pose,
+                joints=joints,
+                min_clearance_mm=min_clearance_mm,
+            )
         )
 
     @mcp.tool()
@@ -564,6 +611,32 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         )
 
     @mcp.tool()
+    def create_gear(
+        name: str,
+        spec: dict[str, Any],
+        position: list[float] | None = None,
+        rotation_deg: list[float] | None = None,
+    ) -> dict:
+        """Create or replace a spur, helical, straight bevel, or spiral bevel gear.
+
+        spec needs type, module_mm, teeth, and face_width_mm. pressure_angle_deg
+        defaults to 20. module_mm is the normal module, or the outer transverse
+        module for a bevel. A bevel needs mate_teeth or ratio. helix_angle_deg
+        and spiral_angle_deg are positive for a right-hand tooth. bore_mm, hub,
+        keyway (DIN 6885-1), and spline (ISO 14 or DIN 5480) are optional.
+        position and rotation_deg are [x, y, z]. Hypoid gears are not built.
+        """
+        return guard(
+            lambda: run(
+                "create_gear",
+                name=name,
+                spec=spec,
+                position=position,
+                rotation_deg=rotation_deg,
+            )
+        )
+
+    @mcp.tool()
     def place_part(
         name: str,
         position: list[float],
@@ -695,7 +768,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         or cylinder {driver, driven, stroke, moving_anchor, retracted_mm}.
         A linkage is a planar four-bar map, not a closed spatial loop. A cylinder
         keeps the rod eye on the moving clevis without adding a joint cycle.
-        poses, motions, cables, and actuators live on the same spec.
+        poses, motions, studies, cables, and actuators live on the same spec.
         """
         return guard(lambda: run("create_assembly", spec=spec))
 
@@ -704,7 +777,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """Replace an assembly with a new spec.
 
         The spec is the same object create_assembly takes: name, instances,
-        joints, relations, poses, motions, cables, and actuators. Parts it
+        joints, relations, poses, motions, studies, cables, and actuators. Parts it
         names must already be in the document. If the spec does not solve,
         the previous assembly is left as it was.
         """
@@ -717,7 +790,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def list_assemblies() -> dict:
-        """List assemblies, joint values, poses, and motion names."""
+        """List assemblies, joint values, poses, motion names, and motion studies."""
         return guard(lambda: run("list_assemblies"))
 
     @mcp.tool()
@@ -740,6 +813,39 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         Parent and child of a joint are allowed to touch.
         """
         return guard(lambda: _images(run("run_motion", name=name, sequence=sequence, motion=motion)))
+
+    @mcp.tool()
+    def run_motion_study(
+        name: str,
+        sequence: str | None = None,
+        study: dict[str, Any] | None = None,
+        steps: int | None = None,
+        clearance_mm: float | None = None,
+    ) -> dict:
+        """Drive joints over time and report collisions and joint-limit violations.
+
+        sequence names a study stored on the assembly. study is an inline
+        timeline: duration_s, steps, clearance_mm, drivers, and couplings.
+        A driver is {joint, expression} with t in seconds, or
+        {joint, keyframes: [{time_s, value}]}. A cylindrical joint may also
+        set slide. A coupling is {type: gear, driver, driven, ratio, offset}
+        and means driven = ratio * driver + offset.
+        The record schema is motion_study.v1. Each step has the pose matrix
+        of every instance, collisions with interference volume and penetration
+        depth, and any joint that was held at a stop. Parts that share a joint
+        are allowed to touch. Boxes farther apart than the clearance are not
+        intersected.
+        """
+        return guard(
+            lambda: run(
+                "run_motion_study",
+                name=name,
+                sequence=sequence,
+                study=study,
+                steps=steps,
+                clearance_mm=clearance_mm,
+            )
+        )
 
     @mcp.tool()
     def check_cables(name: str, sequence: str | None = None, motion: dict[str, Any] | None = None) -> dict:

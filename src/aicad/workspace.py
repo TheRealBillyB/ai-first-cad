@@ -1,7 +1,8 @@
 """The command layer shared by the workspace UI, the in-app assistant, and MCP.
 
 Every change to a document goes through :meth:`Workspace.execute`. Undo stores
-the session, the markdown notes, and the requirements, then restores them.
+the session, the markdown notes, the requirements, the plan files, and this
+project's plan approval records, then restores them.
 Listeners hear the same event whether a person or an assistant ran the command.
 """
 
@@ -19,12 +20,15 @@ from typing import Any
 from aicad import kernel
 from aicad.document import Document
 from aicad.errors import AICADError, GeometryError
-from aicad.plan import plan_files, restore_plan_files
+from aicad.plan import ledger_snapshot, plan_files, restore_ledger_snapshot, restore_plan_files
 from aicad.refs import resolve_edge
 from aicad.requirements import evaluate, normalize
 
 _DOC_NAME = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}\.md$")
 _UNDO_LIMIT = 40
+# ui, cli, and api read a note as the file. Other sources, including agent
+# and chat, get the same project-text marker.
+_PERSON_SOURCES = frozenset({"ui", "cli", "api"})
 
 
 @dataclass(frozen=True)
@@ -108,7 +112,7 @@ class Workspace:
                     result = attach_sheet(result, self.root / "renders" / "sheets", name, root=self.root)
                     if name in {"check_requirements", "get_requirements", "set_requirements"} and result.get("sheet"):
                         self.requirements_sheet = result["sheet"]
-                    if source in ("mcp", "chat") and name == "read_document":
+                    if name == "read_document" and source not in _PERSON_SOURCES:
                         result = _fence_note(result)
             except Exception:
                 if command.undo:
@@ -358,6 +362,7 @@ class Workspace:
             "requirements": copy.deepcopy(self._requirements),
             "selection": copy.deepcopy(self.selection),
             "plans": plan_files(self.root),
+            "plan_ledger": ledger_snapshot(self.root),
         }
 
     def _restore(self, snapshot: dict) -> None:
@@ -376,6 +381,8 @@ class Workspace:
         self.selection = copy.deepcopy(snapshot["selection"])
         if "plans" in snapshot:
             restore_plan_files(self.root, snapshot["plans"])
+        if "plan_ledger" in snapshot:
+            restore_ledger_snapshot(self.root, snapshot["plan_ledger"])
         self._mesh_cache.clear()
         self._requirement_cache.clear()
         self.panels.clear()
@@ -539,6 +546,17 @@ def _cmd_clearance(workspace: Workspace, arguments: dict) -> dict:
     ).to_dict()
 
 
+def _cmd_packaging(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.check_packaging(
+        arguments["envelope"],
+        parts=arguments.get("parts"),
+        assembly=arguments.get("assembly"),
+        pose=arguments.get("pose"),
+        joints=arguments.get("joints"),
+        min_clearance_mm=float(arguments.get("min_clearance_mm") or 0.0),
+    ).to_dict()
+
+
 def _cmd_render(workspace: Workspace, arguments: dict) -> dict:
     views = workspace.document.render(arguments["name"])
     return {"views": [view.to_dict() for view in views]}
@@ -641,6 +659,17 @@ def _cmd_update_part_from_sketch(workspace: Workspace, arguments: dict) -> dict:
 
 def _cmd_search(workspace: Workspace, arguments: dict) -> dict:
     return workspace.document.search_parts(str(arguments.get("query") or ""))
+
+
+def _cmd_create_gear(workspace: Workspace, arguments: dict) -> dict:
+    names = {part.name for part in workspace.document.list_parts()}
+    method = workspace.document.update_gear if arguments["name"] in names else workspace.document.create_gear
+    return method(
+        arguments["name"],
+        arguments["spec"],
+        arguments.get("position"),
+        arguments.get("rotation_deg"),
+    )
 
 
 def _cmd_insert(workspace: Workspace, arguments: dict) -> dict:
@@ -902,6 +931,18 @@ def _cmd_run_motion(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("motion", report)  # noqa: SLF001
 
 
+def _cmd_run_motion_study(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.run_motion_study(
+        arguments["name"],
+        sequence=arguments.get("sequence"),
+        study=arguments.get("study"),
+        steps=arguments.get("steps"),
+        clearance_mm=arguments.get("clearance_mm"),
+    )
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("motion_study", report)  # noqa: SLF001
+
+
 def _cmd_check_cables(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.check_cables(
         arguments["name"],
@@ -1106,6 +1147,31 @@ _add(Command(
     _obj({"part_a": _string("First part."), "part_b": _string("Second part."), "min_clearance_mm": _number("Required gap.")}, ["part_a", "part_b"]),
     _cmd_clearance,
 ))
+_add(Command(
+    "check_packaging",
+    "Check that parts fit inside an envelope. Reports wall clearance, protrusion, and part-to-part overlap.",
+    _obj(
+        {
+            "envelope": {
+                "description": "Part or instance name, or an object: a primitive {shape, size|radius, height, center, axis} or an outline {outline, axis, origin, limit|length}.",
+            },
+            "parts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Part or instance names. With an assembly, the default is every instance except the envelope.",
+            },
+            "assembly": _string("Assembly to pose. Omit to use each part's stored placement."),
+            "pose": _string("Named pose for this check. The stored assembly is left unchanged."),
+            "joints": {
+                "type": "object",
+                "description": "Joint values for this check only. Revolute values are degrees. Prismatic values are millimeters.",
+            },
+            "min_clearance_mm": _number("Required gap to the envelope wall. 0 allows a part to touch the wall."),
+        },
+        ["envelope"],
+    ),
+    _cmd_packaging,
+))
 _add(Command("render_part", "Render the standard shaded views.", _PART, _cmd_render))
 _add(Command(
     "inspect_part",
@@ -1176,6 +1242,21 @@ _add(Command(
     "Search screws, nuts, washers, and bearings.",
     _obj({"query": _string("Text such as M3 or 608.")}, []),
     _cmd_search,
+))
+_add(Command(
+    "create_gear",
+    "Create or replace an involute spur, helical, straight bevel, or spiral bevel gear.",
+    _obj(
+        {
+            "name": _string("Part name."),
+            "spec": {"type": "object", "description": "module_mm, teeth, pressure_angle_deg, face_width_mm, and the family fields."},
+            "position": {"type": "array"},
+            "rotation_deg": {"type": "array"},
+        },
+        ["name", "spec"],
+    ),
+    _cmd_create_gear,
+    undo=True,
 ))
 _add(Command(
     "insert_standard_part",
@@ -1363,7 +1444,7 @@ _add(Command(
     _cmd_update_assembly,
     undo=True,
 ))
-_add(Command("list_assemblies", "List assemblies with joint values, poses, and motion names. Does not test collisions.", _obj({}, []), _cmd_list_assemblies))
+_add(Command("list_assemblies", "List assemblies with joint values, poses, motion names, and motion studies. Does not test collisions.", _obj({}, []), _cmd_list_assemblies))
 _add(Command("get_assembly", "Solve an assembly and return joint frames and instance origins.", _ASSEMBLY, _cmd_get_assembly))
 _add(Command(
     "set_joint",
@@ -1392,6 +1473,24 @@ _add(Command(
     "Sweep a joint or play keyframes. Reports collisions and renders an isometric frame for each sample.",
     _MOTION,
     _cmd_run_motion,
+))
+_add(Command(
+    "run_motion_study",
+    "Drive joints through a timeline of expressions or keyframes, with gear couplings, and report collisions and joint-limit violations.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "sequence": _string("Named study on the assembly."),
+            "study": {
+                "type": "object",
+                "description": "Inline study with drivers, couplings, duration_s, steps, and clearance_mm.",
+            },
+            "steps": _number("Poses to solve, including both ends. Overrides the study."),
+            "clearance_mm": _number("Minimum allowed gap in millimeters. A smaller gap is interference."),
+        },
+        ["name"],
+    ),
+    _cmd_run_motion_study,
 ))
 _add(Command(
     "check_cables",

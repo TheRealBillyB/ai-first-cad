@@ -23,14 +23,17 @@ from build123d import (
     Cylinder,
     Face,
     Plane,
+    CenterArc,
+    Line,
     Polygon,
     Pos,
     Rot,
+    Sphere,
     Vector,
+    make_face,
     export_step,
     export_stl,
     extrude,
-    import_step,
     revolve,
 )
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
@@ -40,7 +43,7 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
 from OCP.GCPnts import GCPnts_QuasiUniformDeflection
-from OCP.GeomAbs import GeomAbs_SurfaceType
+from OCP.GeomAbs import GeomAbs_CurveType, GeomAbs_SurfaceType
 from OCP.BRepClass import BRepClass_FaceClassifier
 from OCP.HLRAlgo import HLRAlgo_Projector
 from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
@@ -52,6 +55,7 @@ from OCP.TopoDS import TopoDS
 from OCP.gp import gp_Ax2, gp_Dir, gp_Lin, gp_Pnt, gp_Trsf
 
 from aicad.errors import GeometryError, ScriptError
+from aicad.paths import session_path_escapes
 from aicad.refs import edge_ref, face_ref
 from aicad.models import (
     BoundingBox,
@@ -72,6 +76,11 @@ _NAME_IN_SCRIPT = "part"
 MAX_MM = 1_000_000.0
 _WALL_PROBES_MM = (0.01, 0.002, 0.0004)
 _WALL_HIT_FLOOR_MM = 1e-4
+# A cone's opposite wall is not parallel. 0.5 still rejects a face the ray only grazes.
+_WALL_ALIGNMENT = 0.5
+# Parameter-domain edges, where a cone apex or a knife tip sits. The regular
+# grid is (i+0.5)/n and never lands on that border.
+_WALL_BORDER = (0.02, 0.98)
 
 
 def finite_number(
@@ -355,39 +364,29 @@ def measure(shape: Shape) -> Measurement:
 
 
 def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEstimate:
-    """Estimate minimum wall thickness from rays and from planar sections.
+    """Estimate minimum wall thickness from face-normal rays.
 
-    The reported minimum is the smaller of the two. ``method`` says which one
-    produced it, or ``ray+section`` when they agree within 0.05 mm. A reading
-    that could not step into the solid is an upper bound and is marked capped,
-    so a later threshold cannot treat it as a pass.
+    A ray is the local thickness. ``method`` is ``ray+section`` when a planar
+    section agrees within 0.05 mm. An axis-aligned slice of a round or rotated
+    solid is a shorter chord than that thickness, and that chord does not lower
+    the estimate. A reading that could not step into the solid is an upper bound
+    and is marked capped, so a later threshold cannot treat it as a pass.
     """
     ray_mm, accepted, used, point, ray_capped = _ray_wall_thickness(shape, samples_per_edge)
     section_mm, section_count, section_capped = _section_wall_thickness(shape)
-    minimum, capped = _thinnest(ray_mm, ray_capped, section_mm, section_capped)
-    if ray_mm is None and section_mm is None:
-        method = "none"
-    elif ray_mm is None:
-        method = "section"
-    elif section_mm is None:
-        method = "ray"
-    elif abs(ray_mm - section_mm) <= 0.05:
-        method = "ray+section"
-    elif section_mm < ray_mm:
-        method = "section"
-    else:
-        method = "ray"
-    if method == "section":
+    minimum, capped, method = _thinnest(ray_mm, ray_capped, section_mm, section_capped)
+    if method != "ray" and method != "ray+section":
         point = None
     note = (
         f"Minimum came from {method}. "
         f"Ray samples: {_mm(ray_mm)} mm. "
         f"Planar sections ({section_count} slices): {_mm(section_mm)} mm. "
-        "Rays start 0.01 mm inside a face and keep a hit only when the segment "
-        "stays in the solid. Sections slice the part at 25%, 50%, and 75% of its "
-        "extent along X, Y, and Z and measure the width between roughly parallel "
-        "edges in that plane. The smaller number is the estimate. Either method "
-        "can miss a thin spot it does not cross."
+        "Rays start 0.01 mm inside a face, including the border of the face where a "
+        "taper comes to a point, and keep a hit only when the segment stays in the solid. "
+        "Sections slice the part at 25%, 50%, and 75% of its extent along X, Y, and Z. "
+        "A section width shorter than the ray reading is a chord of that slice, not a "
+        "thinner wall, and it does not lower the estimate. Either method can miss a thin "
+        "spot it does not cross."
     )
     if capped:
         note += (
@@ -413,23 +412,28 @@ def _thinnest(
     ray_capped: bool,
     section_mm: float | None,
     section_capped: bool,
-) -> tuple[float | None, bool]:
-    """The smaller reading. An upper bound wins when the other reading is the far side."""
-    pairs = [
-        (ray_mm, ray_capped),
-        (section_mm, section_capped),
-    ]
-    known = [(value, capped) for value, capped in pairs if value is not None]
-    if not known:
-        return None, False
-    value, capped = min(known, key=lambda item: item[0])
-    if capped:
-        return value, True
-    # A large "measurement" next to a capped upper bound is the far wall of a cavity.
-    bounds = [other for other, other_capped in known if other_capped]
-    if bounds and value > 0.5 and min(bounds) < value:
-        return min(bounds), True
-    return value, False
+) -> tuple[float | None, bool, str]:
+    """Local thickness, whether it is only an upper bound, and which method produced it.
+
+    A capped reading is an upper bound from a probe that never entered the solid.
+    It wins over a larger number, which is often the far side of a cavity. An
+    uncapped ray is a thickness along the surface normal. A shorter section is
+    not used in its place: that reading is the width of one axis-aligned slice.
+    """
+    if section_mm is not None and section_capped and (ray_mm is None or section_mm < ray_mm):
+        return section_mm, True, "section"
+    if ray_mm is not None and ray_capped and (section_mm is None or ray_mm <= section_mm):
+        return ray_mm, True, "ray"
+    if ray_mm is not None and not ray_capped:
+        if section_mm is not None and not section_capped and abs(ray_mm - section_mm) <= 0.05:
+            return ray_mm, False, "ray+section"
+        return ray_mm, False, "ray"
+    if section_mm is not None:
+        # No ray confirmed this width, so a later threshold cannot treat it as a pass.
+        return section_mm, True, "section"
+    if ray_mm is not None:
+        return ray_mm, ray_capped, "ray"
+    return None, False, "none"
 
 
 def _ray_wall_thickness(
@@ -447,32 +451,42 @@ def _ray_wall_thickness(
     thinnest_measured: float | None = None
     accepted = 0
 
+    def consider(face, u: float, v: float, *, record_miss: bool) -> None:
+        nonlocal accepted, thinnest_measured, thinnest_point
+        try:
+            point = face.position_at(u, v)
+            normal = face.normal_at(u, v)
+        except Exception:
+            return
+        if normal.length < 1e-9 or not face.is_inside(point):
+            return
+        inward, probe = _inward_probe(impl, point, normal)
+        if inward is None or probe is None:
+            # A border sample that cannot enter is not evidence the whole part is thin.
+            # The regular grid still records that miss.
+            if record_miss:
+                missed.append(_WALL_PROBES_MM[-1])
+            return
+        origin = point + inward * probe
+        distance = _first_parallel_hit(impl, origin, inward, probe)
+        if distance is None:
+            return
+        thickness = distance + probe
+        accepted += 1
+        measured.append(thickness)
+        if thinnest_measured is None or thickness < thinnest_measured:
+            thinnest_measured = thickness
+            thinnest_point = _vec(point)
+
     for face in impl.faces():
         for i in range(n):
             for j in range(n):
-                u = (i + 0.5) / n
-                v = (j + 0.5) / n
-                try:
-                    point = face.position_at(u, v)
-                    normal = face.normal_at(u, v)
-                except Exception:
-                    continue
-                if normal.length < 1e-9 or not face.is_inside(point):
-                    continue
-                inward, probe = _inward_probe(impl, point, normal)
-                if inward is None or probe is None:
-                    missed.append(_WALL_PROBES_MM[-1])
-                    continue
-                origin = point + inward * probe
-                distance = _first_parallel_hit(impl, origin, inward, probe)
-                if distance is None:
-                    continue
-                thickness = distance + probe
-                accepted += 1
-                measured.append(thickness)
-                if thinnest_measured is None or thickness < thinnest_measured:
-                    thinnest_measured = thickness
-                    thinnest_point = _vec(point)
+                consider(face, (i + 0.5) / n, (j + 0.5) / n, record_miss=True)
+        for u in _WALL_BORDER:
+            for v in _WALL_BORDER:
+                consider(face, u, v, record_miss=False)
+            consider(face, u, 0.5, record_miss=False)
+            consider(face, 0.5, u, record_miss=False)
     minimum, capped = _combine_wall_samples(measured, missed)
     if capped:
         thinnest_point = None
@@ -530,6 +544,969 @@ def clearance_between(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Ve
     return round_mm(overlap), round_mm(distance), _vec(first), _vec(second)
 
 
+def aabb_gap_lower_bound(a: Shape, b: Shape) -> float:
+    """Lower bound on the surface gap, in millimeters.
+
+    Positive when the axis-aligned boxes are apart, by the largest per-axis
+    separation. Negative when the boxes overlap. A true gap cannot be smaller
+    than a positive result, so a broad phase can skip the boolean.
+    """
+    a_low, a_high = _aabb(a)
+    b_low, b_high = _aabb(b)
+    separations = [
+        max(a_low[index] - b_high[index], b_low[index] - a_high[index]) for index in range(3)
+    ]
+    return max(separations)
+
+
+# Edge-pair axes are exact and cheap while both solids have few edge directions.
+# Past this, directions are sampled and the depth is an upper bound.
+_PENETRATION_EDGE_BUDGET = 4096
+_PENETRATION_SAMPLES = 96
+
+
+def penetration_depth(a: Shape, b: Shape) -> dict:
+    """Minimum translation that separates two solids, in millimeters.
+
+    Convex polyhedra use the separating-axis theorem on their exact faces and
+    edges, so the depth is the real interference. Any other solid uses the
+    same theorem on the convex hull of its vertices or of a tessellation, which
+    can be deeper than a local notch. ``direction`` is a unit vector that moves
+    the second solid out of the first.
+    """
+    first = _solid_axes(a)
+    second = _solid_axes(b)
+    depth, direction, sampled = _separating_depth(first, second)
+    convex = bool(first["convex"] and second["convex"] and not first["meshed"] and not second["meshed"])
+    if depth <= 1e-9:
+        depth = _intersection_extent(a, b)
+        direction = [0.0, 0.0, 1.0]
+        method = "intersection_extent"
+    elif convex and not sampled:
+        method = "separating_axis"
+    elif sampled:
+        method = "separating_axis_sampled"
+    else:
+        method = "convex_hull"
+    return {
+        "penetration_depth_mm": round_mm(max(0.0, depth)),
+        "direction": [round_mm(component) for component in direction],
+        "depth_method": method,
+    }
+
+
+def _solid_axes(shape: Shape) -> dict:
+    planar = _planar_axes(shape)
+    if planar is not None:
+        return planar
+    return _mesh_axes(shape)
+
+
+def _planar_axes(shape: Shape) -> dict | None:
+    """Exact vertices, face normals, and edge directions when every face is planar."""
+    impl = shape.impl
+    vertices = [_xyz(vertex) for vertex in impl.vertices()]
+    if len(vertices) < 4:
+        return None
+    normals = []
+    planes = []
+    for face in impl.faces():
+        adaptor = BRepAdaptor_Surface(face.wrapped)
+        if adaptor.GetType() != GeomAbs_SurfaceType.GeomAbs_Plane:
+            return None
+        center = face.center()
+        origin = _xyz(center)
+        normal = _outward_normal(face, center)
+        if normal is None or abs(normal[0]) + abs(normal[1]) + abs(normal[2]) < 1e-12:
+            return None
+        normals.append(normal)
+        planes.append((origin, normal))
+    edges = []
+    for edge in impl.edges():
+        curve = BRepAdaptor_Curve(edge.wrapped)
+        if curve.GetType() != GeomAbs_CurveType.GeomAbs_Line:
+            return None
+        start = curve.Value(curve.FirstParameter())
+        end = curve.Value(curve.LastParameter())
+        edges.append((end.X() - start.X(), end.Y() - start.Y(), end.Z() - start.Z()))
+    return {
+        "vertices": np.asarray(vertices, dtype=np.float64),
+        "normals": normals,
+        "edges": edges,
+        "convex": _vertices_behind(vertices, planes),
+        "meshed": False,
+    }
+
+
+def _mesh_axes(shape: Shape) -> dict:
+    mesh = tessellate(shape)
+    points = np.asarray(mesh.vertices, dtype=np.float64)
+    normals = []
+    edges = []
+    for tri in mesh.triangles:
+        a, b, c = points[int(tri[0])], points[int(tri[1])], points[int(tri[2])]
+        normal = np.cross(b - a, c - a)
+        if float(np.linalg.norm(normal)) > 1e-12:
+            normals.append(normal)
+        edges.extend((b - a, c - b, a - c))
+    return {
+        "vertices": points,
+        "normals": normals,
+        "edges": edges,
+        "convex": False,
+        "meshed": True,
+    }
+
+
+def _vertices_behind(vertices: list[tuple[float, float, float]], planes: list[tuple]) -> bool:
+    """True when every vertex is on the inner side of every outward plane."""
+    for origin, normal in planes:
+        for vertex in vertices:
+            outside = sum((vertex[index] - origin[index]) * normal[index] for index in range(3))
+            if outside > 1e-5:
+                return False
+    return True
+
+
+def _separating_depth(first: dict, second: dict) -> tuple[float, list[float], bool]:
+    axes: list[np.ndarray] = []
+    seen: set[tuple[float, ...]] = set()
+
+    def add(vector) -> None:
+        arr = np.asarray(vector, dtype=np.float64).reshape(3)
+        length = float(np.linalg.norm(arr))
+        if length < 1e-12:
+            return
+        arr = arr / length
+        for component in arr:
+            if component < -1e-12:
+                arr = -arr
+                break
+            if component > 1e-12:
+                break
+        key = tuple(round(float(component), 8) for component in arr)
+        if key in seen:
+            return
+        seen.add(key)
+        axes.append(arr)
+
+    for normal in list(first["normals"]) + list(second["normals"]):
+        add(normal)
+    edges_a = _unique_dirs(first["edges"])
+    edges_b = _unique_dirs(second["edges"])
+    sampled = False
+    if len(edges_a) * len(edges_b) <= _PENETRATION_EDGE_BUDGET:
+        for edge_a in edges_a:
+            for edge_b in edges_b:
+                add(np.cross(edge_a, edge_b))
+    else:
+        sampled = True
+        for direction in _fibonacci_axes(_PENETRATION_SAMPLES):
+            add(direction)
+    for direction in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+        add(direction)
+    verts_a = first["vertices"]
+    verts_b = second["vertices"]
+    if len(verts_a) == 0 or len(verts_b) == 0 or not axes:
+        return 0.0, [0.0, 0.0, 1.0], sampled
+    center_a = verts_a.mean(axis=0)
+    center_b = verts_b.mean(axis=0)
+    best = float("inf")
+    best_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    for axis in axes:
+        projected_a = verts_a @ axis
+        projected_b = verts_b @ axis
+        overlap = float(min(projected_a.max(), projected_b.max()) - max(projected_a.min(), projected_b.min()))
+        if overlap < best:
+            best = overlap
+            if float(np.dot(center_b - center_a, axis)) >= 0.0:
+                best_axis = axis
+            else:
+                best_axis = -axis
+    if best == float("inf"):
+        best = 0.0
+    return best, [float(component) for component in best_axis], sampled
+
+
+def _unique_dirs(vectors) -> list[np.ndarray]:
+    unique = []
+    seen: set[tuple[float, ...]] = set()
+    for vector in vectors:
+        arr = np.asarray(vector, dtype=np.float64).reshape(3)
+        length = float(np.linalg.norm(arr))
+        if length < 1e-12:
+            continue
+        arr = arr / length
+        for component in arr:
+            if component < -1e-12:
+                arr = -arr
+                break
+            if component > 1e-12:
+                break
+        key = tuple(round(float(component), 8) for component in arr)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(arr)
+    return unique
+
+
+def _fibonacci_axes(count: int) -> list[tuple[float, float, float]]:
+    golden = math.pi * (3.0 - math.sqrt(5.0))
+    axes = []
+    for index in range(count):
+        height = 1.0 - (2.0 * index + 1.0) / count
+        radius = math.sqrt(max(0.0, 1.0 - height * height))
+        theta = golden * index
+        axes.append((math.cos(theta) * radius, height, math.sin(theta) * radius))
+    return axes
+
+
+def _intersection_extent(a: Shape, b: Shape) -> float:
+    """Smallest side of the intersection box. Used when the axis test misses a hit."""
+    common = a.impl & b.impl
+    if common is None:
+        return 0.0
+    try:
+        if float(common.volume) <= 0:
+            return 0.0
+        box = common.bounding_box()
+    except Exception:
+        return 0.0
+    size = (
+        float(box.max.X) - float(box.min.X),
+        float(box.max.Y) - float(box.min.Y),
+        float(box.max.Z) - float(box.min.Z),
+    )
+    return min(size)
+
+
+def _xyz(point) -> tuple[float, float, float]:
+    if hasattr(point, "X"):
+        return (float(point.X), float(point.Y), float(point.Z))
+    return (float(point[0]), float(point[1]), float(point[2]))
+
+
+# A point this close to the wall is touching. Smaller than this is solver noise.
+_PACK_TOUCH_MM = 1e-4
+_PACK_VOLUME_MM3 = 1e-4
+_GOLDEN = (math.sqrt(5.0) - 1.0) / 2.0
+
+
+def make_envelope(spec: dict) -> Shape:
+    """Build an envelope solid from a primitive or an extruded outline.
+
+    A primitive is ``shape`` ``box``, ``cylinder``, or ``sphere``. A box uses
+    ``size`` [x, y, z]. A cylinder uses ``radius`` and ``height``. A sphere
+    uses ``radius``. ``center`` defaults to the origin. A cylinder also takes
+    ``axis``.
+
+    An outline is a closed polygon in a plane, extruded along ``axis`` between
+    ``limit`` [low, high] or for ``length`` starting at the origin. Outline
+    points are [x, y] in that plane. Local X is world +X projected onto the
+    plane (world +Y when the axis is parallel to X). Local Y completes a
+    right-handed frame with the axis. ``origin`` is the plane's origin before
+    the low limit is applied.
+    """
+    if not isinstance(spec, dict):
+        raise GeometryError("An envelope is a part name or an object.")
+    if "outline" in spec:
+        return Shape(_require_solid(_outline_solid(spec)))
+    return Shape(_require_solid(_primitive_solid(spec, "envelope")))
+
+
+def fit_in_envelope(part: Shape, envelope: Shape) -> dict:
+    """Signed wall clearance of one solid inside an envelope solid.
+
+    The envelope is the allowed volume. ``min_clearance_mm`` is the smallest
+    signed distance from the part to that wall: positive inside, zero on the
+    wall, negative when the part sticks out. ``max_protrusion_mm`` is how far
+    the worst point sticks out. The point is on the part.
+
+    A contained part uses the kernel distance to the envelope boundary. A
+    polyhedron's protrusion is the farthest vertex outside the envelope.
+    A curved face is the farthest point on that surface.
+    """
+    outside_volume = _boolean_volume(part.impl - envelope.impl)
+    inside_volume = _boolean_volume(part.impl & envelope.impl)
+    part_volume = _boolean_volume(part.impl)
+    if part_volume <= _PACK_VOLUME_MM3:
+        raise GeometryError("The part has no volume to pack.")
+    contained = outside_volume <= _PACK_VOLUME_MM3 and inside_volume > _PACK_VOLUME_MM3
+    if contained:
+        clearance, at = _wall_clearance(part, envelope)
+        return _fit_record(
+            contained=True,
+            clearance=clearance,
+            at=at,
+            protrusion=0.0,
+            protrusion_at=None,
+            outside_volume=0.0,
+            inside_volume=inside_volume,
+            method="boundary",
+        )
+    protrusion, at, method = _farthest_outside(part, envelope)
+    if protrusion <= _PACK_TOUCH_MM and inside_volume > _PACK_VOLUME_MM3:
+        clearance, point = _wall_clearance(part, envelope)
+        return _fit_record(
+            contained=True,
+            clearance=clearance,
+            at=point,
+            protrusion=0.0,
+            protrusion_at=None,
+            outside_volume=0.0,
+            inside_volume=inside_volume,
+            method="boundary",
+        )
+    if at is None:
+        raise GeometryError("Could not locate where the part leaves the envelope.")
+    return _fit_record(
+        contained=False,
+        clearance=-protrusion,
+        at=at,
+        protrusion=protrusion,
+        protrusion_at=at,
+        outside_volume=outside_volume,
+        inside_volume=inside_volume,
+        method=method,
+    )
+
+
+def overlap_inside(a: Shape, b: Shape, envelope: Shape) -> dict | None:
+    """Volume of ``a ∩ b`` that also lies inside the envelope, and a point there."""
+    if aabb_separated(a, b):
+        return None
+    common = a.impl & b.impl
+    if _boolean_volume(common) <= _PACK_VOLUME_MM3:
+        return None
+    inside = common & envelope.impl
+    volume = _boolean_volume(inside)
+    if volume <= _PACK_VOLUME_MM3:
+        return None
+    center = inside.center()
+    return {
+        "volume_mm3": volume,
+        "at": (float(center.X), float(center.Y), float(center.Z)),
+    }
+
+
+def _fit_record(
+    *,
+    contained: bool,
+    clearance: float,
+    at: tuple[float, float, float],
+    protrusion: float,
+    protrusion_at: tuple[float, float, float] | None,
+    outside_volume: float,
+    inside_volume: float,
+    method: str,
+) -> dict:
+    return {
+        "contained": contained,
+        "min_clearance_mm": clearance,
+        "clearance_at_mm": at,
+        "max_protrusion_mm": protrusion,
+        "protrusion_at_mm": protrusion_at,
+        "outside_volume_mm3": outside_volume,
+        "inside_volume_mm3": inside_volume,
+        "method": method,
+    }
+
+
+def _boolean_volume(impl) -> float:
+    if impl is None:
+        return 0.0
+    try:
+        volume = float(impl.volume)
+    except Exception:
+        return 0.0
+    if not math.isfinite(volume) or volume <= 0:
+        return 0.0
+    return volume
+
+
+def _wall_clearance(part: Shape, envelope: Shape) -> tuple[float, tuple[float, float, float]]:
+    """Minimum distance from a contained solid to the envelope boundary."""
+    shells = list(envelope.impl.shells())
+    if not shells:
+        raise GeometryError("The envelope has no wall to measure against.")
+    if len(shells) == 1:
+        target = shells[0].wrapped
+    else:
+        from OCP.BRep import BRep_Builder
+        from OCP.TopoDS import TopoDS_Compound
+
+        compound = TopoDS_Compound()
+        builder = BRep_Builder()
+        builder.MakeCompound(compound)
+        for shell in shells:
+            builder.Add(compound, shell.wrapped)
+        target = compound
+    tool = BRepExtrema_DistShapeShape(part.impl.wrapped, target)
+    tool.Perform()
+    if not tool.IsDone() or tool.NbSolution() < 1:
+        raise GeometryError("Could not measure the gap between the part and the envelope wall.")
+    point = tool.PointOnShape1(1)
+    return float(tool.Value()), (float(point.X()), float(point.Y()), float(point.Z()))
+
+
+class _OutsideMeter:
+    """Distance from a point to an envelope solid. Zero when the point is inside."""
+
+    def __init__(self, envelope: Shape):
+        self._wrapped = envelope.impl.wrapped
+        self._classifier = BRepClass3d_SolidClassifier(self._wrapped)
+
+    def __call__(self, x: float, y: float, z: float) -> float:
+        point = gp_Pnt(float(x), float(y), float(z))
+        self._classifier.Perform(point, 1e-7)
+        if self._classifier.State() in (TopAbs_IN, TopAbs_ON):
+            return 0.0
+        vertex = BRepBuilderAPI_MakeVertex(point).Vertex()
+        tool = BRepExtrema_DistShapeShape(self._wrapped, vertex)
+        tool.Perform()
+        if not tool.IsDone():
+            return 0.0
+        distance = float(tool.Value())
+        if not math.isfinite(distance) or distance < 0:
+            return 0.0
+        return distance
+
+
+class _ProtrusionSearch:
+    def __init__(self, part: Shape, envelope: Shape):
+        self.meter = _OutsideMeter(envelope)
+        self._part = BRepClass3d_SolidClassifier(part.impl.wrapped)
+        self.best = 0.0
+        self.point: tuple[float, float, float] | None = None
+        self.method = "vertices"
+
+    def vertex(self, x: float, y: float, z: float) -> float:
+        return self._keep(x, y, z, "vertices", on_part=True)
+
+    def surface(self, x: float, y: float, z: float, *, on_part: bool = True) -> float:
+        return self._keep(x, y, z, "surface", on_part=on_part)
+
+    def _keep(self, x: float, y: float, z: float, method: str, *, on_part: bool) -> float:
+        if not on_part and not self._on_part(x, y, z):
+            return 0.0
+        distance = self.meter(x, y, z)
+        if distance > self.best + 1e-9:
+            self.best = distance
+            self.point = (float(x), float(y), float(z))
+            self.method = method
+        return distance
+
+    def _on_part(self, x: float, y: float, z: float) -> bool:
+        self._part.Perform(gp_Pnt(float(x), float(y), float(z)), 1e-5)
+        return self._part.State() in (TopAbs_IN, TopAbs_ON)
+
+
+def _farthest_outside(part: Shape, envelope: Shape) -> tuple[float, tuple[float, float, float] | None, str]:
+    """Farthest point of ``part`` outside ``envelope``, and the distance."""
+    search = _ProtrusionSearch(part, envelope)
+    for vertex in part.impl.vertices():
+        search.vertex(vertex.X, vertex.Y, vertex.Z)
+    if _polyhedron(part):
+        return search.best, search.point, "vertices"
+    directions = _support_directions(envelope)
+    for edge in part.impl.edges():
+        _maximize_edge(edge, search, directions)
+    for face in part.impl.faces():
+        _maximize_face(face, search, directions)
+    return search.best, search.point, search.method if search.best > _PACK_TOUCH_MM else "vertices"
+
+
+def _polyhedron(part: Shape) -> bool:
+    for face in part.impl.faces():
+        if BRepAdaptor_Surface(face.wrapped).GetType() != GeomAbs_SurfaceType.GeomAbs_Plane:
+            return False
+    return True
+
+
+def _support_directions(envelope: Shape) -> list[tuple[float, float, float]]:
+    directions: list[tuple[float, float, float]] = []
+    for x in (-1.0, 0.0, 1.0):
+        for y in (-1.0, 0.0, 1.0):
+            for z in (-1.0, 0.0, 1.0):
+                if x or y or z:
+                    directions.append(_unit_tuple(x, y, z))
+    normals: list[tuple[float, float, float]] = []
+    for face in envelope.impl.faces():
+        adaptor = BRepAdaptor_Surface(face.wrapped)
+        if adaptor.GetType() != GeomAbs_SurfaceType.GeomAbs_Plane:
+            continue
+        normal = _outward_normal(face, face.center())
+        if normal is None:
+            continue
+        normals.append((float(normal[0]), float(normal[1]), float(normal[2])))
+    directions.extend(normals)
+    if len(normals) <= 24:
+        for index, left in enumerate(normals):
+            for right in normals[index + 1 :]:
+                summed = (left[0] + right[0], left[1] + right[1], left[2] + right[2])
+                length = math.sqrt(summed[0] ** 2 + summed[1] ** 2 + summed[2] ** 2)
+                if length > 0.25:
+                    directions.append((summed[0] / length, summed[1] / length, summed[2] / length))
+    unique: list[tuple[float, float, float]] = []
+    seen: set[tuple[int, int, int]] = set()
+    for direction in directions:
+        key = tuple(int(round(component * 1e5)) for component in direction)
+        if key in seen or key == (0, 0, 0):
+            continue
+        seen.add(key)
+        unique.append(direction)
+    return unique
+
+
+def _unit_tuple(x: float, y: float, z: float) -> tuple[float, float, float]:
+    length = math.sqrt(x * x + y * y + z * z)
+    if length < 1e-15:
+        return (0.0, 0.0, 0.0)
+    return (x / length, y / length, z / length)
+
+
+def _dot_dir(direction: tuple[float, float, float], vector) -> float:
+    return direction[0] * float(vector.X()) + direction[1] * float(vector.Y()) + direction[2] * float(vector.Z())
+
+
+def _wrap_param(parameter: float, low: float, high: float) -> float | None:
+    span = high - low
+    if span >= 2.0 * math.pi - 1e-6:
+        period = 2.0 * math.pi
+        while parameter < low - 1e-9:
+            parameter += period
+        while parameter > high + 1e-9:
+            parameter -= period
+        return min(high, max(low, parameter))
+    for candidate in (parameter, parameter + 2.0 * math.pi, parameter - 2.0 * math.pi):
+        if low - 1e-7 <= candidate <= high + 1e-7:
+            return min(high, max(low, candidate))
+    return None
+
+
+def _maximize_edge(edge, search: _ProtrusionSearch, directions: list[tuple[float, float, float]]) -> None:
+    adaptor = BRepAdaptor_Curve(edge.wrapped)
+    kind = adaptor.GetType()
+    if kind == GeomAbs_CurveType.GeomAbs_Line:
+        return
+    low = float(adaptor.FirstParameter())
+    high = float(adaptor.LastParameter())
+    if not math.isfinite(low) or not math.isfinite(high) or high <= low:
+        return
+    if kind == GeomAbs_CurveType.GeomAbs_Circle:
+        _circle_supports(adaptor, low, high, directions, search)
+    count = _curve_samples(adaptor, low, high)
+    values: list[tuple[float, float]] = []
+    for index in range(count):
+        parameter = low + (high - low) * index / (count - 1)
+        point = adaptor.Value(parameter)
+        distance = search.surface(point.X(), point.Y(), point.Z())
+        values.append((parameter, distance))
+    peaks = _parameter_peaks(values, adaptor)
+    for left, right in peaks:
+        _golden_edge(adaptor, left, right, search)
+
+
+def _circle_supports(adaptor, low: float, high: float, directions, search: _ProtrusionSearch) -> None:
+    position = adaptor.Circle().Position()
+    x_axis = position.XDirection()
+    y_axis = position.YDirection()
+    for direction in directions:
+        along_x = _dot_dir(direction, x_axis)
+        along_y = _dot_dir(direction, y_axis)
+        if along_x * along_x + along_y * along_y < 1e-16:
+            continue
+        parameter = _wrap_param(math.atan2(along_y, along_x), low, high)
+        if parameter is None:
+            continue
+        point = adaptor.Value(parameter)
+        search.surface(point.X(), point.Y(), point.Z())
+
+
+def _curve_samples(adaptor, low: float, high: float) -> int:
+    span = high - low
+    if adaptor.GetType() == GeomAbs_CurveType.GeomAbs_Circle:
+        radius = max(float(adaptor.Circle().Radius()), 1e-6)
+        step = math.sqrt(max(1e-8, 0.16 / radius))
+        count = int(math.ceil(span / max(step, 1e-3))) + 1
+        return max(24, min(240, count))
+    return max(16, min(80, int(span * 4) + 2))
+
+
+def _parameter_peaks(values: list[tuple[float, float]], adaptor) -> list[tuple[float, float]]:
+    if len(values) < 3:
+        return []
+    start = adaptor.Value(values[0][0])
+    end = adaptor.Value(values[-1][0])
+    periodic = _points_close(
+        (start.X(), start.Y(), start.Z()),
+        (end.X(), end.Y(), end.Z()),
+    )
+    count = len(values) - 1 if periodic else len(values)
+    peaks: list[tuple[float, float, float]] = []
+    for index in range(count):
+        distance = values[index][1]
+        if distance <= 0:
+            continue
+        previous = values[index - 1][1] if index > 0 else (values[-2][1] if periodic else -1.0)
+        nxt = values[index + 1][1] if index + 1 < len(values) else (values[1][1] if periodic else -1.0)
+        if distance + 1e-12 < previous or distance + 1e-12 < nxt:
+            continue
+        if index == 0:
+            left = values[0][0]
+            right = values[1][0]
+        elif index + 1 >= len(values):
+            left = values[-2][0]
+            right = values[-1][0]
+        else:
+            left = values[index - 1][0]
+            right = values[index + 1][0]
+        if right > left:
+            peaks.append((left, right, distance))
+    peaks.sort(key=lambda item: item[2], reverse=True)
+    return [(left, right) for left, right, _distance in peaks[:8]]
+
+
+def _golden_edge(adaptor, low: float, high: float, search: _ProtrusionSearch) -> None:
+    def value(parameter: float) -> float:
+        point = adaptor.Value(parameter)
+        return search.surface(point.X(), point.Y(), point.Z())
+
+    if high - low < 1e-9:
+        value((low + high) * 0.5)
+        return
+    left = low
+    right = high
+    c_param = right - _GOLDEN * (right - left)
+    d_param = left + _GOLDEN * (right - left)
+    c_value = value(c_param)
+    d_value = value(d_param)
+    for _ in range(48):
+        if right - left < 1e-10:
+            break
+        if c_value >= d_value:
+            right = d_param
+            d_param = c_param
+            d_value = c_value
+            c_param = right - _GOLDEN * (right - left)
+            c_value = value(c_param)
+        else:
+            left = c_param
+            c_param = d_param
+            c_value = d_value
+            d_param = left + _GOLDEN * (right - left)
+            d_value = value(d_param)
+
+
+def _maximize_face(face, search: _ProtrusionSearch, directions: list[tuple[float, float, float]]) -> None:
+    adaptor = BRepAdaptor_Surface(face.wrapped)
+    kind = adaptor.GetType()
+    if kind == GeomAbs_SurfaceType.GeomAbs_Plane:
+        return
+    u0 = float(adaptor.FirstUParameter())
+    u1 = float(adaptor.LastUParameter())
+    v0 = float(adaptor.FirstVParameter())
+    v1 = float(adaptor.LastVParameter())
+    if not all(math.isfinite(value) for value in (u0, u1, v0, v1)) or u1 < u0 or v1 < v0:
+        return
+    _face_supports(adaptor, kind, u0, u1, v0, v1, directions, search)
+    nu, nv = _face_grid(kind)
+    samples: list[tuple[float, float, float]] = []
+    for i in range(nu):
+        u = u0 if nu == 1 else u0 + (u1 - u0) * i / (nu - 1)
+        for j in range(nv):
+            v = v0 if nv == 1 else v0 + (v1 - v0) * j / (nv - 1)
+            point = adaptor.Value(u, v)
+            distance = search.surface(point.X(), point.Y(), point.Z())
+            samples.append((u, v, distance))
+    peaks: list[tuple[float, float, float]] = []
+    for i in range(nu):
+        for j in range(nv):
+            u, v, distance = samples[i * nv + j]
+            if distance <= 0:
+                continue
+            local = True
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    if di == 0 and dj == 0:
+                        continue
+                    ii = i + di
+                    jj = j + dj
+                    if 0 <= ii < nu and 0 <= jj < nv and samples[ii * nv + jj][2] > distance + 1e-12:
+                        local = False
+            if local:
+                peaks.append((u, v, distance))
+    peaks.sort(key=lambda sample: sample[2], reverse=True)
+    for u, v, _distance in peaks[:6]:
+        _refine_face(adaptor, u, v, u0, u1, v0, v1, search)
+
+
+def _face_grid(kind) -> tuple[int, int]:
+    if kind == GeomAbs_SurfaceType.GeomAbs_Sphere:
+        return 36, 19
+    if kind in (
+        GeomAbs_SurfaceType.GeomAbs_Cylinder,
+        GeomAbs_SurfaceType.GeomAbs_Cone,
+        GeomAbs_SurfaceType.GeomAbs_Torus,
+        GeomAbs_SurfaceType.GeomAbs_SurfaceOfRevolution,
+        GeomAbs_SurfaceType.GeomAbs_SurfaceOfExtrusion,
+    ):
+        return 36, 8
+    return 16, 12
+
+
+def _face_supports(adaptor, kind, u0, u1, v0, v1, directions, search: _ProtrusionSearch) -> None:
+    if kind == GeomAbs_SurfaceType.GeomAbs_Cylinder:
+        _cylinder_supports(adaptor, u0, u1, v0, v1, directions, search)
+    elif kind == GeomAbs_SurfaceType.GeomAbs_Sphere:
+        _sphere_supports(adaptor, u0, u1, v0, v1, directions, search)
+    elif kind == GeomAbs_SurfaceType.GeomAbs_Cone:
+        _cone_supports(adaptor, u0, u1, v0, v1, directions, search)
+    elif kind == GeomAbs_SurfaceType.GeomAbs_Torus:
+        _torus_supports(adaptor, u0, u1, v0, v1, directions, search)
+
+
+def _cylinder_supports(adaptor, u0, u1, v0, v1, directions, search: _ProtrusionSearch) -> None:
+    position = adaptor.Cylinder().Position()
+    x_axis = position.XDirection()
+    y_axis = position.YDirection()
+    z_axis = position.Direction()
+    for direction in directions:
+        along_x = _dot_dir(direction, x_axis)
+        along_y = _dot_dir(direction, y_axis)
+        along_z = _dot_dir(direction, z_axis)
+        if along_x * along_x + along_y * along_y < 1e-16:
+            parameter = u0
+        else:
+            parameter = _wrap_param(math.atan2(along_y, along_x), u0, u1)
+            if parameter is None:
+                continue
+        height = v1 if along_z >= 0 else v0
+        point = adaptor.Value(parameter, height)
+        search.surface(point.X(), point.Y(), point.Z())
+
+
+def _sphere_supports(adaptor, u0, u1, v0, v1, directions, search: _ProtrusionSearch) -> None:
+    sphere = adaptor.Sphere()
+    center = sphere.Location()
+    radius = float(sphere.Radius())
+    position = sphere.Position()
+    x_axis = position.XDirection()
+    y_axis = position.YDirection()
+    z_axis = position.Direction()
+    for direction in directions:
+        along_x = _dot_dir(direction, x_axis)
+        along_y = _dot_dir(direction, y_axis)
+        along_z = _dot_dir(direction, z_axis)
+        sin_v = min(1.0, max(-1.0, along_z))
+        v = math.asin(sin_v)
+        u = _wrap_param(math.atan2(along_y, along_x), u0, u1)
+        if u is None or v < v0 - 1e-7 or v > v1 + 1e-7:
+            continue
+        point = adaptor.Value(u, min(v1, max(v0, v)))
+        # The support constructed from the center is the same point on a full sphere.
+        search.surface(point.X(), point.Y(), point.Z())
+        search.surface(
+            float(center.X()) + radius * direction[0],
+            float(center.Y()) + radius * direction[1],
+            float(center.Z()) + radius * direction[2],
+            on_part=False,
+        )
+
+
+def _cone_supports(adaptor, u0, u1, v0, v1, directions, search: _ProtrusionSearch) -> None:
+    """A solid cone is convex, so the extreme is on a circular boundary of the face."""
+    position = adaptor.Cone().Position()
+    x_axis = position.XDirection()
+    y_axis = position.YDirection()
+    for direction in directions:
+        along_x = _dot_dir(direction, x_axis)
+        along_y = _dot_dir(direction, y_axis)
+        if along_x * along_x + along_y * along_y < 1e-16:
+            continue
+        parameter = _wrap_param(math.atan2(along_y, along_x), u0, u1)
+        if parameter is None:
+            continue
+        for height in (v0, v1):
+            point = adaptor.Value(parameter, height)
+            search.surface(point.X(), point.Y(), point.Z())
+
+
+def _torus_supports(adaptor, u0, u1, v0, v1, directions, search: _ProtrusionSearch) -> None:
+    torus = adaptor.Torus()
+    position = torus.Position()
+    x_axis = position.XDirection()
+    y_axis = position.YDirection()
+    z_axis = position.Direction()
+    for direction in directions:
+        along_x = _dot_dir(direction, x_axis)
+        along_y = _dot_dir(direction, y_axis)
+        along_z = _dot_dir(direction, z_axis)
+        if along_x * along_x + along_y * along_y < 1e-16:
+            u = u0
+        else:
+            u = _wrap_param(math.atan2(along_y, along_x), u0, u1)
+            if u is None:
+                continue
+        radial = math.sqrt(max(0.0, 1.0 - along_z * along_z))
+        # v is the angle around the tube. The outer side is v = 0 in gp_Torus
+        # when the direction lies in the plane of the ring; use atan2.
+        v = _wrap_param(math.atan2(along_z, radial if radial > 1e-12 else 1.0), v0, v1)
+        if v is None:
+            continue
+        point = adaptor.Value(u, v)
+        search.surface(point.X(), point.Y(), point.Z())
+
+
+def _refine_face(adaptor, u: float, v: float, u0: float, u1: float, v0: float, v1: float, search: _ProtrusionSearch) -> None:
+    step_u = max((u1 - u0) / 40.0, 1e-6)
+    step_v = max((v1 - v0) / 40.0, 1e-6)
+    best = search.surface(*_surface_xyz(adaptor, u, v))
+    for _ in range(36):
+        improved = False
+        for du, dv in (
+            (step_u, 0.0),
+            (-step_u, 0.0),
+            (0.0, step_v),
+            (0.0, -step_v),
+            (step_u, step_v),
+            (step_u, -step_v),
+            (-step_u, step_v),
+            (-step_u, -step_v),
+        ):
+            uu = min(u1, max(u0, u + du))
+            vv = min(v1, max(v0, v + dv))
+            distance = search.surface(*_surface_xyz(adaptor, uu, vv))
+            if distance > best + 1e-10:
+                best = distance
+                u, v = uu, vv
+                improved = True
+                break
+        if improved:
+            continue
+        step_u *= 0.5
+        step_v *= 0.5
+        if step_u < 1e-9 and step_v < 1e-9:
+            break
+
+
+def _surface_xyz(adaptor, u: float, v: float) -> tuple[float, float, float]:
+    point = adaptor.Value(u, v)
+    return float(point.X()), float(point.Y()), float(point.Z())
+
+
+def _points_close(a: tuple[float, float, float], b: tuple[float, float, float], tol: float = 1e-7) -> bool:
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2 <= tol * tol
+
+
+def _primitive_solid(spec: dict, label: str):
+    kind = spec.get("shape", spec.get("primitive"))
+    center = finite_vec3(spec.get("center", [0, 0, 0]), f"{label} center")
+    if kind == "box":
+        size = finite_vec3(spec.get("size"), f"{label} size", positive=True)
+        solid = Pos(*center) * Box(size[0], size[1], size[2])
+        return solid
+    if kind == "cylinder":
+        radius = finite_number(spec.get("radius"), f"{label} radius", positive=True)
+        height = finite_number(spec.get("height"), f"{label} height", positive=True)
+        axis = finite_vec3(spec.get("axis", [0, 0, 1]), f"{label} axis")
+        length = math.sqrt(sum(component * component for component in axis))
+        if length < 1e-9:
+            raise GeometryError(f"{label} axis must be non-zero.")
+        direction = tuple(component / length for component in axis)
+        return Plane(origin=center, z_dir=direction) * Cylinder(radius, height)
+    if kind == "sphere":
+        radius = finite_number(spec.get("radius"), f"{label} radius", positive=True)
+        return Pos(*center) * Sphere(radius)
+    raise GeometryError(
+        f"Unknown envelope shape {kind!r}. Use 'box', 'cylinder', 'sphere', or an outline."
+    )
+
+
+def _outline_solid(spec: dict):
+    raw = spec.get("outline")
+    if not isinstance(raw, (list, tuple)) or len(raw) < 3:
+        raise GeometryError("An outline needs at least three [x, y] points.")
+    if len(raw) > 500:
+        raise GeometryError("An outline may have at most 500 points.")
+    points: list[tuple[float, float]] = []
+    for index, point in enumerate(raw):
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise GeometryError(f"Outline point {index} must be [x, y].")
+        x = finite_number(point[0], f"outline point {index}")
+        y = finite_number(point[1], f"outline point {index}")
+        points.append((x, y))
+    if _points_close((points[0][0], points[0][1], 0.0), (points[-1][0], points[-1][1], 0.0), tol=1e-9):
+        points = points[:-1]
+    if len(points) < 3:
+        raise GeometryError("An outline needs at least three distinct points.")
+    if _polygon_area(points) <= 1e-6:
+        raise GeometryError("The outline has no area.")
+    axis = finite_vec3(spec.get("axis", [0, 0, 1]), "outline axis")
+    axis_length = math.sqrt(sum(component * component for component in axis))
+    if axis_length < 1e-9:
+        raise GeometryError("The outline axis must be non-zero.")
+    axis_unit = tuple(component / axis_length for component in axis)
+    origin = finite_vec3(spec.get("origin", [0, 0, 0]), "outline origin")
+    if "limit" in spec and "length" in spec:
+        raise GeometryError("Pass an outline limit or a length, not both.")
+    if "limit" in spec:
+        limit = spec["limit"]
+        if not isinstance(limit, (list, tuple)) or len(limit) != 2:
+            raise GeometryError("Outline limit is [low, high] along the axis.")
+        low = finite_number(limit[0], "outline limit")
+        high = finite_number(limit[1], "outline limit")
+    elif "length" in spec:
+        low = 0.0
+        high = finite_number(spec["length"], "outline length", positive=True)
+    else:
+        raise GeometryError("An outline needs limit [low, high] or length.")
+    if high <= low:
+        raise GeometryError("Outline limit must run from low to high.")
+    x_dir, _y_dir = _outline_axes(axis_unit)
+    start = tuple(origin[index] + axis_unit[index] * low for index in range(3))
+    try:
+        face = Polygon(*points)
+        prism = extrude(face, amount=high - low)
+        plane = Plane(origin=start, x_dir=x_dir, z_dir=axis_unit)
+        solid = plane.location * prism
+    except GeometryError:
+        raise
+    except Exception as exc:
+        raise GeometryError(f"Could not extrude the outline: {exc}") from exc
+    if _boolean_volume(solid) <= _PACK_VOLUME_MM3:
+        raise GeometryError("The outline did not produce a solid. The polygon may cross itself.")
+    return solid
+
+
+def _polygon_area(points: list[tuple[float, float]]) -> float:
+    area = 0.0
+    count = len(points)
+    for index, point in enumerate(points):
+        nxt = points[(index + 1) % count]
+        area += point[0] * nxt[1] - nxt[0] * point[1]
+    return abs(area) * 0.5
+
+
+def _outline_axes(axis: tuple[float, float, float]) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Local X and Y of an outline plane whose normal is ``axis``."""
+    reference = (1.0, 0.0, 0.0)
+    dot = axis[0]
+    projected = (reference[0] - dot * axis[0], reference[1] - dot * axis[1], reference[2] - dot * axis[2])
+    if projected[0] ** 2 + projected[1] ** 2 + projected[2] ** 2 < 1e-8:
+        reference = (0.0, 1.0, 0.0)
+        dot = axis[1]
+        projected = (reference[0] - dot * axis[0], reference[1] - dot * axis[1], reference[2] - dot * axis[2])
+    x_dir = _unit_tuple(*projected)
+    y_dir = _unit_tuple(
+        axis[1] * x_dir[2] - axis[2] * x_dir[1],
+        axis[2] * x_dir[0] - axis[0] * x_dir[2],
+        axis[0] * x_dir[1] - axis[1] * x_dir[0],
+    )
+    return x_dir, y_dir
+
+
 def solid_inertia(shape: Shape) -> dict:
     """Volume, center of mass, and the inertia tensor about that center.
 
@@ -581,14 +1558,35 @@ def export_stl_file(
     publish_file(path, write)
 
 
+# Entity names that point at another file. The check is case-insensitive.
+# A comment cannot hide a name: the text is searched with comments removed
+# as well as raw.
+_STEP_EXTERNAL_MARKERS = (
+    "document_file",
+    "applied_document_reference",
+    "applied_external_identification_assignment",
+    "product_definition_with_associated_documents",
+    "external_source",
+)
+
+
 def import_step_file(path: Path) -> Shape:
+    """Read one STEP file into a solid.
+
+    Only this file is opened. A name inside it that points at another file is
+    not followed, so a shared part cannot read or write outside the project
+    by naming some other path.
+    """
     if not path.is_file():
         raise GeometryError(f"STEP file not found: {path}")
+    _refuse_step_file_outside_folder(path)
     try:
         # The STEP parser logs through C stdout. That descriptor is the MCP
         # stream when `aicad serve` is running, so the bytes never reach it.
         with divert_native_stdio(stderr=True):
-            imported = import_step(path)
+            imported = _read_step_shape(path)
+    except GeometryError:
+        raise
     except Exception as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
     try:
@@ -596,6 +1594,231 @@ def import_step_file(path: Path) -> Shape:
     except GeometryError as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
     return Shape(solid)
+
+
+def _read_step_shape(path: Path):
+    """Read the solids in ``path`` and do not open any other file it names."""
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_Reader
+    from build123d.topology import Shape as BuildShape
+
+    reader = STEPControl_Reader()
+    status = reader.ReadFile(str(path))
+    if status != IFSelect_RetDone or reader.TransferRoots() < 1:
+        raise GeometryError(f"Could not read STEP file {path}.")
+    shape = reader.OneShape()
+    if shape.IsNull():
+        raise GeometryError(f"Could not read STEP file {path}.")
+    return BuildShape.cast(shape)
+
+
+def _refuse_step_file_outside_folder(path: Path) -> None:
+    """Refuse a STEP file that names a path outside the file's own folder.
+
+    An assembly file can name another STEP file. A name with a drive, a
+    leading slash, a backslash, or ``..`` would leave the folder, so the
+    file is not read at all. A name that stays in the folder is not opened
+    either: only this file is read.
+    """
+    try:
+        text = path.read_text(encoding="latin-1")
+    except OSError as exc:
+        raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
+    try:
+        code, values = _step_code_and_strings(text)
+    except ValueError as exc:
+        if _step_mentions_external(text):
+            raise GeometryError(
+                f"Could not read STEP file {path}: it names other files in a form that was not accepted."
+            ) from exc
+        return
+    if not _step_mentions_external(text, code):
+        return
+    folder = path.resolve().parent
+    for value in values:
+        if _step_string_leaves_folder(folder, value):
+            raise GeometryError(
+                f"Could not read STEP file {path}: it refers to a file outside its folder. It was not read."
+            )
+
+
+def _step_code_and_strings(text: str) -> tuple[str, list[str]]:
+    """STEP text with comments removed, and every decoded string value."""
+    code: list[str] = []
+    values: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end < 0:
+                raise ValueError("unclosed comment")
+            code.append(" ")
+            index = end + 2
+            continue
+        if text[index] == "'":
+            raw, index = _read_step_literal(text, index)
+            while True:
+                cursor = index
+                while cursor < length and text[cursor] in " \t\r\n":
+                    cursor += 1
+                while cursor < length and text.startswith("/*", cursor):
+                    end = text.find("*/", cursor + 2)
+                    if end < 0:
+                        raise ValueError("unclosed comment")
+                    cursor = end + 2
+                    while cursor < length and text[cursor] in " \t\r\n":
+                        cursor += 1
+                if cursor < length and text[cursor] == "'":
+                    nxt, index = _read_step_literal(text, cursor)
+                    raw += nxt
+                    continue
+                index = cursor
+                break
+            values.append(_decode_step_string(raw))
+            code.append("''")
+            continue
+        code.append(text[index])
+        index += 1
+    return "".join(code), values
+
+
+def _read_step_literal(text: str, index: int) -> tuple[str, int]:
+    """Content of one quoted literal. A doubled quote is an apostrophe."""
+    index += 1
+    chars: list[str] = []
+    length = len(text)
+    while index < length:
+        if text[index] == "'":
+            if index + 1 < length and text[index + 1] == "'":
+                chars.append("'")
+                index += 2
+                continue
+            return "".join(chars), index + 1
+        chars.append(text[index])
+        index += 1
+    raise ValueError("unterminated string")
+
+
+def _step_mentions_external(text: str, code: str | None = None) -> bool:
+    """True when the file uses an entity that names another file."""
+    for blob in (text, code):
+        if blob is None:
+            continue
+        folded = blob.lower()
+        if any(marker in folded for marker in _STEP_EXTERNAL_MARKERS):
+            return True
+    if code is not None:
+        return False
+    try:
+        stripped = _strip_step_comments(text)
+    except ValueError:
+        return False
+    folded = stripped.lower()
+    return any(marker in folded for marker in _STEP_EXTERNAL_MARKERS)
+
+
+def _strip_step_comments(text: str) -> str:
+    parts: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end < 0:
+                raise ValueError("unclosed comment")
+            parts.append(" ")
+            index = end + 2
+            continue
+        parts.append(text[index])
+        index += 1
+    return "".join(parts)
+
+
+def _decode_step_string(raw: str) -> str:
+    """Decode ISO 10303-21 character escapes the way the STEP reader does.
+
+    Newlines are removed, because the reader drops them before it uses the
+    text as a file name. ``\\\\`` is one backslash. An unknown escape is
+    refused so a directive cannot hide a path.
+    """
+    out: list[str] = []
+    index = 0
+    length = len(raw)
+    hex_digits = "0123456789abcdefABCDEF"
+    while index < length:
+        char = raw[index]
+        if char in "\n\r":
+            index += 1
+            continue
+        if char != "\\":
+            out.append(char)
+            index += 1
+            continue
+        if index + 1 < length and raw[index + 1] == "\\":
+            out.append("\\")
+            index += 2
+            continue
+        token = raw[index:].lower()
+        if token.startswith("\\x2\\") or token.startswith("\\x4\\"):
+            width = 4 if token.startswith("\\x2\\") else 8
+            index += 4
+            digits: list[str] = []
+            while index < length and not raw.lower().startswith("\\x0\\", index):
+                digits.append(raw[index])
+                index += 1
+            if not raw.lower().startswith("\\x0\\", index):
+                raise ValueError("unclosed character escape")
+            index += 4
+            blob = "".join(digits)
+            if not blob or len(blob) % width != 0 or any(char not in hex_digits for char in blob):
+                raise ValueError("bad character escape")
+            for start in range(0, len(blob), width):
+                code = int(blob[start : start + width], 16)
+                if code > 0x10FFFF:
+                    raise ValueError("bad character escape")
+                out.append(chr(code))
+            continue
+        if token.startswith("\\x\\"):
+            pair = raw[index + 3 : index + 5]
+            if len(pair) != 2 or any(char not in hex_digits for char in pair):
+                raise ValueError("bad character escape")
+            out.append(chr(int(pair, 16)))
+            index += 5
+            continue
+        if token.startswith("\\s\\"):
+            if index + 3 >= length:
+                raise ValueError("bad character escape")
+            out.append(chr(ord(raw[index + 3]) + 128))
+            index += 4
+            continue
+        if token.startswith("\\n\\") or token.startswith("\\t\\"):
+            if token.startswith("\\t\\"):
+                out.append("\t")
+            index += 3
+            continue
+        if len(token) >= 4 and token[1] == "p" and token[3] == "\\":
+            index += 4
+            continue
+        raise ValueError("bad character escape")
+    return "".join(out)
+
+
+def _step_string_leaves_folder(folder: Path, value: str) -> bool:
+    """True when a decoded STEP string names something outside ``folder``."""
+    if "\x00" in value:
+        return True
+    normalized = value.replace("\\", "/").replace("\n", "").replace("\r", "")
+    if normalized == "":
+        return False
+    if session_path_escapes(normalized):
+        return True
+    candidate = (folder / normalized).resolve()
+    try:
+        candidate.relative_to(folder)
+    except ValueError:
+        return True
+    return False
 
 
 def tessellate(shape: Shape) -> TriangleMesh:
@@ -751,6 +1974,56 @@ def viewport_mesh(shape: Shape) -> dict:
             "max": [round_mm(bbox.max.X), round_mm(bbox.max.Y), round_mm(bbox.max.Z)],
         },
     }
+
+
+def face_pressure_triangles(
+    shape: Shape, face_index: int, deflection: float
+) -> list[tuple[float, tuple[float, float, float], tuple[tuple[float, float, float], ...]]]:
+    """Tessellate one face for a pressure load.
+
+    Each item is ``(area_mm2, outward_unit_normal, three_vertices)``. The normal
+    points out of the material, matching :func:`describe_faces`. A curved face
+    needs these triangles: one normal at the face center times the whole area
+    is a single force, and a round hole then gets a sideways load instead of
+    pressure.
+    """
+    faces = list(shape.impl.faces())
+    if face_index < 0 or face_index >= len(faces) or deflection <= 0:
+        return []
+    face = faces[face_index]
+    try:
+        vertices, triangles = face.tessellate(deflection)
+    except Exception:
+        return []
+    found = []
+    for tri in triangles:
+        try:
+            corners = tuple(
+                (float(vertices[int(index)].X), float(vertices[int(index)].Y), float(vertices[int(index)].Z))
+                for index in tri
+            )
+        except Exception:
+            continue
+        if len(corners) != 3:
+            continue
+        a, b, c = corners
+        ax, ay, az = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+        bx, by, bz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+        nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+        length = math.sqrt(nx * nx + ny * ny + nz * nz)
+        area = 0.5 * length
+        if area < 1e-12 or length < 1e-12:
+            continue
+        normal = (nx / length, ny / length, nz / length)
+        center = ((a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0)
+        try:
+            reference = face.normal_at(Vector(*center))
+            if normal[0] * reference.X + normal[1] * reference.Y + normal[2] * reference.Z < 0:
+                normal = (-normal[0], -normal[1], -normal[2])
+        except Exception:
+            pass
+        found.append((area, normal, corners))
+    return found
 
 
 def distance_point_to_face(shape: Shape, face_index: int, point: tuple[float, float, float]) -> float:
@@ -944,7 +2217,7 @@ def _first_parallel_hit(impl, origin, direction, probe: float) -> float | None:
                 aligned = abs(hit_normal.normalized().dot(direction))
             except Exception:
                 aligned = 0.0
-            if aligned > 0.7:
+            if aligned > _WALL_ALIGNMENT:
                 midpoint = origin + direction * (parameter * 0.5)
                 if _strictly_inside(impl, midpoint) and (best is None or parameter < best):
                     best = parameter
@@ -1330,7 +2603,8 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
 
     ``z`` is the bottom of an extrusion or a cutter. A revolve spins the XY
     profile about the sketch X or Y axis. The profile must stay on one side of
-    that axis.
+    that axis. Consecutive points that are the ends of a sketch arc follow
+    that arc. A profile with only straight edges stays a polygon.
     """
     if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
         raise GeometryError(
@@ -1410,7 +2684,7 @@ def _polygon_prism(step: dict, geometry: dict, name: str):
     height = _positive(step.get("height"), f"{name} height")
     z = _optional_number(step.get("z", 0.0), f"{name} z")
     try:
-        face = Plane.XY * Polygon(*coords)
+        face = _profile_face(step, geometry, name, coords)
         solid = Pos(0, 0, z) * extrude(face, amount=height)
     except GeometryError:
         raise
@@ -1431,7 +2705,7 @@ def _revolve_profile(step: dict, geometry: dict, name: str):
     if angle > 360:
         raise GeometryError(f"{name}: revolve angle must be from 0 to 360 degrees.")
     radial = 0 if axis_name == "y" else 1
-    signs = [coord[radial] for coord in coords]
+    signs = [sample[radial] for sample in _profile_samples(step, geometry, coords)]
     if min(signs) < -1e-9 and max(signs) > 1e-9:
         raise GeometryError(
             f"{name}: the profile crosses the {axis_name.upper()} axis. "
@@ -1439,10 +2713,170 @@ def _revolve_profile(step: dict, geometry: dict, name: str):
         )
     axis = Axis.Y if axis_name == "y" else Axis.X
     try:
-        solid = revolve(Plane.XY * Polygon(*coords), axis=axis, revolution_arc=angle)
+        face = _profile_face(step, geometry, name, coords)
+        solid = revolve(face, axis=axis, revolution_arc=angle)
+    except GeometryError:
+        raise
     except Exception as exc:
         raise GeometryError(f"{name}: revolve failed. {exc}") from exc
     return solid
+
+
+def _profile_face(step: dict, geometry: dict, name: str, coords: list[tuple[float, float]]):
+    """A polygon when every edge is straight. An arc edge follows the circle."""
+    ids = step.get("points")
+    edges = _boundary_arcs(geometry)
+    if not isinstance(ids, list) or not _profile_uses_arc(ids, edges):
+        return Plane.XY * Polygon(*coords)
+    points = geometry.get("points") or {}
+    wire = None
+    count = len(ids)
+    for index in range(count):
+        left = ids[index]
+        right = ids[(index + 1) % count]
+        pair = frozenset((left, right))
+        matches = edges.get(pair) or []
+        if matches:
+            if len(matches) != 1:
+                raise GeometryError(f"{name}: more than one arc joins {left} and {right}.")
+            segment = _boundary_arc(matches[0], left, right, name)
+        else:
+            segment = Line(_point_xy(points, left), _point_xy(points, right))
+        wire = segment if wire is None else wire + segment
+    try:
+        return make_face(wire)
+    except GeometryError:
+        raise
+    except Exception as exc:
+        raise GeometryError(f"{name}: could not build a face from that profile. {exc}") from exc
+
+
+def _profile_uses_arc(ids: list, edges: dict) -> bool:
+    count = len(ids)
+    for index in range(count):
+        if frozenset((ids[index], ids[(index + 1) % count])) in edges:
+            return True
+    return False
+
+
+def _profile_samples(step: dict, geometry: dict, coords: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Profile points plus the high and low points of any arc on the boundary."""
+    samples = list(coords)
+    ids = step.get("points")
+    if not isinstance(ids, list):
+        return samples
+    edges = _boundary_arcs(geometry)
+    count = len(ids)
+    for index in range(count):
+        matches = edges.get(frozenset((ids[index], ids[(index + 1) % count]))) or []
+        if len(matches) == 1:
+            samples.extend(_arc_extrema(matches[0]))
+    return samples
+
+
+def _boundary_arcs(geometry: dict) -> dict[frozenset, list[dict]]:
+    arcs = geometry.get("arcs") or {}
+    points = geometry.get("points") or {}
+    grouped: dict[frozenset, list[dict]] = {}
+    if not isinstance(arcs, dict) or not isinstance(points, dict):
+        return grouped
+    for arc in arcs.values():
+        if not isinstance(arc, dict) or arc.get("construction"):
+            continue
+        start_id = arc.get("start_id") or _id_at(points, arc.get("start"))
+        end_id = arc.get("end_id") or _id_at(points, arc.get("end"))
+        if not isinstance(start_id, str) or not isinstance(end_id, str) or start_id == end_id:
+            continue
+        if start_id not in points or end_id not in points:
+            continue
+        stored = dict(arc)
+        stored["start_id"] = start_id
+        stored["end_id"] = end_id
+        grouped.setdefault(frozenset((start_id, end_id)), []).append(stored)
+    return grouped
+
+
+def _boundary_arc(arc: dict, walk_from: str, walk_to: str, name: str):
+    center = _xy_dict(arc.get("center"), f"{name} arc center")
+    start = _xy_dict(arc.get("start"), f"{name} arc start")
+    end = _xy_dict(arc.get("end"), f"{name} arc end")
+    try:
+        radius, start_angle, end_angle, sweep = _arc_sweep(center, start, end)
+    except GeometryError as exc:
+        raise GeometryError(f"{name}: {exc}") from exc
+    if walk_from == arc.get("start_id") and walk_to == arc.get("end_id"):
+        return CenterArc(center, radius, start_angle, sweep)
+    if walk_from == arc.get("end_id") and walk_to == arc.get("start_id"):
+        return CenterArc(center, radius, end_angle, -sweep)
+    raise GeometryError(f"{name}: the arc does not join {walk_from} and {walk_to}.")
+
+
+def _arc_sweep(center: tuple[float, float], start: tuple[float, float], end: tuple[float, float]):
+    """Radius, start angle, end angle, and the counterclockwise sweep in degrees."""
+    radius_start = math.hypot(start[0] - center[0], start[1] - center[1])
+    radius_end = math.hypot(end[0] - center[0], end[1] - center[1])
+    if radius_start <= 1e-3 or abs(radius_start - radius_end) > 1e-3:
+        raise GeometryError("arc endpoints are not on one circle.")
+    start_angle = math.degrees(math.atan2(start[1] - center[1], start[0] - center[0]))
+    end_angle = math.degrees(math.atan2(end[1] - center[1], end[0] - center[0]))
+    sweep = (end_angle - start_angle) % 360.0
+    if sweep < 1e-3 or sweep > 360.0 - 1e-3:
+        raise GeometryError("that arc has no sweep.")
+    return radius_start, start_angle, end_angle, sweep
+
+
+def _arc_extrema(arc: dict) -> list[tuple[float, float]]:
+    try:
+        center = _xy_dict(arc.get("center"), "center")
+        start = _xy_dict(arc.get("start"), "start")
+        end = _xy_dict(arc.get("end"), "end")
+        radius, start_angle, _end_angle, sweep = _arc_sweep(center, start, end)
+    except GeometryError:
+        return []
+    found = []
+    for degrees in (0.0, 90.0, 180.0, 270.0):
+        delta = (degrees - start_angle) % 360.0
+        if delta <= sweep + 1e-6:
+            radians = math.radians(degrees)
+            found.append((center[0] + radius * math.cos(radians), center[1] + radius * math.sin(radians)))
+    return found
+
+
+def _point_xy(points: dict, point_id: str) -> tuple[float, float]:
+    return _xy_dict(points.get(point_id), point_id)
+
+
+def _xy_dict(point, label: str) -> tuple[float, float]:
+    if not isinstance(point, dict):
+        raise GeometryError(f"{label} is missing.")
+    try:
+        return (float(point["x"]), float(point["y"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GeometryError(f"{label} is missing.") from exc
+
+
+def _id_at(points: dict, coord) -> str | None:
+    if not isinstance(coord, dict):
+        return None
+    try:
+        x = float(coord["x"])
+        y = float(coord["y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    found = None
+    for point_id, point in points.items():
+        if not isinstance(point, dict):
+            continue
+        try:
+            near = abs(float(point["x"]) - x) <= 1e-6 and abs(float(point["y"]) - y) <= 1e-6
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not near:
+            continue
+        if found is not None:
+            return None
+        found = point_id
+    return found
 
 
 def _profile_points(step: dict, geometry: dict, name: str) -> list[tuple[float, float]]:

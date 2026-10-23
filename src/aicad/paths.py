@@ -223,11 +223,7 @@ _LINK_ERRNOS = {errno.ELOOP, errno.ENOTDIR}
 
 
 def nofollow_writes() -> bool:
-    """True when a directory can be opened without following a link.
-
-    Windows has no equivalent of ``openat`` with ``O_NOFOLLOW`` here, so
-    project writes on Windows keep the path check that runs before the write.
-    """
+    """True when a directory can be opened without following a link."""
     if sys.platform == "win32":
         return False
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):

@@ -117,6 +117,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required gap in mm. 0 means the parts must not intersect.",
     )
 
+    packaging = commands.add_parser(
+        "check-packaging",
+        parents=[common],
+        help="Check that parts fit inside an envelope, with wall clearance and overlap.",
+    )
+    packaging.add_argument(
+        "--envelope",
+        required=True,
+        help="Part name, or a JSON primitive or outline.",
+    )
+    packaging.add_argument(
+        "--parts",
+        default=None,
+        help="Comma-separated part or instance names. With an assembly, the default is every instance except the envelope.",
+    )
+    packaging.add_argument("--assembly", default=None, help="Check the posed instances of this assembly.")
+    packaging.add_argument("--pose", default=None, help="Named pose. The stored assembly is left unchanged.")
+    packaging.add_argument(
+        "--joints",
+        default=None,
+        help="JSON object of joint values for this check only. Degrees or millimeters.",
+    )
+    packaging.add_argument(
+        "--min",
+        dest="min_clearance",
+        type=float,
+        default=0.0,
+        help="Required gap to the envelope wall, in mm. 0 allows a part to touch the wall.",
+    )
+
     inspect = commands.add_parser(
         "inspect", parents=[common], help="Measure, check wall thickness, and render."
     )
@@ -211,6 +241,22 @@ def build_parser() -> argparse.ArgumentParser:
     motion.add_argument("name")
     motion.add_argument("--sequence", default=None, help="Motion stored on the assembly.")
     motion.add_argument("--file", type=Path, default=None, help="JSON sweep or keyframes.")
+
+    motion_study = commands.add_parser(
+        "motion-study",
+        parents=[common],
+        help="Drive joints over time and report collisions and joint-limit violations.",
+    )
+    motion_study.add_argument("name")
+    motion_study.add_argument("--sequence", default=None, help="Study stored on the assembly.")
+    motion_study.add_argument("--file", type=Path, default=None, help="JSON study of drivers and couplings.")
+    motion_study.add_argument("--steps", type=int, default=None, help="Poses to solve, including both ends.")
+    motion_study.add_argument(
+        "--clearance",
+        type=float,
+        default=None,
+        help="Minimum allowed gap in millimeters. A smaller gap is interference.",
+    )
 
     cables = commands.add_parser("cables", parents=[common], help="Check cables and hoses.")
     cables.add_argument("name")
@@ -395,6 +441,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     simulate_from.add_argument("name")
 
+    gear = commands.add_parser(
+        "gear",
+        parents=[common],
+        help="Create or replace a spur, helical, straight bevel, or spiral bevel gear.",
+    )
+    gear.add_argument("name")
+    gear.add_argument("--file", type=Path, default=None, help="JSON gear spec. Flags override it.")
+    gear.add_argument("--type", default=None, help="spur, helical, straight_bevel, or spiral_bevel.")
+    gear.add_argument("--module", type=float, default=None, help="Normal module, or outer transverse module for a bevel.")
+    gear.add_argument("--teeth", type=int, default=None)
+    gear.add_argument("--pressure-angle", type=float, default=None)
+    gear.add_argument("--helix-angle", type=float, default=None, help="Degrees. Positive is right-hand.")
+    gear.add_argument("--spiral-angle", type=float, default=None, help="Mean spiral angle, degrees. Positive is right-hand.")
+    gear.add_argument("--face-width", type=float, default=None)
+    gear.add_argument("--profile-shift", type=float, default=None)
+    gear.add_argument("--shaft-angle", type=float, default=None)
+    gear.add_argument("--mate-teeth", type=int, default=None)
+    gear.add_argument("--bore", type=float, default=None)
+    gear.add_argument("--rack", default=None, help="ISO 53 basic rack A, B, C, or D.")
+    gear.add_argument("--hand", default=None, choices=["right", "left"])
+    gear.add_argument("--at", default=None, help="Position x,y,z in mm.")
+    gear.add_argument("--rot", default=None, help="Rotation about X, Y, Z in degrees.")
+
     from aicad.plugins import add_cli
 
     add_cli(commands, common)
@@ -469,6 +538,16 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "check-clearance":
         report = document.check_clearance(args.part_a, args.part_b, args.min_clearance)
         return emit(report.to_dict())
+    if args.command == "check-packaging":
+        report = document.check_packaging(
+            _envelope_argument(args.envelope),
+            parts=_name_list(args.parts, "--parts"),
+            assembly=args.assembly,
+            pose=args.pose,
+            joints=_joints_argument(args.joints),
+            min_clearance_mm=args.min_clearance,
+        )
+        return emit(report.to_dict())
     if args.command == "inspect":
         report = document.inspect(args.name, args.min_wall, args.samples)
         return emit(report.to_dict())
@@ -492,6 +571,34 @@ def _dispatch(args: argparse.Namespace) -> int:
             rotation_deg=_triple(args.rot, "--rot"),
         )
         return emit(info.to_dict())
+    if args.command == "gear":
+        spec = _json_object(args.file) if args.file is not None else {}
+        overrides = {
+            "type": args.type,
+            "module_mm": args.module,
+            "teeth": args.teeth,
+            "pressure_angle_deg": args.pressure_angle,
+            "helix_angle_deg": args.helix_angle,
+            "spiral_angle_deg": args.spiral_angle,
+            "face_width_mm": args.face_width,
+            "profile_shift": args.profile_shift,
+            "shaft_angle_deg": args.shaft_angle,
+            "mate_teeth": args.mate_teeth,
+            "bore_mm": args.bore,
+            "rack": args.rack,
+            "hand": args.hand,
+        }
+        for key, value in overrides.items():
+            if value is not None:
+                spec[key] = value
+        position = _triple(args.at, "--at") if args.at else None
+        rotation = _triple(args.rot, "--rot") if args.rot else None
+        names = {part.name for part in document.list_parts()}
+        if args.name in names:
+            report = document.update_gear(args.name, spec, position, rotation)
+        else:
+            report = document.create_gear(args.name, spec, position, rotation)
+        return emit(report)
     if args.command == "place":
         info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
         return emit(info.to_dict())
@@ -536,6 +643,17 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "motion":
         inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
         return emit(document.run_motion(args.name, sequence=args.sequence, motion=inline))
+    if args.command == "motion-study":
+        inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
+        return emit(
+            document.run_motion_study(
+                args.name,
+                sequence=args.sequence,
+                study=inline,
+                steps=args.steps,
+                clearance_mm=args.clearance,
+            )
+        )
     if args.command == "cables":
         return emit(document.check_cables(args.name, sequence=args.sequence))
     if args.command == "power":
@@ -650,6 +768,40 @@ def _create_or_update_ops(document, name: str, ops: list[dict]):
     if name in names:
         return document.update_part_ops(name, ops)
     return document.create_part_from_ops(name, ops)
+
+
+def _envelope_argument(text: str):
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return text
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise AICADError(f"--envelope is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise AICADError("--envelope JSON must be an object.")
+    return payload
+
+
+def _name_list(text: str | None, label: str) -> list[str] | None:
+    if text is None:
+        return None
+    names = [part.strip() for part in text.split(",")]
+    if not names or any(not part for part in names):
+        raise AICADError(f"{label} is a comma-separated list of names.")
+    return names
+
+
+def _joints_argument(text: str | None) -> dict | None:
+    if text is None:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AICADError(f"--joints is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise AICADError("--joints must be a JSON object of joint names and values.")
+    return payload
 
 
 def _triple(text: str, label: str) -> list[float]:

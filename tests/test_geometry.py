@@ -128,6 +128,37 @@ def test_a_wall_the_same_size_as_the_first_probe_is_measured(tmp_path):
     assert wall.method == "ray+section"
 
 
+def test_round_and_rotated_solids_report_normal_thickness(tmp_path):
+    """An off-center slice is a chord. It is not a thinner wall."""
+    document = Document(tmp_path)
+    document.create_part_from_script("rod", "part = Cylinder(10, 40)\n")
+    rod = document.check_wall_thickness("rod", min_wall_mm=18, samples=4)
+    assert rod.ray_estimate_mm == pytest.approx(20, abs=0.2)
+    assert rod.estimated_min_mm == pytest.approx(20, abs=0.2)
+    assert rod.section_estimate_mm < 19
+    assert rod.passed is True
+
+    document.create_part_from_script("turned", "part = Rot(0, 0, 45) * Box(10, 10, 30)\n")
+    turned = document.check_wall_thickness("turned", min_wall_mm=8, samples=4)
+    assert turned.ray_estimate_mm == pytest.approx(10, abs=0.2)
+    assert turned.estimated_min_mm == pytest.approx(10, abs=0.2)
+    assert turned.passed is True
+
+    document.create_part_from_script("ball", "part = Sphere(10)\n")
+    ball = document.check_wall_thickness("ball", min_wall_mm=18, samples=4)
+    assert ball.estimated_min_mm == pytest.approx(20, abs=0.3)
+    assert ball.passed is True
+
+
+def test_a_pointed_cone_does_not_pass_a_one_millimetre_wall(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_script("cone", "part = Cone(10, 0, 20)\n")
+    wall = document.check_wall_thickness("cone", min_wall_mm=1.0, samples=4)
+    assert wall.estimated_min_mm is not None
+    assert wall.estimated_min_mm < 1.0
+    assert wall.passed is False
+
+
 def test_interference_and_clearance(tmp_path):
     document = Document(tmp_path)
     document.create_part_from_script("left", "part = Box(10, 10, 10)\n")

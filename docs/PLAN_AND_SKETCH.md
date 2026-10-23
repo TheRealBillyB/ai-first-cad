@@ -22,7 +22,7 @@ The assistant can start a plan, add research (every note needs a source), draw s
 
 You answer questions, accept or reject assumptions, waive a question, and approve. You can do that in the Plan panel, or with the commands below. The assistant's tools refuse those three actions and say so. There is no flag on those commands that lets the assistant through.
 
-Approval is remembered on your computer, in `~/.config/aicad/plan-approvals.json`, not only as a word in the project file. Changing `plans/<name>.json` so it says approved does not open modeling. A project you received from someone else stays closed until you approve it yourself, even when its file already says approved. Answers typed into the file the same way are shown as not entered on this computer. Opening the project does not rewrite the file.
+Approval is remembered on your computer, in `~/.config/aicad/plan-approvals.json`, not only as a word in the project file. Changing `plans/<name>.json` so it says approved does not open modeling. Undo of an approval removes the record of that approval. Redo puts the record back. A project you received from someone else stays closed until you approve it yourself, even when its file already says approved. Answers typed into the file the same way are shown as not entered on this computer. Opening the project does not rewrite the file.
 
 The project tree can show a short plan status. The full review stays on the Plan page. On a workspace page that already has an empty `#plan-body`, the one line that fills it is:
 

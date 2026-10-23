@@ -218,8 +218,7 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
     stl = out_dir / "oriented.stl"
     gcode = out_dir / "print.gcode"
     _write_stl(vertices, triangles, stl)
-    # The slicer writes this path in its own process. Drop a link first so that
-    # write creates a file in this folder.
+    # A link at this name is removed so the file is created in this folder.
     _drop_link(gcode)
     last = ""
     last_name = Path(executables[-1]).name
