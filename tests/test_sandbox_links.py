@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -96,6 +97,34 @@ def test_opening_does_not_replace_a_session_file_link(tmp_path):
     (project / "session.json.tmp").symlink_to(canary)
     _try(lambda: workspace.execute("save_project", {}))
     _assert_text(canary, _CANARY_TEXT)
+
+
+def test_save_as_does_not_follow_a_directory_link(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = _canary(outside)
+    canary.write_text(_CANARY_TEXT, encoding="utf-8")
+    project = tmp_path / "project"
+    workspace = Workspace(project)
+    documents = project / "documents"
+    if documents.is_symlink():
+        documents.unlink()
+    elif documents.exists():
+        shutil.rmtree(documents)
+    _link_dir(documents, outside)
+    copy = tmp_path / "copy"
+    _try(lambda: workspace.execute("save_project_as", {"path": str(copy)}))
+    _assert_text(canary, _CANARY_TEXT)
+    assert not (copy / "documents" / _CANARY_NAME).exists()
+    assert not (outside / "requirements.md").exists()
+    plain = Workspace(tmp_path / "plain")
+    linked = tmp_path / "linked-copy"
+    linked.mkdir()
+    _link_dir(linked / "documents", outside)
+    _try(lambda: plain.execute("save_project_as", {"path": str(linked)}))
+    _assert_text(canary, _CANARY_TEXT)
+    assert not (outside / "requirements.md").exists()
+    assert not (outside / "decisions.md").exists()
 
 
 def test_a_note_link_is_not_followed_after_open(tmp_path):
