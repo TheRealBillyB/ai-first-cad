@@ -19,19 +19,23 @@ reading a note, does not turn them on. Part scripts, the ones that assign
 ``part``, use the same confined process so an assistant cannot skip it.
 A link that points outside the project is not written. A file with more
 than one name is not used for the run, because writing it would change
-every name.
+every name. A script result that is a link is not read. Geometry and
+pictures named by that result are opened only when they stay inside the
+project.
 """
 
 from __future__ import annotations
 
 import builtins
 import ctypes
+import errno
 import json
 import os
 import platform
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1790,6 +1794,99 @@ def _died_from_limit_signal(code: int) -> bool:
     return -code in signals
 
 
+def _result_text(path: Path) -> str | None:
+    """UTF-8 text of a regular result file. A link is not read.
+
+    ``None`` means the file is not there. A symlink, junction, or file with
+    another name raises ``ScriptError`` before a byte of that file is read.
+    """
+    from aicad.paths import is_reparse
+
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return None
+        raise ScriptError("The script result is a link and was not read.") from exc
+    if stat.S_ISLNK(info.st_mode) or is_reparse(path):
+        raise ScriptError("The script result is a link and was not read.")
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        descriptor = os.open(os.fspath(path), flags)
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.EMLINK}:
+            raise ScriptError("The script result is a link and was not read.") from exc
+        if exc.errno == errno.ENOENT:
+            return None
+        raise ScriptError("The script result could not be read.") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink > 1
+            or opened.st_ino != info.st_ino
+            or opened.st_dev != info.st_dev
+        ):
+            raise ScriptError("The script result is a link and was not read.")
+        chunks: list[bytes] = []
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            chunks.append(block)
+        try:
+            return b"".join(chunks).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ScriptError("The script result could not be read.") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _project_regular_file(root: Path, raw: str | Path, label: str) -> Path:
+    """A regular file inside ``root``. A link is not opened."""
+    from aicad.paths import is_reparse, shared_file
+
+    root_resolved = Path(root).resolve()
+    text = os.fspath(raw)
+    if not text or "\x00" in text:
+        raise ScriptError(f"{label} is outside the project folder {root_resolved}.")
+    path = Path(text)
+    if not path.is_absolute():
+        path = root_resolved / path
+    if is_reparse(path):
+        raise ScriptError(f"{label} is a link and was not opened.")
+    try:
+        resolved = path.resolve()
+    except OSError as exc:
+        raise ScriptError(f"{label} is outside the project folder {root_resolved}.") from exc
+    if not _inside(resolved, root_resolved):
+        raise ScriptError(f"{label} is outside the project folder {root_resolved}.")
+    if is_reparse(resolved) or shared_file(resolved):
+        raise ScriptError(f"{label} is a link and was not opened.")
+    return resolved
+
+
+def _refuse_result_paths(root: Path, payload: dict) -> None:
+    """Refuse a picture path that leaves the project or is a link."""
+    views: list[dict] = []
+    listed = payload.get("views")
+    if isinstance(listed, list):
+        views.extend(item for item in listed if isinstance(item, dict))
+    single = payload.get("view")
+    if isinstance(single, dict):
+        views.append(single)
+    for view in views:
+        raw = view.get("path")
+        if isinstance(raw, str) and raw.strip():
+            _project_regular_file(root, raw, "The script picture")
+
+
 def _payload_from_result(
     job: Path,
     code: int,
@@ -1806,7 +1903,12 @@ def _payload_from_result(
         shutil.rmtree(job, ignore_errors=True)
         raise ScriptError("The script was stopped because it hit the memory or CPU limit.")
     result_path = job / "result.json"
-    if not result_path.is_file():
+    try:
+        result_text = _result_text(result_path)
+    except ScriptError:
+        shutil.rmtree(job, ignore_errors=True)
+        raise
+    if result_text is None:
         tail = stderr[-2000:]
         shutil.rmtree(job, ignore_errors=True)
         # SIGKILL is the memory cap and the parent's kill. SIGXCPU is the CPU
@@ -1838,7 +1940,7 @@ def _payload_from_result(
             + (f"\n{detail}" if detail else f"\nexit {code}")
         )
     try:
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload = json.loads(result_text)
     except json.JSONDecodeError as exc:
         raise ScriptError(f"The script's result could not be read: {exc}") from exc
     if not isinstance(payload, dict):
@@ -1867,7 +1969,7 @@ def run_part_script(code: str, workspace: str | Path | None = None):
         from aicad.kernel import import_step_file
         from aicad.models import feature_report_from_dict
 
-        step = Path(str(payload["step"]))
+        step = _project_regular_file(Path(workspace), str(payload["step"]), "The script geometry")
         shape = import_step_file(step)
         shape.features = feature_report_from_dict(payload.get("features"))
         return shape
@@ -1888,6 +1990,12 @@ def run_design_script(workspace: str | Path, code: str, network: bool = False) -
     try:
         payload = _spawn(root, "design", code, network=network)
     except ScriptError as exc:
+        _append_log(root, code, False, str(exc))
+        raise
+    try:
+        _refuse_result_paths(root, payload)
+    except ScriptError as exc:
+        _drop_job(payload)
         _append_log(root, code, False, str(exc))
         raise
     _drop_job(payload)
