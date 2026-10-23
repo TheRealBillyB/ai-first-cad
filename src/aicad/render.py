@@ -889,6 +889,7 @@ def render_motion_frames(
     def write_gif(temporary: Path) -> None:
         images[0].save(
             temporary,
+            format="GIF",
             save_all=True,
             append_images=images[1:],
             duration=280,

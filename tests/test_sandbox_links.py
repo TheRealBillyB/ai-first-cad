@@ -388,6 +388,39 @@ def test_a_slicer_does_not_write_through_a_link(tmp_path, monkeypatch):
     _assert_text(canary, "keep\n")
 
 
+def test_a_swapped_directory_is_not_written(tmp_path, monkeypatch):
+    from aicad import paths
+
+    if not paths.nofollow_writes():
+        pytest.skip("this system cannot open a directory without following a link")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "exports").mkdir()
+    workspace = Workspace(project)
+
+    def swap(root, relative):
+        if not relative.parts:
+            return
+        link = Path(root) / relative.parts[0]
+        if link.is_symlink() or not link.is_dir():
+            return
+        shutil.rmtree(link)
+        link.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(paths, "_before_nofollow", swap)
+    with pytest.raises(OSError):
+        paths.publish_text(project / "exports" / "part.txt", _CANARY_TEXT, root=project)
+    assert list(outside.iterdir()) == []
+    _assert_absent(outside / "part.txt")
+    with pytest.raises(AICADError):
+        workspace.execute("write_document", {"name": "notes.md", "markdown": _CANARY_TEXT})
+    assert list(outside.iterdir()) == []
+    _assert_absent(outside / "notes.md")
+    _assert_absent(_canary(outside))
+
+
 def test_a_part_script_does_not_use_a_hard_link(tmp_path):
     supported, reason = sandbox_supported()
     if not supported:

@@ -131,6 +131,9 @@ class Document:
     def __init__(self, workspace: str | Path = "aicad_workspace"):
         self.workspace = Path(workspace).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        from aicad.paths import remember_project
+
+        remember_project(self.workspace)
         self._parts: dict[str, _Part] = {}
         self._sketches: dict[str, _Sketch] = {}
         self._assemblies: dict[str, dict] = {}
