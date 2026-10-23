@@ -111,9 +111,13 @@ _network_off_sid: str | None = None
 # Rules left in place after the last network-off child. The next child with
 # the same package reuses them. A network-on script removes them first.
 _network_off_rules_sid: str | None = None
-# The next process has no memory of that. The marker is the package id of
-# the rules still installed, so it does not call the firewall again.
+# The next process has no memory of that. The record is only the package id.
+# It is not proof the rules still exist. It lives in the real local profile,
+# which is not the project and is not a folder the script is allowed to write.
 _network_off_marker_path: Path | None = None
+_profile_local_app_data_known = False
+_profile_local_app_data_path: Path | None = None
+_FOLDERID_LOCAL_APPDATA = "{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}"
 _PACKAGE_SID_TEXT = re.compile(r"^S-1-15-2(?:-\d+)+$", re.IGNORECASE)
 # Inbound and outbound, every protocol. The old UDP-only name is removed
 # when present and is not installed again.
@@ -1851,20 +1855,67 @@ def _run_firewall_script(script: str) -> None:
         )
 
 
-def _network_off_marker() -> Path:
+def _lookup_profile_local_app_data() -> Path | None:
+    """The real local profile directory, not TEMP and not an overridden variable.
+
+    A sandboxed script's environment points this name at the project, and the
+    project is a folder it can write. The known profile folder is neither.
+    """
+
+    if sys.platform != "win32":
+        return Path.home() / ".config"
+    try:
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    except OSError:
+        return None
+    shell32.SHGetKnownFolderPath.argtypes = [
+        ctypes.POINTER(_Guid),
+        wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
+    folder = _guid(_FOLDERID_LOCAL_APPDATA)
+    found = ctypes.c_void_p()
+    code = int(shell32.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.byref(found)))
+    if code != 0 or not found.value:
+        return None
+    try:
+        text = ctypes.wstring_at(found.value)
+    finally:
+        ole32.CoTaskMemFree(found)
+    if not text:
+        return None
+    return Path(text)
+
+
+def _profile_local_app_data() -> Path | None:
+    global _profile_local_app_data_known, _profile_local_app_data_path
+    if _profile_local_app_data_known:
+        return _profile_local_app_data_path
+    _profile_local_app_data_known = True
+    _profile_local_app_data_path = _lookup_profile_local_app_data()
+    return _profile_local_app_data_path
+
+
+def _network_off_marker() -> Path | None:
     if _network_off_marker_path is not None:
         return _network_off_marker_path
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or os.environ.get("TMP")
-    if not base:
-        import tempfile
-
-        base = tempfile.gettempdir()
-    return Path(base) / "aicad" / "script-network-off-sid"
+    base = _profile_local_app_data()
+    if base is None:
+        return None
+    return base / "aicad" / "script-network-off-sid"
 
 
 def _recorded_rules_sid() -> str | None:
+    path = _network_off_marker()
+    if path is None:
+        return None
     try:
-        text = _network_off_marker().read_text(encoding="utf-8").strip()
+        text = path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
     if _PACKAGE_SID_TEXT.fullmatch(text) is None:
@@ -1873,8 +1924,10 @@ def _recorded_rules_sid() -> str | None:
 
 
 def _record_rules_sid(sid: str) -> None:
+    path = _network_off_marker()
+    if path is None:
+        return
     try:
-        path = _network_off_marker()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(sid.upper() + "\n", encoding="utf-8")
     except OSError:
@@ -1882,19 +1935,86 @@ def _record_rules_sid(sid: str) -> None:
 
 
 def _forget_recorded_rules() -> None:
+    path = _network_off_marker()
+    if path is None:
+        return
     try:
-        _network_off_marker().unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
     except OSError:
         return
+
+
+def _firewall_present_script(sid: str) -> str:
+    """Read the two block rules. This script does not create or remove any rule."""
+
+    if _PACKAGE_SID_TEXT.fullmatch(sid) is None:
+        raise OSError("The AppContainer id is not a package SID, so the network was not blocked.")
+    package = sid.upper()
+    names = (
+        ("aicad-script-network-off-out", "Outbound"),
+        ("aicad-script-network-off-in", "Inbound"),
+    )
+    checks = "\n".join(
+        f"  if (-not (Test-AicadBlock '{name}' '{direction}' '{package}')) {{ exit 2 }}\n"
+        for name, direction in names
+    )
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        "function Test-AicadBlock([string]$Name, [string]$Direction, [string]$Package) {\n"
+        "  $rules = @(Get-NetFirewallRule -Name $Name -ErrorAction Ignore)\n"
+        "  if ($rules.Count -ne 1) { return $false }\n"
+        "  $rule = $rules[0]\n"
+        "  if ([string]$rule.Enabled -ne 'True') { return $false }\n"
+        "  if ([string]$rule.Action -ne 'Block') { return $false }\n"
+        "  if ([string]$rule.Direction -ne $Direction) { return $false }\n"
+        "  $ports = @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule)\n"
+        "  if ($ports.Count -ne 1) { return $false }\n"
+        "  $protocol = [string]$ports[0].Protocol\n"
+        "  if ($protocol -ne 'Any' -and $protocol -ne '256') { return $false }\n"
+        "  foreach ($value in @($ports[0].LocalPort) + @($ports[0].RemotePort)) {\n"
+        "    foreach ($item in @($value)) {\n"
+        "      $text = [string]$item\n"
+        "      if ($text -and $text -ne 'Any') { return $false }\n"
+        "    }\n"
+        "  }\n"
+        "  $apps = @(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule)\n"
+        "  if ($apps.Count -ne 1) { return $false }\n"
+        "  if ([string]$apps[0].Package.Trim().ToUpperInvariant() -ne $Package) { return $false }\n"
+        "  return $true\n"
+        "}\n"
+        "try {\n"
+        f"{checks}"
+        "  exit 0\n"
+        "} catch {\n"
+        "  Write-Output ($_ | Out-String)\n"
+        "  exit 2\n"
+        "}\n"
+    )
+
+
+def _firewall_block_is_present(sid: str) -> bool:
+    """True only when both block rules for this package are installed now.
+
+    A missing rule, a timed-out lookup, or any other failure is not present.
+    The caller installs the rules again or does not start the script.
+    """
+
+    if sys.platform != "win32":
+        return False
+    try:
+        _run_firewall_script(_firewall_present_script(sid))
+    except OSError:
+        return False
+    return True
 
 
 def _hold_network_block(sid_text: str) -> None:
     """Install the container block. A second overlapping child reuses it.
 
-    The firewall rules stay after the last child, and a marker remembers the
-    package id for the next process, so PowerShell is not called again. The
-    filter is installed for each hold, because closing it drops the dynamic
-    session.
+    The firewall rules stay after the last child. A record names the package
+    for the next process, and that record is used only after both rules are
+    read back. A missing rule is installed again. The filter is installed for
+    each hold, because closing it drops the dynamic session.
     """
 
     global _network_off_holders, _network_off_sid, _network_off_rules_sid
@@ -1906,7 +2026,8 @@ def _hold_network_block(sid_text: str) -> None:
         if _network_off_holders == 0:
             wanted = sid_text.upper()
             if _network_off_rules_sid != wanted:
-                if _recorded_rules_sid() != wanted:
+                recorded = _recorded_rules_sid() == wanted
+                if not recorded or not _firewall_block_is_present(wanted):
                     _run_firewall_script(_firewall_script(sid_text, install=True))
                     _record_rules_sid(wanted)
                 _network_off_rules_sid = wanted

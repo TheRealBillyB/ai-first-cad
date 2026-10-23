@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A recorded Windows package id is not the network block | The next process reads both rules before it reuses them. A missing rule is installed again, and the record stays in the user profile, outside the project and outside folders a script can write. |
 | Windows firewall rules are remembered for the next process | Installing them again after the sandbox tests made the firewall call time out. The package id is recorded, and a network-on script removes the rules and that record. |
 | A Windows save reports a destination that cannot be created | An access-list deny does not stop this token from creating a folder. A file in that place cannot become the copy's parent, and the open project stays put. |
 | A Windows folder lock denies creates for that user | An Owner Rights allow did not stop a new folder. The user is denied creating a file, creating a folder, and traversing, and can still restore the access list. |
