@@ -15,6 +15,8 @@ applied, the script is not run.
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
 ``part``, use the same confined process so an assistant cannot skip it.
+The project folder is not placed on the child interpreter's import path, so
+a module shipped in a shared project cannot run before those limits.
 """
 
 from __future__ import annotations
@@ -120,6 +122,34 @@ _ESCAPE_SYSCALLS = {
     "x86_64": (112, 109),
     "aarch64": (157, 154),
 }
+# Refused on every run, including when the network is on. io_uring can issue a
+# socket call this filter would not see. ptrace, cross-process memory, and
+# pidfd_getfd reach a process outside the script.
+_ISOLATION_SYSCALLS = {
+    "x86_64": (
+        101,  # ptrace
+        310,  # process_vm_readv
+        311,  # process_vm_writev
+        425,  # io_uring_setup
+        426,  # io_uring_enter
+        427,  # io_uring_register
+        438,  # pidfd_getfd
+    ),
+    "aarch64": (
+        117,  # ptrace
+        270,  # process_vm_readv
+        271,  # process_vm_writev
+        425,  # io_uring_setup
+        426,  # io_uring_enter
+        427,  # io_uring_register
+        438,  # pidfd_getfd
+    ),
+}
+# seccomp_data.arch. A 32-bit int 0x80 call on x86_64 is a different architecture
+# and a different syscall number, so a filter that only compares the native
+# number would let it through. x32 numbers set bit 30 on this same architecture.
+_AUDIT_ARCH = {"x86_64": 0xC000003E, "aarch64": 0xC00000B7}
+_X32_SYSCALL_BIT = 0x40000000
 # How often the macOS parent checks the script's resident memory.
 _MEMORY_POLL_SECONDS = 0.25
 _LANDLOCK_SCOPE_SIGNAL = 1 << 1
@@ -758,15 +788,25 @@ def _block_sockets(*, network: bool) -> None:
     if arch is None:
         raise ScriptError(sandbox_supported()[1])
     numbers = list(_ESCAPE_SYSCALLS[arch])
+    numbers.extend(_ISOLATION_SYSCALLS[arch])
     if not network:
         numbers.extend(_NET_SYSCALLS[arch])
-    # Load the syscall number, refuse the network ones, allow everything else.
+    # Refuse a different instruction set, then the listed native numbers.
     bpf_ld = 0x00 | 0x00 | 0x20
     bpf_jeq = 0x05 | 0x10 | 0x00
+    bpf_jset = 0x05 | 0x40 | 0x00
     bpf_ret = 0x06
     allow = 0x7FFF0000
     errno_eperm = 0x00050000 | 1
-    program = [_SockFilter(bpf_ld, 0, 0, 0)]
+    program = [
+        _SockFilter(bpf_ld, 0, 0, 4),
+        _SockFilter(bpf_jeq, 1, 0, _AUDIT_ARCH[arch]),
+        _SockFilter(bpf_ret, 0, 0, errno_eperm),
+        _SockFilter(bpf_ld, 0, 0, 0),
+    ]
+    if arch == "x86_64":
+        program.append(_SockFilter(bpf_jset, 0, 1, _X32_SYSCALL_BIT))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
     for number in numbers:
         program.append(_SockFilter(bpf_jeq, 0, 1, number))
         program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
@@ -904,6 +944,28 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     return roots
 
 
+def _without_project_pythonpath(workspace: Path, raw: str) -> str:
+    """Absolute import entries that are not this project.
+
+    A relative entry is resolved in the parent, then stored as an absolute
+    path. The child uses the project as its working directory, and a relative
+    entry would be resolved there.
+    """
+    root = workspace.resolve()
+    kept: list[str] = []
+    for entry in raw.split(os.pathsep):
+        if entry == "" or entry == ".":
+            continue
+        try:
+            resolved = Path(entry).expanduser().resolve()
+        except OSError:
+            continue
+        if resolved == root or _inside(resolved, root):
+            continue
+        kept.append(str(resolved))
+    return os.pathsep.join(kept)
+
+
 def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     env: dict[str, str] = {}
     for key, value in os.environ.items():
@@ -938,6 +1000,18 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
         env["XDG_CONFIG_HOME"] = cache
         env["XDG_DATA_HOME"] = cache
         env["MPLCONFIGDIR"] = cache
+    # -P on the command does the same thing. The variable covers a child that
+    # starts another interpreter. A module in the project must not be imported
+    # while the process is still unrestricted.
+    env["PYTHONSAFEPATH"] = "1"
+    env.pop("PYTHONSTARTUP", None)
+    raw_path = env.get("PYTHONPATH")
+    if raw_path is not None:
+        cleaned = _without_project_pythonpath(workspace, raw_path)
+        if cleaned:
+            env["PYTHONPATH"] = cleaned
+        else:
+            env.pop("PYTHONPATH", None)
     return env
 
 
@@ -1141,10 +1215,12 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     (job / "job.json").write_text(json.dumps(spec) + "\n", encoding="utf-8")
     if script is not None:
         (job / "script.py").write_text(script, encoding="utf-8")
+    # -P keeps the project folder off sys.path. Without it, python -m imports
+    # aicad from that folder before the limits are applied.
     if sys.platform == "win32":
-        command = [sys.executable, "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job)]
+        command = [sys.executable, "-B", "-u", "-P", "-c", _WINDOWS_CHILD_BOOT, str(job)]
     else:
-        command = [sys.executable, "-m", "aicad.sandbox_run", str(job)]
+        command = [sys.executable, "-P", "-m", "aicad.sandbox_run", str(job)]
     profile_path: Path | None = None
     if sys.platform == "darwin":
         from aicad.sandbox_macos import build_profile, command_prefix
