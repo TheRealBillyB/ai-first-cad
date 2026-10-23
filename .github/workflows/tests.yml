@@ -7,6 +7,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to a pull request cancels the run it replaced. Push and manual
+# runs each keep their own id, so they do not cancel each other or a pull request.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   actions: write
