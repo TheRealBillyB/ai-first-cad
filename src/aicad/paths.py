@@ -198,10 +198,30 @@ def file_is_user_private(path: Path) -> bool:
     return "(A;" in text
 
 
-# FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY. Read and execute still let Windows
-# create a folder, so those two creates are denied. WRITE_DAC stays with the
-# owner so the directory can be restored.
-_DIRECTORY_LOCK_SDDL = "D:P(D;;0x00000006;;;WD)(A;;FRFXWD;;;OW)"
+# An Owner Rights allow is not this user's rights. Deny the user, Everyone,
+# and Administrators directly. Traverse is included because a read-and-execute
+# allow still let Windows create a folder. WRITE_DAC stays so the caller can
+# restore the directory.
+_FILE_ADD_FILE = 0x0002
+_FILE_ADD_SUBDIRECTORY = 0x0004
+_FILE_WRITE_EA = 0x0010
+_FILE_TRAVERSE = 0x0020
+_FILE_DELETE_CHILD = 0x0040
+_FILE_WRITE_ATTRIBUTES = 0x0100
+_WRITE_DAC = 0x00040000
+_FILE_GENERIC_READ = 0x00120089
+_DIRECTORY_LOCK_DENY = (
+    _FILE_ADD_FILE
+    | _FILE_ADD_SUBDIRECTORY
+    | _FILE_WRITE_EA
+    | _FILE_TRAVERSE
+    | _FILE_DELETE_CHILD
+    | _FILE_WRITE_ATTRIBUTES
+)
+_DIRECTORY_LOCK_ALLOW = _FILE_GENERIC_READ | _WRITE_DAC
+_WIN_WORLD_SID = 1
+_WIN_BUILTIN_ADMINISTRATORS_SID = 26
+_WIN_BUILTIN_USERS_SID = 27
 
 
 def deny_directory_write(path: Path) -> None:
@@ -213,7 +233,7 @@ def deny_directory_write(path: Path) -> None:
     if os.name != "nt":
         path.chmod(0o555)
         return
-    _windows_set_dacl(path, _DIRECTORY_LOCK_SDDL)
+    _windows_lock_directory(path)
 
 
 def allow_directory_write(path: Path) -> None:
@@ -277,6 +297,95 @@ def _windows_security():
     kernel32.LocalFree.argtypes = [ctypes.c_void_p]
     kernel32.LocalFree.restype = ctypes.c_void_p
     return advapi32, kernel32
+
+
+def _windows_lock_directory(path: Path) -> None:
+    """Protected access list: this user cannot create a file or a folder."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32, kernel32 = _windows_security()
+    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.CreateWellKnownSid.argtypes = [
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.CreateWellKnownSid.restype = wintypes.BOOL
+    advapi32.InitializeAcl.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+    advapi32.InitializeAcl.restype = wintypes.BOOL
+    advapi32.AddAccessDeniedAce.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    advapi32.AddAccessDeniedAce.restype = wintypes.BOOL
+    advapi32.AddAccessAllowedAce.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    advapi32.AddAccessAllowedAce.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        raise OSError("Could not read the user for the directory lock.")
+    try:
+        needed = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))
+        user = ctypes.create_string_buffer(max(int(needed.value), 8))
+        if not advapi32.GetTokenInformation(token, 1, user, len(user), ctypes.byref(needed)):
+            raise OSError("Could not read the user for the directory lock.")
+        user_sid = ctypes.cast(user, ctypes.POINTER(ctypes.c_void_p))[0]
+        if not user_sid:
+            raise OSError("Could not read the user for the directory lock.")
+        deny_sids = [ctypes.c_void_p(user_sid)]
+        sid_buffers = []
+        for kind in (_WIN_WORLD_SID, _WIN_BUILTIN_ADMINISTRATORS_SID, _WIN_BUILTIN_USERS_SID):
+            buffer = ctypes.create_string_buffer(68)
+            size = wintypes.DWORD(68)
+            if not advapi32.CreateWellKnownSid(kind, None, buffer, ctypes.byref(size)):
+                raise OSError("Could not build the directory lock.")
+            sid_buffers.append(buffer)
+            deny_sids.append(ctypes.cast(buffer, ctypes.c_void_p))
+        acl = ctypes.create_string_buffer(512)
+        if not advapi32.InitializeAcl(acl, len(acl), 2):
+            raise OSError("Could not build the directory lock.")
+        for sid in deny_sids:
+            if not advapi32.AddAccessDeniedAce(acl, 2, _DIRECTORY_LOCK_DENY, sid):
+                raise OSError("Could not build the directory lock.")
+        if not advapi32.AddAccessAllowedAce(acl, 2, _DIRECTORY_LOCK_ALLOW, ctypes.c_void_p(user_sid)):
+            raise OSError("Could not build the directory lock.")
+        status = advapi32.SetNamedSecurityInfoW(
+            str(path),
+            1,
+            0x4 | 0x80000000,
+            None,
+            None,
+            ctypes.cast(acl, ctypes.c_void_p),
+            None,
+        )
+        if status != 0:
+            raise OSError(f"Could not set the file access list (Windows error {status}).")
+    finally:
+        kernel32.CloseHandle(token)
 
 
 def _windows_set_dacl(path: Path, sddl: str) -> None:

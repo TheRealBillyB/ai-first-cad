@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A Windows folder lock denies creates for that user | An Owner Rights allow did not stop a new folder. The user is denied creating a file, creating a folder, and traversing, and can still restore the access list. |
 | A Windows folder with write access removed cannot gain a child | Read and execute still allowed a new folder. Creating a file or a folder is denied, and the owner can still restore the access list. |
 | Windows firewall rules stay up for the next network-off script | Installing them again for every script made the firewall call time out. A network-on script still removes them first. |
 | A Windows export is judged after trailing dots and spaces are removed | ``.. .`` is ``..`` once Win32 trims the name. That path is refused before anything is written. |
