@@ -627,6 +627,17 @@ def _cmd_search(workspace: Workspace, arguments: dict) -> dict:
     return workspace.document.search_parts(str(arguments.get("query") or ""))
 
 
+def _cmd_create_gear(workspace: Workspace, arguments: dict) -> dict:
+    names = {part.name for part in workspace.document.list_parts()}
+    method = workspace.document.update_gear if arguments["name"] in names else workspace.document.create_gear
+    return method(
+        arguments["name"],
+        arguments["spec"],
+        arguments.get("position"),
+        arguments.get("rotation_deg"),
+    )
+
+
 def _cmd_insert(workspace: Workspace, arguments: dict) -> dict:
     info = workspace.document.insert_standard_part(
         arguments["name"],
@@ -1188,6 +1199,21 @@ _add(Command(
     "Search bearings, seals, fasteners, motors, and gearboxes by designation.",
     _obj({"query": _string("Text such as M5, 608, 30205, 20x35x7, or NEMA17.")}, []),
     _cmd_search,
+))
+_add(Command(
+    "create_gear",
+    "Create or replace an involute spur, helical, straight bevel, or spiral bevel gear.",
+    _obj(
+        {
+            "name": _string("Part name."),
+            "spec": {"type": "object", "description": "module_mm, teeth, pressure_angle_deg, face_width_mm, and the family fields."},
+            "position": {"type": "array"},
+            "rotation_deg": {"type": "array"},
+        },
+        ["name", "spec"],
+    ),
+    _cmd_create_gear,
+    undo=True,
 ))
 _add(Command(
     "insert_standard_part",

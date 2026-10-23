@@ -1,0 +1,503 @@
+"""Involute gears against published proportions and the involute equation."""
+
+import math
+from pathlib import Path
+
+import pytest
+
+from aicad import kernel
+from aicad.cli import main as cli_main
+from aicad.document import Document
+from aicad.errors import GeometryError
+from aicad.gears import build_gear, families, gear_data, mesh_placement, pair_geometry, profile_points
+from aicad.gears import tables
+from aicad.server import build_server
+from aicad.workspace import Workspace
+
+
+def _inv(alpha: float) -> float:
+    return math.tan(alpha) - alpha
+
+
+def _half_angle(radius: float, pitch: float, base: float, alpha: float, thickness: float) -> float:
+    alpha_r = math.acos(min(1.0, base / radius))
+    return thickness / (2.0 * pitch) + _inv(alpha) - _inv(alpha_r)
+
+
+def _section_loops(shape, origin=(0.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0)):
+    report = kernel.section_geometry(shape, origin, normal)
+    loops = []
+    for loop in report.loops:
+        points = []
+        for u, v in loop.points_mm:
+            points.append(
+                (
+                    report.plane_origin_mm.x + u * report.plane_x_mm.x + v * report.plane_y_mm.x,
+                    report.plane_origin_mm.y + u * report.plane_x_mm.y + v * report.plane_y_mm.y,
+                )
+            )
+        loops.append((loop.kind, points))
+    return loops
+
+
+def _circle_angles(points, radius: float) -> list[float]:
+    hits = []
+    count = len(points)
+    for index in range(count):
+        x1, y1 = points[index]
+        x2, y2 = points[(index + 1) % count]
+        dx, dy = x2 - x1, y2 - y1
+        quad = dx * dx + dy * dy
+        if quad < 1e-16:
+            continue
+        linear = 2.0 * (x1 * dx + y1 * dy)
+        constant = x1 * x1 + y1 * y1 - radius * radius
+        disc = linear * linear - 4.0 * quad * constant
+        if disc < 0:
+            continue
+        root = math.sqrt(disc)
+        for scale in ((-linear - root) / (2.0 * quad), (-linear + root) / (2.0 * quad)):
+            if -1e-6 <= scale <= 1.0 + 1e-6:
+                hits.append(math.atan2(y1 + scale * dy, x1 + scale * dx))
+    return hits
+
+
+def test_families_leave_hypoid_unregistered():
+    layouts = {item["axis_layout"] for item in families().values()}
+    assert layouts == {"parallel", "intersecting"}
+    assert set(families()) == {"spur", "helical", "straight_bevel", "spiral_bevel"}
+    spec = {"type": "hypoid", "module_mm": 2, "teeth": 20, "face_width_mm": 8, "offset_mm": 10}
+    with pytest.raises(GeometryError, match="Hypoid"):
+        gear_data(spec)
+    spur = {"type": "spur", "module_mm": 2, "teeth": 20, "face_width_mm": 8, "offset_mm": 1}
+    with pytest.raises(GeometryError, match="Hypoid"):
+        gear_data(spur)
+
+
+def test_spur_and_helical_match_iso_21771():
+    spur = gear_data(
+        {"type": "spur", "module_mm": 2, "teeth": 20, "pressure_angle_deg": 20, "face_width_mm": 10}
+    )
+    alpha = math.radians(20)
+    assert spur["pitch_diameter_mm"] == pytest.approx(40)
+    assert spur["base_diameter_mm"] == pytest.approx(40 * math.cos(alpha))
+    assert spur["tip_diameter_mm"] == pytest.approx(44)
+    assert spur["root_diameter_mm"] == pytest.approx(35)
+    assert spur["tooth_thickness_normal_mm"] == pytest.approx(math.pi)
+    assert spur["standards"] == ["ISO 21771:2007", "ISO 53:1998"]
+
+    shifted = gear_data(
+        {
+            "type": "spur",
+            "module_mm": 2,
+            "teeth": 20,
+            "pressure_angle_deg": 20,
+            "face_width_mm": 8,
+            "profile_shift": 0.5,
+        }
+    )
+    assert shifted["tip_diameter_mm"] == pytest.approx(46)
+    assert shifted["root_diameter_mm"] == pytest.approx(37)
+    assert shifted["tooth_thickness_normal_mm"] == pytest.approx(math.pi + 2 * math.tan(alpha))
+
+    beta = math.radians(15)
+    helical = gear_data(
+        {
+            "type": "helical",
+            "module_mm": 2,
+            "teeth": 20,
+            "pressure_angle_deg": 20,
+            "helix_angle_deg": 15,
+            "face_width_mm": 20,
+        }
+    )
+    transverse = 2 / math.cos(beta)
+    diameter = 20 * transverse
+    alpha_t = math.atan(math.tan(alpha) / math.cos(beta))
+    assert helical["pitch_diameter_mm"] == pytest.approx(diameter)
+    assert helical["transverse_pressure_angle_deg"] == pytest.approx(math.degrees(alpha_t))
+    assert helical["base_diameter_mm"] == pytest.approx(diameter * math.cos(alpha_t))
+    assert helical["tip_diameter_mm"] == pytest.approx(diameter + 4)
+    assert helical["root_diameter_mm"] == pytest.approx(diameter - 5)
+    assert helical["overlap_ratio"] == pytest.approx(20 * math.sin(beta) / (math.pi * 2))
+    assert helical["hand"] == "right"
+
+    low = gear_data({"type": "spur", "module_mm": 2, "teeth": 12, "pressure_angle_deg": 20, "face_width_mm": 6})
+    assert low["undercut"] is True
+
+
+def test_spur_pair_contact_ratio_is_the_path_of_contact():
+    alpha = math.radians(20)
+    radius_1, radius_2 = 20.0, 40.0
+    tip_1, tip_2 = 22.0, 42.0
+    base_1, base_2 = radius_1 * math.cos(alpha), radius_2 * math.cos(alpha)
+    centre = 60.0
+    path = math.sqrt(tip_1**2 - base_1**2) + math.sqrt(tip_2**2 - base_2**2) - centre * math.sin(alpha)
+    expected = path / (math.pi * 2 * math.cos(alpha))
+    left = {"type": "spur", "module_mm": 2, "teeth": 20, "pressure_angle_deg": 20, "face_width_mm": 12}
+    right = {"type": "spur", "module_mm": 2, "teeth": 40, "pressure_angle_deg": 20, "face_width_mm": 10}
+    report = pair_geometry(left, right)
+    assert report["centre_distance_mm"] == pytest.approx(centre)
+    assert report["transverse_contact_ratio"] == pytest.approx(expected, abs=1e-6)
+    assert report["total_contact_ratio"] == pytest.approx(expected, abs=1e-6)
+
+
+def test_profile_points_lie_on_the_involute():
+    spec = {"type": "spur", "module_mm": 2, "teeth": 20, "pressure_angle_deg": 20, "face_width_mm": 8, "profile_shift": 0.2}
+    data = gear_data(spec)
+    alpha = math.radians(data["transverse_pressure_angle_deg"])
+    pitch = data["pitch_diameter_mm"] / 2
+    base = data["base_diameter_mm"] / 2
+    thickness = data["tooth_thickness_transverse_mm"]
+    form = data["form_radius_mm"]
+    tip = data["tip_diameter_mm"] / 2
+    half_pitch = math.pi / data["teeth"]
+    checked = 0
+    for x, y in profile_points(spec):
+        radius = math.hypot(x, y)
+        angle = math.atan2(y, x)
+        if not (0.01 < angle < half_pitch and form + 0.15 < radius < tip - 0.05):
+            continue
+        expect = _half_angle(radius, pitch, base, alpha, thickness)
+        assert abs(angle - expect) * radius < 1e-6
+        checked += 1
+    assert checked > 10
+
+
+def test_straight_and_spiral_bevel_match_the_worked_20_40_pair():
+    # Gleason proportions for m = 3, 20/40, shaft angle 90. Outer cone distance
+    # (3/2) * sqrt(20**2 + 40**2) = 67.082. Straight addendum 4.035 / 1.965.
+    # Spiral addendum 3.4275 / 1.6725 at a 35 degree mean spiral.
+    common = {"module_mm": 3, "pressure_angle_deg": 20, "face_width_mm": 20, "shaft_angle_deg": 90}
+    pinion = gear_data({"type": "straight_bevel", "teeth": 20, "mate_teeth": 40, **common})
+    gear = gear_data({"type": "straight_bevel", "teeth": 40, "mate_teeth": 20, **common})
+    assert pinion["pitch_angle_deg"] == pytest.approx(26.56505, abs=1e-4)
+    assert gear["pitch_angle_deg"] == pytest.approx(63.43495, abs=1e-4)
+    assert pinion["pitch_diameter_mm"] == pytest.approx(60)
+    assert gear["pitch_diameter_mm"] == pytest.approx(120)
+    assert pinion["outer_cone_distance_mm"] == pytest.approx(67.08204, abs=1e-4)
+    assert pinion["addendum_mm"] == pytest.approx(4.035, abs=1e-4)
+    assert pinion["dedendum_mm"] == pytest.approx(2.529, abs=1e-4)
+    assert gear["addendum_mm"] == pytest.approx(1.965, abs=1e-4)
+    assert gear["dedendum_mm"] == pytest.approx(4.599, abs=1e-4)
+    assert pinion["tip_diameter_mm"] == pytest.approx(67.2180, abs=1e-3)
+    assert gear["tip_diameter_mm"] == pytest.approx(121.7575, abs=1e-3)
+    assert "ISO 23509:2016" in pinion["standards"]
+    assert "ANSI/AGMA 2005-D03" in pinion["standards"]
+
+    spiral = gear_data(
+        {"type": "spiral_bevel", "teeth": 20, "mate_teeth": 40, "spiral_angle_deg": -35, **common}
+    )
+    mate = gear_data(
+        {"type": "spiral_bevel", "teeth": 40, "mate_teeth": 20, "spiral_angle_deg": 35, **common}
+    )
+    assert spiral["hand"] == "left"
+    assert mate["hand"] == "right"
+    assert spiral["transverse_pressure_angle_deg"] == pytest.approx(23.9568, abs=1e-3)
+    assert spiral["addendum_mm"] == pytest.approx(3.4275, abs=1e-4)
+    assert spiral["dedendum_mm"] == pytest.approx(2.2365, abs=1e-4)
+    assert mate["addendum_mm"] == pytest.approx(1.6725, abs=1e-4)
+    assert mate["dedendum_mm"] == pytest.approx(3.9915, abs=1e-4)
+    assert spiral["tip_diameter_mm"] == pytest.approx(66.1313, abs=1e-3)
+    assert mate["tip_diameter_mm"] == pytest.approx(121.4959, abs=1e-3)
+    with pytest.raises(GeometryError, match="profile_shift"):
+        gear_data({"type": "straight_bevel", "teeth": 20, "mate_teeth": 40, "profile_shift": 0.2, **common})
+
+
+def test_bevel_pitch_cones_at_a_60_degree_shaft_angle():
+    sigma = math.radians(60)
+    ratio = 40 / 20
+    delta = math.degrees(math.atan(math.sin(sigma) / (ratio + math.cos(sigma))))
+    data = gear_data(
+        {
+            "type": "straight_bevel",
+            "module_mm": 2.5,
+            "teeth": 20,
+            "mate_teeth": 40,
+            "pressure_angle_deg": 20,
+            "face_width_mm": 10,
+            "shaft_angle_deg": 60,
+        }
+    )
+    assert data["pitch_angle_deg"] == pytest.approx(delta, abs=1e-6)
+    assert data["mate_pitch_angle_deg"] == pytest.approx(60 - delta, abs=1e-6)
+
+
+def test_key_and_spline_tables():
+    key = tables.din6885_key(20)
+    assert key["width_mm"] == 6
+    assert key["hub_depth_mm"] == 2.8
+    assert tables.din6885_key(22)["width_mm"] == 6
+    assert tables.din6885_key(22.1)["width_mm"] == 8
+    medium = tables.iso14_spline("medium", 56)
+    assert medium["major_mm"] == 65
+    assert medium["count"] == 8
+    light = tables.iso14_spline("light", 62)
+    assert light["major_mm"] == 68
+    spec = {
+        "type": "spur",
+        "module_mm": 8,
+        "teeth": 30,
+        "face_width_mm": 20,
+        "spline": {"standard": "din5480", "module_mm": 3, "teeth": 38, "reference_diameter_mm": 120},
+    }
+    spline = gear_data(spec)["spec"]["spline"]
+    assert spline["profile_shift"] == pytest.approx(0.45)
+    assert spline["hub_tip_diameter_mm"] == pytest.approx(114)
+    assert spline["hub_root_diameter_mm"] == pytest.approx(120)
+    alpha = math.radians(30)
+    thickness = 3 * (math.pi / 2 + 2 * 0.45 * math.tan(alpha))
+    pitch = 3 * 38 / 2
+    base = pitch * math.cos(alpha)
+    # Space half-angle at the reference radius equals the shaft tooth half-angle.
+    half = _half_angle(pitch, pitch, base, alpha, thickness)
+    assert half == pytest.approx(thickness / (2 * pitch))
+
+
+def test_generated_spur_flank_matches_the_involute_and_a_pair_meshes():
+    spec = {"type": "spur", "module_mm": 2, "teeth": 16, "pressure_angle_deg": 20, "face_width_mm": 4}
+    data = gear_data(spec)
+    shape = kernel.adopt(build_gear(spec))
+    measured = kernel.measure(shape)
+    assert measured.watertight and measured.valid
+    assert measured.bounding_box.size.z == pytest.approx(4)
+    outer = next(points for kind, points in _section_loops(shape) if kind == "outer")
+    alpha = math.radians(20)
+    pitch = data["pitch_diameter_mm"] / 2
+    base = data["base_diameter_mm"] / 2
+    thickness = data["tooth_thickness_transverse_mm"]
+    for radius in (pitch, pitch + 1.2):
+        angles = [angle for angle in _circle_angles(outer, radius) if 0 < angle < math.pi / 16]
+        assert angles, radius
+        expect = _half_angle(radius, pitch, base, alpha, thickness)
+        assert abs(min(angles) - expect) * radius < 0.02
+
+    mate = {"type": "spur", "module_mm": 2, "teeth": 24, "pressure_angle_deg": 20, "face_width_mm": 4}
+    placement = mesh_placement(spec, mate)
+    gear = kernel.place(
+        kernel.adopt(build_gear(mate)),
+        tuple(placement["gear"]["position_mm"]),
+        tuple(placement["gear"]["rotation_deg"]),
+    )
+    overlap, gap, *_ = kernel.clearance_between(shape, gear)
+    assert overlap < 1e-4
+    assert 0 <= gap < 0.05
+    close = list(placement["gear"]["position_mm"])
+    close[0] -= 0.3
+    crowded = kernel.place(kernel.adopt(build_gear(mate)), tuple(close), tuple(placement["gear"]["rotation_deg"]))
+    overlap_close, *_ = kernel.clearance_between(shape, crowded)
+    assert overlap_close > overlap + 0.5
+
+
+def test_helical_tooth_advances_with_height():
+    spec = {
+        "type": "helical",
+        "module_mm": 2,
+        "teeth": 14,
+        "pressure_angle_deg": 20,
+        "helix_angle_deg": 12,
+        "face_width_mm": 8,
+    }
+    data = gear_data(spec)
+    shape = kernel.adopt(build_gear(spec))
+    assert kernel.measure(shape).watertight
+    pitch = data["pitch_diameter_mm"] / 2
+
+    def flank(z):
+        outer = next(points for kind, points in _section_loops(shape, (0, 0, z), (0, 0, 1)) if kind == "outer")
+        angles = [angle for angle in _circle_angles(outer, pitch) if -0.2 < angle < 0.4]
+        assert angles
+        return min(angle for angle in angles if angle > 0)
+
+    rise = flank(2.0) - flank(0.0)
+    expected = 2.0 * math.tan(math.radians(12)) / pitch
+    assert rise == pytest.approx(expected, abs=0.01)
+
+
+def test_bevel_pair_meshes_and_a_plunge_interferes():
+    pinion = {
+        "type": "straight_bevel",
+        "module_mm": 2,
+        "teeth": 12,
+        "mate_teeth": 18,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 5,
+    }
+    gear = {
+        "type": "straight_bevel",
+        "module_mm": 2,
+        "teeth": 18,
+        "mate_teeth": 12,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 5,
+    }
+    placement = mesh_placement(pinion, gear)
+    first = kernel.adopt(build_gear(pinion))
+    second = kernel.place(
+        kernel.adopt(build_gear(gear)),
+        tuple(placement["gear"]["position_mm"]),
+        tuple(placement["gear"]["rotation_deg"]),
+    )
+    overlap, gap, *_ = kernel.clearance_between(first, second)
+    assert overlap < 1e-4
+    assert gap < 0.05
+    plunged = kernel.place(first, (0.0, 0.0, -0.4), (0.0, 0.0, 0.0))
+    overlap_plunge, *_ = kernel.clearance_between(plunged, second)
+    assert overlap_plunge > 0.3
+
+
+def test_spiral_bevel_solid_is_closed():
+    spec = {
+        "type": "spiral_bevel",
+        "module_mm": 2,
+        "teeth": 12,
+        "mate_teeth": 24,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 6,
+        "spiral_angle_deg": 25,
+    }
+    shape = kernel.adopt(build_gear(spec))
+    measured = kernel.measure(shape)
+    assert measured.watertight and measured.valid
+    assert measured.volume_mm3 > 1000
+
+
+def test_bore_keyway_hub_and_splines_cut_the_blank():
+    keyed = {
+        "type": "spur",
+        "module_mm": 2,
+        "teeth": 22,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 5,
+        "bore_mm": 20,
+        "keyway": {"standard": "din6885"},
+        "hub": {"diameter_mm": 28, "length_mm": 4, "side": "front"},
+    }
+    shape = kernel.adopt(build_gear(keyed))
+    measured = kernel.measure(shape)
+    assert measured.watertight
+    assert measured.bounding_box.max.z > 2.5 + 2
+    hole = next(points for kind, points in _section_loops(shape) if kind == "hole")
+    radii = [math.hypot(x, y) for x, y in hole]
+    assert min(radii) == pytest.approx(10, abs=0.15)
+    # The keyway bottom is 2.8 mm past the 20 mm bore, centred on +X. The slot
+    # corners sit farther from the origin than that flat.
+    assert max(point[0] for point in hole) == pytest.approx(12.8, abs=0.1)
+    slot = [point for point in hole if point[0] > 12]
+    assert slot and max(abs(point[1]) for point in slot) == pytest.approx(3, abs=0.2)
+
+    iso = {
+        "type": "spur",
+        "module_mm": 3,
+        "teeth": 24,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 5,
+        "spline": {"standard": "iso14", "series": "medium", "minor_mm": 23},
+    }
+    iso_shape = kernel.adopt(build_gear(iso))
+    assert kernel.measure(iso_shape).watertight
+    # Medium 6 x 23 x 28: void inside the minor radius, a groove out to the major
+    # on +X, and metal between grooves.
+    assert not iso_shape.impl.is_inside((0, 0, 0))
+    assert not iso_shape.impl.is_inside((11.0, 0, 0))
+    assert not iso_shape.impl.is_inside((13.5, 0, 0))
+    assert iso_shape.impl.is_inside((14.6, 0, 0))
+    land = math.radians(30)
+    assert iso_shape.impl.is_inside((12.5 * math.cos(land), 12.5 * math.sin(land), 0))
+
+    din = {
+        "type": "spur",
+        "module_mm": 3,
+        "teeth": 24,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 5,
+        "spline": {"standard": "din5480", "module_mm": 2, "teeth": 14, "reference_diameter_mm": 30},
+    }
+    shift = gear_data(din)["spec"]["spline"]["profile_shift"]
+    din_shape = kernel.adopt(build_gear(din))
+    assert kernel.measure(din_shape).watertight
+    alpha = math.radians(30)
+    pitch = 2 * 14 / 2
+    base = pitch * math.cos(alpha)
+    thickness = 2 * (math.pi / 2 + 2 * shift * math.tan(alpha))
+    expect = _half_angle(pitch, pitch, base, alpha, thickness)
+    # The space is centred on +X. Just inside that involute is void; just outside it is metal.
+    void = (pitch * math.cos(expect - 0.012), pitch * math.sin(expect - 0.012), 0)
+    metal = (pitch * math.cos(expect + 0.012), pitch * math.sin(expect + 0.012), 0)
+    assert not din_shape.impl.is_inside(void)
+    assert din_shape.impl.is_inside(metal)
+
+
+def test_document_reloads_a_gear_and_the_command_layer_matches(tmp_path: Path):
+    spec = {"type": "spur", "module_mm": 2, "teeth": 14, "pressure_angle_deg": 20, "face_width_mm": 4}
+    document = Document(tmp_path / "project")
+    created = document.create_gear("pinion", spec)
+    assert created["result_kind"] == "verified_check"
+    assert created["source"] == "gear"
+    assert created["gear"]["pitch_diameter_mm"] == pytest.approx(28)
+    volume = created["volume_mm3"]
+    source = document.get_source("pinion")
+    assert source["gear"]["teeth"] == 14
+    assert source["gear_data"]["base_diameter_mm"] == pytest.approx(28 * math.cos(math.radians(20)))
+    reopened = Document(tmp_path / "project")
+    assert reopened.measure("pinion").volume_mm3 == pytest.approx(volume, rel=1e-6)
+    with pytest.raises(GeometryError, match="already"):
+        document.create_gear("pinion", spec)
+    replaced = document.update_gear("pinion", {**spec, "teeth": 16})
+    assert replaced["gear"]["teeth"] == 16
+    assert abs(replaced["volume_mm3"] - volume) / volume > 0.05
+
+    workspace = Workspace(tmp_path / "app")
+    report = workspace.execute("create_gear", {"name": "pinion", "spec": spec, "position": [0, 0, 0]})
+    assert report["result_kind"] == "verified_check"
+    note = workspace.execute("list_parameters", {"name": "pinion"})
+    assert note["source"] == "gear"
+    assert "generated gear" in note["note"]
+    again = workspace.execute("create_gear", {"name": "pinion", "spec": {**spec, "teeth": 15}})
+    assert again["gear"]["teeth"] == 15
+
+    assert cli_main(
+        [
+            "gear",
+            "wheel",
+            "--type",
+            "spur",
+            "--module",
+            "2",
+            "--teeth",
+            "18",
+            "--face-width",
+            "4",
+            "--workspace",
+            str(tmp_path / "cli"),
+        ]
+    ) == 0
+    cli_doc = Document(tmp_path / "cli")
+    assert cli_doc.get_source("wheel")["source"] == "gear"
+    assert cli_doc.measure("wheel").watertight
+
+
+def test_mcp_create_gear(tmp_path: Path):
+    import asyncio
+    import json
+
+    server = build_server(tmp_path)
+    result = asyncio.run(
+        server.call_tool(
+            "create_gear",
+            {
+                "name": "pinion",
+                "spec": {
+                    "type": "spur",
+                    "module_mm": 2,
+                    "teeth": 12,
+                    "pressure_angle_deg": 20,
+                    "face_width_mm": 4,
+                },
+            },
+        )
+    )
+    body = json.loads(result.content[0].text)
+    assert body["result_kind"] == "verified_check"
+    assert body["gear"]["pitch_diameter_mm"] == pytest.approx(24)
+    assert Document(tmp_path).measure("pinion").watertight
