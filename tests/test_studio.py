@@ -109,6 +109,125 @@ def test_sketch_dimension_and_extrude_height_are_parameters(tmp_path, monkeypatc
     assert workspace.document.measure("plate").volume_mm3 == 8000
 
 
+def _inset_frame(workspace: Workspace) -> None:
+    workspace.execute(
+        "create_sketch",
+        {
+            "name": "frame",
+            "spec": {
+                "plane": "xy",
+                "entities": [
+                    {"id": "p0", "type": "point", "at": [0, 0]},
+                    {"id": "p1", "type": "point", "at": [40, 0]},
+                    {"id": "p2", "type": "point", "at": [40, 20]},
+                    {"id": "p3", "type": "point", "at": [0, 20]},
+                    {"id": "bottom", "type": "line", "start": "p0", "end": "p1"},
+                    {"id": "right", "type": "line", "start": "p1", "end": "p2"},
+                    {"id": "top", "type": "line", "start": "p2", "end": "p3"},
+                    {"id": "left", "type": "line", "start": "p3", "end": "p0"},
+                    {"id": "mark", "type": "point", "at": [6, 10]},
+                ],
+                "constraints": [
+                    {"type": "fix", "entity": "p0"},
+                    {"type": "horizontal", "entity": "bottom"},
+                    {"type": "horizontal", "entity": "top"},
+                    {"type": "vertical", "entity": "right"},
+                    {"type": "vertical", "entity": "left"},
+                    {"type": "distance", "a": "p0", "b": "p1", "value": 40, "name": "width"},
+                    {"type": "distance", "a": "p0", "b": "p3", "value": 20, "name": "height"},
+                    {"type": "distance", "a": "mark", "b": "left", "value": -6, "name": "inset"},
+                    {"type": "distance", "a": "mark", "b": "bottom", "value": -10, "name": "rise"},
+                ],
+            },
+        },
+    )
+    workspace.execute(
+        "create_part_from_sketch",
+        {
+            "name": "frame",
+            "sketch": "frame",
+            "steps": [{"op": "extrude", "points": ["p0", "p1", "p2", "p3"], "height": 5, "name": "extrude"}],
+        },
+    )
+
+
+def _mark(workspace: Workspace) -> dict:
+    return workspace.execute("get_sketch", {"name": "frame"})["geometry"]["points"]["mark"]
+
+
+def test_point_to_line_distance_stays_signed(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    workspace = Workspace(tmp_path / "project")
+    _inset_frame(workspace)
+    listed = workspace.execute("list_parameters", {"name": "frame"})
+    by_id = {}
+    for item in listed["parameters"]:
+        assert item["id"] not in by_id
+        by_id[item["id"]] = item
+    assert by_id["dimension/inset"]["kind"] == "signed"
+    assert by_id["dimension/inset"]["value"] == -6
+    assert by_id["dimension/rise"]["kind"] == "signed"
+    assert by_id["dimension/width"]["kind"] == "length"
+    assert workspace.execute("get_sketch", {"name": "frame"})["status"] == "fully_constrained"
+    assert _mark(workspace)["x"] == pytest.approx(6)
+    workspace.execute("set_parameter", {"name": "frame", "parameter": "dimension/inset", "value": -10})
+    assert _mark(workspace)["x"] == pytest.approx(10)
+    assert workspace.execute("get_sketch", {"name": "frame"})["status"] == "fully_constrained"
+    workspace.execute("set_parameter", {"name": "frame", "parameter": "dimension/inset", "value": 6})
+    assert _mark(workspace)["x"] == pytest.approx(-6)
+    with pytest.raises(GeometryError, match="greater than zero"):
+        workspace.execute("set_parameter", {"name": "frame", "parameter": "dimension/width", "value": -5})
+    assert workspace.document.measure("frame").volume_mm3 == pytest.approx(4000)
+    assert _mark(workspace)["x"] == pytest.approx(-6)
+    workspace.execute("undo")
+    assert _mark(workspace)["x"] == pytest.approx(10)
+    workspace.execute("undo")
+    assert _mark(workspace)["x"] == pytest.approx(6)
+
+
+def test_shared_inset_name_is_one_signed_parameter():
+    from aicad.studio import _dimension_parameters
+
+    spec = {
+        "entities": [
+            {"id": "hsw", "type": "point"},
+            {"id": "left", "type": "line"},
+            {"id": "bottom", "type": "line"},
+            {"id": "a", "type": "point"},
+            {"id": "b", "type": "point"},
+            {"id": "hole", "type": "circle"},
+            {"id": "edge", "type": "line"},
+        ],
+        "constraints": [
+            {"type": "distance", "a": "hsw", "b": "left", "value": -6, "name": "frame_inset"},
+            {"type": "distance", "a": "hsw", "b": "bottom", "value": -6, "name": "frame_inset"},
+            {"type": "distance", "a": "a", "b": "b", "value": 40, "name": "width"},
+            {"type": "radius", "entity": "hole", "value": 3, "name": "hole"},
+            {"type": "angle", "a": "bottom", "b": "edge", "value": 90, "name": "corner"},
+        ],
+    }
+
+    class _Holder:
+        def __init__(self, stored):
+            self.spec = stored
+
+    class _Document:
+        def _get_sketch(self, _name):
+            return _Holder(spec)
+
+    class _Workspace:
+        document = _Document()
+
+    listed = _dimension_parameters(_Workspace(), "frame")
+    by_id = {item["id"]: item for item in listed}
+    assert len(listed) == len(by_id)
+    assert by_id["dimension/frame_inset"]["kind"] == "signed"
+    assert by_id["dimension/frame_inset"]["value"] == -6
+    assert by_id["dimension/width"]["kind"] == "length"
+    assert by_id["dimension/hole"]["kind"] == "length"
+    assert by_id["dimension/corner"]["kind"] == "angle"
+
+
 def test_catalog_length_is_a_parameter(tmp_path, monkeypatch):
     monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
     workspace = Workspace(tmp_path / "project")
