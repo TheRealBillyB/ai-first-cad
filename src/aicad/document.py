@@ -1509,8 +1509,9 @@ class Document:
 
     def _store_script_geometry(self, name: str, script: str, shape: kernel.Shape) -> str:
         relative = f".aicad/geometry/{name}-{_script_hash(script)[:16]}.step"
-        path = self.workspace / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from aicad.sandbox import project_file
+
+        path = project_file(self.workspace, relative)
         kernel.export_step_file(shape, path)
         return relative
 

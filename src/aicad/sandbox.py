@@ -16,6 +16,9 @@ If those limits cannot be applied, the script is not run.
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
 ``part``, use the same confined process so an assistant cannot skip it.
+A link that points outside the project is not written. A file with more
+than one name is not used for the run, because writing it would change
+every name.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import os
 import platform
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -452,11 +456,24 @@ def script_log_path(workspace: Path) -> Path:
 
 
 def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> None:
-    path = script_log_path(workspace)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Append one design-script row. A log path that leaves the project is skipped."""
+    try:
+        path = project_file(workspace, ".aicad/script_log.jsonl")
+    except ScriptError:
+        return
     row = {"time": _now(), "kind": "design", "ok": ok, "error": error, "script": script}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row) + "\n")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags, 0o666)
+    except OSError:
+        return
+    try:
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row) + "\n")
+    except OSError:
+        return
 
 
 def _check_script(code: str) -> None:
@@ -493,6 +510,122 @@ def _inside(path: Path, root: Path) -> bool:
     except (OSError, ValueError):
         return False
     return True
+
+
+_OUTSIDE = "A path in this project points outside the project folder, so the script was not run."
+_NO_FOLDER = "Could not create a project folder, so the script was not run."
+
+
+def _relative_parts(relative: str) -> tuple[str, ...]:
+    text = str(relative).replace("\\", "/")
+    if text.startswith("/") or text.startswith("~"):
+        raise ScriptError(_OUTSIDE)
+    parts: list[str] = []
+    for part in text.split("/"):
+        if part in ("", "."):
+            continue
+        if part == ".." or "\x00" in part:
+            raise ScriptError(_OUTSIDE)
+        parts.append(part)
+    if not parts:
+        raise ScriptError(_OUTSIDE)
+    return tuple(parts)
+
+
+def _linked_more_than_once(path: Path) -> bool:
+    """True when ``path`` is a regular file with another name for the same data."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and info.st_nlink > 1
+
+
+def _write_would_touch_extra_name(path: Path) -> bool:
+    if _linked_more_than_once(path):
+        return True
+    if not path.is_symlink():
+        return False
+    try:
+        target = path.resolve(strict=True)
+    except OSError:
+        return False
+    return _linked_more_than_once(target)
+
+
+def _refuse_multilink(workspace: Path) -> None:
+    """Refuse a run when a file in the project has another name.
+
+    Writing that file would change every name, including one outside the
+    project. Directory link counts are not file names, and directory links
+    are not followed.
+    """
+    root = workspace.resolve()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
+        for name in filenames:
+            path = current / name
+            if not _linked_more_than_once(path):
+                continue
+            relative = path.relative_to(root).as_posix()
+            raise ScriptError(
+                f"{relative} is linked from more than one name, so the script was not run."
+            )
+
+
+def project_dir(workspace: Path, relative: str) -> Path:
+    """A directory inside the project. A link that leaves the project is refused."""
+    root = Path(workspace).resolve()
+    current = root
+    for part in _relative_parts(relative):
+        current = current / part
+        if current.is_symlink():
+            try:
+                target = current.resolve(strict=True)
+            except OSError as exc:
+                raise ScriptError(_OUTSIDE) from exc
+            if not target.is_dir() or not _inside(target, root):
+                raise ScriptError(_OUTSIDE)
+            current = target
+            continue
+        if current.exists():
+            if not current.is_dir() or not _inside(current, root):
+                raise ScriptError(_OUTSIDE)
+            continue
+        try:
+            current.mkdir(mode=0o700)
+        except OSError as exc:
+            raise ScriptError(_NO_FOLDER) from exc
+    resolved = current.resolve()
+    if not resolved.is_dir() or not _inside(resolved, root):
+        raise ScriptError(_OUTSIDE)
+    return resolved
+
+
+def project_file(workspace: Path, relative: str) -> Path:
+    """A file path inside the project. A link that leaves the project is refused.
+
+    A dangling link is refused too. Opening it would create the missing target.
+    """
+    root = Path(workspace).resolve()
+    parts = _relative_parts(relative)
+    parent = project_dir(workspace, "/".join(parts[:-1])) if len(parts) > 1 else root
+    path = parent / parts[-1]
+    if path.is_symlink():
+        try:
+            target = path.resolve(strict=True)
+        except OSError as exc:
+            raise ScriptError(_OUTSIDE) from exc
+        if not target.is_file() or not _inside(target, root):
+            raise ScriptError(_OUTSIDE)
+        return target
+    if path.exists() and (not path.is_file() or not _inside(path, root)):
+        raise ScriptError(_OUTSIDE)
+    resolved = path.resolve()
+    if not _inside(resolved, root):
+        raise ScriptError(_OUTSIDE)
+    return resolved
 
 
 def _under(path: Path, roots: list[Path]) -> bool:
@@ -534,6 +667,10 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
             path = Path(os.fsdecode(file))
             if not path.is_absolute():
                 path = Path.cwd() / path
+            if writing and _write_would_touch_extra_name(path):
+                raise ScriptError(
+                    f"{path} is linked from more than one name, so it was not written."
+                )
             if not _inside(path, root) and (writing or not _under(path, read_roots)):
                 refuse(path, writing)
         return real_open(file, mode, *args, **kwargs)
@@ -544,6 +681,10 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
             file_path = Path(os.fsdecode(path))
             if not file_path.is_absolute():
                 file_path = Path.cwd() / file_path
+            if writing and _write_would_touch_extra_name(file_path):
+                raise ScriptError(
+                    f"{file_path} is linked from more than one name, so it was not written."
+                )
             if not _inside(file_path, root) and (writing or not _under(file_path, read_roots)):
                 refuse(file_path, writing)
         return real_os_open(path, flags, mode, dir_fd=dir_fd)
@@ -903,8 +1044,7 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     seal_sandbox_plugins()
     _refuse_foreign_kill()
     workspace = workspace.resolve()
-    temporary = workspace / ".aicad" / "tmp"
-    temporary.mkdir(parents=True, exist_ok=True)
+    temporary = project_dir(workspace, ".aicad/tmp")
     os.environ["TMPDIR"] = str(temporary)
     os.environ["TMP"] = str(temporary)
     os.environ["TEMP"] = str(temporary)
@@ -979,7 +1119,13 @@ def _pythonpath_for_child(workspace: Path, raw: str | None) -> str | None:
     return os.pathsep.join(kept)
 
 
-def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
+def _child_env(
+    workspace: Path,
+    job: Path,
+    network: bool,
+    tmp: Path | None = None,
+    cache: Path | None = None,
+) -> dict[str, str]:
     env: dict[str, str] = {}
     for key, value in os.environ.items():
         upper = key.upper()
@@ -1001,26 +1147,28 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     env["AICAD_JOB"] = str(job)
     env["AICAD_NETWORK"] = "1" if network else "0"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    tmp = str(workspace / ".aicad" / "tmp")
-    env["TMPDIR"] = tmp
-    env["TMP"] = tmp
-    env["TEMP"] = tmp
+    tmp_path = tmp if tmp is not None else workspace / ".aicad" / "tmp"
+    tmp_text = str(tmp_path)
+    env["TMPDIR"] = tmp_text
+    env["TMP"] = tmp_text
+    env["TEMP"] = tmp_text
     if sys.platform == "win32":
         # ezdxf and matplotlib otherwise stat the real user profile. An
         # AppContainer is denied that path. Do not redirect USERPROFILE:
         # that made every script fail with STATUS_INVALID_HANDLE.
         # The font list is built once in the Python install. The other
         # caches stay in the project, which the container can write.
-        cache = str(workspace / ".aicad" / "cache")
+        cache_path = cache if cache is not None else workspace / ".aicad" / "cache"
+        cache_text = str(cache_path)
         font_home = _windows_font_cache_home()
         font_file = font_home / "ezdxf" / "font_manager_cache.json"
         if font_file.is_file() and font_file.stat().st_size > 0:
             env["XDG_CACHE_HOME"] = str(font_home)
         else:
-            env["XDG_CACHE_HOME"] = cache
-        env["XDG_CONFIG_HOME"] = cache
-        env["XDG_DATA_HOME"] = cache
-        env["MPLCONFIGDIR"] = cache
+            env["XDG_CACHE_HOME"] = cache_text
+        env["XDG_CONFIG_HOME"] = cache_text
+        env["XDG_DATA_HOME"] = cache_text
+        env["MPLCONFIGDIR"] = cache_text
     return env
 
 
@@ -1211,12 +1359,15 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         raise ScriptError(reason)
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
-    job = workspace / ".aicad" / "jobs" / uuid.uuid4().hex
-    job.mkdir(parents=True, exist_ok=True)
-    (workspace / ".aicad" / "tmp").mkdir(parents=True, exist_ok=True)
-    if sys.platform == "win32":
-        # Created before the AppContainer grant so the container can write it.
-        (workspace / ".aicad" / "cache").mkdir(parents=True, exist_ok=True)
+    _refuse_multilink(workspace)
+    tmp_dir = project_dir(workspace, ".aicad/tmp")
+    jobs_dir = project_dir(workspace, ".aicad/jobs")
+    cache_dir = project_dir(workspace, ".aicad/cache") if sys.platform == "win32" else None
+    job = jobs_dir / uuid.uuid4().hex
+    try:
+        job.mkdir(mode=0o700)
+    except OSError as exc:
+        raise ScriptError(_NO_FOLDER) from exc
     spec: dict = {"kind": kind, "network": network}
     probe_root = None
     if kind == "probe":
@@ -1261,7 +1412,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
                 command,
                 cwd=str(workspace),
-                env=_child_env(workspace, job, network),
+                env=_child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir),
                 read_paths=_read_roots(),
                 workspace=workspace,
                 cpu_seconds=cpu_seconds(),
@@ -1277,7 +1428,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             return _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
         if sys.platform.startswith("linux"):
             pids_cgroup = _prepare_pids_cgroup()
-        env = _child_env(workspace, job, network)
+        env = _child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir)
         env.pop("AICAD_PIDS_CGROUP", None)
         if pids_cgroup is not None:
             env["AICAD_PIDS_CGROUP"] = str(pids_cgroup)
