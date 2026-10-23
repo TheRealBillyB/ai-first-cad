@@ -273,6 +273,9 @@ def test_windows_launch_attributes_point_at_the_container_and_the_job():
         network=False,
     )
     assert plain_capability is None
+    plain_security = ctypes.cast(plain[0][1], ctypes.POINTER(win._SecurityCapabilities)).contents
+    assert plain_security.CapabilityCount == 0
+    assert not plain_security.Capabilities
     assert win._PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY not in {row[0] for row in plain}
 
     restype, argtypes = win._update_attribute_signature()
@@ -460,6 +463,200 @@ def test_windows_probe_requires_the_confinement_check():
     assert "sandbox-ok" in source
     assert "if failed" in source
     assert str(win._PROBE_MEMORY_BYTES) in source
+
+
+def _socket_error(errno=None, winerror=None, *, timeout=False, dns=False):
+    import socket
+
+    if dns:
+        error = socket.gaierror(errno if errno is not None else 11001, "dns")
+    elif timeout:
+        error = TimeoutError(errno if errno is not None else 10060, "timed out")
+    else:
+        error = OSError(errno if errno is not None else 0, "probe")
+    if winerror is not None:
+        error.winerror = winerror
+    if errno is not None:
+        error.errno = errno
+    return error
+
+
+def test_windows_network_refusal_is_not_a_timeout_or_a_dns_failure():
+    """The script runs only when both probes were refused and the token has no network capability."""
+
+    import inspect
+
+    from aicad.sandbox import (
+        _NETWORK_CAPABILITY_SIDS,
+        _WINDOWS_TCP_PROBE,
+        _WINDOWS_UDP_PROBE,
+        _public_probe_address,
+        apply_sandbox,
+        confined_errno,
+        network_attempt_label,
+        windows_network_failure_text,
+        windows_network_is_off,
+    )
+
+    assert _WINDOWS_TCP_PROBE == ("1.1.1.1", 443)
+    assert _WINDOWS_UDP_PROBE == ("1.1.1.1", 53)
+    assert _public_probe_address("1.1.1.1")
+    assert not _public_probe_address("127.0.0.1")
+    assert not _public_probe_address("localhost")
+    assert not _public_probe_address("::1")
+    assert _NETWORK_CAPABILITY_SIDS == frozenset({"S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"})
+
+    for winerror, errno in ((5, 5), (10013, 13), (10051, 10051), (None, 1), (None, 13), (None, 101)):
+        error = _socket_error(errno, winerror)
+        assert confined_errno(error)
+        assert network_attempt_label(error, success="connected").startswith("denied ")
+
+    timeout = _socket_error(10060, 10060, timeout=True)
+    host = _socket_error(10065, 10065)
+    dns = _socket_error(11001, 11001, dns=True)
+    assert not confined_errno(host)
+    assert network_attempt_label(timeout, success="connected").startswith("timeout ")
+    assert "10060" in network_attempt_label(timeout, success="connected")
+    assert network_attempt_label(host, success="connected").startswith("error ")
+    assert "10065" in network_attempt_label(host, success="sent")
+    assert network_attempt_label(dns, success="connected").startswith("dns ")
+    assert network_attempt_label(None, success="connected") == "connected"
+    assert network_attempt_label(None, success="sent") == "sent"
+    # A timeout that also carries a denial errno is still a timeout.
+    mixed = _socket_error(13, 10060, timeout=True)
+    assert network_attempt_label(mixed, success="connected").startswith("timeout ")
+
+    denied = network_attempt_label(_socket_error(13, 10013), success="connected")
+    denied_udp = network_attempt_label(_socket_error(13, 10013), success="sent")
+    package = "S-1-15-2-11-22-33-44-55-66-77"
+    assert windows_network_is_off(tcp=denied, udp=denied_udp, package=package, capabilities=())
+    assert not windows_network_is_off(
+        tcp=network_attempt_label(timeout, success="connected"),
+        udp=denied_udp,
+        package=package,
+        capabilities=(),
+    )
+    assert not windows_network_is_off(
+        tcp=denied,
+        udp="sent",
+        package=package,
+        capabilities=(),
+    )
+    assert not windows_network_is_off(tcp="loopback", udp=denied_udp, package=package, capabilities=())
+    assert not windows_network_is_off(tcp=denied, udp=denied_udp, package=package, capabilities=None)
+    assert not windows_network_is_off(tcp=denied, udp=denied_udp, package="unread", capabilities=())
+    for capability in ("S-1-15-3-1", "s-1-15-3-2", "S-1-15-3-3"):
+        assert not windows_network_is_off(
+            tcp=denied,
+            udp=denied_udp,
+            package=package,
+            capabilities=(capability,),
+        )
+    text = windows_network_failure_text(
+        tcp=network_attempt_label(timeout, success="connected"),
+        udp="sent",
+        package=package,
+        capabilities=("S-1-15-3-1",),
+    )
+    assert text.startswith("Windows did not turn the network off, so the script was not run.")
+    assert "probe=1.1.1.1:443,1.1.1.1:53" in text
+    assert "tcp=timeout " in text
+    assert "winerror=10060" in text
+    assert "udp=sent" in text
+    assert "package=" + package in text
+    assert "capabilities=S-1-15-3-1" in text
+    assert "capabilities=none" in windows_network_failure_text(
+        tcp=denied, udp=denied_udp, package=package, capabilities=()
+    )
+    assert "capabilities=unread" in windows_network_failure_text(
+        tcp=denied, udp=denied_udp, package=package, capabilities=None
+    )
+
+    source = inspect.getsource(apply_sandbox)
+    windows = source.split('sys.platform == "win32"', 1)[1].split('sys.platform == "darwin"', 1)[0]
+    assert windows.index("identity_failures") < windows.index("windows_network_is_off")
+    assert "_network_blocked" not in windows
+
+
+def test_windows_network_block_names_only_that_container():
+    """The firewall block is the package SID, and it stays until the last network-off child exits."""
+
+    import inspect
+
+    from aicad import sandbox_windows as win
+
+    package = "S-1-15-2-11-22-33-44-55-66-77"
+    script = win._firewall_script(package, install=True)
+    assert script.count("New-NetFirewallRule") == 2
+    assert script.count("-Action Block") == 2
+    assert "-Direction Outbound" in script
+    assert "-Direction Inbound" in script
+    assert f"-Package '{package}'" in script
+    assert "S-1-15-3-1" not in script
+    assert "Remove-NetFirewallRule" in script
+    removal = win._firewall_script(install=False)
+    assert "New-NetFirewallRule" not in removal
+    assert "Remove-NetFirewallRule" in removal
+    for bad in ("S-1-15-3-1", "S-1-15-2-1'; Remove-Item", "S-1-5-18", ""):
+        with pytest.raises(OSError, match="not a package SID"):
+            win._firewall_script(bad, install=True)
+
+    calls = []
+
+    def record(text):
+        calls.append(text)
+
+    win._network_off_holders = 0
+    win._network_off_sid = None
+    original = win._run_firewall_script
+    win._run_firewall_script = record
+    try:
+        win._hold_network_block(package.lower())
+        win._hold_network_block(package)
+        assert len(calls) == 1
+        assert win._network_off_holders == 2
+        with pytest.raises(OSError, match="still has the network blocked"):
+            win._require_script_network_open()
+        assert len(calls) == 1
+        with pytest.raises(OSError, match="still has the network blocked"):
+            win._hold_network_block("S-1-15-2-9-9-9-9-9-9-9")
+        win._release_network_block()
+        assert len(calls) == 1
+        win._release_network_block()
+        assert len(calls) == 2
+        assert "New-NetFirewallRule" not in calls[1]
+        assert win._network_off_holders == 0
+        win._require_script_network_open()
+        assert len(calls) == 3
+    finally:
+        win._run_firewall_script = original
+        win._network_off_holders = 0
+        win._network_off_sid = None
+
+    spawn = inspect.getsource(win.spawn)
+    assert spawn.index("_hold_network_block") < spawn.index("_launch")
+    assert spawn.index("TerminateJobObject") < spawn.index("_release_network_block")
+    probe = inspect.getsource(win._probe_mode)
+    assert probe.index("_hold_network_block") < probe.index("_launch")
+
+
+def test_windows_token_capability_list_keeps_network_sids():
+    """The capability reader returns the SIDs the token actually carries."""
+
+    from aicad import sandbox_windows as win
+
+    def pack(pointers):
+        raw = len(pointers).to_bytes(4, "little") + b"\x00" * 4
+        for pointer in pointers:
+            raw += int(pointer).to_bytes(8, "little") + b"\x00" * 8
+        return raw
+
+    names = {10: "S-1-15-3-1", 11: "S-1-15-3-2", 12: "S-1-15-3-9"}
+    found = win._token_group_sids(pack([10, 0, 11, 12]), lambda pointer: names[pointer])
+    assert found == ["S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-9"]
+    assert win._token_group_sids(pack([]), lambda pointer: pointer) == []
+    with pytest.raises(OSError, match="cut off"):
+        win._token_group_sids(pack([10])[:16], lambda pointer: "S-1-15-3-1")
 
 
 def test_windows_script_keeps_library_caches_in_the_project(tmp_path, monkeypatch):

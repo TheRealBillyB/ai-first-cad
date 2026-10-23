@@ -830,8 +830,21 @@ def _block_sockets(*, network: bool) -> None:
         )
 
 
+# A literal public address. Loopback is often allowed inside a container, and a
+# name would make a DNS failure look like a closed network.
+_WINDOWS_TCP_PROBE = ("1.1.1.1", 443)
+_WINDOWS_UDP_PROBE = ("1.1.1.1", 53)
+# internetClient, internetClientServer, privateNetworkClientServer.
+_NETWORK_CAPABILITY_SIDS = frozenset({"S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"})
+
+
 def confined_errno(error: OSError) -> bool:
-    """True when this error is the operating system refusing the sandbox, not a timeout."""
+    """True when this error is the operating system refusing the sandbox.
+
+    A timeout, a DNS failure, and any other code are not a refusal. A packet
+    that was allowed to wait is not proof the network is off.
+    """
+
     winerror = getattr(error, "winerror", None)
     if winerror in {5, 10013, 10051}:
         return True
@@ -855,6 +868,119 @@ def _file_blocked(path: str) -> bool:
     except OSError as exc:
         return confined_errno(exc)
     return False
+
+
+def _error_codes(error: BaseException) -> str:
+    winerror = getattr(error, "winerror", None)
+    number = getattr(error, "errno", None)
+    return f"winerror={winerror} errno={number}"
+
+
+def _network_timeout(error: BaseException) -> bool:
+    if isinstance(error, TimeoutError):
+        return True
+    if getattr(error, "winerror", None) == 10060:
+        return True
+    return getattr(error, "errno", None) in {10060, 110}
+
+
+def _network_dns(error: BaseException) -> bool:
+    import socket
+
+    if isinstance(error, socket.gaierror):
+        return True
+    number = getattr(error, "winerror", None)
+    errno = getattr(error, "errno", None)
+    return number in {11001, 11002, 11003, 11004} or errno in {11001, 11002, 11003, 11004}
+
+
+def network_attempt_label(error: BaseException | None, *, success: str) -> str:
+    """What one connect or send did. Only a sandbox refusal is a denial."""
+
+    if error is None:
+        return success
+    if _network_timeout(error):
+        return f"timeout {_error_codes(error)}"
+    if _network_dns(error):
+        return f"dns {_error_codes(error)}"
+    if isinstance(error, OSError) and confined_errno(error):
+        return f"denied {_error_codes(error)}"
+    return f"error {_error_codes(error)}"
+
+
+def _public_probe_address(address: str) -> bool:
+    text = address.strip().lower()
+    if text in {"localhost", "::1", "0.0.0.0"} or text.startswith("127."):
+        return False
+    return True
+
+
+def _windows_transport_label(kind: str) -> str:
+    """Try the public probe. Loopback is not used, and it is not a refusal."""
+
+    import socket
+
+    address, port = _WINDOWS_TCP_PROBE if kind == "tcp" else _WINDOWS_UDP_PROBE
+    if not _public_probe_address(address):
+        return "loopback"
+    stream = kind == "tcp"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM if stream else socket.SOCK_DGRAM)
+    sock.settimeout(2)
+    try:
+        try:
+            # A connected UDP send is what reports a firewall refusal. sendto
+            # can return success when the stack drops the datagram later.
+            sock.connect((address, port))
+            if not stream:
+                sock.send(b"x")
+        except OSError as exc:
+            return network_attempt_label(exc, success="connected" if stream else "sent")
+        return "connected" if stream else "sent"
+    finally:
+        sock.close()
+
+
+def windows_network_is_off(
+    *,
+    tcp: str,
+    udp: str,
+    package: str,
+    capabilities: tuple[str, ...] | None,
+) -> bool:
+    """True only when this token has no network capability and both probes were refused.
+
+    The package id has to be present, because that is the container the
+    firewall block names. An unreadable capability list is not an empty one.
+    """
+
+    if capabilities is None or not package.upper().startswith("S-1-15-2-"):
+        return False
+    present = {item.upper() for item in capabilities}
+    if present & {item.upper() for item in _NETWORK_CAPABILITY_SIDS}:
+        return False
+    return tcp.startswith("denied ") and udp.startswith("denied ")
+
+
+def windows_network_failure_text(
+    *,
+    tcp: str,
+    udp: str,
+    package: str,
+    capabilities: tuple[str, ...] | None,
+) -> str:
+    if capabilities is None:
+        shown = "unread"
+    elif not capabilities:
+        shown = "none"
+    else:
+        shown = ",".join(capabilities)
+    tcp_host, tcp_port = _WINDOWS_TCP_PROBE
+    udp_host, udp_port = _WINDOWS_UDP_PROBE
+    return (
+        "Windows did not turn the network off, so the script was not run. "
+        f"probe={tcp_host}:{tcp_port},{udp_host}:{udp_port}; "
+        f"tcp={tcp}; udp={udp}; package={package}; capabilities={shown}"
+    )
 
 
 def _network_blocked() -> bool:
@@ -922,7 +1048,7 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     roots = _read_roots()
     if sys.platform == "win32":
-        from aicad.sandbox_windows import identity_failures
+        from aicad.sandbox_windows import identity_failures, windows_token_network
 
         failures = identity_failures(memory_bytes())
         if failures:
@@ -931,8 +1057,19 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
                 + "; ".join(failures)
                 + "), so the script was not run."
             )
-        if not network and not _network_blocked():
-            raise ScriptError("Windows did not turn the network off, so the script was not run.")
+        # The token and the job are already applied. This probe reads that token.
+        if not network:
+            package, capabilities = windows_token_network()
+            tcp = _windows_transport_label("tcp")
+            udp = _windows_transport_label("udp")
+            if not windows_network_is_off(
+                tcp=tcp, udp=udp, package=package, capabilities=capabilities
+            ):
+                raise ScriptError(
+                    windows_network_failure_text(
+                        tcp=tcp, udp=udp, package=package, capabilities=capabilities
+                    )
+                )
         return roots
     if sys.platform == "darwin":
         _set_limits()

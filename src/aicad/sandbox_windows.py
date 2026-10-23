@@ -17,6 +17,11 @@ The script is the base interpreter. The virtual-environment redirector
 starts a second process in a job of its own, so the script would not stay
 in the sandbox job. The new process stays suspended until that job holds
 it and its token is an AppContainer.
+
+When the script was not given the network, Windows Firewall blocks that
+container before the process runs. The script still checks the token and a
+real connection. It runs only when that connection is refused. A timeout
+is not a refusal.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from __future__ import annotations
 import ctypes
 import ntpath
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -64,6 +70,8 @@ _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 0x00000102
 _TOKEN_QUERY = 0x0008
 _TokenIsAppContainer = 29
+_TokenCapabilities = 30
+_TokenAppContainerSid = 31
 _ERROR_ALREADY_EXISTS = 0x800700B7
 _INVALID_HANDLE = ctypes.c_void_p(-1).value
 
@@ -89,6 +97,12 @@ _probe_done = False
 _probe_result: str | None = None
 # Parents already checked for this container, so a later script does not open them again.
 _granted_traverse: set[tuple[str, str, str]] = set()
+# One firewall block for this container, shared by overlapping network-off children.
+_network_off_lock = threading.Lock()
+_network_off_holders = 0
+_network_off_sid: str | None = None
+_PACKAGE_SID_TEXT = re.compile(r"^S-1-15-2(?:-\d+)+$", re.IGNORECASE)
+_NETWORK_OFF_RULES = ("aicad-script-network-off-out", "aicad-script-network-off-in")
 
 # One directory finishes immediately. A tree walk of the Python install can
 # take longer. Either one that does not finish is waiting, not working.
@@ -1375,6 +1389,112 @@ def _job_limit_violated(job: wintypes.HANDLE) -> bool:
     return bool(int(info.ViolationLimitFlags) & _LIMIT_VIOLATION_BITS)
 
 
+def _firewall_script(sid: str | None = None, *, install: bool) -> str:
+    """PowerShell that blocks, or clears, this container's inbound and outbound traffic.
+
+    The package id is the AppContainer SID. A capability SID is not accepted.
+    """
+
+    names = ", ".join(repr(name) for name in _NETWORK_OFF_RULES)
+    remove = (
+        "$ErrorActionPreference = 'Stop'\n"
+        f"foreach ($name in @({names})) {{\n"
+        "  $rule = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue\n"
+        "  if ($null -ne $rule) { Remove-NetFirewallRule -Name $name }\n"
+        "}\n"
+    )
+    if not install:
+        return remove
+    if sid is None or _PACKAGE_SID_TEXT.fullmatch(sid) is None:
+        raise OSError("The AppContainer id is not a package SID, so the network was not blocked.")
+    package = sid.upper()
+    return (
+        remove
+        + "New-NetFirewallRule -Name 'aicad-script-network-off-out' "
+        + "-DisplayName 'aicad script network off outbound' "
+        + "-Direction Outbound -Action Block "
+        + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
+        + "New-NetFirewallRule -Name 'aicad-script-network-off-in' "
+        + "-DisplayName 'aicad script network off inbound' "
+        + "-Direction Inbound -Action Block "
+        + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
+    )
+
+
+def _run_firewall_script(script: str) -> None:
+    kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        "timeout": 30,
+        "check": False,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = _CREATE_NO_WINDOW
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            **kwargs,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OSError(f"Could not set the script network block. {exc}") from exc
+    if completed.returncode != 0:
+        detail = ((completed.stderr or "") + (completed.stdout or "")).strip()
+        raise OSError(
+            "Could not set the script network block "
+            f"(code {completed.returncode}). {detail}"
+        )
+
+
+def _hold_network_block(sid_text: str) -> None:
+    """Install the container block. A second overlapping child reuses it."""
+
+    global _network_off_holders, _network_off_sid
+    with _network_off_lock:
+        if _network_off_holders and _network_off_sid != sid_text.upper():
+            raise OSError(
+                "A script still has the network blocked, so this script was not started."
+            )
+        if _network_off_holders == 0:
+            _run_firewall_script(_firewall_script(sid_text, install=True))
+            _network_off_sid = sid_text.upper()
+        _network_off_holders += 1
+
+
+def _release_network_block() -> None:
+    """Remove the block once the last network-off child has exited."""
+
+    global _network_off_holders, _network_off_sid
+    with _network_off_lock:
+        if _network_off_holders <= 0:
+            return
+        _network_off_holders -= 1
+        if _network_off_holders > 0:
+            return
+        sid = _network_off_sid
+        _network_off_sid = None
+        try:
+            _run_firewall_script(_firewall_script(sid, install=False))
+        except OSError:
+            # The child has already finished. The next block installs by
+            # replacing these rules, and a network-on script refuses to start
+            # until that removal succeeds.
+            _network_off_sid = sid
+
+
+def _require_script_network_open() -> None:
+    """A network-on script must not run while the shared container is blocked."""
+
+    global _network_off_sid
+    with _network_off_lock:
+        if _network_off_holders:
+            raise OSError(
+                "A script still has the network blocked, so this script was not started."
+            )
+        _run_firewall_script(_firewall_script(install=False))
+        _network_off_sid = None
+
+
 def spawn(
     command: list[str],
     *,
@@ -1396,6 +1516,7 @@ def spawn(
     sid, sid_text = _appcontainer_sid()
     job = None
     process = None
+    held_block = False
     try:
         # Do not rewrite this process's access list. An AppContainer can open
         # a process only when that process grants the container, and this
@@ -1403,6 +1524,13 @@ def spawn(
         # from finishing in CI. See SECURITY.md.
         grant_workspace(workspace, sid_text, _package_sid(mode == "lpac"))
         job = _create_job(cpu_seconds, memory_bytes)
+        if network:
+            _require_script_network_open()
+        else:
+            # The block is in place before the process is resumed. The child
+            # then checks that the connection is refused.
+            _hold_network_block(sid_text)
+            held_block = True
         process = _launch(
             command,
             cwd=cwd,
@@ -1458,6 +1586,8 @@ def spawn(
             _kernel32().CloseHandle(process.hProcess)
         if job is not None:
             _kernel32().CloseHandle(job)
+        if held_block:
+            _release_network_block()
         _advapi32().FreeSid(sid)
 
 
@@ -1498,9 +1628,12 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
             grant_read_paths(read_paths, sid_text, package)
             grant_workspace(root, sid_text, package)
             job = _create_job(_PROBE_CPU_SECONDS, _PROBE_MEMORY_BYTES)
+            held_block = False
             try:
                 stdout_path = root / "stdout.txt"
                 stderr_path = root / "stderr.txt"
+                _hold_network_block(sid_text)
+                held_block = True
                 process = _launch(
                     _probe_command(root),
                     cwd=str(root),
@@ -1526,6 +1659,8 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
                     _kernel32().CloseHandle(process.hProcess)
             finally:
                 _kernel32().CloseHandle(job)
+                if held_block:
+                    _release_network_block()
         finally:
             _advapi32().FreeSid(sid)
     except OSError as exc:
@@ -1674,10 +1809,90 @@ def identity_failures(memory_bytes: int) -> list[str]:
     return failures
 
 
+class _TokenAppContainerInformation(ctypes.Structure):
+    _fields_ = [("TokenAppContainer", ctypes.c_void_p)]
+
+
+def _token_group_sids(buffer, read_sid) -> list[str]:
+    """Capability SIDs in a 64-bit TOKEN_GROUPS. The caller still holds the buffer."""
+
+    if ctypes.sizeof(ctypes.c_void_p) != 8:
+        raise OSError("the network capability list needs 64-bit Python")
+    raw = bytes(buffer)
+    if len(raw) < 8:
+        raise OSError("the network capability list was too small")
+    count = int.from_bytes(raw[:4], "little")
+    if count > 64:
+        raise OSError("the network capability list was not readable")
+    if len(raw) < 8 + count * 16:
+        raise OSError("the network capability list was cut off")
+    found: list[str] = []
+    for index in range(count):
+        start = 8 + index * 16
+        pointer = int.from_bytes(raw[start : start + 8], "little")
+        if pointer:
+            found.append(str(read_sid(pointer)))
+    return found
+
+
+def _token_buffer(advapi32, info_class: int):
+    """Bytes of one token class. The buffer stays alive until the caller drops it."""
+
+    returned = wintypes.DWORD(0)
+    advapi32.GetTokenInformation(-4, info_class, None, 0, ctypes.byref(returned))
+    size = int(returned.value)
+    if size <= 0 or size > 1024 * 1024:
+        raise OSError(f"the token could not be read (Windows error {_last_error()}).")
+    buffer = ctypes.create_string_buffer(size)
+    returned = wintypes.DWORD(0)
+    if not advapi32.GetTokenInformation(-4, info_class, buffer, size, ctypes.byref(returned)):
+        raise OSError(f"the token could not be read (Windows error {_last_error()}).")
+    return buffer
+
+
+def windows_token_network() -> tuple[str, tuple[str, ...] | None]:
+    """This process's package SID and capability SIDs.
+
+    The capability tuple is None when the list could not be read. An empty
+    tuple means the token has none. The process-token pseudo-handle is not closed.
+    """
+
+    _bind()
+    advapi32 = _advapi32()
+    package = "unread"
+    try:
+        raw = _token_buffer(advapi32, _TokenAppContainerSid)
+        try:
+            info = _TokenAppContainerInformation.from_buffer(raw)
+            if not info.TokenAppContainer:
+                package = "unread empty"
+            else:
+                package = _sid_to_string(ctypes.c_void_p(info.TokenAppContainer))
+        finally:
+            del raw
+    except (OSError, ValueError) as exc:
+        package = f"unread {exc}"
+    try:
+        raw = _token_buffer(advapi32, _TokenCapabilities)
+        try:
+            capabilities = tuple(
+                _token_group_sids(
+                    raw,
+                    lambda pointer: _sid_to_string(ctypes.c_void_p(pointer)),
+                )
+            )
+        finally:
+            del raw
+    except (OSError, ValueError) as exc:
+        return f"{package}; capabilities unread ({exc})", None
+    return package, capabilities
+
+
 def network_error_is_confined(error: OSError) -> bool:
     winerror = getattr(error, "winerror", None)
     # 5 and 10013 are access denied. 10051 is network unreachable, which is what a
-    # blocked stack reports. A timeout or a reset means the packet left the machine.
+    # blocked stack reports. A timeout (10060), host unreachable (10065), or a DNS
+    # failure means the socket was not refused.
     return winerror in {5, 10013, 10051} or error.errno in {13, 1}
 
 

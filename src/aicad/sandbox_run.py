@@ -142,8 +142,12 @@ def _probe(workspace: Path, job: Path) -> int:
     except OSError as exc:
         found["tcp"] = denied_probe_label(exc)
     try:
+        # Connect first so a firewall refusal is reported. sendto can succeed
+        # when the stack drops the datagram afterwards.
         packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        packet.sendto(b"x", ("1.1.1.1", 53))
+        packet.settimeout(2)
+        packet.connect(("1.1.1.1", 53))
+        packet.send(b"x")
         found["udp"] = "sent"
     except OSError as exc:
         found["udp"] = denied_probe_label(exc)
