@@ -480,3 +480,71 @@ def test_agent_cannot_approve_by_flags_or_argument_names(tmp_path):
         assert blocked.returncode == 2, blocked.stderr
         assert "unrecognized arguments" in blocked.stderr
     assert json.loads((tmp_path / "plans" / "shelf.json").read_text(encoding="utf-8"))["status"] == "draft"
+
+
+def _question(plan: dict, item: str) -> dict:
+    return next(question for question in plan["revision"]["questions"] if question["id"] == item)
+
+
+def test_undo_of_approval_closes_modeling_again(tmp_path):
+    user = Workspace(tmp_path)
+    user.execute("start_plan", {"name": "shelf", "bundle": SHELF}, source="ui")
+    user.execute("submit_plan", {"name": "shelf"}, source="ui")
+    user.execute("approve_plan", {"name": "shelf"}, source="ui")
+    assert user.execute("start_model_from_plan", {"name": "shelf"}, source="ui")["ready"] is True
+    user.execute("undo", source="ui")
+    with pytest.raises(PlanError, match="Nothing was modeled"):
+        user.execute("start_model_from_plan", {"name": "shelf"}, source="ui")
+    path = tmp_path / "plans" / "shelf.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["status"] = "approved"
+    payload["approved_revision"] = payload["current_revision"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(PlanError, match="Nothing was modeled"):
+        user.execute("start_model_from_plan", {"name": "shelf"}, source="ui")
+    user.execute("redo", source="ui")
+    assert user.execute("start_model_from_plan", {"name": "shelf"}, source="ui")["ready"] is True
+
+
+def test_undo_of_an_answer_is_not_trusted_from_the_file(tmp_path):
+    user = Workspace(tmp_path)
+    user.execute("start_plan", {"name": "shelf", "bundle": SHELF}, source="ui")
+    user.execute("answer_plan_question", {"name": "shelf", "item": "q1", "text": "600 mm apart"}, source="ui")
+    assert _question(user.execute("get_plan", {"name": "shelf"}), "q1")["trusted"] is True
+    user.execute("undo", source="ui")
+    path = tmp_path / "plans" / "shelf.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for item in payload["revisions"][-1]["questions"]:
+        if item["id"] == "q1":
+            item["status"] = "answered"
+            item["answer"] = "600 mm apart"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    shown = _question(user.execute("get_plan", {"name": "shelf"}), "q1")
+    assert shown["trusted"] is False
+    assert shown["status"] == "open"
+    user.execute("redo", source="ui")
+    restored = _question(user.execute("get_plan", {"name": "shelf"}), "q1")
+    assert restored["trusted"] is True
+    assert restored["status"] == "answered"
+
+
+def test_undo_in_one_project_keeps_another_projects_approval(tmp_path):
+    first = Workspace(tmp_path / "one")
+    second = Workspace(tmp_path / "two")
+    for workspace in (first, second):
+        workspace.execute("start_plan", {"name": "shelf", "bundle": SHELF}, source="ui")
+        workspace.execute("submit_plan", {"name": "shelf"}, source="ui")
+        workspace.execute("approve_plan", {"name": "shelf"}, source="ui")
+    first.execute("undo", source="ui")
+    with pytest.raises(PlanError, match="Nothing was modeled"):
+        first.execute("start_model_from_plan", {"name": "shelf"}, source="ui")
+    assert second.execute("start_model_from_plan", {"name": "shelf"}, source="ui")["ready"] is True
+
+
+def test_undo_of_a_sheet_does_not_create_the_approval_ledger(tmp_path, approvals_stay_outside_the_project):
+    workspace = Workspace(tmp_path)
+    workspace.execute("start_plan", {"name": "shelf", "title": "Shelf"}, source="ui")
+    workspace.execute("put_plan_sheet", {"name": "shelf", "spec": _sheet()}, source="ui")
+    workspace.execute("undo", source="ui")
+    workspace.execute("redo", source="ui")
+    assert not approvals_stay_outside_the_project.exists()

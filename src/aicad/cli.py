@@ -117,6 +117,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required gap in mm. 0 means the parts must not intersect.",
     )
 
+    packaging = commands.add_parser(
+        "check-packaging",
+        parents=[common],
+        help="Check that parts fit inside an envelope, with wall clearance and overlap.",
+    )
+    packaging.add_argument(
+        "--envelope",
+        required=True,
+        help="Part name, or a JSON primitive or outline.",
+    )
+    packaging.add_argument(
+        "--parts",
+        default=None,
+        help="Comma-separated part or instance names. With an assembly, the default is every instance except the envelope.",
+    )
+    packaging.add_argument("--assembly", default=None, help="Check the posed instances of this assembly.")
+    packaging.add_argument("--pose", default=None, help="Named pose. The stored assembly is left unchanged.")
+    packaging.add_argument(
+        "--joints",
+        default=None,
+        help="JSON object of joint values for this check only. Degrees or millimeters.",
+    )
+    packaging.add_argument(
+        "--min",
+        dest="min_clearance",
+        type=float,
+        default=0.0,
+        help="Required gap to the envelope wall, in mm. 0 allows a part to touch the wall.",
+    )
+
     inspect = commands.add_parser(
         "inspect", parents=[common], help="Measure, check wall thickness, and render."
     )
@@ -211,6 +241,22 @@ def build_parser() -> argparse.ArgumentParser:
     motion.add_argument("name")
     motion.add_argument("--sequence", default=None, help="Motion stored on the assembly.")
     motion.add_argument("--file", type=Path, default=None, help="JSON sweep or keyframes.")
+
+    motion_study = commands.add_parser(
+        "motion-study",
+        parents=[common],
+        help="Drive joints over time and report collisions and joint-limit violations.",
+    )
+    motion_study.add_argument("name")
+    motion_study.add_argument("--sequence", default=None, help="Study stored on the assembly.")
+    motion_study.add_argument("--file", type=Path, default=None, help="JSON study of drivers and couplings.")
+    motion_study.add_argument("--steps", type=int, default=None, help="Poses to solve, including both ends.")
+    motion_study.add_argument(
+        "--clearance",
+        type=float,
+        default=None,
+        help="Minimum allowed gap in millimeters. A smaller gap is interference.",
+    )
 
     cables = commands.add_parser("cables", parents=[common], help="Check cables and hoses.")
     cables.add_argument("name")
@@ -489,6 +535,16 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "check-clearance":
         report = document.check_clearance(args.part_a, args.part_b, args.min_clearance)
         return emit(report.to_dict())
+    if args.command == "check-packaging":
+        report = document.check_packaging(
+            _envelope_argument(args.envelope),
+            parts=_name_list(args.parts, "--parts"),
+            assembly=args.assembly,
+            pose=args.pose,
+            joints=_joints_argument(args.joints),
+            min_clearance_mm=args.min_clearance,
+        )
+        return emit(report.to_dict())
     if args.command == "inspect":
         report = document.inspect(args.name, args.min_wall, args.samples)
         return emit(report.to_dict())
@@ -584,6 +640,17 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "motion":
         inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
         return emit(document.run_motion(args.name, sequence=args.sequence, motion=inline))
+    if args.command == "motion-study":
+        inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
+        return emit(
+            document.run_motion_study(
+                args.name,
+                sequence=args.sequence,
+                study=inline,
+                steps=args.steps,
+                clearance_mm=args.clearance,
+            )
+        )
     if args.command == "cables":
         return emit(document.check_cables(args.name, sequence=args.sequence))
     if args.command == "power":
@@ -698,6 +765,40 @@ def _create_or_update_ops(document, name: str, ops: list[dict]):
     if name in names:
         return document.update_part_ops(name, ops)
     return document.create_part_from_ops(name, ops)
+
+
+def _envelope_argument(text: str):
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return text
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise AICADError(f"--envelope is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise AICADError("--envelope JSON must be an object.")
+    return payload
+
+
+def _name_list(text: str | None, label: str) -> list[str] | None:
+    if text is None:
+        return None
+    names = [part.strip() for part in text.split(",")]
+    if not names or any(not part for part in names):
+        raise AICADError(f"{label} is a comma-separated list of names.")
+    return names
+
+
+def _joints_argument(text: str | None) -> dict | None:
+    if text is None:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AICADError(f"--joints is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise AICADError("--joints must be a JSON object of joint names and values.")
+    return payload
 
 
 def _triple(text: str, label: str) -> list[float]:

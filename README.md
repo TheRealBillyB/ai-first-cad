@@ -91,6 +91,7 @@ aicad inspect motor_mount --min-wall 1.2 --workspace ./aicad_workspace
 aicad section motor_mount --axis y --offset 0 --workspace ./aicad_workspace
 aicad features motor_mount --workspace ./aicad_workspace
 aicad check-clearance motor_mount shaft --min 0.1 --workspace ./aicad_workspace
+aicad check-packaging --envelope '{"shape":"box","size":[80,60,30],"center":[0,0,15]}' --parts motor_mount,shaft --min 0.5 --workspace ./aicad_workspace
 aicad catalog "M3 screw" --workspace ./aicad_workspace
 aicad insert m3 --kind socket_head_cap_screw --size M3-0.5 --length 12 --at 0,0,12 --workspace ./aicad_workspace
 aicad export motor_mount --format step --out motor_mount.step --workspace ./aicad_workspace
@@ -244,6 +245,8 @@ A gear is linear: driven = ratio × driver + offset. A linkage is a planar four-
 
 Named poses store joint values. A motion is a sweep (`joint`, `start`, `end`, `frames`) or keyframes (`{"pose": "lift"}` or `{"joints": {"shoulder": -40}}`), with `samples` and `duration_s`. If the duration is omitted, rates use one second and the report says so. `run_motion` places every sample, reports interference between instances that are not joined to each other, and writes an isometric frame, a strip, and a GIF. The two sides of a joint are allowed to touch.
 
+A motion study is the record of that kind of sweep for a later check to read. `duration_s` is the length of the timeline. `steps` is how many poses are solved, counting both ends. A driver is an expression in `t` (seconds), such as `90 * t`, or keyframes `{time_s, value}` with straight lines between them. A cylindrical joint can also drive `slide`. A coupling is a gear constraint on the study: the driven joint is `ratio * driver + offset`. Commands past a joint limit are held at the stop, and the stop is recorded. Pairs whose boxes are farther apart than `clearance_mm` are left alone. Every other pair is the boolean intersection of the modeled solids. An overlap reports the volume and the penetration depth. A gap shorter than the clearance reports the shortfall. The two sides of a joint are allowed to touch. `run_motion_study` returns schema `motion_study.v1`: the pose matrix of every part at every step, the collisions, and the limit hits. The module docstring in `aicad.motion_study` is the field list.
+
 Cables and hoses are polylines through waypoints fixed on parts (`instance`, `at`, and whether that point is a clip). Each route has a diameter, a minimum bend radius, and a stiffness (`low`, `medium`, `high`, or newtons per unit strain). Through a motion the check reports length change, strain against the rest length, bend radius at each waypoint, pinching between the centerline and a moving solid, and a self-intersection of the route. Rest length is the authored value, or the length of the first frame. A shorter route is slack, not compression. Samples next to a waypoint are the clip seat and are not counted as a pinch of that part.
 
 This is a kinematic model. The line does not sag, and clips do not slip. A later flexible-body model, a Cosserat rod or a chain of rigid segments with bending springs, would add sag, contact, and clip slip. It would still be checked against these length, bend, and gap limits.
@@ -252,13 +255,14 @@ Power is quasi-static. Gravity is 9.81 m/s² along −Z. Mass is the solid's vol
 
 A hydraulic cylinder turns that torque into force with `moment_arm_mm`. Extend uses the bore area. Retract uses bore minus rod. Pressure is force over area, in MPa. Flow is area times piston speed. Power is pressure times flow, divided by efficiency. One MPa·mm³/s is 0.001 W. The pump figure is the hydraulic energy over the motion duration, with no regeneration. An electric actuator divides joint torque by gear ratio and efficiency, then divides by the torque constant for current. Power is joint torque times speed, divided by efficiency. Braking energy is counted as spent. Battery watt-hours are that electric energy, and amp-hours divide by the stated voltage.
 
-The same commands are `create_assembly`, `set_joint`, `set_pose`, `run_motion`, `check_cables`, `estimate_power`, `solve_modal`, `solve_assembly_modal`, and `check_bolts` on the Python API, the MCP server, and the CLI:
+The same commands are `create_assembly`, `set_joint`, `set_pose`, `run_motion`, `run_motion_study`, `check_cables`, `estimate_power`, `solve_modal`, `solve_assembly_modal`, and `check_bolts` on the Python API, the MCP server, and the CLI:
 
 ```bash
 aicad assemble rod_arm --file arm.json --workspace ./aicad_workspace
 aicad joint rod_arm shoulder --value -40 --workspace ./aicad_workspace
 aicad pose rod_arm lift --workspace ./aicad_workspace
 aicad motion rod_arm --sequence lift --workspace ./aicad_workspace
+aicad motion-study rod_arm --file study.json --workspace ./aicad_workspace
 aicad cables rod_arm --sequence lift --workspace ./aicad_workspace
 aicad power rod_arm --sequence lift --workspace ./aicad_workspace
 ```
@@ -403,6 +407,7 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `render_part` | The standard views and the contact sheet, as images. |
 | `check_wall_thickness` | Ray estimate and section estimate. The minimum is scored against a threshold in mm, and `method` says which one won. |
 | `check_clearance` | Overlap volume, or the gap between two parts. |
+| `check_packaging` | Whether parts fit inside an envelope, with wall clearance, protrusion, and part-to-part overlap. |
 | `export_part` | Write STEP or STL. |
 | `list_parts` / `get_part_source` / `delete_part` | Document housekeeping. |
 | `list_materials` | PLA, PETG, ABS, nylon, aluminum 6061, and mild steel, with the modulus and strength the solver will use. |
@@ -418,6 +423,7 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `get_requirements` / `set_requirements` / `check_requirements` | Structured requirements and their pass, fail, or unchecked state. |
 | `create_assembly` / `update_assembly` / `get_assembly` / `list_assemblies` | Place parts, replace a spec (a spec that does not solve leaves the previous assembly), and read joint values. |
 | `set_joint` / `set_pose` / `run_motion` / `render_assembly` | Move an assembly, sweep a motion, and render the pose. Motion and the assembly render return pictures. |
+| `run_motion_study` | Drive joints from expressions or keyframes, apply gear couplings, and report collisions and joint-limit violations. The record is `motion_study.v1`. |
 | `check_cables` / `estimate_power` | Cable length and strain, and a quasi-static power estimate. Read the assumptions. |
 | `list_sketches` / `update_sketch` / `update_part_from_sketch` | Sketch names, a replaced sketch spec, and a solid rebuilt from it. |
 | `session_payload` / `replace_session` / `save_project` / `open_project` | Read or replace the saved document, confirm `session.json`, or switch project folder. Opening does not run scripts. |
@@ -518,6 +524,8 @@ A result is either a **verified check** or a **rough estimate**. A verified chec
 
 **Clearance.** The interference volume is the boolean intersection of the two solids. If they do not overlap, `min_distance_mm` is the gap between the surfaces, and the closest points are reported. The gap is not a penetration depth: overlapping parts report distance 0 and a volume.
 
+**Packaging.** `check_packaging` tests whether each part lies inside an envelope, using the solid rather than its bounding box. The envelope is a part (a modeled solid or an imported STEP file), a primitive (`box`, `cylinder`, or `sphere`), or a 2D outline extruded between two limits along an axis. `min_clearance_mm` is the required gap to the envelope wall. The report gives pass or fail for each part, the smallest signed clearance and where it occurs, and, for a part that sticks out, the maximum protrusion and a point on the part. A positive clearance is a gap inside the wall, zero means the part touches the wall, and a negative clearance is the protrusion. Overlap between parts is the boolean intersection that also lies inside the envelope. The check fails if any part is too close to the wall or any overlap is reported. Pass `assembly` with `pose` or `joints` to use a posed assembly; that call does not change the stored pose, so the same check can be repeated at another joint position.
+
 **Catalog parts.** Screws, nuts, washers, and bearings come from [bd_warehouse](https://github.com/gumyr/bd_warehouse), which builds them with build123d from published dimensions. A screw's shank points down (−Z) and the underside of the head sits on local z = 0. Nuts, washers, and bearings sit on z = 0 and grow toward +Z. Screws and nuts are built with `simple=True`, so the thread is not cut; a screw's modeled shank is near the minor diameter, and a clearance check against a hole uses that solid. `import_step` plus `place_part` is the path for a STEP file from McMaster-Carr or anywhere else.
 
 **Gears.** `create_gear` builds an external spur, helical, straight bevel, or spiral bevel as a solid, and reports the pitch diameters, base diameter, cone angles, and contact ratio. Spur and helical teeth follow ISO 21771:2007 with an ISO 53:1998 basic rack. Straight and spiral bevel teeth use the intersecting-axis pitch cones of ISO 23509:2016 and the virtual cylindrical gear of ANSI/AGMA 2005-D03. A bore, a hub, a DIN 6885-1 keyway, or an ISO 14 or DIN 5480 spline is optional. The formulas and the limits are in [docs/reference/gears.md](docs/reference/gears.md). Hypoid gears are not generated.
@@ -544,6 +552,7 @@ GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/
 - Wall thickness can still miss a thin spot that no ray and no slice crosses. A passing check is evidence, not a guarantee. The probe starts inside the face, at 0.01 mm or a smaller step when that would land on the opposite face. A wall thinner than the smallest step, 0.0004 mm, is an upper bound that cannot pass a minimum. A knife-edge gusset reads as a very thin wall, which is why the example gussets end in a 2.4 mm toe.
 - A section only shows the plane you asked for. Buried geometry between planes is still invisible until you cut there.
 - Clearance does not report how deep an interference goes, only its volume. Catalog screws omit threads, so a fit check is against the simple shank, not the major diameter.
+- Packaging measures the real solids. A polyhedron's protrusion is the farthest vertex outside the envelope. A curved face is maximized on that surface until the step is under 0.000001 mm. A part that sits within 0.0001 mm of the wall counts as touching. The reported point is one place the maximum is reached when a whole face is equally far. The envelope is the allowed volume, so a cavity has to be modeled as that interior solid.
 - The catalog is screws, nuts, washers, and one family of ball bearings. It is not a McMaster mirror. An arbitrary bought part is a STEP import.
 - A gear is the nominal involute at zero backlash. A bevel solid rules the back-cone profile along the face; the reported face and root angles are the parallel-clearance angles, and a spiral is a constant-angle spiral rather than a circular cutter path. Hypoid gears are not generated. See [docs/reference/gears.md](docs/reference/gears.md).
 - Renders are shaded orthographic pictures from a software rasterizer, not a dimensioned drawing. Sections are filled profiles with a scale bar, not a hatched drawing. There is no click-to-measure.

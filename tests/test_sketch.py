@@ -361,3 +361,86 @@ def test_cli_dimension_changes_the_part(tmp_path):
     assert changed.returncode == 0, changed.stderr
     payload = json.loads(changed.stdout)
     assert payload["rebuilt_parts"][0]["volume_mm3"] == pytest.approx(80 * 52 * 4)
+
+
+def _quarter(end=(0.0, 10.0)) -> Sketch:
+    return (
+        Sketch()
+        .point("o", 0, 0)
+        .fix("o")
+        .point("a", 10, 0)
+        .point("b", end[0], end[1])
+        .line("oa", "o", "a")
+        .horizontal("oa")
+        .line("ob", "o", "b")
+        .vertical("ob")
+        .arc("q", "o", "a", "b")
+        .distance("o", "a", 10, name="radius")
+    )
+
+
+def test_a_fully_constrained_arc_extrudes_as_the_arc():
+    report = solve_sketch(_quarter())
+    assert report.status == "fully_constrained"
+    assert report.dof == 0
+    arc = report.geometry["arcs"]["q"]
+    assert arc["center_id"] == "o"
+    assert arc["start_id"] == "a"
+    assert arc["end_id"] == "b"
+    quarter = math.pi * 100 / 4
+    forward = solid_from_sketch(
+        report.geometry,
+        [{"op": "extrude", "points": ["o", "a", "b"], "height": 1, "name": "quarter"}],
+    )
+    assert forward.impl.volume == pytest.approx(quarter, rel=1e-3)
+    assert forward.impl.bounding_box().min.Z >= -1e-6
+    reverse = solid_from_sketch(
+        report.geometry,
+        [{"op": "extrude", "points": ["o", "b", "a"], "height": 1, "name": "quarter"}],
+    )
+    assert reverse.impl.volume == pytest.approx(quarter, rel=1e-3)
+
+
+def test_a_long_arc_keeps_the_counterclockwise_sweep():
+    report = solve_sketch(_quarter(end=(0.0, -10.0)))
+    assert report.geometry["points"]["b"]["y"] == pytest.approx(-10)
+    major = solid_from_sketch(
+        report.geometry,
+        [{"op": "extrude", "points": ["o", "a", "b"], "height": 1, "name": "major"}],
+    )
+    assert major.impl.volume == pytest.approx(math.pi * 100 * 270 / 360, rel=1e-3)
+
+
+def test_a_construction_arc_does_not_replace_the_chord():
+    spec = _quarter().to_spec()
+    for entity in spec["entities"]:
+        if entity["id"] == "q":
+            entity["construction"] = True
+    report = solve_sketch(spec)
+    shape = solid_from_sketch(
+        report.geometry,
+        [{"op": "extrude", "points": ["o", "a", "b"], "height": 1, "name": "chord"}],
+    )
+    assert shape.impl.volume == pytest.approx(50, rel=1e-3)
+
+
+def test_revolving_a_quarter_profile_builds_a_hemisphere():
+    report = solve_sketch(_quarter())
+    shape = solid_from_sketch(
+        report.geometry,
+        [{"op": "revolve", "points": ["o", "a", "b"], "axis": "y", "name": "ball"}],
+    )
+    # The quarter disk sits on one side of the axis, so a full turn is a hemisphere.
+    # The chord triangle would revolve to a cone of about one third of pi r^2 h.
+    assert shape.impl.volume == pytest.approx(2 / 3 * math.pi * 1000, rel=1e-3)
+
+
+def test_two_arcs_on_one_edge_are_refused():
+    report = solve_sketch(_quarter())
+    geometry = json.loads(json.dumps(report.geometry))
+    geometry["arcs"]["extra"] = dict(geometry["arcs"]["q"])
+    with pytest.raises(GeometryError, match="more than one arc"):
+        solid_from_sketch(
+            geometry,
+            [{"op": "extrude", "points": ["o", "a", "b"], "height": 1, "name": "double"}],
+        )

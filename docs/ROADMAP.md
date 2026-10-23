@@ -23,6 +23,7 @@ A Python library, a command-line tool (`aicad`), and an MCP server (`aicad serve
 - **Measurements.** Bounding box, volume, surface area, center of mass, and whether the solid is valid and watertight (a closed surface, one real inside and outside).
 - **Thinnest wall.** A sampled estimate. The report names the method that produced the number. A passing check is evidence to read alongside the picture.
 - **Clearance.** Overlap between two parts, or the gap when they do not touch.
+- **Packaging.** Whether a set of parts fits inside an envelope. The envelope is a solid, a primitive, or a flat outline extruded along an axis. The check uses the part geometry, including a posed assembly, and reports clearance, protrusion, and part-to-part overlap.
 - **Files.** Export STEP (the format other CAD tools and machine shops expect) and STL (the triangle file a 3D printer slices).
 - **An example.** A motor-mount bracket, and a shaft meant to pass through its bore. Units are millimeters.
 
@@ -69,11 +70,10 @@ Requirements are checked against every design. The first kinds of goal: it holds
 - **Hypoid gears.** Generates a true hypoid gear from offset, spiral angle, and ratio, with tooth geometry produced by simulating the generating and cutting process rather than an approximation.
 - **Gear mesh and backlash check.** Verifies that a gear pair meshes with a specified backlash and does not interfere through a full rotation.
 - **Gear-train solver.** Computes speed ratios and torques through a train of gears, including planetary arrangements.
-- **Motion study.** Drives assembly joints through angles or paths over time, and reports collisions and joint-limit violations.
+- **Motion study.** **Done.** Drives assembly joints through angles or paths over time, and reports collisions and joint-limit violations.
 - **Kinematics.** Solves forward and inverse kinematics for a serial chain of joints, including the joint angles that reach a target pose.
 - **Positional error budget.** Estimates the end-point position error of a jointed mechanism from link deflection (using the strength check), gear backlash, joint stiffness, and encoder resolution, and reports pass or fail against a tolerance.
 - **Cable and pulley routing.** Routes cables over pulleys and guides through joints, and checks how cable length and tension change across a joint's range of motion.
-- **Packaging check.** Verifies that a set of parts fits inside a target envelope or outline.
 - **Standard parts library.** Inserts bearings, seals, fasteners, small motors, and gearboxes by catalog designation.
 - **Animated renders.** Renders a motion study to a GIF or a video for documentation.
 

@@ -1,16 +1,18 @@
 """Run an assistant's Python in a separate process that cannot leave the project.
 
 Linux confines the process with Landlock (files, TCP, and signals) and a small
-seccomp filter (every other socket, and starting a new session). The process
-cap counts only that script's threads: a cgroup ``pids.max`` when this user can
-create one, and otherwise the parent stops the script's process tree. It is
-not the user-wide process limit, which also counts a browser and was stalling
-geometry. macOS uses ``sandbox-exec`` and ``setrlimit`` for CPU time. The
-parent watches the script's resident memory and stops it above the memory cap,
-because the address-space cap counts a system library cache and was stopping
-every script. Windows uses an AppContainer and a Job Object. CPU time, memory,
-and a wall-clock limit are set on that process. If those limits cannot be
-applied, the script is not run.
+seccomp filter. That filter accepts only the native instruction set. It refuses
+io_uring, ptrace, and cross-process memory, and it blocks every other socket
+and a new session. Landlock also refuses a symlink, named pipe, socket node, or
+device node outside the project. The process cap counts only that script's
+threads: a cgroup ``pids.max`` when this user can create one, and otherwise the
+parent stops the script's process tree. It is not the user-wide process limit,
+which also counts a browser and was stalling geometry. macOS uses
+``sandbox-exec`` and ``setrlimit`` for CPU time. The parent watches the script's
+resident memory and stops it above the memory cap, because the address-space
+cap counts a system library cache and was stopping every script. Windows uses
+an AppContainer and a Job Object. CPU time, memory, and a wall-clock limit are
+set on that process. If those limits cannot be applied, the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
@@ -86,8 +88,13 @@ _FS_READ = 1 << 2
 _FS_READ_DIR = 1 << 3
 _FS_REMOVE_DIR = 1 << 4
 _FS_REMOVE_FILE = 1 << 5
+_FS_MAKE_CHAR = 1 << 6
 _FS_MAKE_DIR = 1 << 7
 _FS_MAKE_REG = 1 << 8
+_FS_MAKE_SOCK = 1 << 9
+_FS_MAKE_FIFO = 1 << 10
+_FS_MAKE_BLOCK = 1 << 11
+_FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13
 _FS_TRUNCATE = 1 << 14
 _NET_BIND = 1 << 0
@@ -101,10 +108,15 @@ _WORK_ACCESS = (
     | _FS_REMOVE_FILE
     | _FS_MAKE_DIR
     | _FS_MAKE_REG
+    | _FS_MAKE_SOCK
+    | _FS_MAKE_FIFO
+    | _FS_MAKE_SYM
     | _FS_REFER
     | _FS_TRUNCATE
 )
-_HANDLED_FS = _WORK_ACCESS | _FS_EXECUTE
+# Device nodes are handled and never granted. Symlinks, pipes, and socket
+# nodes are granted only on the project folder, below.
+_HANDLED_FS = _WORK_ACCESS | _FS_EXECUTE | _FS_MAKE_CHAR | _FS_MAKE_BLOCK
 
 _LANDLOCK = {"x86_64": (444, 445, 446), "aarch64": (444, 445, 446)}
 _SECCOMP = {"x86_64": 317, "aarch64": 277}
@@ -120,6 +132,34 @@ _ESCAPE_SYSCALLS = {
     "x86_64": (112, 109),
     "aarch64": (157, 154),
 }
+# Refused on every run, including when the network is on. io_uring can issue a
+# socket call this filter would not see. ptrace, cross-process memory, and
+# pidfd_getfd reach a process outside the script.
+_ISOLATION_SYSCALLS = {
+    "x86_64": (
+        101,  # ptrace
+        310,  # process_vm_readv
+        311,  # process_vm_writev
+        425,  # io_uring_setup
+        426,  # io_uring_enter
+        427,  # io_uring_register
+        438,  # pidfd_getfd
+    ),
+    "aarch64": (
+        117,  # ptrace
+        270,  # process_vm_readv
+        271,  # process_vm_writev
+        425,  # io_uring_setup
+        426,  # io_uring_enter
+        427,  # io_uring_register
+        438,  # pidfd_getfd
+    ),
+}
+# seccomp_data.arch. A 32-bit int 0x80 call on x86_64 is a different architecture
+# and a different syscall number, so a filter that only compares the native
+# number would let it through. x32 numbers set bit 30 on this same architecture.
+_AUDIT_ARCH = {"x86_64": 0xC000003E, "aarch64": 0xC00000B7}
+_X32_SYSCALL_BIT = 0x40000000
 # How often the macOS parent checks the script's resident memory.
 _MEMORY_POLL_SECONDS = 0.25
 _LANDLOCK_SCOPE_SIGNAL = 1 << 1
@@ -758,15 +798,25 @@ def _block_sockets(*, network: bool) -> None:
     if arch is None:
         raise ScriptError(sandbox_supported()[1])
     numbers = list(_ESCAPE_SYSCALLS[arch])
+    numbers.extend(_ISOLATION_SYSCALLS[arch])
     if not network:
         numbers.extend(_NET_SYSCALLS[arch])
-    # Load the syscall number, refuse the network ones, allow everything else.
+    # Refuse a different instruction set, then the listed native numbers.
     bpf_ld = 0x00 | 0x00 | 0x20
     bpf_jeq = 0x05 | 0x10 | 0x00
+    bpf_jset = 0x05 | 0x40 | 0x00
     bpf_ret = 0x06
     allow = 0x7FFF0000
     errno_eperm = 0x00050000 | 1
-    program = [_SockFilter(bpf_ld, 0, 0, 0)]
+    program = [
+        _SockFilter(bpf_ld, 0, 0, 4),
+        _SockFilter(bpf_jeq, 1, 0, _AUDIT_ARCH[arch]),
+        _SockFilter(bpf_ret, 0, 0, errno_eperm),
+        _SockFilter(bpf_ld, 0, 0, 0),
+    ]
+    if arch == "x86_64":
+        program.append(_SockFilter(bpf_jset, 0, 1, _X32_SYSCALL_BIT))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
     for number in numbers:
         program.append(_SockFilter(bpf_jeq, 0, 1, number))
         program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
@@ -904,6 +954,65 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     return roots
 
 
+# Imported while the interpreter is starting, before the sandbox is applied.
+# ``aicad`` is this program. The other names are imported by site startup
+# (Debian and Ubuntu also import ``apport_python_hook`` from sitecustomize).
+_STARTUP_MODULE_NAMES = frozenset(
+    {
+        "aicad",
+        "apport_python_hook",
+        "sitecustomize",
+        "usercustomize",
+    }
+)
+
+
+def _under_directory(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _pythonpath_for_child(workspace: Path, raw: str | None) -> str | None:
+    """Drop import entries that would load Python from the project.
+
+    The child uses the project as its working directory. A relative entry
+    would be read from that folder, so every entry that is kept is absolute
+    and taken from this process's current directory. The project itself, any
+    directory inside it, and a parent directory that would import the project
+    under a name Python loads at startup are removed.
+    """
+    if not raw:
+        return None
+    root = workspace.resolve()
+    kept: list[str] = []
+    for entry in raw.split(os.pathsep):
+        text = entry.strip()
+        if text in ("", ".", ".."):
+            continue
+        try:
+            candidate = Path(text).expanduser()
+            if not candidate.is_absolute():
+                candidate = Path.cwd() / candidate
+            candidate = candidate.resolve()
+        except OSError:
+            continue
+        if _under_directory(candidate, root):
+            continue
+        if root.name in _STARTUP_MODULE_NAMES:
+            try:
+                if (candidate / root.name).resolve() == root:
+                    continue
+            except OSError:
+                continue
+        kept.append(str(candidate))
+    if not kept:
+        return None
+    return os.pathsep.join(kept)
+
+
 def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     env: dict[str, str] = {}
     for key, value in os.environ.items():
@@ -913,6 +1022,14 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
         if key in ("AICAD_CONFIG", "AICAD_SETTINGS", "AICAD_PLUGIN_CONSENT", "XDG_CONFIG_HOME"):
             continue
         env[key] = value
+    safe_path = _pythonpath_for_child(workspace, env.get("PYTHONPATH"))
+    if safe_path is None:
+        env.pop("PYTHONPATH", None)
+    else:
+        env["PYTHONPATH"] = safe_path
+    # Do not prepend the working directory to sys.path. The working directory
+    # is the project, and a module there would run before the sandbox.
+    env["PYTHONSAFEPATH"] = "1"
     env["AICAD_SANDBOX_CHILD"] = "1"
     env["AICAD_WORKSPACE"] = str(workspace)
     env["AICAD_JOB"] = str(job)
@@ -1141,10 +1258,12 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     (job / "job.json").write_text(json.dumps(spec) + "\n", encoding="utf-8")
     if script is not None:
         (job / "script.py").write_text(script, encoding="utf-8")
+    # -P is the same rule as PYTHONSAFEPATH: the project is the working
+    # directory, and it must not be the first place Python imports from.
     if sys.platform == "win32":
-        command = [sys.executable, "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job)]
+        command = [sys.executable, "-P", "-B", "-u", "-c", _WINDOWS_CHILD_BOOT, str(job)]
     else:
-        command = [sys.executable, "-m", "aicad.sandbox_run", str(job)]
+        command = [sys.executable, "-P", "-m", "aicad.sandbox_run", str(job)]
     profile_path: Path | None = None
     if sys.platform == "darwin":
         from aicad.sandbox_macos import build_profile, command_prefix
