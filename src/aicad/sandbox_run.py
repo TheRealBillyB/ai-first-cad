@@ -81,9 +81,16 @@ class ScriptDocument:
     """The ``document`` name inside a design script. Only the public methods are visible."""
 
     def __init__(self, document, calls: list[dict]):
-        self._document = document
-        self._calls = calls
-        self._depth = 0
+        # Stored off the instance so a script cannot read it back by name.
+        object.__setattr__(self, "_state", (document, calls, [0]))
+
+    def __getattribute__(self, name: str):
+        if name.startswith("_"):
+            from aicad.parity import SCRIPT_METHODS
+
+            allowed = ", ".join(sorted(SCRIPT_METHODS))
+            raise AttributeError(f"{name} is not available in a design script. Allowed calls: {allowed}.")
+        return object.__getattribute__(self, name)
 
     def __getattr__(self, name: str):
         from aicad.parity import SCRIPT_METHODS
@@ -91,23 +98,24 @@ class ScriptDocument:
         if name.startswith("_") or name not in SCRIPT_METHODS:
             allowed = ", ".join(sorted(SCRIPT_METHODS))
             raise AttributeError(f"{name} is not available in a design script. Allowed calls: {allowed}.")
-        method = getattr(self._document, name)
+        document, calls, depth = object.__getattribute__(self, "_state")
+        method = getattr(document, name)
 
         def wrapped(*args, **kwargs):
-            self._depth += 1
-            outer = self._depth == 1
+            depth[0] += 1
+            outer = depth[0] == 1
             try:
                 result = method(*args, **kwargs)
             except Exception as exc:
                 if outer:
-                    self._calls.append({"method": name, "error": f"{type(exc).__name__}: {exc}"})
+                    calls.append({"method": name, "error": f"{type(exc).__name__}: {exc}"})
                 raise
             else:
                 if outer:
-                    self._calls.append({"method": name, "result": _jsonable(result)})
+                    calls.append({"method": name, "result": _jsonable(result)})
                 return result
             finally:
-                self._depth -= 1
+                depth[0] -= 1
 
         return wrapped
 
