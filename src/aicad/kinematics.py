@@ -114,6 +114,7 @@ def normalize(spec: dict) -> dict:
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
             raise GeometryError("ignore_collisions entries are [instance, instance].")
         ignore.append([str(pair[0]), str(pair[1])])
+    studies = _studies(spec.get("studies"), joints, relations)
     return {
         "name": str(name),
         "instances": cleaned_instances,
@@ -121,10 +122,20 @@ def normalize(spec: dict) -> dict:
         "relations": relations,
         "poses": poses,
         "motions": motions,
+        "studies": studies,
         "cables": copy.deepcopy(spec.get("cables") or []),
         "actuators": copy.deepcopy(spec.get("actuators") or []),
         "ignore_collisions": ignore,
     }
+
+
+def _studies(raw, joints: list[dict], relations: list[dict]) -> dict:
+    """Motion studies stored on the assembly. The schema lives in motion_study."""
+    if not raw:
+        return {}
+    from aicad.motion_study import normalize_studies
+
+    return normalize_studies(raw, joints, relations)
 
 
 def solve(spec: dict, overrides: dict | None = None) -> dict:
@@ -257,7 +268,8 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
                 "payload_at": instance["payload_at"],
                 "color": instance.get("color"),
                 "origin_mm": [round(matrix[row][3], 4) for row in range(3)],
-                "matrix": [[round(value, 6) for value in row] for row in matrix],
+                # Exact. Rounding the rotation shears the solid, and the boolean then misses a real overlap.
+                "matrix": [list(row) for row in matrix],
             }
         )
     return {
