@@ -134,7 +134,7 @@ async def _mcp_example(tmp_path: Path) -> None:
             catalog = await session.call_tool("search_parts", {"query": "608"})
             assert catalog.is_error is False, _text(catalog)
             matches = json.loads(_text(catalog))["matches"]
-            assert any(item["size"] == "M8-22-7" for item in matches)
+            assert any(item["size"] == "608" for item in matches)
             image_blocks = [block for block in inspected.content if block.type == "image"]
             assert len(image_blocks) >= 8
             assert image_blocks[0].mime_type == "image/png"

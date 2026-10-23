@@ -41,6 +41,8 @@ inv αwt = inv αt + 2 tan αn · (x1 + x2) / (z1 + z2)
 
 a = (d1 + d2) / 2 · cos αt / cos αwt
 
+If inv αwt is negative, backlash remains when the base circles touch. There is no zero-backlash centre distance, and the pair is refused.
+
 The transverse contact ratio is the length of the path of contact divided by the transverse base pitch. The overlap ratio is b sin|β| / (π mn), using the shorter face. External helical gears need opposite hands.
 
 ## Straight and spiral bevel
@@ -51,7 +53,7 @@ Standards: ISO 23509:2016 for intersecting axes (offset zero), and the Tredgold 
 
 tan δ1 = sin Σ / (u + cos Σ), δ2 = Σ − δ1
 
-The outer pitch diameter is d = m_et z. The outer cone distance is Re = d / (2 sin δ). For Σ = 90°, tan δ1 = z1 / z2 and Re = (m_et / 2) √(z1² + z2²).
+The outer pitch diameter is d = m_et z. The outer cone distance is Re = d / (2 sin δ). For Σ = 90°, tan δ1 = z1 / z2 and Re = (m_et / 2) √(z1² + z2²). When `mate_teeth`, `ratio`, and `pitch_angle_deg` are given together, they have to describe that same cone.
 
 Straight Gleason proportions, with member 1 the pinion:
 
