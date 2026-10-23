@@ -177,6 +177,8 @@ On the example load both brackets pass with a safety factor near 9. The gusseted
 
 ## Workspace
 
+Start with the `aicad` command. Do not run `python -m aicad` from a project folder. For development, use `python -P -m aicad`.
+
 ```bash
 aicad app --workspace ./aicad_workspace
 ```

@@ -264,7 +264,7 @@ def _leave(code: int) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
-        print("usage: python -m aicad.sandbox_run JOB_DIR", file=sys.stderr)
+        print("usage: python -P -m aicad.sandbox_run JOB_DIR", file=sys.stderr)
         return 2
     job = Path(args[0])
     spec = json.loads((job / "job.json").read_text(encoding="utf-8"))

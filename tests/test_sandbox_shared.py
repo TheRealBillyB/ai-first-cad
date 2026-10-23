@@ -422,7 +422,10 @@ def test_pack_named_as_the_core_distribution_is_not_run_when_listed_or_allowed(t
     plugins.warning_text(offer)
     plugins._list_payload()
     # The distribution name matches aicad. That does not make it this install.
-    # Listing it and recording an allow must not run the package.
+    # Listing it and recording an allow must not run the package. Loading it
+    # before that allow must not run it either.
+    with pytest.raises(plugins.PluginConsentError):
+        plugins.load("h-core")
     allowed = plugins.allow("h-core", accept=True)
     assert allowed.third_party is True
     assert "h_core_plugin" not in sys.modules
