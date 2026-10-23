@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import socket
+import sys
 import threading
 from http.client import HTTPConnection
 from pathlib import Path
@@ -164,10 +165,18 @@ def test_step_http_and_file_references_are_not_opened(watch: _Watch):
     _craft_step(base, http_step, watch.url("hidden.step"))
     _craft_step(base, file_step, watch.hidden.as_uri())
     document = Document(watch.project)
-    for name, path in (("remote", http_step), ("fileurl", file_step)):
-        info = document.import_step(name, path)
+    info = document.import_step("remote", http_step)
+    assert info.built is True
+    assert document.measure("remote").volume_mm3 == pytest.approx(8)
+    # A file URI is not fetched. On Windows the STEP writer stores it as a
+    # drive path, and a drive path is not read at all.
+    if sys.platform == "win32":
+        with pytest.raises(GeometryError, match="outside its folder"):
+            document.import_step("fileurl", file_step)
+    else:
+        info = document.import_step("fileurl", file_step)
         assert info.built is True
-        assert document.measure(name).volume_mm3 == pytest.approx(8)
+        assert document.measure("fileurl").volume_mm3 == pytest.approx(8)
     watch.assert_quiet()
 
 

@@ -107,7 +107,7 @@ aicad plugins run volume-note volume shaft
 
 Any small solid works. A `10 × 20 × 30` mm box is `6` cm³.
 
-The allow is stored in user config: `$XDG_CONFIG_HOME/aicad/plugins.json`, or `~/.config/aicad/plugins.json`. It is not stored in the design. Set `AICAD_PLUGIN_CONSENT` to point at a different file.
+The allow is stored in user config: `$XDG_CONFIG_HOME/aicad/plugins.json`, or `~/.config/aicad/plugins.json`. It is not stored in the design. Set `AICAD_PLUGIN_CONSENT` to point at a different file. A confined script reports the home config path. It does not report a folder inside the project.
 
 If the package version, the entry point, or `aicad.plugin.json` changes, the old allow stops working and the warning comes back. An editable install that changes the Python without changing that declaration is still the version you allowed. Read the code you install.
 

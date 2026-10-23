@@ -68,6 +68,9 @@ def write_agent_token(port: int, token: str) -> None:
         os.write(fd, token.encode("utf-8"))
     finally:
         os.close(fd)
+    from aicad.paths import restrict_private_file
+
+    restrict_private_file(path)
 
 
 def read_agent_token(port: int) -> str:
@@ -418,7 +421,31 @@ def _handler(session: Workspace):
             if path.suffix.lower() not in _FILE_SUFFIXES or not path.is_file():
                 raise GeometryError("That file is not available to the workspace view.")
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            if path.suffix.lower() in {".md", ".txt"} and self._caller() not in {"ui", "cli", "api"}:
+                self._marked_note(path, mime)
+                return
             self._bytes(path, mime)
+
+        def _marked_note(self, path: Path, mime: str) -> None:
+            from aicad.workspace import _fence_note
+
+            root = os.path.realpath(self.workspace.root)
+            resolved = os.path.realpath(path)
+            if resolved.startswith(root + os.sep):
+                try:
+                    text = Path(resolved).read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    self._bytes(Path(resolved), mime)
+                    return
+            else:
+                raise GeometryError("That file is outside the project.")
+            marked = _fence_note({"markdown": text})["markdown"].encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(marked)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(marked)
 
         def _static(self, name: str) -> None:
             if not name or "/" in name or ".." in name:

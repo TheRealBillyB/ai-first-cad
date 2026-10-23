@@ -477,19 +477,37 @@ def test_a_reserved_windows_name_is_refused(tmp_path):
         document.create_assembly({"name": "con", "instances": [{"name": "base", "part": "base"}], "joints": []})
     assert list(tmp_path.rglob("con.pdf")) == []
     assert list(tmp_path.rglob("con.csv")) == []
+    assert list(tmp_path.rglob("con_file*")) == []
+    root = Path(__file__).resolve().parents[1]
+    assert "con_file" not in (root / "README.md").read_text(encoding="utf-8")
+    assert "con_file" not in (root / "docs" / "DECISIONS.md").read_text(encoding="utf-8")
+
+
+def test_windows_directory_lock_denies_new_files_and_folders():
+    from aicad.paths import _DIRECTORY_LOCK_ALLOW, _DIRECTORY_LOCK_DENY
+
+    assert _DIRECTORY_LOCK_DENY & 0x0002  # FILE_ADD_FILE
+    assert _DIRECTORY_LOCK_DENY & 0x0004  # FILE_ADD_SUBDIRECTORY
+    assert _DIRECTORY_LOCK_DENY & 0x0020  # FILE_TRAVERSE
+    assert _DIRECTORY_LOCK_ALLOW & 0x00040000  # WRITE_DAC
+    assert (_DIRECTORY_LOCK_ALLOW & 0x0002) == 0
+    assert (_DIRECTORY_LOCK_ALLOW & 0x0004) == 0
+    assert (_DIRECTORY_LOCK_ALLOW & 0x0020) == 0
 
 
 def test_a_blocked_output_path_is_a_clear_error(tmp_path):
     document = Document(tmp_path)
     _post(document)
+    from aicad.paths import allow_directory_write, deny_directory_write
+
     blocked = tmp_path / "locked"
     blocked.mkdir()
-    blocked.chmod(0o555)
+    deny_directory_write(blocked)
     try:
         with pytest.raises(GeometryError, match="Could not"):
             document.export_drawing("stand", out_dir=blocked)
     finally:
-        blocked.chmod(0o755)
+        allow_directory_write(blocked)
     parent = tmp_path / "notadir"
     parent.write_text("x", encoding="utf-8")
     with pytest.raises(GeometryError, match="Could not"):

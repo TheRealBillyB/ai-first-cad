@@ -5,6 +5,7 @@ import os
 import threading
 from http.client import HTTPConnection
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -22,7 +23,7 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setenv("AICAD_SERVER_TOKENS", str(tmp_path / "tokens"))
     workspace = tmp_path / "project"
     (workspace).mkdir()
-    (workspace / "notes.txt").write_text("hello\n", encoding="utf-8")
+    (workspace / "notes.txt").write_bytes(b"hello\n")
     running = make_server(workspace, "127.0.0.1", 0)
     thread = threading.Thread(target=running.serve_forever, daemon=True)
     thread.start()
@@ -80,8 +81,10 @@ def test_page_embeds_the_session_and_static_files_stay_open(server):
 
     port = int(server.server_address[1])
     token_file = Path(os.environ["AICAD_SERVER_TOKENS"]) / f"{port}.token"
+    from aicad.paths import file_is_user_private
+
     assert token_file.read_text(encoding="utf-8") == server.agent_token
-    assert token_file.stat().st_mode & 0o777 == 0o600
+    assert file_is_user_private(token_file)
 
 
 def test_rebinding_host_is_rejected_before_the_page_or_a_command(server):
@@ -234,3 +237,34 @@ def test_picture_request_can_carry_the_token_in_the_query(server):
     )
     assert status == 200
     assert payload == b"hello\n"
+
+    status, payload, _headers = _exchange(server, "GET", "/api/file?path=notes.txt", token="agent")
+    assert status == 200
+    text = payload.decode("utf-8")
+    assert text.startswith("<<<UNTRUSTED PROJECT TEXT")
+    assert "hello" in text
+    assert text.rstrip().endswith("<<<END UNTRUSTED PROJECT TEXT>>>")
+
+
+def test_a_note_outside_the_project_is_refused(server, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("secret-note\n", encoding="utf-8")
+    sibling = tmp_path / "project-extra"
+    sibling.mkdir()
+    (sibling / "notes.txt").write_text("sibling-note\n", encoding="utf-8")
+    (tmp_path / "project" / "linked.txt").symlink_to(secret)
+
+    queries = [
+        "/api/file?path=../outside/secret.txt",
+        "/api/file?path=linked.txt",
+        "/api/file?path=" + quote(str(secret)),
+        "/api/file?path=" + quote(str(sibling / "notes.txt")),
+    ]
+    for query in queries:
+        status, payload, _headers = _exchange(server, "GET", query, token="agent")
+        assert status == 400
+        assert b"outside the project" in payload
+        assert b"secret-note" not in payload
+        assert b"sibling-note" not in payload

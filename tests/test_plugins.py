@@ -138,6 +138,11 @@ def test_consent_file_is_user_config_not_the_project(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert plugins.consent_file() == tmp_path / "xdg" / "aicad" / "plugins.json"
     assert project not in plugins.consent_file().parents
+    monkeypatch.setenv("AICAD_PLUGIN_CONSENT", str(project / "plugins.json"))
+    monkeypatch.setattr("aicad.sandbox_state.in_sandbox", lambda: True)
+    sandboxed = plugins.consent_file()
+    assert sandboxed == tmp_path / "home" / ".config" / "aicad" / "plugins.json"
+    assert project not in sandboxed.parents
 
 
 def test_discover_and_warning_do_not_import(tmp_path, monkeypatch, isolated_consent):

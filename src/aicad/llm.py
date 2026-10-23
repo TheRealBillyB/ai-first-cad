@@ -97,7 +97,9 @@ def save_settings(incoming: dict) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
     try:
-        path.chmod(0o600)
+        from aicad.paths import restrict_private_file
+
+        restrict_private_file(path)
     except OSError:
         pass
     return public_settings(current)

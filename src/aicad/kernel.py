@@ -1534,13 +1534,26 @@ def solid_inertia(shape: Shape) -> dict:
     }
 
 
+def _prepare_export_parent(path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise GeometryError(f"Could not write {path}.") from exc
+
+
 def export_step_file(shape: Shape, path: Path) -> None:
-    from aicad.paths import publish_file
+    from aicad.paths import nofollow_writes, publish_file
 
     def write(temporary: Path) -> None:
-        if not export_step(shape.impl, temporary):
+        try:
+            written = export_step(shape.impl, temporary)
+        except (OSError, RuntimeError) as exc:
+            raise GeometryError(f"Could not write STEP file {path}.") from exc
+        if not written:
             raise GeometryError(f"Could not write STEP file {path}.")
 
+    if not nofollow_writes():
+        _prepare_export_parent(path)
     publish_file(path, write)
 
 
@@ -1550,7 +1563,7 @@ def export_stl_file(
     linear_tolerance: float = 0.05,
     angular_tolerance: float = 0.2,
 ) -> None:
-    from aicad.paths import publish_file
+    from aicad.paths import nofollow_writes, publish_file
 
     def write(temporary: Path) -> None:
         if not export_stl(
@@ -1561,6 +1574,8 @@ def export_stl_file(
         ):
             raise GeometryError(f"Could not write STL file {path}.")
 
+    if not nofollow_writes():
+        _prepare_export_parent(path)
     publish_file(path, write)
 
 

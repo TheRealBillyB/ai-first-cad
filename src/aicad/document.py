@@ -556,10 +556,18 @@ class Document:
 
             require_in_project(path, self.workspace, writing=True)
             part = self._get(name)
-            from aicad.paths import refuse_reserved_device
+            from aicad.paths import refuse_reserved_device, require_export_path
 
             refuse_reserved_device(path, self.workspace, "Export path", GeometryError)
-            destination = _project_file(self.workspace, path, "Export path", allow_absolute_outside=True)
+            destination = Path(path)
+            if not destination.is_absolute():
+                # A relative export stays in the project. Windows trims a
+                # trailing dot or space before creating the file, and that
+                # trimmed path is refused when it would leave the project.
+                destination = require_export_path(self.workspace, path, "Export path", GeometryError)
+            destination = _project_file(
+                self.workspace, destination, "Export path", allow_absolute_outside=True
+            )
             kind = kind.lower()
             if kind == "step":
                 kernel.export_step_file(part.shape, destination)
@@ -1253,12 +1261,17 @@ class Document:
                 from aicad.sandbox import require_in_project
 
                 require_in_project(out_dir, self.workspace, writing=True)
-                destination = _project_directory(self.workspace, out_dir, "Export path")
+                checked = Path(out_dir)
+                if not checked.is_absolute():
+                    from aicad.paths import require_export_path
+
+                    checked = require_export_path(self.workspace, out_dir, "Export path", GeometryError)
+                destination = _project_directory(self.workspace, checked, "Export path")
             else:
                 destination = _project_directory(
                     self.workspace, self.workspace / "exports" / "drawings", "Drawing"
                 )
-            stem, reserved = _output_stem(spec["name"])
+            stem = _output_stem(spec["name"])
             png = _project_file(
                 self.workspace, self.workspace / "renders" / "assemblies" / stem / "drawing.png", "Drawing"
             )
@@ -1276,11 +1289,6 @@ class Document:
             extras = []
             if planned is not None and planned.get("gap_capped"):
                 extras.append("The automatic gap is capped at 1000000 mm.")
-            if reserved:
-                extras.append(
-                    f"The file is named {stem} because {reserved} is a reserved file name on Windows."
-                )
-                report["file_note"] = extras[-1]
             if extras:
                 report["note"] = f"{report.get('note') or ''} {' '.join(extras)}".strip()
             return report
@@ -1295,12 +1303,17 @@ class Document:
             spec = self._get_assembly(name)
             shapes = self._assembly_shapes(spec)
             report = bom_mod.build_bom(spec, shapes, self._part_facts(spec))
-            stem, reserved = _output_stem(spec["name"])
+            stem = _output_stem(spec["name"])
             if out:
                 from aicad.sandbox import require_in_project
 
                 require_in_project(out, self.workspace, writing=True)
-                csv_path = _project_file(self.workspace, out, "Export path")
+                checked = Path(out)
+                if not checked.is_absolute():
+                    from aicad.paths import require_export_path
+
+                    checked = require_export_path(self.workspace, out, "Export path", GeometryError)
+                csv_path = _project_file(self.workspace, checked, "Export path")
             else:
                 csv_path = _project_file(
                     self.workspace, self.workspace / "exports" / "bom" / f"{stem}.csv", "Bill of materials"
@@ -1312,17 +1325,6 @@ class Document:
             view = bom_mod.render_table(report, png)
             report["csv"] = str(csv_path.resolve())
             report["views"] = [view]
-            if reserved and not out:
-                file_note = f"The file is named {stem} because {reserved} is a reserved file name on Windows."
-            elif reserved:
-                file_note = (
-                    f"The picture folder is named {stem} because {reserved} is a reserved file name on Windows."
-                )
-            else:
-                file_note = ""
-            if file_note:
-                report["file_note"] = file_note
-                report["note"] = f"{report.get('note') or ''} {file_note}".strip()
             return report
 
     def exploded_view(
@@ -1345,7 +1347,7 @@ class Document:
             planned = explode_mod.plan(spec, solved, shapes, self._library_specs(spec), gap_mm)
             moved = explode_mod.apply_moves(solved, planned["offsets"])
             mesh = assembly._colored_mesh(shapes, moved)  # noqa: SLF001
-            stem, reserved = _output_stem(spec["name"])
+            stem = _output_stem(spec["name"])
             out = _project_directory(
                 self.workspace, self.workspace / "renders" / "assemblies" / stem, "Render"
             )
@@ -1402,12 +1404,6 @@ class Document:
                 ),
                 limits=list(report.get("omits") or explode_mod.OMITS),
             )
-            if reserved:
-                file_note = (
-                    f"The picture folder is named {stem} because {reserved} is a reserved file name on Windows."
-                )
-                finished["file_note"] = file_note
-                finished["note"] = f"{finished.get('note') or ''} {file_note}".strip()
             return finished
 
     def assembly_mesh(self, name: str) -> dict:
@@ -1816,17 +1812,14 @@ def _assembly_name(spec: dict) -> str:
     return spec["name"]
 
 
-def _output_stem(name: str) -> tuple[str, str]:
-    """A file stem that is not a Windows device name.
-
-    The second value stays empty. A reserved name is refused.
-    """
+def _output_stem(name: str) -> str:
+    """A file stem that is not a Windows device name. A reserved name is refused."""
     from aicad.paths import is_reserved_device_name
 
     stem = str(name).strip().rstrip(" .") or "assembly"
     if is_reserved_device_name(stem):
         raise GeometryError(f"{stem} is reserved on Windows. Pick another name.")
-    return stem, ""
+    return stem
 
 
 def _pack_vec(point: tuple[float, float, float]) -> Vec3:

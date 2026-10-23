@@ -66,14 +66,14 @@ def test_bh_s03_script_cannot_leave_a_detached_child(tmp_path):
         # Windows has no fork. A second Python process is the same kind of
         # leftover: it sleeps, then writes the file, unless the job kills it.
         script = (
-            "import subprocess, sys\n"
+            "import aicad.sandbox as sandbox\n"
             "code = (\n"
             "    'import time\\n'\n"
             "    'from pathlib import Path\\n'\n"
             "    'time.sleep(8)\\n'\n"
             "    'Path(\"phase2.txt\").write_text(\"survived\\\\n\", encoding=\"utf-8\")\\n'\n"
             ")\n"
-            "subprocess.Popen([sys.executable, '-c', code])\n"
+            "sandbox.subprocess.Popen([sandbox.sys.executable, '-c', code])\n"
             "part = Box(1, 1, 1)\n"
         )
     else:
