@@ -176,7 +176,7 @@ def test_plan_commands_match_the_document_and_the_cli():
         assert name in COMMANDS
         assert callable(getattr(Document, name))
     completed = subprocess.run(
-        [sys.executable, "-m", "aicad", "--help"],
+        [sys.executable, "-P", "-m", "aicad", "--help"],
         check=False,
         capture_output=True,
         text=True,
@@ -193,7 +193,7 @@ def test_cli_refuses_modeling_then_releases_it(tmp_path):
 
     def run(*args):
         return subprocess.run(
-            [sys.executable, "-m", "aicad", *args, "--workspace", str(workspace)],
+            [sys.executable, "-P", "-m", "aicad", *args, "--workspace", str(workspace)],
             check=False,
             capture_output=True,
             text=True,
@@ -225,7 +225,7 @@ async def _mcp_plan(tmp_path: Path) -> None:
 
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "aicad", "serve", "--workspace", str(tmp_path)],
+        args=["-P", "-m", "aicad", "serve", "--workspace", str(tmp_path)],
         cwd=str(tmp_path),
     )
     async with stdio_client(params) as (read, write):
@@ -464,7 +464,7 @@ def test_agent_cannot_approve_by_flags_or_argument_names(tmp_path):
 
     def run(*args):
         return subprocess.run(
-            [sys.executable, "-m", "aicad", *args, "--workspace", str(tmp_path)],
+            [sys.executable, "-P", "-m", "aicad", *args, "--workspace", str(tmp_path)],
             check=False,
             capture_output=True,
             text=True,
