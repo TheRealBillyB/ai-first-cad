@@ -451,6 +451,21 @@ def test_a_private_file_is_copied_into_the_project(tmp_path, monkeypatch):
     assert all(not path.exists() for path in copied)
 
 
+def test_a_locked_directory_refuses_the_new_file(tmp_path, monkeypatch):
+    from aicad import paths
+
+    monkeypatch.setattr(paths, "nofollow_writes", lambda: False)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o555)
+    try:
+        with pytest.raises(OSError):
+            paths.publish_text(locked / "part.txt", "inside\n")
+    finally:
+        locked.chmod(0o755)
+    assert list(locked.iterdir()) == []
+
+
 def test_a_part_script_does_not_use_a_hard_link(tmp_path):
     supported, reason = sandbox_supported()
     if not supported:

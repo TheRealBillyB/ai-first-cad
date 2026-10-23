@@ -1105,10 +1105,7 @@ def publish_file(path: Path, write, *, root: Path | None = None) -> Path:
                 raise OSError(exc.errno, f"{path} is a link and was not followed.") from exc
             raise
         return path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=".aicad-", suffix=path.suffix, dir=path.parent)
-    os.close(descriptor)
-    temporary = Path(name)
+    temporary = _create_beside(path.parent, path.suffix)
     try:
         write(temporary)
         os.replace(temporary, path)
@@ -1116,6 +1113,33 @@ def publish_file(path: Path, write, *, root: Path | None = None) -> Path:
         temporary.unlink(missing_ok=True)
         raise
     return path
+
+
+def _create_beside(directory: Path, suffix: str) -> Path:
+    """A new file in ``directory``.
+
+    A permission error is raised at once. Checking the directory again after
+    that error can wait on a locked folder.
+    """
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    directory.mkdir(parents=True, exist_ok=True)
+    last: OSError | None = None
+    for _ in range(128):
+        candidate = directory / f".aicad-{os.getpid()}-{uuid.uuid4().hex}{suffix}"
+        try:
+            descriptor = os.open(os.fspath(candidate), flags, 0o600)
+        except FileExistsError as exc:
+            last = exc
+            continue
+        os.close(descriptor)
+        return candidate
+    if last is not None:
+        raise last
+    raise OSError(errno.EEXIST, "could not create a temporary file")
 
 
 def publish_bytes(path: Path, data: bytes, *, root: Path | None = None) -> Path:
