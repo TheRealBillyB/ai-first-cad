@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A geometry import keeps the project as the working directory | The image library's attach routine points the process at the base interpreter, then puts the project back. That request is refused, so a relative file in the project still opens and a plugin file there is not loaded. |
 | A relative project file can be missed only in the base interpreter directory | Native code is in that directory for a moment, and the file is not there. A changed file, or a miss from any other directory, still means the working directory moved. |
 | The child loader does not run a script that is outside the container | Loading the installed runner file is not confinement. Windows still requires an AppContainer in a job, and macOS still requires its profile. |
 | A geometry import may pass through the interpreter directory | Native libraries change that directory and put the project back. A relative file in the project still has to open, and no other directory counts as staying put. |

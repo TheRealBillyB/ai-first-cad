@@ -109,10 +109,10 @@ def _child_import(project: Path, body: str) -> str:
         "        try:\n"
         "            text = open('local.txt', encoding='utf-8').read()\n"
         "        except OSError as exc:\n"
-        "            errors.append({'cwd': here, 'error': repr(exc)})\n"
+        "            errors.append(repr(exc))\n"
         "        else:\n"
         "            if text != 'kept\\n':\n"
-        "                errors.append({'cwd': here, 'error': text})\n"
+        "                errors.append(text)\n"
         "thread = threading.Thread(target=watch, daemon=True)\n"
         "thread.start()\n"
         "while not samples:\n"
@@ -132,51 +132,8 @@ def _assert_cwd_unchanged(payload: dict, project: Path) -> None:
     assert payload["cwd"] == str(project)
     assert payload["origin"] == str(project)
     assert payload["samples"] > 0
-    # Native geometry libraries can pass through the real interpreter
-    # directory, including the base install behind a virtual environment,
-    # and then put the project back. Another directory is still a move.
-    allowed = set()
-    for text in (
-        sys.prefix,
-        getattr(sys, "base_prefix", ""),
-        str(Path(sys.executable).resolve().parent),
-        str(Path(getattr(sys, "_base_executable", "") or sys.executable).resolve().parent),
-    ):
-        if not text:
-            continue
-        try:
-            allowed.add(os.path.normcase(str(Path(text).resolve())))
-        except OSError:
-            allowed.add(os.path.normcase(text))
-    moved = []
-    for item in payload["moved"]:
-        try:
-            key = os.path.normcase(str(Path(item).resolve()))
-        except OSError:
-            moved.append(item)
-            continue
-        if key not in allowed:
-            moved.append(item)
-    assert moved == []
-    # A relative open misses local.txt only while native code is in the
-    # interpreter directory. A changed file, or a miss from anywhere else,
-    # means the project directory was left.
-    unexpected = []
-    for item in payload["errors"]:
-        if not isinstance(item, dict):
-            unexpected.append(item)
-            continue
-        if item.get("error") == "kept\n":
-            continue
-        try:
-            key = os.path.normcase(str(Path(item.get("cwd", "")).resolve()))
-        except OSError:
-            unexpected.append(item)
-            continue
-        missing = str(item.get("error", "")).startswith("FileNotFoundError")
-        if not (missing and key in allowed):
-            unexpected.append(item)
-    assert unexpected == []
+    assert payload["moved"] == []
+    assert payload["errors"] == []
     project_ini = (project / "ezdxf.ini").resolve()
     for item in payload["loaded"]:
         assert Path(item).resolve() != project_ini

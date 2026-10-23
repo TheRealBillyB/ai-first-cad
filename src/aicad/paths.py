@@ -16,6 +16,8 @@ import sys
 import threading
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from aicad.windows_directory import pin_interpreter_directory
+
 _OPTIONS_ASSIGN = re.compile(r"(?m)^options\s*=\s*Options\(\)\s*$")
 _BLOCK_PROJECT_INI = threading.local()
 _FINDER_INSTALLED = False
@@ -143,9 +145,11 @@ def prepare_geometry_import() -> None:
     Those libraries read ``ezdxf.ini`` from the working directory. A project
     is often that directory, and the file can name a font folder outside the
     project. ``EZDXF_CONFIG_FILE`` points at the file shipped with aicad, and
-    the working-directory file is not read. The process working directory is
-    not changed, so another thread can keep opening relative paths.
+    the working-directory file is not read. The image library asks to enter
+    the interpreter directory while it loads. That request is refused, so a
+    relative path in the project still opens.
     """
+    pin_interpreter_directory()
     global _FINDER_INSTALLED
     packaged = packaged_font_config()
     current = os.environ.get("EZDXF_CONFIG_FILE", "")
