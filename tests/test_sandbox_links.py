@@ -329,6 +329,39 @@ def test_a_zip_in_the_project_is_not_extracted(tmp_path):
     _assert_absent(project / _CANARY_NAME)
 
 
+def test_a_child_of_a_linked_project_is_not_opened(tmp_path):
+    outside = tmp_path / "outside"
+    nested = outside / "nested"
+    nested.mkdir(parents=True)
+    (outside / "session.json").write_text(_empty_session(), encoding="utf-8")
+    (nested / "keep.txt").write_text("keep\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "session.json").write_text(_empty_session(), encoding="utf-8")
+    _link_dir(project / "linked", outside)
+    for root in (project, tmp_path / "home"):
+        workspace = Workspace(root)
+        with pytest.raises(AICADError, match="link outside"):
+            workspace.execute("open_project", {"path": str(project / "linked" / "nested")})
+        assert workspace.root == root.resolve()
+    assert (nested / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+    assert not (nested / "session.json").exists()
+    assert not (nested / "requirements.json").exists()
+    assert not (outside / "requirements.json").exists()
+
+
+def test_a_link_that_stays_inside_the_project_can_be_opened(tmp_path):
+    project = tmp_path / "project"
+    inner = project / "inner"
+    inner.mkdir(parents=True)
+    (project / "session.json").write_text(_empty_session(), encoding="utf-8")
+    (inner / "session.json").write_text(_empty_session(), encoding="utf-8")
+    _link_dir(project / "alias", inner)
+    workspace = Workspace(tmp_path / "home")
+    workspace.execute("open_project", {"path": str(project / "alias")})
+    assert workspace.root == inner.resolve()
+
+
 def test_a_linked_subfolder_is_not_opened(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
