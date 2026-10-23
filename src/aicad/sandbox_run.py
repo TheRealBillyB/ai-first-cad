@@ -272,12 +272,14 @@ def _design(workspace: Path, job: Path) -> int:
 
 
 def _leave(code: int) -> int:
-    """On Windows, skip interpreter shutdown. A confined process that has loaded
-    the geometry libraries can take more than a minute to exit, and the parent
-    waits for that. The result file is already written.
+    """Skip interpreter shutdown on macOS and Windows.
+
+    A confined process that has loaded the geometry libraries can take a long
+    time to exit, and the parent waits for that. The result file is already
+    written.
     """
 
-    if sys.platform == "win32":
+    if sys.platform == "win32" or sys.platform == "darwin":
         os._exit(code)
     return code
 
