@@ -263,11 +263,21 @@ class Workspace:
         corrupt requirements file, and a missing note, do not change this session
         and do not write template files into the other person's folder.
         """
-        root = Path(path).expanduser().resolve()
+        from aicad.paths import link_leaves, project_link_escapes, resolve_in_project
+
+        raw = Path(path).expanduser()
+        if not raw.is_absolute():
+            raw = self.root / raw
+        if link_leaves(self.root, raw) or project_link_escapes(raw):
+            raise GeometryError(f"{raw} is a link outside the project. It was not opened.")
+        root = raw.resolve()
         if not root.is_dir():
             raise GeometryError(f"{root} is not a folder, so it cannot be opened as a project.")
         document = Document(root)
-        requirements = _read_requirements_file(root / "requirements.json")
+        requirements_file = root / "requirements.json"
+        if requirements_file.exists() or requirements_file.is_symlink():
+            resolve_in_project(root, requirements_file, "Requirements", GeometryError)
+        requirements = _read_requirements_file(requirements_file)
         with self._lock:
             self.document = document
             self.root = self.document.workspace
@@ -345,7 +355,10 @@ class Workspace:
     def _snapshot(self) -> dict:
         return {
             "session": self.document.session_payload(),
-            "documents": {name: (self.documents / name).read_text(encoding="utf-8") for name in self._document_names()},
+            "documents": {
+                name: self._read_note(name)
+                for name in self._document_names()
+            },
             "requirements": copy.deepcopy(self._requirements),
             "selection": copy.deepcopy(self.selection),
             "plans": plan_files(self.root),
@@ -353,14 +366,16 @@ class Workspace:
         }
 
     def _restore(self, snapshot: dict) -> None:
+        from aicad.paths import publish_text
+
         self.document.replace_session(snapshot["session"])
-        self.documents.mkdir(parents=True, exist_ok=True)
+        documents = self._notes_dir()
         keep = set(snapshot["documents"])
-        for path in self.documents.glob("*.md"):
+        for path in documents.glob("*.md"):
             if path.name not in keep:
                 path.unlink()
         for name, text in snapshot["documents"].items():
-            (self.documents / name).write_text(text, encoding="utf-8")
+            publish_text(documents / name, text)
         self._requirements = copy.deepcopy(snapshot["requirements"])
         self._write_requirements()
         self.selection = copy.deepcopy(snapshot["selection"])
@@ -378,41 +393,60 @@ class Workspace:
         Opening someone else's folder does not call this. Their missing notes
         stay missing.
         """
-        self.documents.mkdir(parents=True, exist_ok=True)
-        requirements_md = self.documents / "requirements.md"
-        decisions_md = self.documents / "decisions.md"
+        from aicad.paths import publish_text, resolve_in_project
+
+        documents = self._notes_dir()
+        requirements_md = documents / "requirements.md"
+        decisions_md = documents / "decisions.md"
         if not requirements_md.exists():
-            requirements_md.write_text(
+            publish_text(
+                requirements_md,
                 "# Requirements\n\n"
                 "The checks in the requirements panel are the numbers. "
                 "Use this note for the intent those numbers do not capture.\n",
-                encoding="utf-8",
             )
         if not decisions_md.exists():
-            decisions_md.write_text(
+            publish_text(
+                decisions_md,
                 "# Decisions\n\n"
                 "Record why a dimension, a material, or a load case changed.\n",
-                encoding="utf-8",
             )
-        if self.requirements_path.is_file():
-            self._requirements = _read_requirements_file(self.requirements_path)
-        else:
-            self._requirements = []
-            self._write_requirements()
+        if self.requirements_path.exists() or self.requirements_path.is_symlink():
+            safe = resolve_in_project(self.root, self.requirements_path, "Requirements", GeometryError)
+            if safe.is_file():
+                self._requirements = _read_requirements_file(safe)
+                return
+        self._requirements = []
+        self._write_requirements()
 
     def _write_requirements(self) -> None:
+        from aicad.paths import output_path, publish_text
+
         payload = {"requirements": self._requirements}
-        self.requirements_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        path = output_path(self.root, self.requirements_path, "Requirements", GeometryError)
+        publish_text(path, json.dumps(payload, indent=2) + "\n")
+
+    def _notes_dir(self) -> Path:
+        from aicad.paths import output_dir
+
+        return output_dir(self.root, self.root / "documents", "Notes", GeometryError)
 
     def _document_names(self) -> list[str]:
-        if not self.documents.is_dir():
+        documents = self.root / "documents"
+        if not documents.exists() and not documents.is_symlink():
             return []
-        return sorted(path.name for path in self.documents.glob("*.md"))
+        return sorted(path.name for path in self._notes_dir().glob("*.md"))
 
     def _document_path(self, name: str) -> Path:
         if not isinstance(name, str) or not _DOC_NAME.match(name):
             raise GeometryError("A document name looks like decisions.md: letters, numbers, underscore, hyphen.")
-        return self.documents / name
+        return self._notes_dir() / name
+
+    def _read_note(self, name: str) -> str:
+        from aicad.paths import resolve_in_project
+
+        path = resolve_in_project(self.root, self._document_path(name), "Note", GeometryError)
+        return path.read_text(encoding="utf-8")
 
     def _remember_panel(self, key: str, payload: dict) -> dict:
         from aicad.honesty import attach_sheet
@@ -749,9 +783,9 @@ def _cmd_list_docs(workspace: Workspace, _arguments: dict) -> dict:
 
 def _cmd_read_doc(workspace: Workspace, arguments: dict) -> dict:
     path = workspace._document_path(arguments["name"])
-    if not path.is_file():
+    if not path.is_file() and not path.is_symlink():
         raise GeometryError(f"No document {arguments['name']!r}.")
-    return {"name": arguments["name"], "markdown": path.read_text(encoding="utf-8")}
+    return {"name": arguments["name"], "markdown": workspace._read_note(arguments["name"])}
 
 
 def _fence_note(result: dict) -> dict:
@@ -779,6 +813,11 @@ def _path_inside_project(root: Path, raw: str | Path, label: str) -> Path:
 
 def _read_requirements_file(path: Path) -> list:
     """Read requirements.json. A missing file is an empty list and is not created."""
+    if path.is_symlink():
+        from aicad.paths import stays_inside
+
+        if not stays_inside(path.parent, path):
+            raise GeometryError(f"{path} is outside the project folder {path.parent}.")
     if not path.is_file():
         return []
     try:
@@ -789,18 +828,22 @@ def _read_requirements_file(path: Path) -> list:
 
 
 def _cmd_write_doc(workspace: Workspace, arguments: dict) -> dict:
+    from aicad.paths import publish_text
+
     path = workspace._document_path(arguments["name"])
     text = arguments.get("markdown")
     if not isinstance(text, str):
         raise GeometryError("markdown must be a string.")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    publish_text(path, text)
     return {"name": arguments["name"], "bytes": path.stat().st_size}
 
 
 def _cmd_delete_doc(workspace: Workspace, arguments: dict) -> dict:
+    from aicad.paths import is_reparse, resolve_in_project
+
     path = workspace._document_path(arguments["name"])
-    if path.is_file():
+    if path.is_symlink() or path.is_file() or is_reparse(path):
+        resolve_in_project(workspace.root, path, "Note", GeometryError)
         path.unlink()
     return {"deleted": arguments["name"]}
 

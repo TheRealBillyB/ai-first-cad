@@ -1542,13 +1542,19 @@ def _prepare_export_parent(path: Path) -> None:
 
 
 def export_step_file(shape: Shape, path: Path) -> None:
-    _prepare_export_parent(path)
-    try:
-        written = export_step(shape.impl, path)
-    except (OSError, RuntimeError) as exc:
-        raise GeometryError(f"Could not write STEP file {path}.") from exc
-    if not written:
-        raise GeometryError(f"Could not write STEP file {path}.")
+    from aicad.paths import nofollow_writes, publish_file
+
+    def write(temporary: Path) -> None:
+        try:
+            written = export_step(shape.impl, temporary)
+        except (OSError, RuntimeError) as exc:
+            raise GeometryError(f"Could not write STEP file {path}.") from exc
+        if not written:
+            raise GeometryError(f"Could not write STEP file {path}.")
+
+    if not nofollow_writes():
+        _prepare_export_parent(path)
+    publish_file(path, write)
 
 
 def export_stl_file(
@@ -1557,14 +1563,20 @@ def export_stl_file(
     linear_tolerance: float = 0.05,
     angular_tolerance: float = 0.2,
 ) -> None:
-    _prepare_export_parent(path)
-    if not export_stl(
-        shape.impl,
-        path,
-        tolerance=linear_tolerance,
-        angular_tolerance=angular_tolerance,
-    ):
-        raise GeometryError(f"Could not write STL file {path}.")
+    from aicad.paths import nofollow_writes, publish_file
+
+    def write(temporary: Path) -> None:
+        if not export_stl(
+            shape.impl,
+            temporary,
+            tolerance=linear_tolerance,
+            angular_tolerance=angular_tolerance,
+        ):
+            raise GeometryError(f"Could not write STL file {path}.")
+
+    if not nofollow_writes():
+        _prepare_export_parent(path)
+    publish_file(path, write)
 
 
 # Entity names that point at another file. The check is case-insensitive.

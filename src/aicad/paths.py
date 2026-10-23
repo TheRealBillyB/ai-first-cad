@@ -9,11 +9,17 @@ project or touches the file.
 from __future__ import annotations
 
 import builtins
+import ctypes
+import ctypes.util
+import errno
 import importlib.machinery
 import os
 import re
+import stat
 import sys
+import tempfile
 import threading
+import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from aicad.windows_directory import pin_interpreter_directory
@@ -614,6 +620,553 @@ def _is_inside(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _lexical_inside(path: Path, root: Path) -> bool:
+    """True when ``path`` is inside ``root`` before links are followed."""
+    try:
+        Path(os.path.normcase(os.path.abspath(path))).relative_to(
+            Path(os.path.normcase(os.path.abspath(root)))
+        )
+    except ValueError:
+        return False
+    return True
+
+
+def is_reparse(path: Path) -> bool:
+    """True for a symlink or a Windows directory junction."""
+    try:
+        if path.is_symlink():
+            return True
+    except OSError:
+        return False
+    checker = getattr(os.path, "isjunction", None)
+    if checker is None:
+        return False
+    try:
+        return bool(checker(os.fspath(path)))
+    except (OSError, ValueError):
+        return False
+
+
+def stays_inside(root: Path, path: Path) -> bool:
+    """True when ``path`` resolves inside ``root``."""
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return False
+    return _is_inside(resolved, Path(root).resolve())
+
+
+def link_leaves(root: Path, path: str | Path) -> bool:
+    """True when a path inside ``root`` resolves outside it.
+
+    Opening that path would leave the project by following a symlink or junction.
+    A path that is already outside ``root`` is not this case: the caller asked
+    for a different folder.
+    """
+    root_resolved = Path(root).resolve()
+    raw = Path(path).expanduser()
+    if not raw.is_absolute():
+        raw = root_resolved / raw
+    try:
+        parent = raw.parent.resolve()
+        resolved = raw.resolve()
+    except OSError:
+        return False
+    return _is_inside(parent, root_resolved) and not _is_inside(resolved, root_resolved)
+
+
+def project_link_escapes(path: str | Path) -> bool:
+    """True when ``path`` follows a link out of a project that contains it.
+
+    The project is the nearest ancestor with a real ``session.json``. A symlink
+    the caller chose as the project folder itself is not this case.
+    """
+    raw = Path(path).expanduser()
+    if not raw.is_absolute():
+        raw = Path.cwd() / raw
+    probe = raw.parent
+    seen: set[str] = set()
+    while True:
+        key = os.path.normcase(os.path.abspath(probe))
+        if key in seen:
+            return False
+        seen.add(key)
+        marker = probe / "session.json"
+        if is_reparse(marker):
+            holds_project = False
+        else:
+            try:
+                holds_project = marker.is_file()
+            except OSError:
+                holds_project = False
+        if holds_project:
+            return not stays_inside(probe, raw)
+        parent = probe.parent
+        if parent == probe:
+            return False
+        probe = parent
+
+
+def resolve_in_project(root: Path, path: str | Path, label: str, error: type[Exception]) -> Path:
+    """Resolved path that stays inside ``root``. Does not create it.
+
+    A symlink or Windows junction is followed. A link that leaves the project
+    is refused before the file is opened.
+    """
+    root_resolved = Path(root).resolve()
+    raw = Path(path)
+    if not raw.is_absolute():
+        raw = root_resolved / raw
+    if "\x00" in os.fspath(raw):
+        raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+    try:
+        resolved = raw.resolve()
+    except OSError as exc:
+        raise error(f"{label} {raw} is outside the project folder {root_resolved}.") from exc
+    if not _is_inside(resolved, root_resolved):
+        raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+    return resolved
+
+
+_LIBC = None
+_PROJECTS: set[Path] = set()
+_LINK_ERRNOS = {errno.ELOOP, errno.ENOTDIR}
+
+
+def nofollow_writes() -> bool:
+    """True when a directory can be opened without following a link."""
+    if sys.platform == "win32":
+        return False
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        return False
+    try:
+        _libc()
+    except OSError:
+        return False
+    return True
+
+
+def remember_project(root: Path) -> None:
+    """Remember an open project so a later write starts from that directory."""
+    resolved = Path(root).resolve()
+    if resolved.is_dir():
+        _PROJECTS.add(resolved)
+
+
+def _project_containing(path: Path) -> Path | None:
+    """The longest remembered project that lexically contains ``path``."""
+    if not path.is_absolute():
+        return None
+    best: Path | None = None
+    for root in _PROJECTS:
+        if _lexical_inside(path, root) and (best is None or len(root.parts) > len(best.parts)):
+            best = root
+    return best
+
+
+def _before_nofollow(root: Path, relative: Path) -> None:
+    """After a project path is accepted, before that path is opened.
+
+    The open that follows uses a directory descriptor and does not follow a link.
+    """
+    return
+
+
+def _libc():
+    """C library calls for descriptor-relative opens. Python 3.12 has no ``os.openat``."""
+    global _LIBC
+    if _LIBC is not None:
+        return _LIBC
+    library = ctypes.util.find_library("c")
+    if not library:
+        raise OSError(errno.ENOTSUP, "no-follow directory open is not available")
+    libc = ctypes.CDLL(library, use_errno=True)
+    libc.openat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_uint]
+    libc.openat.restype = ctypes.c_int
+    libc.mkdirat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    libc.mkdirat.restype = ctypes.c_int
+    libc.renameat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p]
+    libc.renameat.restype = ctypes.c_int
+    libc.unlinkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    libc.unlinkat.restype = ctypes.c_int
+    _LIBC = libc
+    return libc
+
+
+def _call(result: int, name: str) -> int:
+    if result < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err), name)
+    return result
+
+
+def _directory_flags() -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return flags
+
+
+def _check_component(name: str) -> None:
+    if name in {"", ".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+        raise OSError(errno.EINVAL, "invalid path component", name)
+
+
+def _relative_parts(relative: str | Path) -> tuple[str, ...]:
+    path = Path(relative)
+    if path.is_absolute():
+        raise OSError(errno.EINVAL, "path is absolute")
+    parts: list[str] = []
+    for part in path.parts:
+        _check_component(part)
+        parts.append(part)
+    return tuple(parts)
+
+
+def _relative_within(root: Path, path: Path) -> Path:
+    """``path`` relative to ``root`` without following links."""
+    relative = Path(os.path.normpath(os.path.relpath(os.fspath(path), os.fspath(root))))
+    if relative == Path("."):
+        return Path()
+    if relative.is_absolute() or ".." in relative.parts:
+        raise OSError(errno.EINVAL, "path leaves the project")
+    _relative_parts(relative)
+    return relative
+
+
+def _fd_path(descriptor: int) -> Path:
+    """A path that reopens this descriptor instead of looking the name up again."""
+    proc = Path(f"/proc/self/fd/{descriptor}")
+    if proc.parent.is_dir():
+        return proc
+    return Path(f"/dev/fd/{descriptor}")
+
+
+def _reopen_accepts_create(path: Path) -> bool:
+    """True when ``path`` can be opened again with a create flag.
+
+    ``/dev/fd/N`` refuses that open, so a writer which creates its file is
+    given a private file and the bytes are copied into the descriptor.
+    """
+    return not os.fspath(path).startswith("/dev/fd/")
+
+
+def _copy_into_descriptor(descriptor: int, source: Path) -> None:
+    """Replace the contents of ``descriptor`` with ``source``."""
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    with source.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            offset = 0
+            while offset < len(chunk):
+                offset += os.write(descriptor, chunk[offset:])
+    os.ftruncate(descriptor, os.lseek(descriptor, 0, os.SEEK_CUR))
+
+
+def _writer_target(descriptor: int, suffix: str) -> tuple[Path, Path | None]:
+    """A path for ``write`` and, when set, a private file to copy back."""
+    direct = _fd_path(descriptor)
+    if _reopen_accepts_create(direct):
+        return direct, None
+    if suffix and not suffix.startswith("."):
+        suffix = "." + suffix
+    raw, name = tempfile.mkstemp(prefix=".aicad-", suffix=suffix)
+    os.close(raw)
+    staged = Path(name)
+    return staged, staged
+
+
+def open_directory(path: Path) -> int:
+    """Open one directory. A symlink is refused. The caller closes the descriptor."""
+    if not nofollow_writes():
+        raise OSError(errno.ENOTSUP, "no-follow directory open is not available")
+    return os.open(os.fspath(path), _directory_flags())
+
+
+def _open_child(dirfd: int, name: str, *, create: bool) -> int:
+    """Open ``name`` in ``dirfd``. Does not close ``dirfd`` and does not follow a link."""
+    _check_component(name)
+    encoded = os.fsencode(name)
+    libc = _libc()
+    flags = _directory_flags()
+    try:
+        return _call(libc.openat(dirfd, encoded, flags, 0), name)
+    except OSError as exc:
+        if exc.errno != errno.ENOENT or not create:
+            raise
+    made = libc.mkdirat(dirfd, encoded, 0o755)
+    if made < 0:
+        err = ctypes.get_errno()
+        if err != errno.EEXIST:
+            raise OSError(err, os.strerror(err), name)
+    return _call(libc.openat(dirfd, encoded, flags, 0), name)
+
+
+def open_relative(root: Path, relative: str | Path, *, create: bool = False) -> int:
+    """Open ``root / relative`` one component at a time from ``root``'s descriptor.
+
+    Each component uses ``openat`` with ``O_NOFOLLOW`` and ``O_DIRECTORY``.
+    A symlink is refused. The caller closes the returned descriptor.
+    ``relative`` may be empty, which opens ``root`` itself.
+    """
+    parts = _relative_parts(relative) if Path(relative).parts else ()
+    current = open_directory(root)
+    for name in parts:
+        try:
+            nxt = _open_child(current, name, create=create)
+        except OSError:
+            os.close(current)
+            raise
+        os.close(current)
+        current = nxt
+    return current
+
+
+def replace_file(root: Path, relative: str | Path, write) -> None:
+    """Replace ``root / relative`` without following a link in any component.
+
+    The project directory is opened once. Each directory component is opened
+    from the previous descriptor. The new bytes go to a new file in the parent
+    directory, and that name then replaces ``relative``.
+    """
+    parts = _relative_parts(relative)
+    if not parts:
+        raise OSError(errno.EINVAL, "path is empty")
+    name = parts[-1]
+    parent = Path(*parts[:-1]) if len(parts) > 1 else Path()
+    dirfd = open_relative(root, parent, create=True)
+    temporary = f".aicad-{os.getpid()}-{uuid.uuid4().hex}{Path(name).suffix}"
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    descriptor = -1
+    staged: Path | None = None
+    placed = False
+    try:
+        descriptor = _call(_libc().openat(dirfd, os.fsencode(temporary), flags, 0o644), temporary)
+        # openat's mode is not applied on every system, so set it on the descriptor.
+        os.fchmod(descriptor, 0o644)
+        target, staged = _writer_target(descriptor, Path(name).suffix)
+        write(target)
+        if staged is not None:
+            _copy_into_descriptor(descriptor, staged)
+        os.fsync(descriptor)
+        _call(
+            _libc().renameat(dirfd, os.fsencode(temporary), dirfd, os.fsencode(name)),
+            name,
+        )
+        placed = True
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+        if descriptor >= 0 and not placed:
+            _libc().unlinkat(dirfd, os.fsencode(temporary), 0)
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(dirfd)
+
+
+def _accept_project_file(root: Path, path: Path) -> Path:
+    """A relative file whose parent is inside ``root`` before it is opened."""
+    raw = path if path.is_absolute() else root / path
+    if not _lexical_inside(raw, root):
+        raise OSError(errno.EINVAL, f"{path} is outside the project folder {root}.")
+    parent = raw.parent
+    if parent.exists() or parent.is_symlink():
+        try:
+            resolved = parent.resolve()
+        except OSError as exc:
+            raise OSError(errno.ELOOP, f"{path} is outside the project folder {root}.") from exc
+        if not _is_inside(resolved, root):
+            raise OSError(errno.ELOOP, f"{path} is outside the project folder {root}.")
+    return _relative_within(root, raw)
+
+
+def output_dir(root: Path, path: str | Path, label: str, error: type[Exception]) -> Path:
+    """A real directory inside ``root``.
+
+    Nothing is created when the path resolves outside the project. Missing
+    directories inside the project are created.
+    """
+    root_resolved = Path(root).resolve()
+    raw = Path(path)
+    if not raw.is_absolute():
+        raw = root_resolved / raw
+    if not _lexical_inside(raw, root_resolved):
+        raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    try:
+        resolved = raw.resolve()
+    except OSError as exc:
+        raise error(f"{label} {path} is outside the project folder {root_resolved}.") from exc
+    if not _is_inside(resolved, root_resolved):
+        raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    remember_project(root_resolved)
+    if nofollow_writes():
+        try:
+            relative = _relative_within(root_resolved, raw)
+            _before_nofollow(root_resolved, relative)
+            if relative.parts:
+                descriptor = open_relative(root_resolved, relative, create=True)
+            else:
+                descriptor = open_directory(root_resolved)
+            os.close(descriptor)
+            resolved = raw.resolve()
+        except OSError as exc:
+            reason = exc.strerror or str(exc)
+            raise error(f"Could not create {label} {path}. {reason}.") from exc
+        if not _is_inside(resolved, root_resolved):
+            raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+        return resolved
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+        resolved = resolved.resolve()
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        raise error(f"Could not create {label} {path}. {reason}.") from exc
+    if not _is_inside(resolved, root_resolved):
+        raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    return resolved
+
+
+def output_path(
+    root: Path,
+    path: str | Path,
+    label: str,
+    error: type[Exception],
+    *,
+    allow_absolute_outside: bool = False,
+) -> Path:
+    """A file path to create or replace without following a link out of ``root``.
+
+    A relative path, and an absolute path that is lexically inside the project,
+    must still be inside after links are followed. An absolute path that is
+    already outside the project is returned unchanged when
+    ``allow_absolute_outside`` is set, so a caller can write a file the person
+    named explicitly.
+    """
+    root_resolved = Path(root).resolve()
+    raw = Path(path)
+    absolute = raw.is_absolute()
+    if not absolute:
+        raw = root_resolved / raw
+    if "\x00" in os.fspath(raw):
+        raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    if not _lexical_inside(raw, root_resolved):
+        if absolute and allow_absolute_outside:
+            return Path(os.path.abspath(raw))
+        raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    try:
+        resolved = raw.resolve()
+    except OSError as exc:
+        raise error(f"{label} {path} is outside the project folder {root_resolved}.") from exc
+    if not _is_inside(resolved, root_resolved):
+        raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    parent = output_dir(root_resolved, resolved.parent, label, error)
+    name = resolved.name
+    if _refused_file_name(name) or _windows_reserved_punctuation(name):
+        raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    return parent / name
+
+
+def _refused_file_name(name: str) -> bool:
+    return name in {"", ".", ".."} or "/" in name or "\\" in name or "\x00" in name
+
+
+def _windows_reserved_punctuation(name: str) -> bool:
+    """True when Windows will not create this as an ordinary file name."""
+    if os.name != "nt":
+        return False
+    return any(char in name for char in ':*?"<>|')
+
+
+def shared_file(path: Path) -> bool:
+    """True when ``path`` is a regular file with another directory entry."""
+    try:
+        info = path.stat()
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and info.st_nlink > 1
+
+
+def publish_file(path: Path, write, *, root: Path | None = None) -> Path:
+    """Write a temp file beside ``path``, then replace ``path``.
+
+    Replacement does not follow a symlink and does not change a hard link's
+    other name. When ``path`` is inside a project and this system can open
+    directories without following links, the project directory is opened once
+    and each component is opened from that descriptor. ``path``'s parent must
+    already be a real directory on systems that cannot do that.
+    """
+    path = Path(path)
+    chosen = Path(root).resolve() if root is not None else _project_containing(path)
+    lexical = path if path.is_absolute() else (chosen / path if chosen is not None else path)
+    if (
+        chosen is not None
+        and nofollow_writes()
+        and _lexical_inside(lexical, chosen)
+    ):
+        relative = _accept_project_file(chosen, lexical)
+        _before_nofollow(chosen, relative)
+        try:
+            replace_file(chosen, relative, write)
+        except OSError as exc:
+            if exc.errno in _LINK_ERRNOS:
+                raise OSError(exc.errno, f"{path} is a link and was not followed.") from exc
+            raise
+        return path
+    temporary = _create_beside(path.parent, path.suffix)
+    try:
+        write(temporary)
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _create_beside(directory: Path, suffix: str) -> Path:
+    """A new file in ``directory``.
+
+    A permission error is raised at once. Checking the directory again after
+    that error can wait on a locked folder.
+    """
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    directory.mkdir(parents=True, exist_ok=True)
+    last: OSError | None = None
+    for _ in range(128):
+        candidate = directory / f".aicad-{os.getpid()}-{uuid.uuid4().hex}{suffix}"
+        try:
+            descriptor = os.open(os.fspath(candidate), flags, 0o600)
+        except FileExistsError as exc:
+            last = exc
+            continue
+        os.close(descriptor)
+        return candidate
+    if last is not None:
+        raise last
+    raise OSError(errno.EEXIST, "could not create a temporary file")
+
+
+def publish_bytes(path: Path, data: bytes, *, root: Path | None = None) -> Path:
+    """Replace ``path`` with ``data`` without following a link at that name."""
+
+    def write(temporary: Path) -> None:
+        temporary.write_bytes(data)
+
+    return publish_file(path, write, root=root)
+
+
+def publish_text(path: Path, text: str, *, root: Path | None = None) -> Path:
+    """Replace ``path`` with UTF-8 text without following a link at that name."""
+    return publish_bytes(path, text.encode("utf-8"), root=root)
 
 
 prepare_geometry_import()

@@ -841,24 +841,30 @@ def _prepare(path: Path) -> None:
 
 
 def _write_bytes(path: Path, payload: bytes) -> None:
-    _prepare(path)
+    from aicad.paths import publish_bytes
+
     try:
-        path.write_bytes(payload)
+        publish_bytes(path, payload)
     except OSError as exc:
         raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc
 
 
 def _write_text(path: Path, text: str) -> None:
-    _prepare(path)
+    from aicad.paths import publish_text
+
     try:
-        path.write_text(text, encoding="utf-8")
+        publish_text(path, text)
     except OSError as exc:
         raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc
 
 
 def _save_png(path: Path, image: Image.Image) -> None:
-    _prepare(path)
+    from aicad.paths import publish_file
+
+    def write(temporary: Path) -> None:
+        image.save(temporary, format="PNG", optimize=True)
+
     try:
-        image.save(path, format="PNG", optimize=True)
+        publish_file(path, write)
     except OSError as exc:
         raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc

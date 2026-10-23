@@ -115,8 +115,12 @@ def list_folders(path: str | Path) -> dict:
         children = sorted(folder.iterdir(), key=lambda item: item.name.lower())
     except OSError as exc:
         raise GeometryError(f"Could not read {folder}. {exc}") from exc
+    from aicad.paths import is_reparse, stays_inside
+
     for child in children:
         if child.name.startswith("."):
+            continue
+        if is_reparse(child) and not stays_inside(folder, child):
             continue
         try:
             is_dir = child.is_dir()
@@ -201,7 +205,14 @@ def save_project_as(workspace, path: str, name: str | None = None) -> dict:
 
 
 def open_project(workspace, path: str) -> dict:
-    folder = Path(path).expanduser().resolve()
+    from aicad.paths import link_leaves, project_link_escapes
+
+    requested = Path(path).expanduser()
+    if not requested.is_absolute():
+        requested = workspace.root / requested
+    if link_leaves(workspace.root, requested) or project_link_escapes(requested):
+        raise GeometryError(f"{requested} is a link outside the project. It was not opened.")
+    folder = requested.resolve()
     if not folder.is_dir():
         raise GeometryError(f"No folder at {folder}.")
     # An existing project is only read. A new empty folder gets the note templates.
@@ -632,22 +643,54 @@ def _write_recent(projects: list[dict]) -> None:
 
 
 def _copy_project(source: Path, destination: Path) -> None:
+    from aicad.paths import is_reparse, stays_inside
+
+    def refuse_outward(path: Path, root: Path) -> None:
+        if not (path.exists() or path.is_symlink()):
+            return
+        if is_reparse(path) and not stays_inside(root, path):
+            raise GeometryError(f"{path} is a link outside the project. It was not followed.")
+        if path.is_dir() and not path.is_symlink():
+            for child in path.iterdir():
+                refuse_outward(child, root)
+
     for name in ("session.json", "requirements.json"):
         file = source / name
-        if file.is_file():
-            shutil.copy2(file, destination / name)
+        if file.is_file() or file.is_symlink():
+            refuse_outward(file, source)
+            target = destination / name
+            if target.exists() or target.is_symlink():
+                refuse_outward(target, destination)
+            shutil.copy2(file, target)
     for folder in ("documents", "imports"):
         origin = source / folder
-        if origin.is_dir():
-            shutil.copytree(origin, destination / folder, dirs_exist_ok=True)
+        if origin.is_dir() or origin.is_symlink():
+            refuse_outward(origin, source)
+            target = destination / folder
+            if target.exists() or target.is_symlink():
+                refuse_outward(target, destination)
+            shutil.copytree(origin, target, dirs_exist_ok=True)
     # A script part is stored as text plus a STEP solid. Opening the copy
     # must not run the script, so the solid has to travel with the folder.
+    dot = source / ".aicad"
+    if dot.exists() or dot.is_symlink():
+        refuse_outward(dot, source)
+    dest_dot = destination / ".aicad"
+    if dest_dot.exists() or dest_dot.is_symlink():
+        refuse_outward(dest_dot, destination)
     geometry = source / ".aicad" / "geometry"
-    if geometry.is_dir():
-        shutil.copytree(geometry, destination / ".aicad" / "geometry", dirs_exist_ok=True)
+    if geometry.is_dir() or geometry.is_symlink():
+        refuse_outward(geometry, source)
+        target = destination / ".aicad" / "geometry"
+        if target.exists() or target.is_symlink():
+            refuse_outward(target, destination)
+        shutil.copytree(geometry, target, dirs_exist_ok=True)
     log = source / ".aicad" / "script_log.jsonl"
-    if log.is_file():
+    if log.is_file() or log.is_symlink():
+        refuse_outward(log, source)
         target = destination / ".aicad" / "script_log.jsonl"
+        if target.exists() or target.is_symlink():
+            refuse_outward(target, destination)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(log, target)
 

@@ -10,6 +10,7 @@ solid's volume times the handbook density, and the row says which.
 from __future__ import annotations
 
 import csv
+import io
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -180,17 +181,19 @@ def write_csv(report: dict, path: Path) -> None:
         "note",
     ]
     # utf-8-sig so Excel on Windows reads a name such as 供水 as itself.
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
+    writer.writeheader()
+    for row in report["rows"]:
+        written = dict(row)
+        written["instances"] = ";".join(row.get("instances") or [])
+        writer.writerow(written)
+    from aicad.paths import publish_bytes
+
     try:
-        handle_cm = path.open("w", encoding="utf-8-sig", newline="")
+        publish_bytes(Path(path), buffer.getvalue().encode("utf-8-sig"))
     except OSError as exc:
         raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc
-    with handle_cm as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        for row in report["rows"]:
-            written = dict(row)
-            written["instances"] = ";".join(row.get("instances") or [])
-            writer.writerow(written)
 
 
 def render_table(report: dict, path: Path) -> dict:
@@ -489,8 +492,12 @@ def _prepare(path: Path) -> None:
 
 
 def _save_png(path: Path, image: Image.Image) -> None:
-    _prepare(path)
+    from aicad.paths import publish_file
+
+    def write(temporary: Path) -> None:
+        image.save(temporary, format="PNG", optimize=True)
+
     try:
-        image.save(path, format="PNG", optimize=True)
+        publish_file(path, write)
     except OSError as exc:
         raise GeometryError(f"Could not write {path}. {exc.strerror or exc}.") from exc

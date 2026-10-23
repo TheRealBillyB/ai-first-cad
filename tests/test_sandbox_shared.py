@@ -422,7 +422,8 @@ def test_pack_named_as_the_core_distribution_is_not_run_when_listed_or_allowed(t
     assert offer.third_party is True
     assert offer.problem is None
     assert offer.distribution == "aicad"
-    plugins.warning_text(offer)
+    warning = plugins.warning_text(offer)
+    assert "after you allow it" in warning
     plugins._list_payload()
     # The distribution name matches aicad. That does not make it this install.
     # Listing it and recording an allow must not run the package. Loading it

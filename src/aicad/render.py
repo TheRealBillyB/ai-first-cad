@@ -15,6 +15,19 @@ from PIL import Image, ImageDraw, ImageFont
 
 from aicad.kernel import TriangleMesh
 from aicad.models import Measurement, RenderedView, SketchReport, WallReport
+from aicad.paths import publish_file
+
+
+def _save_png(path: Path, image: Image.Image, *, optimize: bool = False) -> None:
+    """Replace ``path`` with a PNG. A link at that name is not followed."""
+
+    def write(temporary: Path) -> None:
+        if optimize:
+            image.save(temporary, format="PNG", optimize=True)
+        else:
+            image.save(temporary, format="PNG")
+
+    publish_file(path, write)
 
 # Viewport of the 3D picture, before the title strip. SSAA renders larger and
 # downsamples, which takes the stair-steps off silhouettes.
@@ -68,7 +81,7 @@ def render_views(
             footer=_footer(measurement),
         )
         path = out_dir / f"{stem}_{name}.png"
-        image.save(path, format="PNG", optimize=True)
+        _save_png(path, image, optimize=True)
         panels[name] = image
         records.append(
             RenderedView(name=name, path=str(path.resolve()), width=image.width, height=image.height)
@@ -76,7 +89,7 @@ def render_views(
 
     contact = _contact_sheet(stem, panels, measurement, wall)
     contact_path = out_dir / f"{stem}_contact.png"
-    contact.save(contact_path, format="PNG", optimize=True)
+    _save_png(contact_path, contact, optimize=True)
     records.append(
         RenderedView(
             name="contact",
@@ -492,8 +505,7 @@ def render_section(
 
     draw.text((16, _HEADER + _VIEW_H + 8), f"plane x  {x_label}", fill=_MUTED, font=small)
     draw.text((220, _HEADER + _VIEW_H + 8), f"plane y  {y_label}", fill=_MUTED, font=small)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(out_path, format="PNG")
+    _save_png(out_path, canvas)
     return RenderedView(name="section", path=str(out_path), width=canvas.width, height=canvas.height)
 
 
@@ -586,8 +598,7 @@ def render_sketch(report: SketchReport, out_path: Path) -> RenderedView:
 
     footer = _sketch_footer(report)
     draw.text((16, _HEADER + _VIEW_H + 6), footer, fill=_status_color(report.status), font=small)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(out_path, format="PNG")
+    _save_png(out_path, canvas)
     return RenderedView(name="sketch", path=str(out_path.resolve()), width=canvas.width, height=canvas.height)
 
 
@@ -770,14 +781,14 @@ def render_scalar_views(
         image = _compose_view(mesh, bases[name], scale, title=f"{title}  ·  {label}", footer=footer)
         _draw_scalar_legend(image, low, high, unit)
         path = out_dir / f"{stem}_{prefix}_{name}.png"
-        image.save(path, format="PNG", optimize=True)
+        _save_png(path, image, optimize=True)
         panels[name] = image
         records.append(
             RenderedView(name=f"{prefix}_{name}", path=str(path.resolve()), width=image.width, height=image.height)
         )
     contact = _scalar_contact(panels)
     contact_path = out_dir / f"{stem}_{prefix}_contact.png"
-    contact.save(contact_path, format="PNG", optimize=True)
+    _save_png(contact_path, contact, optimize=True)
     records.append(
         RenderedView(
             name=f"{prefix}_contact",
@@ -867,21 +878,26 @@ def render_motion_frames(
         title = titles[index] if index < len(titles) else f"frame {index}"
         image = _compose_view(mesh, basis, scale, title=title, footer=stem)
         path = out_dir / f"{stem}_{index:02d}.png"
-        image.save(path, format="PNG", optimize=True)
+        _save_png(path, image, optimize=True)
         images.append(image)
         frames.append({"index": index, "title": title, "path": str(path.resolve()), "name": "iso"})
     strip = _strip(images)
     strip_path = out_dir / f"{stem}_strip.png"
-    strip.save(strip_path, format="PNG", optimize=True)
+    _save_png(strip_path, strip, optimize=True)
     gif_path = out_dir / f"{stem}.gif"
-    images[0].save(
-        gif_path,
-        save_all=True,
-        append_images=images[1:],
-        duration=280,
-        loop=0,
-        disposal=2,
-    )
+
+    def write_gif(temporary: Path) -> None:
+        images[0].save(
+            temporary,
+            format="GIF",
+            save_all=True,
+            append_images=images[1:],
+            duration=280,
+            loop=0,
+            disposal=2,
+        )
+
+    publish_file(gif_path, write_gif)
     return {
         "frames": frames,
         "strip": str(strip_path.resolve()),
