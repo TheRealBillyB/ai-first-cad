@@ -19,6 +19,7 @@ from typing import Any
 from aicad import kernel
 from aicad.document import Document
 from aicad.errors import AICADError, GeometryError
+from aicad.plan import plan_files, restore_plan_files
 from aicad.refs import resolve_edge
 from aicad.requirements import evaluate, normalize
 
@@ -97,6 +98,8 @@ class Workspace:
                 if len(self._undo) > _UNDO_LIMIT:
                     self._undo.pop(0)
                 self._redo.clear()
+            previous_actor = self.document.actor
+            self.document.actor = "user" if source in {"ui", "cli", "api"} else "agent"
             try:
                 result = command.handler(self, arguments)
                 if isinstance(result, dict):
@@ -111,6 +114,8 @@ class Workspace:
                 if command.undo:
                     self._undo.pop()
                 raise
+            finally:
+                self.document.actor = previous_actor
             if command.undo:
                 self.geometry_revision += 1
                 self._mesh_cache.clear()
@@ -202,6 +207,8 @@ class Workspace:
                 "materials": self.document.list_materials(),
                 "design_scripts": self.script_status(),
                 "problems": list(self.document.problems),
+                "plans": self.document.list_plans()["plans"],
+
             }
 
     def script_status(self) -> dict:
@@ -331,6 +338,7 @@ class Workspace:
             "documents": {name: (self.documents / name).read_text(encoding="utf-8") for name in self._document_names()},
             "requirements": copy.deepcopy(self._requirements),
             "selection": copy.deepcopy(self.selection),
+            "plans": plan_files(self.root),
         }
 
     def _restore(self, snapshot: dict) -> None:
@@ -345,6 +353,8 @@ class Workspace:
         self._requirements = copy.deepcopy(snapshot["requirements"])
         self._write_requirements()
         self.selection = copy.deepcopy(snapshot["selection"])
+        if "plans" in snapshot:
+            restore_plan_files(self.root, snapshot["plans"])
         self._mesh_cache.clear()
         self._requirement_cache.clear()
         self.panels.clear()
@@ -1390,7 +1400,7 @@ _add(Command(
     ),
     _cmd_exploded_view,
 ))
-_add(Command("get_state", "Parts, assemblies, sketches, selection, requirement checks, and the latest panels.", _obj({}, []), _cmd_state))
+_add(Command("get_state", "Parts, assemblies, sketches, selection, requirement checks, plans, and the latest panels.", _obj({}, []), _cmd_state))
 _add(Command("list_sketches", "Names of the sketches stored in this project.", _obj({}, []), _cmd_list_sketches))
 _add(Command(
     "assembly_mesh",
@@ -1442,6 +1452,233 @@ _add(Command(
 from aicad.studio import register as _register_studio  # noqa: E402
 
 _register_studio(_add)
+
+
+def _cmd_start_plan(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.start_plan(
+        arguments["name"],
+        arguments.get("title"),
+        summary=arguments.get("summary") or "",
+        bundle=arguments.get("bundle"),
+    )
+
+
+def _cmd_list_plans(workspace: Workspace, _arguments: dict) -> dict:
+    return workspace.document.list_plans()
+
+
+def _cmd_get_plan(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.get_plan(arguments["name"])
+
+
+def _cmd_add_plan_research(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.add_plan_research(
+        arguments["name"],
+        arguments["note"],
+        arguments["source"],
+        title=arguments.get("title") or "",
+    )
+
+
+def _cmd_add_plan_assumption(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.add_plan_assumption(arguments["name"], arguments["text"])
+
+
+def _cmd_add_plan_question(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.add_plan_question(arguments["name"], arguments["text"])
+
+
+def _cmd_put_plan_sheet(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.put_plan_sheet(arguments["name"], arguments["spec"])
+
+
+def _cmd_set_plan_dimensions(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.set_plan_dimensions(arguments["name"], arguments["dimensions"])
+
+
+def _cmd_comment_on_plan(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.comment_on_plan(arguments["name"], arguments.get("item") or "plan", arguments["text"])
+
+
+def _cmd_answer_plan_question(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.answer_plan_question(arguments["name"], arguments["item"], arguments["text"])
+
+
+def _cmd_mark_plan_item(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.mark_plan_item(arguments["name"], arguments["item"], arguments["mark"])
+
+
+def _cmd_submit_plan(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.submit_plan(arguments["name"])
+
+
+def _cmd_revise_plan(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.revise_plan(arguments["name"], arguments["changed"], bundle=arguments.get("bundle"))
+
+
+def _cmd_approve_plan(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.approve_plan(arguments["name"])
+
+
+def _cmd_start_model_from_plan(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.start_model_from_plan(arguments["name"])
+
+
+def _cmd_start_simulation_from_plan(workspace: Workspace, arguments: dict) -> dict:
+    return workspace.document.start_simulation_from_plan(arguments["name"])
+
+
+_PLAN = _obj({"name": _string("Plan name.")}, ["name"])
+_add(Command(
+    "start_plan",
+    "Start a plan before any solid. Optional bundle holds research, assumptions, questions, dimensions, and blueprint sheets. The plan is data. It does not run code.",
+    _obj(
+        {
+            "name": _string("Plan name."),
+            "title": _string("Short title."),
+            "summary": _string("What this plan is deciding."),
+            "bundle": {"type": "object", "description": "Optional research, assumptions, questions, dimensions, and sheets."},
+        },
+        ["name"],
+    ),
+    _cmd_start_plan,
+    undo=True,
+))
+_add(Command("list_plans", "List plans with status, revision, and how many questions are still open.", _obj({}, []), _cmd_list_plans))
+_add(Command("get_plan", "Read one plan, every revision, and the blueprint sheet pictures.", _PLAN, _cmd_get_plan))
+_add(Command(
+    "add_plan_research",
+    "Record a research note on the current draft. source is required: a book, a catalog, or a page.",
+    _obj(
+        {
+            "name": _string("Plan name."),
+            "note": _string("What you found."),
+            "source": _string("Where it came from."),
+            "title": _string("Optional short title."),
+        },
+        ["name", "note", "source"],
+    ),
+    _cmd_add_plan_research,
+    undo=True,
+))
+_add(Command(
+    "add_plan_assumption",
+    "Add an assumption the person can accept or reject. You cannot mark it for them.",
+    _obj({"name": _string("Plan name."), "text": _string("The assumption, in plain language.")}, ["name", "text"]),
+    _cmd_add_plan_assumption,
+    undo=True,
+))
+_add(Command(
+    "add_plan_question",
+    "Add an open question. Only the person can answer it.",
+    _obj({"name": _string("Plan name."), "text": _string("The question.")}, ["name", "text"]),
+    _cmd_add_plan_question,
+    undo=True,
+))
+_add(Command(
+    "put_plan_sheet",
+    "Draw a rough blueprint sheet: blocks, key dimensions, and labels. Not a solid and not a shop drawing.",
+    _obj(
+        {
+            "name": _string("Plan name."),
+            "spec": {"type": "object", "description": "title, optional panels, blocks {x,y,w,h,label,fill}, dimensions, labels, notes."},
+        },
+        ["name", "spec"],
+    ),
+    _cmd_put_plan_sheet,
+    undo=True,
+))
+_add(Command(
+    "set_plan_dimensions",
+    "Named millimeters the modeling step receives after the person approves. value_mm is a number.",
+    _obj(
+        {
+            "name": _string("Plan name."),
+            "dimensions": {"type": "array", "description": "Objects with name, value_mm, and optional note."},
+        },
+        ["name", "dimensions"],
+    ),
+    _cmd_set_plan_dimensions,
+    undo=True,
+))
+_add(Command(
+    "comment_on_plan",
+    "Comment on the plan or on one item id. This does not answer a question or approve the plan.",
+    _obj(
+        {
+            "name": _string("Plan name."),
+            "item": _string("Item id, or plan."),
+            "text": _string("The comment."),
+        },
+        ["name", "text"],
+    ),
+    _cmd_comment_on_plan,
+    undo=True,
+))
+_add(Command(
+    "answer_plan_question",
+    "Answer one question. Only the person can call this. The agent is refused.",
+    _obj(
+        {"name": _string("Plan name."), "item": _string("Question id."), "text": _string("The person's answer.")},
+        ["name", "item", "text"],
+    ),
+    _cmd_answer_plan_question,
+    undo=True,
+))
+_add(Command(
+    "mark_plan_item",
+    "Accept or reject an assumption, or waive a question. Only the person can call this. The agent is refused.",
+    _obj(
+        {
+            "name": _string("Plan name."),
+            "item": _string("Assumption or question id."),
+            "mark": _string("accepted, rejected, or open for an assumption. waived or open for a question."),
+        },
+        ["name", "item", "mark"],
+    ),
+    _cmd_mark_plan_item,
+    undo=True,
+))
+_add(Command(
+    "submit_plan",
+    "Move a draft to in review. Does not approve it. Approval stays with the person.",
+    _PLAN,
+    _cmd_submit_plan,
+    undo=True,
+))
+_add(Command(
+    "revise_plan",
+    "Keep this revision and open the next one as a draft. changed says what changed. Approval of the old revision no longer covers the new one.",
+    _obj(
+        {
+            "name": _string("Plan name."),
+            "changed": _string("What changed, in one or two sentences."),
+            "bundle": {"type": "object", "description": "Optional sheets, research, assumptions, questions, or dimensions for the new revision."},
+        },
+        ["name", "changed"],
+    ),
+    _cmd_revise_plan,
+    undo=True,
+))
+_add(Command(
+    "approve_plan",
+    "Approve the current revision. Only the person can do this. An agent, including the in-app assistant, is refused.",
+    _PLAN,
+    _cmd_approve_plan,
+    undo=True,
+))
+_add(Command(
+    "start_model_from_plan",
+    "Start heavy modeling from a plan. Refuses, and says why, until the person has approved the current revision. Then returns the approved dimensions and assumptions. Does not build a solid.",
+    _PLAN,
+    _cmd_start_model_from_plan,
+))
+_add(Command(
+    "start_simulation_from_plan",
+    "Start simulation from a plan. Refuses, and says why, until the person has approved the current revision. Then returns the approved dimensions and assumptions. Does not run a solver.",
+    _PLAN,
+    _cmd_start_simulation_from_plan,
+))
 
 
 __all__ = ["COMMANDS", "Command", "Workspace"]

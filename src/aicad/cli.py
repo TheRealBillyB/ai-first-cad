@@ -304,6 +304,97 @@ def build_parser() -> argparse.ArgumentParser:
     )
     exploded.add_argument("--out", type=Path, default=None, help="Directory for the sheet, used with --on-drawing.")
 
+    start_plan = commands.add_parser(
+        "start-plan", parents=[common], help="Start a plan. Optional JSON bundle of research, sheets, and questions."
+    )
+    start_plan.add_argument("name")
+    start_plan.add_argument("--title", default=None)
+    start_plan.add_argument("--summary", default="")
+    start_plan.add_argument("--file", type=Path, default=None, help="JSON bundle. Data only. It is not executed.")
+
+    commands.add_parser("list-plans", parents=[common], help="List plans, status, and revision.")
+
+    get_plan = commands.add_parser("get-plan", parents=[common], help="Print one plan, including revisions and sheet paths.")
+    get_plan.add_argument("name")
+
+    research = commands.add_parser(
+        "add-plan-research", parents=[common], help="Add a research note. A source is required."
+    )
+    research.add_argument("name")
+    research.add_argument("--note", required=True)
+    research.add_argument("--source", required=True)
+    research.add_argument("--title", default="")
+
+    assumption = commands.add_parser("add-plan-assumption", parents=[common], help="Add an assumption for the person to mark.")
+    assumption.add_argument("name")
+    assumption.add_argument("--text", required=True)
+
+    question = commands.add_parser("add-plan-question", parents=[common], help="Add an open question for the person to answer.")
+    question.add_argument("name")
+    question.add_argument("--text", required=True)
+
+    sheet = commands.add_parser(
+        "put-plan-sheet", parents=[common], help="Draw or replace one blueprint sheet from a JSON spec."
+    )
+    sheet.add_argument("name")
+    sheet.add_argument("--file", type=Path, required=True)
+
+    dimensions = commands.add_parser(
+        "set-plan-dimensions", parents=[common], help="Set the named millimeters modeling will use after approval."
+    )
+    dimensions.add_argument("name")
+    dimensions.add_argument("--file", type=Path, required=True, help="JSON list, or an object with a dimensions list.")
+
+    comment = commands.add_parser("comment-on-plan", parents=[common], help="Comment on the plan or on one item.")
+    comment.add_argument("name")
+    comment.add_argument("--item", default="plan")
+    comment.add_argument("--text", required=True)
+
+    answer = commands.add_parser(
+        "answer-plan-question", parents=[common], help="Answer a question. This is the person's command, not the agent's."
+    )
+    answer.add_argument("name")
+    answer.add_argument("item")
+    answer.add_argument("--text", required=True)
+
+    mark = commands.add_parser(
+        "mark-plan-item",
+        parents=[common],
+        help="Accept or reject an assumption, or waive a question. The person's command.",
+    )
+    mark.add_argument("name")
+    mark.add_argument("item")
+    mark.add_argument("--mark", required=True, choices=["open", "accepted", "rejected", "waived"])
+
+    submit = commands.add_parser("submit-plan", parents=[common], help="Move a draft to in review. This does not approve it.")
+    submit.add_argument("name")
+
+    revise = commands.add_parser(
+        "revise-plan", parents=[common], help="Open the next revision and record what changed."
+    )
+    revise.add_argument("name")
+    revise.add_argument("--changed", required=True)
+    revise.add_argument("--file", type=Path, default=None, help="Optional JSON bundle applied to the new revision.")
+
+    approve = commands.add_parser(
+        "approve-plan", parents=[common], help="Approve the current revision. Only you can do this."
+    )
+    approve.add_argument("name")
+
+    model_from = commands.add_parser(
+        "start-model-from-plan",
+        parents=[common],
+        help="Release modeling from an approved plan. Refuses until you have approved it.",
+    )
+    model_from.add_argument("name")
+
+    simulate_from = commands.add_parser(
+        "start-simulation-from-plan",
+        parents=[common],
+        help="Release simulation from an approved plan. Refuses until you have approved it.",
+    )
+    simulate_from.add_argument("name")
+
     from aicad.plugins import add_cli
 
     add_cli(commands, common)
@@ -496,6 +587,44 @@ def _dispatch(args: argparse.Namespace) -> int:
                 out_dir=args.out,
             )
         )
+    if args.command == "start-plan":
+        bundle = _json_object(args.file) if args.file else None
+        return emit(document.start_plan(args.name, args.title, summary=args.summary, bundle=bundle))
+    if args.command == "list-plans":
+        return emit(document.list_plans())
+    if args.command == "get-plan":
+        return emit(document.get_plan(args.name))
+    if args.command == "add-plan-research":
+        return emit(document.add_plan_research(args.name, args.note, args.source, title=args.title))
+    if args.command == "add-plan-assumption":
+        return emit(document.add_plan_assumption(args.name, args.text))
+    if args.command == "add-plan-question":
+        return emit(document.add_plan_question(args.name, args.text))
+    if args.command == "put-plan-sheet":
+        return emit(document.put_plan_sheet(args.name, _json_object(args.file)))
+    if args.command == "set-plan-dimensions":
+        payload = json.loads(args.file.read_text(encoding="utf-8"))
+        rows = payload.get("dimensions") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            raise AICADError("The dimensions file must be a list, or an object with a dimensions list.")
+        return emit(document.set_plan_dimensions(args.name, rows))
+    if args.command == "comment-on-plan":
+        return emit(document.comment_on_plan(args.name, args.item, args.text))
+    if args.command == "answer-plan-question":
+        return emit(document.answer_plan_question(args.name, args.item, args.text))
+    if args.command == "mark-plan-item":
+        return emit(document.mark_plan_item(args.name, args.item, args.mark))
+    if args.command == "submit-plan":
+        return emit(document.submit_plan(args.name))
+    if args.command == "revise-plan":
+        bundle = _json_object(args.file) if args.file else None
+        return emit(document.revise_plan(args.name, args.changed, bundle=bundle))
+    if args.command == "approve-plan":
+        return emit(document.approve_plan(args.name))
+    if args.command == "start-model-from-plan":
+        return emit(document.start_model_from_plan(args.name))
+    if args.command == "start-simulation-from-plan":
+        return emit(document.start_simulation_from_plan(args.name))
     raise AICADError(f"Unknown command {args.command!r}.")
 
 
@@ -538,6 +667,18 @@ def _plane_from_args(args) -> dict:
     if not args.axis:
         raise AICADError("A section needs --axis (and optional --offset), or --origin and --normal.")
     return {"axis": args.axis, "offset": args.offset}
+
+
+def _json_object(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise AICADError(f"Could not read {path}: {exc}") from exc
+    except OSError as exc:
+        raise AICADError(f"Could not read {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise AICADError(f"{path} must be a JSON object.")
+    return payload
 
 
 def _emit(payload: dict) -> int:

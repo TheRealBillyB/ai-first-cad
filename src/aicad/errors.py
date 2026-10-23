@@ -19,3 +19,7 @@ class PartNotFound(AICADError):
 
 class DocumentError(AICADError):
     """The session file could not be read or written."""
+
+
+class PlanError(AICADError):
+    """A plan could not be changed, or modeling from it is still closed."""

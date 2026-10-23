@@ -8,6 +8,12 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| An approval is a receipt on this computer, not the word approved in the project file | A downloaded or hand-edited plan can say approved; modeling stays off until approve-plan on this machine records that revision. |
+| Plans are JSON and PNG in the project `plans/` folder, never scripts in the session | Opening a project must not run planning notes; a design file stays data until someone asks to run code. |
+| A revision is cut only by revise, and it records what changed | Earlier revisions stay, and each one says what changed. |
+| Approve, answer, and mark exist on every door, and the agent door refuses them | The assistant writes the plan; the person who has to live with it is the one who accepts it. |
+| Modeling and simulation from a plan go through `start_model_from_plan` and `start_simulation_from_plan` | Those two commands are the gate: they refuse until this revision is approved, then they hand over its dimensions and assumptions. |
+| A plan sheet uses the blueprint block style | A plan sheet is blue paper, gold dimensions, a grid, and a scale bar. It is not a shop drawing. |
 | The workspace server does not trust a source field | The browser session is the person, and MCP is the assistant. A program on this computer can still act as the person. |
 | A thin region is coarse when its elements are thinner than a third of the mesh size | Aspect ratio alone still passed a 0.05 mm foil at 0.4 mm and a 0.3 mm rib. The 2.4 mm gusset at 1.5 mm stays measurable. |
 | A wall probe that only lands on the opposite face is not used; a smaller step is tried | A step of exactly 0.01 mm sits on the inner face of a 0.01 mm wall, so that wall was reported as unmeasurable. |
