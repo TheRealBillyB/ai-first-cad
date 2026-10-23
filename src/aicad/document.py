@@ -172,7 +172,14 @@ class Document:
             source = Path(path).resolve()
             shape = kernel.import_step_file(source)
             relative = f"imports/{name}.step"
-            destination = self.workspace / relative
+            from aicad.paths import require_resolved_inside
+
+            destination = require_resolved_inside(
+                self.workspace,
+                self.workspace / relative,
+                "Import copy",
+                GeometryError,
+            )
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
             note = f"# Imported STEP, copied to {relative}\n"
@@ -340,7 +347,14 @@ class Document:
             part = self._get(name)
             destination = Path(path)
             if not destination.is_absolute():
-                destination = self.workspace / destination
+                from aicad.paths import require_resolved_inside
+
+                destination = require_resolved_inside(
+                    self.workspace,
+                    self.workspace / destination,
+                    "Export path",
+                    GeometryError,
+                )
             kind = kind.lower()
             if kind == "step":
                 kernel.export_step_file(part.shape, destination)

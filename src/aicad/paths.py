@@ -94,6 +94,23 @@ def _export_blocked(text: str, root: Path) -> bool:
     return False
 
 
+def require_resolved_inside(root: Path, candidate: Path, label: str, error: type[Exception]) -> Path:
+    """A path that is still inside ``root`` after ``..`` and links are resolved.
+
+    The final file does not need to exist. A link in a parent that does exist
+    is followed, so a project folder that points somewhere else is refused
+    before anything is written there.
+    """
+    root_resolved = Path(root).resolve()
+    try:
+        resolved = Path(candidate).resolve()
+    except OSError as exc:
+        raise error(f"{label} is outside the project folder {root_resolved}.") from exc
+    if not _is_inside(resolved, root_resolved):
+        raise error(f"{label} is outside the project folder {root_resolved}.")
+    return resolved
+
+
 def _is_inside(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
