@@ -31,6 +31,7 @@ from aicad.robot import export_robot
 from aicad.errors import DocumentError, GeometryError, PartNotFound
 from aicad.kinematics import normalize as normalize_assembly
 from aicad.kinematics import solve as solve_assembly
+from aicad.motion_study import run_study, study_by_name
 from aicad.power import actuators_for
 from aicad.models import (
     BoundingBox,
@@ -909,7 +910,7 @@ class Document:
             return {"assembly": copy.deepcopy(spec), "solved": solve_assembly(spec)}
 
     def list_assemblies(self) -> list[dict]:
-        """Names, joint values, poses, and motions. This does not place solids or test collisions."""
+        """Names, joint values, poses, motions, and studies. This does not place solids."""
         with self._lock:
             listed = []
             for spec in self._assemblies.values():
@@ -935,6 +936,7 @@ class Document:
                         ],
                         "poses": sorted(spec["poses"]),
                         "motions": sorted(spec["motions"]),
+                        "studies": sorted(spec.get("studies") or {}),
                         "cables": [cable.get("name", f"cable_{index + 1}") for index, cable in enumerate(spec["cables"])],
                         "actuators": [
                             actuator.get("name") or actuator.get("joint") for actuator in spec["actuators"]
@@ -991,6 +993,29 @@ class Document:
             if render:
                 out = self.workspace / "renders" / "assemblies" / spec["name"]
             return assembly.run_motion(spec, self._assembly_shapes(spec), chosen, out)
+
+    def run_motion_study(
+        self,
+        name: str,
+        sequence: str | None = None,
+        study: dict | None = None,
+        steps: int | None = None,
+        clearance_mm: float | None = None,
+    ) -> dict:
+        """Drive the assembly through a motion study and report collisions and limit hits."""
+        with self._lock:
+            spec = self._get_assembly(name)
+            chosen = study_by_name(spec, sequence, study)
+            if chosen is None:
+                known = ", ".join(spec.get("studies") or {}) or "(none)"
+                raise GeometryError(f"Name a motion study on {name!r}, or pass one. Studies: {known}.")
+            return run_study(
+                spec,
+                self._assembly_shapes(spec),
+                chosen,
+                steps=steps,
+                clearance_mm=clearance_mm,
+            )
 
     def check_cables(self, name: str, sequence: str | None = None, motion: dict | None = None) -> dict:
         with self._lock:

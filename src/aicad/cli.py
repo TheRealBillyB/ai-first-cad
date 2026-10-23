@@ -246,6 +246,22 @@ def build_parser() -> argparse.ArgumentParser:
     motion.add_argument("--sequence", default=None, help="Motion stored on the assembly.")
     motion.add_argument("--file", type=Path, default=None, help="JSON sweep or keyframes.")
 
+    motion_study = commands.add_parser(
+        "motion-study",
+        parents=[common],
+        help="Drive joints over time and report collisions and joint-limit violations.",
+    )
+    motion_study.add_argument("name")
+    motion_study.add_argument("--sequence", default=None, help="Study stored on the assembly.")
+    motion_study.add_argument("--file", type=Path, default=None, help="JSON study of drivers and couplings.")
+    motion_study.add_argument("--steps", type=int, default=None, help="Poses to solve, including both ends.")
+    motion_study.add_argument(
+        "--clearance",
+        type=float,
+        default=None,
+        help="Minimum allowed gap in millimeters. A smaller gap is interference.",
+    )
+
     cables = commands.add_parser("cables", parents=[common], help="Check cables and hoses.")
     cables.add_argument("name")
     cables.add_argument("--sequence", default=None)
@@ -577,6 +593,17 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "motion":
         inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
         return emit(document.run_motion(args.name, sequence=args.sequence, motion=inline))
+    if args.command == "motion-study":
+        inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
+        return emit(
+            document.run_motion_study(
+                args.name,
+                sequence=args.sequence,
+                study=inline,
+                steps=args.steps,
+                clearance_mm=args.clearance,
+            )
+        )
     if args.command == "cables":
         return emit(document.check_cables(args.name, sequence=args.sequence))
     if args.command == "power":
