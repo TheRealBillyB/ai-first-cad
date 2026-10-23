@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A Windows traverse grant does not walk child directories | The named security call propagated access to every child and did not return. The entry is written on that directory's handle only, a parent that already allows traverse is skipped, and the probe result is kept for the process. |
 | A Windows traverse grant changes that one directory | icacls on a parent in the tool cache did not finish. Traverse adds one access entry on the directory and does not scan or change its children. |
 | The Windows sandbox does not grant a volume root, and icacls has to finish | icacls waits for a person on the drive root, so that folder is skipped. Any other icacls call that does not finish is an error, and the sandbox does not change that folder. |
 | Windows and macOS tests run on every pull request and on every push to main | Manual dispatch still starts the workflow. The weekly schedule and the cross-platform label no longer select those jobs. |

@@ -45,9 +45,10 @@ def test_grant_traverse_does_not_call_icacls_on_the_volume_root(monkeypatch):
 
     calls: list[str] = []
     icacls_calls: list[str] = []
-    monkeypatch.setattr(win, "_grant_traverse_one", lambda path, sid: calls.append(str(path)))
+    win._granted_traverse.clear()
+    monkeypatch.setattr(win, "_grant_traverse_one", lambda path, sid, package_sid: calls.append(str(path)))
     monkeypatch.setattr(win, "_icacls", lambda path, sid, rights, *, recurse: icacls_calls.append(str(path)))
-    win._grant_traverse(Path(r"D:\a\ai-first-cad\ai-first-cad\.venv"), "S-1-2-3")
+    win._grant_traverse(Path(r"D:\a\ai-first-cad\ai-first-cad\.venv"), "S-1-2-3", "S-1-15-2-2")
     assert calls
     assert icacls_calls == []
     assert all(not win._is_volume_root_text(path) for path in calls)
@@ -68,15 +69,86 @@ def test_a_stuck_icacls_fails_with_a_clear_error(monkeypatch):
     assert r"C:\hostedtoolcache" in message
     assert "confirmation" in message
 
-    def stuck_grant(path, sid):
+    def stuck_grant(path, sid, package_sid):
         raise win.IcaclsTimeout(
             "icacls did not finish within 15 seconds for "
             r"C:\hostedtoolcache. It may be waiting for confirmation."
         )
 
+    win._granted_traverse.clear()
     monkeypatch.setattr(win, "_grant_traverse_one", stuck_grant)
     with pytest.raises(win.IcaclsTimeout, match="confirmation"):
-        win._grant_traverse(Path(r"C:\hostedtoolcache\windows\Python"), "S-1-2-3")
+        win._grant_traverse(Path(r"C:\hostedtoolcache\windows\Python"), "S-1-2-3", "S-1-15-2-2")
+
+
+def test_traverse_is_skipped_only_when_that_container_can_already_walk():
+    from aicad import sandbox_windows as win
+
+    allow_all = (0, 0, win._FILE_TRAVERSE, win._ALL_APPLICATION_PACKAGES)
+    assert win._dacl_needs_grant([allow_all], "S-1-5-1", win._package_sid(False)) is False
+    assert win._dacl_needs_grant([allow_all], "S-1-5-1", win._package_sid(True)) is True
+    restricted = (0, 0, win._FILE_TRAVERSE | win._SYNCHRONIZE, win._ALL_RESTRICTED_APPLICATION_PACKAGES)
+    assert win._dacl_needs_grant([restricted], "S-1-5-1", win._package_sid(True)) is False
+    assert win._dacl_needs_grant([restricted], "S-1-5-1", win._package_sid(False)) is True
+    own = (0, 0, win._FILE_TRAVERSE | win._FILE_READ_ATTRIBUTES, "S-1-5-1")
+    assert win._dacl_needs_grant([own], "S-1-5-1", win._package_sid(True)) is False
+    inherit_only = (0, win._INHERIT_ONLY_ACE, win._FILE_TRAVERSE, "S-1-5-1")
+    assert win._dacl_needs_grant([inherit_only], "S-1-5-1", win._package_sid(False)) is True
+    deny = (1, 0, win._FILE_TRAVERSE, "S-1-5-1")
+    assert win._dacl_needs_grant([deny], "S-1-5-1", win._package_sid(False)) is True
+    assert win._package_sid(True) == "S-1-15-2-2"
+    assert win._package_sid(False) == "S-1-15-2-1"
+    assert win._TRAVERSE_MASK & win._FILE_TRAVERSE
+    assert win._TRAVERSE_MASK & win._SYNCHRONIZE
+    assert not win._TRAVERSE_MASK & win._FILE_LIST_DIRECTORY
+
+
+def test_traverse_write_is_skipped_when_the_directory_already_allows_it(monkeypatch):
+    from aicad import sandbox_windows as win
+
+    writes: list[str] = []
+    monkeypatch.setattr(win, "_parent_allows_traverse", lambda path, sid, package_sid: True)
+    monkeypatch.setattr(win, "_write_traverse_ace", lambda path, sid: writes.append(str(path)))
+    win._grant_traverse_one(Path(r"C:\hostedtoolcache"), "S-1-2-3", "S-1-15-2-1")
+    assert writes == []
+
+
+def test_a_slow_traverse_grant_fails_fast(monkeypatch):
+    import time
+
+    from aicad import sandbox_windows as win
+
+    monkeypatch.setattr(win, "_GRANT_TIMEOUT_SECONDS", 0.3)
+
+    def hang(path, sid, package_sid):
+        time.sleep(2)
+
+    win._granted_traverse.clear()
+    monkeypatch.setattr(win, "_grant_traverse_one", hang)
+    started = time.monotonic()
+    with pytest.raises(win.GrantTimeout, match="did not finish") as raised:
+        win._grant_traverse(Path(r"C:\hostedtoolcache\windows"), "S-1-2-3", "S-1-15-2-2")
+    assert time.monotonic() - started < 3
+    message = str(raised.value)
+    assert r"C:\hostedtoolcache" in message
+    assert "not changed" in message
+
+
+def test_availability_probe_runs_once_per_process(monkeypatch):
+    from aicad import sandbox_windows as win
+
+    calls: list[int] = []
+
+    def once(paths):
+        calls.append(1)
+
+    monkeypatch.setattr(win, "_probe_done", False)
+    monkeypatch.setattr(win, "_probe_result", None)
+    monkeypatch.setattr(win, "ensure_mode", once)
+    assert win.availability_error([Path(r"C:\Python")]) is None
+    assert win.availability_error([Path(r"C:\Python")]) is None
+    assert calls == [1]
+    assert win.availability_error(None) == "The sandbox was not given the Python folders it needs to read."
 
 
 def test_windows_script_keeps_library_caches_in_the_project(tmp_path, monkeypatch):

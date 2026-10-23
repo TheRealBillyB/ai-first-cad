@@ -21,6 +21,7 @@ import ntpath
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Sequence
 from ctypes import wintypes
 from pathlib import Path
@@ -67,26 +68,51 @@ _FILE_ATTRIBUTE_NORMAL = 0x80
 _mode: str | None = None
 _mode_error: str | None = None
 _sid_string: str | None = None
+# The availability probe starts a container. Later tests in this process reuse it.
+_probe_done = False
+_probe_result: str | None = None
+# Parents already checked for this container, so a later script does not open them again.
+_granted_traverse: set[tuple[str, str, str]] = set()
 
 # One directory finishes immediately. A tree walk of the Python install can
 # take longer. Either one that does not finish is waiting, not working.
 _ICACLS_TIMEOUT_SECONDS = 15
 _ICACLS_TREE_TIMEOUT_SECONDS = 60
+_GRANT_TIMEOUT_SECONDS = 15
 
 _SE_FILE_OBJECT = 1
 _DACL_SECURITY_INFORMATION = 0x4
-_GRANT_ACCESS = 1
-_NO_MULTIPLE_TRUSTEE = 0
-_TRUSTEE_IS_SID = 0
-_TRUSTEE_IS_UNKNOWN = 0
-_NO_INHERITANCE = 0
-# Traverse and read attributes. This does not include listing the directory,
-# so a parent grant does not reveal the names of its other children.
-_FILE_GENERIC_EXECUTE = 0x1200A0
+_READ_CONTROL = 0x00020000
+_WRITE_DAC = 0x00040000
+_FILE_SHARE_DELETE = 0x00000004
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_ACCESS_ALLOWED_ACE_TYPE = 0
+_INHERIT_ONLY_ACE = 0x8
+_FILE_LIST_DIRECTORY = 0x00000001
+_FILE_TRAVERSE = 0x00000020
+_FILE_READ_ATTRIBUTES = 0x00000080
+_SYNCHRONIZE = 0x00100000
+_GENERIC_ALL = 0x10000000
+_GENERIC_EXECUTE = 0x20000000
+# Walk this directory and read its attributes. Listing its children is not included.
+_TRAVERSE_MASK = _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+_ALL_APPLICATION_PACKAGES = "S-1-15-2-1"
+_ALL_RESTRICTED_APPLICATION_PACKAGES = "S-1-15-2-2"
+_ACL_REVISION = 2
+_ACL_REVISION_DS = 4
+_SECURITY_DESCRIPTOR_REVISION = 1
+_AclSizeInformation = 2
+# Opening these is not a failure of the grant. Windows already allows the
+# container through, or the folder is not one this process can edit.
+_UNCHANGEABLE_ERRORS = {2, 3, 5, 32}
 
 
 class IcaclsTimeout(OSError):
     """icacls did not finish, so the folder was not granted."""
+
+
+class GrantTimeout(OSError):
+    """A folder grant did not finish, so that folder was not changed."""
 
 
 class _IoCounters(ctypes.Structure):
@@ -191,22 +217,19 @@ class _SidAndAttributes(ctypes.Structure):
     ]
 
 
-class _Trustee(ctypes.Structure):
+class _AceHeader(ctypes.Structure):
     _fields_ = [
-        ("pMultipleTrustee", ctypes.c_void_p),
-        ("MultipleTrusteeOperation", wintypes.DWORD),
-        ("TrusteeForm", wintypes.DWORD),
-        ("TrusteeType", wintypes.DWORD),
-        ("ptstrName", ctypes.c_void_p),
+        ("AceType", ctypes.c_ubyte),
+        ("AceFlags", ctypes.c_ubyte),
+        ("AceSize", wintypes.WORD),
     ]
 
 
-class _ExplicitAccess(ctypes.Structure):
+class _AclSizeInformation(ctypes.Structure):
     _fields_ = [
-        ("grfAccessPermissions", wintypes.DWORD),
-        ("grfAccessMode", wintypes.DWORD),
-        ("grfInheritance", wintypes.DWORD),
-        ("Trustee", _Trustee),
+        ("AceCount", wintypes.DWORD),
+        ("AclBytesInUse", wintypes.DWORD),
+        ("AclBytesFree", wintypes.DWORD),
     ]
 
 
@@ -454,113 +477,306 @@ def _grant_tree(path: Path, sid: str, rights: str) -> None:
         _icacls(path, sid, rights, recurse=True)
 
 
-def _bind_acl() -> None:
-    _bind()
-    advapi32 = _advapi32()
-    advapi32.GetNamedSecurityInfoW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
-    advapi32.SetEntriesInAclW.argtypes = [
-        wintypes.ULONG,
-        ctypes.POINTER(_ExplicitAccess),
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    advapi32.SetEntriesInAclW.restype = wintypes.DWORD
-    advapi32.SetNamedSecurityInfoW.argtypes = [
-        wintypes.LPWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-    ]
-    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+def _package_sid(lpac: bool) -> str:
+    """The package id this container already carries, besides its own id."""
+
+    if lpac:
+        return _ALL_RESTRICTED_APPLICATION_PACKAGES
+    return _ALL_APPLICATION_PACKAGES
 
 
-def _grant_traverse_one(path: Path, sid: str) -> None:
-    """Add traverse on this directory only. Children are not listed or changed.
+def _ace_allows_traverse(ace_type: int, ace_flags: int, mask: int) -> bool:
+    """True when this entry lets its trustee walk the directory itself."""
 
-    icacls on a parent such as the tool cache does not return: it asks for
-    confirmation or walks more than that folder. The access call writes one
-    entry and does not scan the children.
+    if ace_type != _ACCESS_ALLOWED_ACE_TYPE:
+        return False
+    if ace_flags & _INHERIT_ONLY_ACE:
+        return False
+    if mask & (_GENERIC_ALL | _GENERIC_EXECUTE):
+        return True
+    return bool(mask & _FILE_TRAVERSE)
+
+
+def _dacl_needs_grant(
+    aces: Sequence[tuple[int, int, int, str]],
+    sid: str,
+    package_sid: str,
+) -> bool:
+    """False when the directory already lets this container walk through it."""
+
+    wanted = {sid, package_sid}
+    for ace_type, ace_flags, mask, ace_sid in aces:
+        if ace_sid in wanted and _ace_allows_traverse(ace_type, ace_flags, mask):
+            return False
+    return True
+
+
+def _finish_within(seconds: float, path: Path, work) -> None:
+    """Run ``work`` and give up if it does not return.
+
+    A grant that walks every child of a tool-cache directory does not return
+    before the test is killed. Stopping here leaves that directory unchanged.
     """
 
-    _bind_acl()
+    box: dict[str, Exception] = {}
+
+    def run() -> None:
+        try:
+            work()
+        except Exception as exc:
+            box["error"] = exc
+
+    thread = threading.Thread(target=run, name="aicad-grant", daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        raise GrantTimeout(
+            f"Granting traverse did not finish within {seconds:g} seconds for {path}. "
+            "The sandbox stopped waiting, and that folder was not changed."
+        )
+    error = box.get("error")
+    if error is not None:
+        raise error
+
+
+def _acl_error(prefix: str) -> OSError:
+    code = ctypes.get_last_error() & 0xFFFFFFFF
+    return OSError(None, f"{prefix} (Windows error {code}).", None, code)
+
+
+def _bind_security() -> None:
+    _bind()
+    advapi32 = _advapi32()
+    advapi32.GetSecurityInfo.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetSecurityInfo.restype = wintypes.DWORD
+    advapi32.SetKernelObjectSecurity.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
+    advapi32.GetAclInformation.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    advapi32.GetAclInformation.restype = wintypes.BOOL
+    advapi32.GetAce.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetAce.restype = wintypes.BOOL
+    advapi32.InitializeAcl.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+    advapi32.InitializeAcl.restype = wintypes.BOOL
+    advapi32.AddAce.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    advapi32.AddAce.restype = wintypes.BOOL
+    advapi32.AddAccessAllowedAce.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    advapi32.AddAccessAllowedAce.restype = wintypes.BOOL
+    advapi32.InitializeSecurityDescriptor.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    advapi32.InitializeSecurityDescriptor.restype = wintypes.BOOL
+    advapi32.SetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p,
+        wintypes.BOOL,
+        ctypes.c_void_p,
+        wintypes.BOOL,
+    ]
+    advapi32.SetSecurityDescriptorDacl.restype = wintypes.BOOL
+    advapi32.GetLengthSid.argtypes = [ctypes.c_void_p]
+    advapi32.GetLengthSid.restype = wintypes.DWORD
+
+
+def _open_directory(path: Path, access: int) -> wintypes.HANDLE:
+    handle = _kernel32().CreateFileW(
+        str(path),
+        access,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    )
+    if handle is None or ctypes.cast(handle, ctypes.c_void_p).value in {None, _INVALID_HANDLE}:
+        raise _acl_error(f"Could not open {path} to grant traverse")
+    return handle
+
+
+def _read_dacl(handle: wintypes.HANDLE) -> tuple[ctypes.c_void_p, ctypes.c_void_p | None]:
+    """Return the security descriptor and its DACL.
+
+    A missing DACL already allows access. The caller must free the descriptor.
+    The DACL pointer is inside that descriptor.
+    """
+
+    dacl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    status = _advapi32().GetSecurityInfo(
+        handle,
+        _SE_FILE_OBJECT,
+        _DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if status != 0:
+        raise OSError(None, f"Could not read the access list (Windows error {status}).", None, status)
+    if not dacl.value:
+        return descriptor, None
+    return descriptor, dacl
+
+
+def _ace_rows(dacl: ctypes.c_void_p) -> list[tuple[int, int, int, str]]:
+    advapi32 = _advapi32()
+    info = _AclSizeInformation()
+    if not advapi32.GetAclInformation(dacl, ctypes.byref(info), ctypes.sizeof(info), _AclSizeInformation):
+        raise _acl_error("Could not read the access entries")
+    rows: list[tuple[int, int, int, str]] = []
+    for index in range(int(info.AceCount)):
+        ace = ctypes.c_void_p()
+        if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+            raise _acl_error("Could not read an access entry")
+        header = ctypes.cast(ace, ctypes.POINTER(_AceHeader)).contents
+        mask = int(ctypes.cast(ace.value + 4, ctypes.POINTER(wintypes.DWORD)).contents.value)
+        ace_sid = ""
+        if header.AceType == _ACCESS_ALLOWED_ACE_TYPE and int(header.AceSize) >= 8:
+            try:
+                ace_sid = _sid_to_string(ctypes.c_void_p(ace.value + 8))
+            except OSError:
+                ace_sid = ""
+        rows.append((int(header.AceType), int(header.AceFlags), mask, ace_sid))
+    return rows
+
+
+def _parent_allows_traverse(path: Path, sid: str, package_sid: str) -> bool:
+    _bind_security()
+    handle = _open_directory(path, _READ_CONTROL)
+    descriptor = ctypes.c_void_p()
+    try:
+        descriptor, dacl = _read_dacl(handle)
+        if dacl is None:
+            return True
+        return not _dacl_needs_grant(_ace_rows(dacl), sid, package_sid)
+    finally:
+        if descriptor.value:
+            _kernel32().LocalFree(descriptor)
+        _kernel32().CloseHandle(handle)
+
+
+def _acl_revision(dacl: ctypes.c_void_p) -> int:
+    revision = int(ctypes.cast(dacl, ctypes.POINTER(ctypes.c_ubyte)).contents.value)
+    if revision == _ACL_REVISION_DS:
+        return _ACL_REVISION_DS
+    return _ACL_REVISION
+
+
+def _append_traverse_ace(dacl: ctypes.c_void_p, sid_ptr: ctypes.c_void_p) -> ctypes.Array:
+    advapi32 = _advapi32()
+    info = _AclSizeInformation()
+    if not advapi32.GetAclInformation(dacl, ctypes.byref(info), ctypes.sizeof(info), _AclSizeInformation):
+        raise _acl_error("Could not measure the access list")
+    sid_length = int(advapi32.GetLengthSid(sid_ptr))
+    if sid_length <= 0:
+        raise _acl_error("Could not measure the sandbox id")
+    extra = ((8 + sid_length + 3) & ~3) + 8
+    total = int(info.AclBytesInUse) + extra
+    if total > 65535:
+        raise OSError("The access list is too large to add traverse.")
+    revision = _acl_revision(dacl)
+    buffer = ctypes.create_string_buffer(total)
+    if not advapi32.InitializeAcl(buffer, total, revision):
+        raise _acl_error("Could not build the access list")
+    for index in range(int(info.AceCount)):
+        ace = ctypes.c_void_p()
+        if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+            raise _acl_error("Could not copy an access entry")
+        size = int(ctypes.cast(ace, ctypes.POINTER(_AceHeader)).contents.AceSize)
+        # Append. Inserting at the front would reverse the existing entries.
+        if not advapi32.AddAce(buffer, revision, 0xFFFFFFFF, ace, size):
+            raise _acl_error("Could not copy an access entry")
+    if not advapi32.AddAccessAllowedAce(buffer, revision, _TRAVERSE_MASK, sid_ptr):
+        raise _acl_error("Could not add traverse")
+    return buffer
+
+
+def _sid_pointer(sid: str) -> ctypes.c_void_p:
+    sid_ptr = ctypes.c_void_p()
+    if not _advapi32().ConvertStringSidToSidW(sid, ctypes.byref(sid_ptr)):
+        raise _acl_error("Could not read the sandbox id")
+    return sid_ptr
+
+
+def _write_traverse_ace(path: Path, sid: str) -> None:
+    """Write one non-inherited traverse entry on this directory only.
+
+    SetNamedSecurityInfo walks every child and applies inheritance. Writing
+    the open directory handle does not open or change the children.
+    """
+
+    _bind_security()
     advapi32 = _advapi32()
     kernel32 = _kernel32()
-    sid_ptr = ctypes.c_void_p()
-    if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(sid_ptr)):
-        raise OSError(_win_error(f"Could not read the sandbox id for {path}"))
+    sid_ptr = _sid_pointer(sid)
+    handle: wintypes.HANDLE | None = None
     descriptor = ctypes.c_void_p()
-    new_dacl = ctypes.c_void_p()
     try:
-        trustee = _Trustee()
-        trustee.pMultipleTrustee = None
-        trustee.MultipleTrusteeOperation = _NO_MULTIPLE_TRUSTEE
-        trustee.TrusteeForm = _TRUSTEE_IS_SID
-        trustee.TrusteeType = _TRUSTEE_IS_UNKNOWN
-        trustee.ptstrName = sid_ptr
-        explicit = _ExplicitAccess()
-        explicit.grfAccessPermissions = _FILE_GENERIC_EXECUTE
-        explicit.grfAccessMode = _GRANT_ACCESS
-        explicit.grfInheritance = _NO_INHERITANCE
-        explicit.Trustee = trustee
-
-        dacl = ctypes.c_void_p()
-        status = advapi32.GetNamedSecurityInfoW(
-            str(path),
-            _SE_FILE_OBJECT,
-            _DACL_SECURITY_INFORMATION,
-            None,
-            None,
-            ctypes.byref(dacl),
-            None,
-            ctypes.byref(descriptor),
-        )
-        if status != 0:
-            raise OSError(f"Could not read access for {path} (code {status}).")
-        # A missing DACL already allows access. Replacing it would lock the folder.
-        if not dacl:
+        handle = _open_directory(path, _READ_CONTROL | _WRITE_DAC)
+        descriptor, dacl = _read_dacl(handle)
+        # A missing access list already allows access. Replacing it would lock the folder.
+        if dacl is None:
             return
-        status = advapi32.SetEntriesInAclW(1, ctypes.byref(explicit), dacl, ctypes.byref(new_dacl))
-        if status != 0:
-            raise OSError(f"Could not add traverse for {path} (code {status}).")
-        mutable = ctypes.create_unicode_buffer(str(path))
-        status = advapi32.SetNamedSecurityInfoW(
-            mutable,
-            _SE_FILE_OBJECT,
-            _DACL_SECURITY_INFORMATION,
-            None,
-            None,
-            new_dacl,
-            None,
-        )
-        if status != 0:
-            raise OSError(f"Could not grant traverse on {path} (code {status}).")
+        new_dacl = _append_traverse_ace(dacl, sid_ptr)
+        security = ctypes.create_string_buffer(64)
+        if not advapi32.InitializeSecurityDescriptor(security, _SECURITY_DESCRIPTOR_REVISION):
+            raise _acl_error(f"Could not grant traverse on {path}")
+        if not advapi32.SetSecurityDescriptorDacl(security, True, new_dacl, False):
+            raise _acl_error(f"Could not grant traverse on {path}")
+        if not advapi32.SetKernelObjectSecurity(handle, _DACL_SECURITY_INFORMATION, security):
+            raise _acl_error(f"Could not grant traverse on {path}")
     finally:
-        if new_dacl:
-            kernel32.LocalFree(new_dacl)
-        if descriptor:
+        if descriptor.value:
             kernel32.LocalFree(descriptor)
-        if sid_ptr:
+        if handle:
+            kernel32.CloseHandle(handle)
+        if sid_ptr.value:
             kernel32.LocalFree(sid_ptr)
 
 
-def _grant_traverse(path: Path, sid: str) -> None:
+def _grant_traverse_one(path: Path, sid: str, package_sid: str) -> None:
+    if _parent_allows_traverse(path, sid, package_sid):
+        return
+    _write_traverse_ace(path, sid)
+
+
+def _grant_traverse(path: Path, sid: str, package_sid: str | None = None) -> None:
     """Let the container walk down to a folder without granting that folder's children."""
 
     # The leaf is granted separately. Parents only need traverse. The volume
     # root is not granted: that would be an access entry on the whole drive.
+    if not package_sid:
+        package_sid = _ALL_APPLICATION_PACKAGES
     if os.name == "nt":
         try:
             text = str(path.resolve())
@@ -569,21 +785,31 @@ def _grant_traverse(path: Path, sid: str) -> None:
     else:
         text = str(path)
     for parent in _windows_traverse_parents(text):
-        try:
-            _grant_traverse_one(Path(parent), sid)
-        except IcaclsTimeout:
-            raise
-        except OSError:
-            # Some system folders are not ours to edit. The container can
-            # still walk them when Windows already allows it.
+        key = (sid, package_sid, ntpath.normcase(parent))
+        if key in _granted_traverse:
             continue
+        try:
+            _finish_within(
+                _GRANT_TIMEOUT_SECONDS,
+                Path(parent),
+                lambda parent=parent: _grant_traverse_one(Path(parent), sid, package_sid),
+            )
+        except (GrantTimeout, IcaclsTimeout):
+            raise
+        except OSError as exc:
+            if getattr(exc, "winerror", None) in _UNCHANGEABLE_ERRORS:
+                continue
+            raise
+        _granted_traverse.add(key)
 
 
 def _marker_path() -> Path:
     return Path(sys.prefix) / ".aicad-appcontainer-acl"
 
 
-def grant_read_paths(paths: Sequence[Path], sid: str) -> None:
+def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = None) -> None:
+    if not package_sid:
+        package_sid = _ALL_APPLICATION_PACKAGES
     marker = _marker_path()
     already = False
     try:
@@ -593,17 +819,19 @@ def grant_read_paths(paths: Sequence[Path], sid: str) -> None:
     if not already:
         for path in paths:
             _grant_tree(path, sid, "(OI)(CI)RX")
-            _grant_traverse(path, sid)
+            _grant_traverse(path, sid, package_sid)
         try:
             marker.write_text(sid, encoding="utf-8")
         except OSError:
             pass
 
 
-def grant_workspace(path: Path, sid: str) -> None:
+def grant_workspace(path: Path, sid: str, package_sid: str | None = None) -> None:
+    if not package_sid:
+        package_sid = _ALL_APPLICATION_PACKAGES
     path.mkdir(parents=True, exist_ok=True)
     _grant_tree(path, sid, "(OI)(CI)M")
-    _grant_traverse(path, sid)
+    _grant_traverse(path, sid, package_sid)
 
 
 _user_sid: str | None = None
@@ -938,7 +1166,7 @@ def spawn(
         # a process only when that process grants the container, and this
         # process does not. Adding a deny entry here stopped later scripts
         # from finishing in CI. See SECURITY.md.
-        grant_workspace(workspace, sid_text)
+        grant_workspace(workspace, sid_text, _package_sid(mode == "lpac"))
         job = _create_job(cpu_seconds, memory_bytes)
         process = _launch(
             command,
@@ -1003,7 +1231,8 @@ def _probe_command(workspace: Path) -> list[str]:
     # The real script imports aicad. A probe that only prints can succeed in a
     # container that then fails to load the geometry libraries.
     script.write_text("import aicad\nprint('sandbox-ok')\n", encoding="utf-8")
-    return [sys.executable, "-B", "-u", str(script)]
+    # -P matches the script process: the working directory is not an import path.
+    return [sys.executable, "-P", "-B", "-u", str(script)]
 
 
 def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
@@ -1016,8 +1245,9 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
     try:
         sid, sid_text = _appcontainer_sid()
         try:
-            grant_read_paths(read_paths, sid_text)
-            grant_workspace(root, sid_text)
+            package = _package_sid(mode == "lpac")
+            grant_read_paths(read_paths, sid_text, package)
+            grant_workspace(root, sid_text, package)
             job = _create_job(30, 2 * 1024 * 1024 * 1024)
             try:
                 stdout_path = root / "stdout.txt"
@@ -1082,6 +1312,7 @@ def _probe_env(workspace: Path) -> dict[str, str]:
     env["USERPROFILE"] = location
     env["APPDATA"] = location
     env["LOCALAPPDATA"] = location
+    env["PYTHONSAFEPATH"] = "1"
     return env
 
 
@@ -1111,15 +1342,23 @@ def ensure_mode(read_paths: Sequence[Path]) -> str:
 
 
 def availability_error(read_paths: Sequence[Path] | None = None) -> str | None:
+    """Whether this process can confine a script. The answer is kept for the process."""
+
+    global _probe_done, _probe_result
     if ctypes.sizeof(ctypes.c_void_p) != 8:
         return "The Windows sandbox needs 64-bit Python. The script was not run."
     if not read_paths:
         return "The sandbox was not given the Python folders it needs to read."
+    if _probe_done:
+        return _probe_result
     try:
         ensure_mode(read_paths)
     except OSError as exc:
-        return str(exc)
-    return None
+        _probe_result = str(exc)
+    else:
+        _probe_result = None
+    _probe_done = True
+    return _probe_result
 
 
 def identity_failures(memory_bytes: int) -> list[str]:
