@@ -8,7 +8,28 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A geometry import keeps the project as the working directory | The image library's attach routine points the process at the base interpreter, then puts the project back. That request is refused, so a relative file in the project still opens and a plugin file there is not loaded. |
+| A relative project file can be missed only in the base interpreter directory | Native code is in that directory for a moment, and the file is not there. A changed file, or a miss from any other directory, still means the working directory moved. |
+| The child loader does not run a script that is outside the container | Loading the installed runner file is not confinement. Windows still requires an AppContainer in a job, and macOS still requires its profile. |
+| A geometry import may pass through the interpreter directory | Native libraries change that directory and put the project back. A relative file in the project still has to open, and no other directory counts as staying put. |
+| A slow Windows firewall command still has to finish the block | After earlier scripts the command can take longer than 30 seconds. The wait is longer, and the script still does not start when the block is missing. |
 | The program is started with the `aicad` command or `python -P` | The working directory is a project folder, so that start keeps the folder off the import path. |
+| Catalog parts are rows in dimension tables, and a joint may name a mate on those parts | Adding a designation is a new row, and the assembly stores the mate name so the anchor stays the catalog frame. |
+| A recorded Windows package id is not the network block | The next process reads both rules before it reuses them. A missing rule is installed again, and the record stays in the user profile, outside the project and outside folders a script can write. |
+| Windows firewall rules are remembered for the next process | Installing them again after the sandbox tests made the firewall call time out. The package id is recorded, and a network-on script removes the rules and that record. |
+| A Windows save reports a destination that cannot be created | An access-list deny does not stop this token from creating a folder. A file in that place cannot become the copy's parent, and the open project stays put. |
+| A Windows folder lock denies creates for that user | An Owner Rights allow did not stop a new folder. The user is denied creating a file, creating a folder, and traversing, and can still restore the access list. |
+| A Windows folder with write access removed cannot gain a child | Read and execute still allowed a new folder. Creating a file or a folder is denied, and the owner can still restore the access list. |
+| Windows firewall rules stay up for the next network-off script | Installing them again for every script made the firewall call time out. A network-on script still removes them first. |
+| A Windows export is judged after trailing dots and spaces are removed | ``.. .`` is ``..`` once Win32 trims the name. That path is refused before anything is written. |
+| A secret file on Windows is an owner-only access list | The mode bits from stat stay world-writable on Windows. The access list is what keeps the file private. |
+| A Windows CPU stop is the job's user time | The process can exit without a signal this platform names. User time at the cap is that limit, and a short crash is not. |
+| A confined script reports plugin consent under the home config | The Windows child keeps library caches in the project. That folder is not the consent file. |
+| An unconnected Windows UDP check binds its socket before it sends | A blocked implicit bind is reported as an invalid argument, and that datagram was not sent. Binding first makes the refusal an access error. An invalid-argument result is still not a closed network. |
+| A Windows network block covers every protocol, and both UDP sends have to be refused | A connected UDP send can leave the machine. The container is blocked inbound and outbound with no protocol or port limit, a successful send is not a closed network, and a receiver on the runner has to stay empty. |
+| A Windows network check sends one unconnected datagram | A connected UDP send can report success after the firewall has refused TCP. The datagram itself has to be refused. |
+| A Windows script runs only after that container's network is refused | An AppContainer with no network capability can still wait out a connection. The firewall blocks that container, and a timeout or a DNS failure is not a refusal. |
+| A Windows script starts from the base interpreter and stays suspended until the job holds it | The virtual-environment redirector starts a second process in its own job. The script is resumed only after the sandbox job holds it and its token is an AppContainer. |
 | A plugin ships with aicad only when its metadata directory is this install's | The package name is not that check, so another package with the same name still needs an allow. |
 | One unreadable entry-point file does not hide the other plugins | That package is skipped and listed with a warning. The rest are still listed. |
 | The syscall filter rejects other architectures and io_uring | A 32-bit socket call and io_uring both opened a socket while the network was off. |
@@ -17,7 +38,10 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 | Interference starts with the axis-aligned boxes and only then intersects the solids | A pair whose boxes are farther apart than the clearance cannot touch, so the boolean runs on the pairs that can. |
 | Penetration depth is the separating-axis translation, and the volume is the boolean | The depth is exact for convex solids. A non-convex solid reports the convex-hull depth, and the volume stays the real intersection. |
 | A joint command past its stop is held at the stop and recorded | The pose stays on the limit, and the study says which step reached it. |
-| Catalog parts are rows in dimension tables, and a joint may name a mate on those parts | Adding a designation is a new row, and the assembly stores the mate name so the anchor stays the catalog frame. |
+| A Windows traverse grant does not walk child directories | The named security call propagated access to every child and did not return. The entry is written on that directory's handle only, a parent that already allows traverse is skipped, and the probe result is kept for the process. |
+| A Windows traverse grant changes that one directory | icacls on a parent in the tool cache did not finish. Traverse adds one access entry on the directory and does not scan or change its children. |
+| The Windows sandbox does not grant a volume root, and icacls has to finish | icacls waits for a person on the drive root, so that folder is skipped. Any other icacls call that does not finish is an error, and the sandbox does not change that folder. |
+| Windows and macOS tests run on every pull request and on every push to main | Manual dispatch still starts the workflow. The weekly schedule and the cross-platform label no longer select those jobs. |
 
 ## 2026-10-22
 

@@ -68,6 +68,9 @@ def write_agent_token(port: int, token: str) -> None:
         os.write(fd, token.encode("utf-8"))
     finally:
         os.close(fd)
+    from aicad.paths import restrict_private_file
+
+    restrict_private_file(path)
 
 
 def read_agent_token(port: int) -> str:

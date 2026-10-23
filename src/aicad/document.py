@@ -546,12 +546,15 @@ class Document:
 
             require_in_project(path, self.workspace, writing=True)
             part = self._get(name)
-            from aicad.paths import refuse_reserved_device
+            from aicad.paths import refuse_reserved_device, require_export_path
 
             destination = Path(path)
             refuse_reserved_device(destination, self.workspace, "Export path", GeometryError)
             if not destination.is_absolute():
-                destination = self.workspace / destination
+                # A relative export stays in the project. Windows trims a
+                # trailing dot or space before creating the file, and that
+                # trimmed path is refused when it would leave the project.
+                destination = require_export_path(self.workspace, path, "Export path", GeometryError)
             kind = kind.lower()
             if kind == "step":
                 kernel.export_step_file(part.shape, destination)

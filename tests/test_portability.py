@@ -147,6 +147,9 @@ def test_export_rejects_windows_escapes_and_keeps_paths_inside(tmp_path):
         r"foo\..\..\outside.step",
         "../outside.step",
         "exports/../../outside.step",
+        ".. .",
+        ".. ./hidden.step",
+        "imports/.. .",
     ]
     for raw in escapes:
         with pytest.raises(GeometryError, match="outside"):
@@ -177,9 +180,15 @@ def test_export_rejects_windows_escapes_and_keeps_paths_inside(tmp_path):
 
 def _c_printf(payload: bytes) -> None:
     if os.name == "nt":
+        # ucrtbase does not export printf. _write is the Universal CRT write
+        # to the same stdout descriptor the redirect replaces.
         libc = ctypes.CDLL("ucrtbase")
-    else:
-        libc = ctypes.CDLL(None)
+        libc._write.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
+        libc._write.restype = ctypes.c_int
+        buffer = ctypes.create_string_buffer(payload)
+        libc._write(1, buffer, len(payload))
+        return
+    libc = ctypes.CDLL(None)
     libc.printf(payload)
 
 

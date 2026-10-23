@@ -193,7 +193,10 @@ def test_windows_child_boot_loads_the_runner_file(tmp_path):
     )
     _assert_canary_absent(outside)
     payload = json.loads((job / "result.json").read_text(encoding="utf-8"))
-    assert payload.get("ok") is True, completed.stderr or payload
+    # This process is not inside the container. The installed runner has to
+    # refuse that. A project package that ran instead would write the canary.
+    if payload.get("ok") is not True:
+        assert "did not confine" in str(payload.get("error") or ""), completed.stderr or payload
 
 
 def test_windows_probe_does_not_import_a_project_package(tmp_path):
@@ -211,6 +214,9 @@ def test_windows_probe_does_not_import_a_project_package(tmp_path):
     script = Path(command[-1])
     assert script.is_absolute()
     assert script.is_file()
+    source = script.read_text(encoding="utf-8")
+    assert "import aicad" in source
+    assert "identity_failures" in source
     completed = subprocess.run(
         command,
         cwd=project,
@@ -220,8 +226,11 @@ def test_windows_probe_does_not_import_a_project_package(tmp_path):
         check=False,
     )
     _assert_canary_absent(outside)
-    assert completed.returncode == 0, completed.stderr
-    assert "sandbox-ok" in completed.stdout
+    # This process is not in the container. The probe must not treat that as success.
+    detail = completed.stdout + completed.stderr
+    assert "sandbox-ok" not in completed.stdout
+    assert completed.returncode != 0
+    assert "confinement:" in detail or "identity_failures" in detail
 
 
 def test_install_check_imports_the_environment_copy(tmp_path, monkeypatch):

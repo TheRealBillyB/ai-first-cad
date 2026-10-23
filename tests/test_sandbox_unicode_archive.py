@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
 import stat
 import sys
@@ -395,7 +396,16 @@ def test_a_reserved_device_name_is_refused_as_an_export_path(tmp_path, name):
     document.create_part_from_ops("box", BOX)
     with pytest.raises(GeometryError, match="reserved"):
         document.export("box", name, "step")
-    assert list((tmp_path / "project").rglob(name.split("/")[-1])) == []
+    # os.listdir returns directory entries. rglob("NUL") also matches the
+    # Windows null device, which is not a file this export created.
+    leaf = name.split("/")[-1]
+    found = []
+    root = tmp_path / "project"
+    for current, dirnames, filenames in os.walk(root):
+        for entry in dirnames + filenames:
+            if entry == leaf:
+                found.append(entry)
+    assert found == []
     _assert_no_canary(tmp_path)
 
 

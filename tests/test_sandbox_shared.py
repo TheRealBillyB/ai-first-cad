@@ -420,12 +420,17 @@ def test_pack_named_as_the_core_distribution_is_not_run_when_listed_or_allowed(t
     # The package name is not enough to count as this install, so it still needs an allow.
     # Listing it and recording that allow does not import the module.
     assert offer.third_party is True
+    assert offer.problem is None
     assert offer.distribution == "aicad"
     plugins.warning_text(offer)
     plugins._list_payload()
+    # The distribution name matches aicad. That does not make it this install.
+    # Listing it and recording an allow must not run the package. Loading it
+    # before that allow must not run it either.
     with pytest.raises(plugins.PluginConsentError):
         plugins.load("h-core")
-    plugins.allow("h-core", accept=True)
+    allowed = plugins.allow("h-core", accept=True)
+    assert allowed.third_party is True
     assert "h_core_plugin" not in sys.modules
     _assert_absent(canary)
 

@@ -26,6 +26,7 @@ import ctypes
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -838,8 +839,21 @@ def _block_sockets(*, network: bool) -> None:
         )
 
 
+# A literal public address. Loopback is often allowed inside a container, and a
+# name would make a DNS failure look like a closed network.
+_WINDOWS_TCP_PROBE = ("1.1.1.1", 443)
+_WINDOWS_UDP_PROBE = ("1.1.1.1", 53)
+# internetClient, internetClientServer, privateNetworkClientServer.
+_NETWORK_CAPABILITY_SIDS = frozenset({"S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"})
+
+
 def confined_errno(error: OSError) -> bool:
-    """True when this error is the operating system refusing the sandbox, not a timeout."""
+    """True when this error is the operating system refusing the sandbox.
+
+    A timeout, a DNS failure, and any other code are not a refusal. A packet
+    that was allowed to wait is not proof the network is off.
+    """
+
     winerror = getattr(error, "winerror", None)
     if winerror in {5, 10013, 10051}:
         return True
@@ -863,6 +877,245 @@ def _file_blocked(path: str) -> bool:
     except OSError as exc:
         return confined_errno(exc)
     return False
+
+
+def _error_codes(error: BaseException) -> str:
+    winerror = getattr(error, "winerror", None)
+    number = getattr(error, "errno", None)
+    return f"winerror={winerror} errno={number}"
+
+
+def _network_timeout(error: BaseException) -> bool:
+    if isinstance(error, TimeoutError):
+        return True
+    if getattr(error, "winerror", None) == 10060:
+        return True
+    return getattr(error, "errno", None) in {10060, 110}
+
+
+def _network_dns(error: BaseException) -> bool:
+    import socket
+
+    if isinstance(error, socket.gaierror):
+        return True
+    number = getattr(error, "winerror", None)
+    errno = getattr(error, "errno", None)
+    return number in {11001, 11002, 11003, 11004} or errno in {11001, 11002, 11003, 11004}
+
+
+def network_attempt_label(error: BaseException | None, *, success: str) -> str:
+    """What one connect or send did. Only a sandbox refusal is a denial."""
+
+    if error is None:
+        return success
+    if _network_timeout(error):
+        return f"timeout {_error_codes(error)}"
+    if _network_dns(error):
+        return f"dns {_error_codes(error)}"
+    if isinstance(error, OSError) and confined_errno(error):
+        return f"denied {_error_codes(error)}"
+    return f"error {_error_codes(error)}"
+
+
+def _public_probe_address(address: str) -> bool:
+    text = address.strip().lower()
+    if text in {"localhost", "::1", "0.0.0.0"} or text.startswith("127."):
+        return False
+    return True
+
+
+# Set by the parent when it is listening. Dotted IPv4 only, so this cannot
+# turn into a name lookup. Each item is address, TCP port, UDP port.
+_WINDOWS_RECEIVER_ENV = "AICAD_WIN_NET_RECEIVERS"
+_WINDOWS_RECEIVER_ITEM = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5}):(\d{1,5})$")
+_WINDOWS_PROBE_PAYLOAD = b"aicad-net-probe"
+# The last Windows network detail, so the probe result can show it after a pass.
+_windows_net_probe_text = ""
+
+
+def _ipv4_text(address: str) -> bool:
+    parts = address.split(".")
+    if len(parts) != 4:
+        return False
+    for part in parts:
+        if not part.isdigit() or (len(part) > 1 and part.startswith("0")):
+            return False
+        if int(part) > 255:
+            return False
+    return True
+
+
+def windows_receiver_targets() -> tuple[tuple[str, int, int], ...]:
+    """Local receivers the parent asked the network check to try.
+
+    A name is ignored. The check must not look anything up.
+    """
+
+    found: list[tuple[str, int, int]] = []
+    raw = os.environ.get(_WINDOWS_RECEIVER_ENV, "")
+    for part in raw.split(";"):
+        item = part.strip()
+        if not item:
+            continue
+        match = _WINDOWS_RECEIVER_ITEM.fullmatch(item)
+        if match is None:
+            continue
+        address, tcp_text, udp_text = match.group(1), match.group(2), match.group(3)
+        tcp_port = int(tcp_text)
+        udp_port = int(udp_text)
+        if not _ipv4_text(address):
+            continue
+        if tcp_port <= 0 or tcp_port > 65535 or udp_port <= 0 or udp_port > 65535:
+            continue
+        found.append((address, tcp_port, udp_port))
+    return tuple(found)
+
+
+def _windows_one_attempt(kind: str, address: str, port: int) -> str:
+    """One TCP connect or one UDP send.
+
+    connect() on a UDP socket only selects the destination. The following
+    send() hands the datagram to the stack. A successful send is not a
+    refusal, connected or not.
+    """
+
+    import socket
+
+    if kind == "tcp":
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        try:
+            try:
+                sock.connect((address, port))
+            except OSError as exc:
+                return network_attempt_label(exc, success="connected")
+            return "connected"
+        finally:
+            sock.close()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(2)
+    try:
+        try:
+            if kind == "udp-sendto":
+                # An unbound sendto reports a blocked local port as WSAEINVAL.
+                # That is not a sent datagram, and it is not the access error
+                # the block returns for a bound socket. Bind first, then send.
+                sock.bind(("0.0.0.0", 0))
+                sock.sendto(_WINDOWS_PROBE_PAYLOAD, (address, port))
+            else:
+                sock.connect((address, port))
+                sock.send(_WINDOWS_PROBE_PAYLOAD)
+        except OSError as exc:
+            return network_attempt_label(exc, success="sent")
+        return "sent"
+    finally:
+        sock.close()
+
+
+def windows_network_attempts() -> tuple[tuple[str, str], ...]:
+    """TCP, an unconnected UDP send, and a connected UDP send.
+
+    Receiver attempts run first, so a later timeout cannot skip them.
+    Loopback is not a refusal. A public address that is loopback is recorded
+    as loopback and does not count as off.
+    """
+
+    attempts: list[tuple[str, str]] = []
+    for address, tcp_port, udp_port in windows_receiver_targets():
+        attempts.append(
+            (f"tcp@{address}:{tcp_port}", _windows_one_attempt("tcp", address, tcp_port))
+        )
+        attempts.append(
+            (
+                f"udp-sendto@{address}:{udp_port}",
+                _windows_one_attempt("udp-sendto", address, udp_port),
+            )
+        )
+        attempts.append(
+            (
+                f"udp-connected@{address}:{udp_port}",
+                _windows_one_attempt("udp-connected", address, udp_port),
+            )
+        )
+    tcp_host, tcp_port = _WINDOWS_TCP_PROBE
+    udp_host, udp_port = _WINDOWS_UDP_PROBE
+    if not _public_probe_address(tcp_host):
+        attempts.append(("tcp", "loopback"))
+    else:
+        attempts.append(("tcp", _windows_one_attempt("tcp", tcp_host, tcp_port)))
+    if not _public_probe_address(udp_host):
+        attempts.append(("udp-sendto", "loopback"))
+        attempts.append(("udp-connected", "loopback"))
+    else:
+        attempts.append(("udp-sendto", _windows_one_attempt("udp-sendto", udp_host, udp_port)))
+        attempts.append(
+            ("udp-connected", _windows_one_attempt("udp-connected", udp_host, udp_port))
+        )
+    return tuple(attempts)
+
+
+def _capability_text(capabilities: tuple[str, ...] | None) -> str:
+    if capabilities is None:
+        return "unread"
+    if not capabilities:
+        return "none"
+    return ",".join(capabilities)
+
+
+def windows_network_detail(
+    *,
+    attempts: tuple[tuple[str, str], ...],
+    package: str,
+    capabilities: tuple[str, ...] | None,
+) -> str:
+    tcp_host, tcp_port = _WINDOWS_TCP_PROBE
+    udp_host, udp_port = _WINDOWS_UDP_PROBE
+    targets = [f"{tcp_host}:{tcp_port}", f"{udp_host}:{udp_port}"]
+    for address, receiver_tcp, receiver_udp in windows_receiver_targets():
+        targets.append(f"{address}:{receiver_tcp}:{receiver_udp}")
+    shown = "; ".join(f"{name}={label}" for name, label in attempts)
+    return (
+        f"probe={','.join(targets)}; {shown}; "
+        f"package={package}; capabilities={_capability_text(capabilities)}"
+    )
+
+
+def windows_network_is_off(
+    *,
+    attempts: tuple[tuple[str, str], ...],
+    package: str,
+    capabilities: tuple[str, ...] | None,
+) -> bool:
+    """True only when every send was refused and the token has no network capability.
+
+    The public TCP connect, the unconnected UDP send, and the connected UDP
+    send all have to be present. A successful send is not off, because the
+    datagram may already have left. An unreadable capability list is not an
+    empty one. The package id has to be present, because that is the
+    container the block names.
+    """
+
+    labels = {name: label for name, label in attempts}
+    if any(name not in labels for name in ("tcp", "udp-sendto", "udp-connected")):
+        return False
+    if capabilities is None or not package.upper().startswith("S-1-15-2-"):
+        return False
+    present = {item.upper() for item in capabilities}
+    if present & {item.upper() for item in _NETWORK_CAPABILITY_SIDS}:
+        return False
+    return all(label.startswith("denied ") for _name, label in attempts)
+
+
+def windows_network_failure_text(
+    *,
+    attempts: tuple[tuple[str, str], ...],
+    package: str,
+    capabilities: tuple[str, ...] | None,
+) -> str:
+    return (
+        "Windows did not turn the network off, so the script was not run. "
+        + windows_network_detail(attempts=attempts, package=package, capabilities=capabilities)
+    )
 
 
 def _network_blocked() -> bool:
@@ -930,7 +1183,7 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     roots = _read_roots()
     if sys.platform == "win32":
-        from aicad.sandbox_windows import identity_failures
+        from aicad.sandbox_windows import identity_failures, windows_token_network
 
         failures = identity_failures(memory_bytes())
         if failures:
@@ -939,8 +1192,21 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
                 + "; ".join(failures)
                 + "), so the script was not run."
             )
-        if not network and not _network_blocked():
-            raise ScriptError("Windows did not turn the network off, so the script was not run.")
+        # The token and the job are already applied. This probe reads that token.
+        if not network:
+            global _windows_net_probe_text
+            package, capabilities = windows_token_network()
+            attempts = windows_network_attempts()
+            _windows_net_probe_text = windows_network_detail(
+                attempts=attempts, package=package, capabilities=capabilities
+            )
+            if not windows_network_is_off(
+                attempts=attempts, package=package, capabilities=capabilities
+            ):
+                raise ScriptError(
+                    "Windows did not turn the network off, so the script was not run. "
+                    + _windows_net_probe_text
+                )
         return roots
     if sys.platform == "darwin":
         _set_limits()
@@ -1405,6 +1671,20 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             shutil.rmtree(probe_root, ignore_errors=True)
 
 
+def _died_from_limit_signal(code: int) -> bool:
+    """True when ``code`` is the memory or CPU signal.
+
+    The names are looked up only if this platform has them. A missing name
+    is not a limit, and reading it must not raise.
+    """
+
+    if code >= 0:
+        return False
+    signals = {getattr(signal, name, None) for name in ("SIGKILL", "SIGXCPU")}
+    signals.discard(None)
+    return -code in signals
+
+
 def _payload_from_result(
     job: Path,
     code: int,
@@ -1425,11 +1705,10 @@ def _payload_from_result(
         tail = stderr[-2000:]
         shutil.rmtree(job, ignore_errors=True)
         # SIGKILL is the memory cap and the parent's kill. SIGXCPU is the CPU
-        # cap. Other signals, including an abort, are crashes.
-        limit_signal = code < 0 and -code in {
-            signal.SIGKILL,
-            getattr(signal, "SIGXCPU", -1),
-        }
+        # cap. Other signals, including an abort, are crashes. Windows has
+        # neither name; a CPU stop on that platform is decided from the job
+        # before this function runs.
+        limit_signal = _died_from_limit_signal(code)
         if memory_killed or limit_signal:
             detail = tail.strip()
             if code < 0:

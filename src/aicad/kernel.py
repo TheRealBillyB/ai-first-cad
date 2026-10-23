@@ -1534,9 +1534,20 @@ def solid_inertia(shape: Shape) -> dict:
     }
 
 
+def _prepare_export_parent(path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise GeometryError(f"Could not write {path}.") from exc
+
+
 def export_step_file(shape: Shape, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not export_step(shape.impl, path):
+    _prepare_export_parent(path)
+    try:
+        written = export_step(shape.impl, path)
+    except (OSError, RuntimeError) as exc:
+        raise GeometryError(f"Could not write STEP file {path}.") from exc
+    if not written:
         raise GeometryError(f"Could not write STEP file {path}.")
 
 
@@ -1546,7 +1557,7 @@ def export_stl_file(
     linear_tolerance: float = 0.05,
     angular_tolerance: float = 0.2,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _prepare_export_parent(path)
     if not export_stl(
         shape.impl,
         path,
