@@ -9,7 +9,33 @@ project or touches the file.
 from __future__ import annotations
 
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+# The working directory is process-wide. Nested imports take the lock again.
+_CWD_LOCK = threading.RLock()
+
+
+@contextmanager
+def aside_from_cwd():
+    """Import from the package directory, not the working directory.
+
+    The geometry libraries read ``ezdxf.ini`` from the working directory as
+    they are imported. That directory is often a project someone else shared.
+    The file can name a font folder outside the project, and the font scan
+    opens it. The import does not need the working directory.
+    """
+    with _CWD_LOCK:
+        origin = os.getcwd()
+        os.chdir(Path(__file__).resolve().parent)
+        try:
+            yield
+        finally:
+            try:
+                os.chdir(origin)
+            except OSError:
+                pass
 
 
 def session_path_escapes(text: str) -> bool:

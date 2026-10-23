@@ -61,6 +61,15 @@ def search(query: str = "") -> dict[str, object]:
     }
 
 
+def _catalog_class(module: str, name: str):
+    """Load one catalog class. The working directory is not on the import path."""
+    from aicad.paths import aside_from_cwd
+
+    with aside_from_cwd():
+        imported = __import__(module, fromlist=[name])
+    return getattr(imported, name)
+
+
 def build(kind: str, size: str, length: float | None = None, fastener_type: str | None = None):
     """Return an unplaced build123d solid for a catalog entry."""
     kind = _canonical_kind(kind)
@@ -70,28 +79,30 @@ def build(kind: str, size: str, length: float | None = None, fastener_type: str 
             raise GeometryError(
                 "socket_head_cap_screw requires length in millimeters (the shank under the head)."
             )
-        from bd_warehouse.fastener import SocketHeadCapScrew
+        socket_head = _catalog_class("bd_warehouse.fastener", "SocketHeadCapScrew")
 
         standard = fastener_type or "iso4762"
-        return SocketHeadCapScrew(size=size, length=float(length), fastener_type=standard, simple=True)
+        return socket_head(size=size, length=float(length), fastener_type=standard, simple=True)
     if kind == "hex_nut":
         if length is not None:
             raise GeometryError("hex_nut has no length. Its height comes from the standard.")
-        from bd_warehouse.fastener import HexNut
+        hex_nut = _catalog_class("bd_warehouse.fastener", "HexNut")
 
-        return HexNut(size=size, fastener_type=fastener_type or "iso4032", simple=True)
+        return hex_nut(size=size, fastener_type=fastener_type or "iso4032", simple=True)
     if kind == "plain_washer":
         if length is not None:
             raise GeometryError("plain_washer has no length. Its thickness comes from the standard.")
-        from bd_warehouse.fastener import PlainWasher
+        washer = _catalog_class("bd_warehouse.fastener", "PlainWasher")
 
-        return PlainWasher(size=size, fastener_type=fastener_type or "iso7089")
+        return washer(size=size, fastener_type=fastener_type or "iso7089")
     if kind == "ball_bearing":
         if length is not None:
-            raise GeometryError("ball_bearing has no length. Width is part of the size, such as M8-22-7.")
-        from bd_warehouse.bearing import SingleRowDeepGrooveBallBearing
+            raise GeometryError(
+                "ball_bearing has no length. Width is part of the size, such as M8-22-7."
+            )
+        bearing = _catalog_class("bd_warehouse.bearing", "SingleRowDeepGrooveBallBearing")
 
-        return SingleRowDeepGrooveBallBearing(size=size, bearing_type=fastener_type or "SKT")
+        return bearing(size=size, bearing_type=fastener_type or "SKT")
     raise GeometryError(f"Unknown part kind {kind!r}. Use one of: {', '.join(_KINDS)}.")
 
 
@@ -218,20 +229,16 @@ def _describe(kind: str, size: str) -> str:
 
 def _sizes(kind: str) -> list[str]:
     if kind == "socket_head_cap_screw":
-        from bd_warehouse.fastener import SocketHeadCapScrew
-
-        return list(SocketHeadCapScrew.sizes("iso4762"))
+        socket_head = _catalog_class("bd_warehouse.fastener", "SocketHeadCapScrew")
+        return list(socket_head.sizes("iso4762"))
     if kind == "hex_nut":
-        from bd_warehouse.fastener import HexNut
-
-        return list(HexNut.sizes("iso4032"))
+        hex_nut = _catalog_class("bd_warehouse.fastener", "HexNut")
+        return list(hex_nut.sizes("iso4032"))
     if kind == "plain_washer":
-        from bd_warehouse.fastener import PlainWasher
-
-        return list(PlainWasher.sizes("iso7089"))
+        washer = _catalog_class("bd_warehouse.fastener", "PlainWasher")
+        return list(washer.sizes("iso7089"))
     if kind == "ball_bearing":
-        from bd_warehouse.bearing import SingleRowDeepGrooveBallBearing
-
-        available = set(SingleRowDeepGrooveBallBearing.sizes("SKT"))
-        return [size for size in SingleRowDeepGrooveBallBearing.sizes("SKT") if size in available]
+        bearing = _catalog_class("bd_warehouse.bearing", "SingleRowDeepGrooveBallBearing")
+        available = set(bearing.sizes("SKT"))
+        return [size for size in bearing.sizes("SKT") if size in available]
     return []

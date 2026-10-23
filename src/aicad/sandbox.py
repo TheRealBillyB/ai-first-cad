@@ -994,9 +994,12 @@ def _windows_font_cache_home() -> Path:
     if target.is_file() and target.stat().st_size > 0:
         return root
     try:
-        from ezdxf.fonts.fonts import build_font_manager_cache
+        from aicad.paths import aside_from_cwd
 
-        build_font_manager_cache(target)
+        with aside_from_cwd():
+            from ezdxf.fonts.fonts import build_font_manager_cache
+
+            build_font_manager_cache(target)
     except Exception:
         return root
     return root

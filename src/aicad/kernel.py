@@ -17,22 +17,26 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from build123d import (
-    Axis,
-    Box,
-    Cylinder,
-    Face,
-    Plane,
-    Polygon,
-    Pos,
-    Rot,
-    Vector,
-    export_step,
-    export_stl,
-    extrude,
-    import_step,
-    revolve,
-)
+
+from aicad.paths import aside_from_cwd
+
+with aside_from_cwd():
+    from build123d import (
+        Axis,
+        Box,
+        Cylinder,
+        Face,
+        Plane,
+        Polygon,
+        Pos,
+        Rot,
+        Vector,
+        export_step,
+        export_stl,
+        extrude,
+        import_step,
+        revolve,
+    )
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepGProp import BRepGProp
 from OCP.GProp import GProp_GProps
