@@ -234,3 +234,10 @@ def test_picture_request_can_carry_the_token_in_the_query(server):
     )
     assert status == 200
     assert payload == b"hello\n"
+
+    status, payload, _headers = _exchange(server, "GET", "/api/file?path=notes.txt", token="agent")
+    assert status == 200
+    text = payload.decode("utf-8")
+    assert text.startswith("<<<UNTRUSTED PROJECT TEXT")
+    assert "hello" in text
+    assert text.rstrip().endswith("<<<END UNTRUSTED PROJECT TEXT>>>")
