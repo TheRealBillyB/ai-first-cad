@@ -19,6 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from aicad.paths import prepare_geometry_import
+
+prepare_geometry_import()
 from build123d import (
     Axis,
     Box,

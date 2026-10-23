@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import math
 
+from aicad.paths import prepare_geometry_import
+
+prepare_geometry_import()
 from build123d import Box, Cylinder, Face, Polyline, Pos, Rot, Solid
 
 from aicad.errors import GeometryError

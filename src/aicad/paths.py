@@ -8,15 +8,165 @@ project or touches the file.
 
 from __future__ import annotations
 
+import builtins
 import ctypes
 import ctypes.util
 import errno
+import importlib.machinery
 import os
+import re
 import stat
 import sys
 import tempfile
+import threading
 import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+_OPTIONS_ASSIGN = re.compile(r"(?m)^options\s*=\s*Options\(\)\s*$")
+_BLOCK_PROJECT_INI = threading.local()
+_FINDER_INSTALLED = False
+
+
+def packaged_font_config() -> Path:
+    """Configuration file shipped with aicad for the geometry libraries."""
+    return Path(__file__).resolve().parent / "data" / "ezdxf.ini"
+
+
+def _is_project_ini(path: Path) -> bool:
+    """True for ``ezdxf.ini`` in the working directory, not the packaged file."""
+    if path.name.lower() != "ezdxf.ini":
+        return False
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return not path.is_absolute()
+    if resolved == packaged_font_config():
+        return False
+    if not path.is_absolute():
+        return True
+    try:
+        return resolved == (Path.cwd() / "ezdxf.ini").resolve()
+    except OSError:
+        return False
+
+
+def _filtered_config_files(original):
+    def config_files():
+        packaged = packaged_font_config()
+        os.environ.setdefault("EZDXF_CONFIG_FILE", str(packaged))
+        kept: list[Path] = []
+        seen: set[str] = set()
+        for item in original():
+            path = Path(item)
+            if _is_project_ini(path):
+                continue
+            key = os.fspath(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append(path)
+        if str(packaged) not in seen:
+            kept.append(packaged)
+        return kept
+
+    return config_files
+
+
+def _install_config_filter(module) -> None:
+    if getattr(module, "_aicad_font_config", False):
+        return
+    module.config_files = _filtered_config_files(module.config_files)
+    module._aicad_font_config = True
+
+
+def _rebuild_options(module) -> None:
+    fresh = module.Options()
+    current = module.options
+    current._loaded_paths = list(fresh._loaded_paths)
+    current._config = fresh._config
+    current.update_cached_options()
+
+
+class _ProjectIniUnread:
+    """Skip a project ``ezdxf.ini`` on this thread without moving other threads."""
+
+    def __enter__(self):
+        self._open = builtins.open
+
+        def guarded(file, *args, **kwargs):
+            if getattr(_BLOCK_PROJECT_INI, "on", False):
+                try:
+                    if _is_project_ini(Path(os.fspath(file))):
+                        raise FileNotFoundError(os.fspath(file))
+                except (TypeError, ValueError):
+                    pass
+            return self._open(file, *args, **kwargs)
+
+        builtins.open = guarded
+        _BLOCK_PROJECT_INI.on = True
+        return self
+
+    def __exit__(self, *exc):
+        _BLOCK_PROJECT_INI.on = False
+        builtins.open = self._open
+        return False
+
+
+class _EzdxfOptionsLoader:
+    def __init__(self, origin: str):
+        self.origin = origin
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module) -> None:
+        source = Path(self.origin).read_text(encoding="utf-8")
+        replaced, count = _OPTIONS_ASSIGN.subn("options = None", source, count=1)
+        code = compile(replaced if count == 1 else source, self.origin, "exec")
+        with _ProjectIniUnread():
+            exec(code, module.__dict__)
+            _install_config_filter(module)
+            if count == 1:
+                module.options = module.Options()
+            else:
+                _rebuild_options(module)
+
+
+class _EzdxfOptionsFinder:
+    def find_spec(self, fullname, path, target=None):
+        if fullname != "ezdxf._options" or fullname in sys.modules:
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is None or not spec.origin:
+            return None
+        spec.loader = _EzdxfOptionsLoader(spec.origin)
+        return spec
+
+
+def prepare_geometry_import() -> None:
+    """Use the packaged font config before the geometry libraries are imported.
+
+    Those libraries read ``ezdxf.ini`` from the working directory. A project
+    is often that directory, and the file can name a font folder outside the
+    project. ``EZDXF_CONFIG_FILE`` points at the file shipped with aicad, and
+    the working-directory file is not read. The process working directory is
+    not changed, so another thread can keep opening relative paths.
+    """
+    global _FINDER_INSTALLED
+    packaged = packaged_font_config()
+    current = os.environ.get("EZDXF_CONFIG_FILE", "")
+    if not current or _is_project_ini(Path(current)):
+        os.environ["EZDXF_CONFIG_FILE"] = str(packaged)
+    if not _FINDER_INSTALLED:
+        sys.meta_path.insert(0, _EzdxfOptionsFinder())
+        _FINDER_INSTALLED = True
+    module = sys.modules.get("ezdxf._options")
+    if module is None or getattr(module, "options", None) is None:
+        return
+    _install_config_filter(module)
+    loaded = list(module.options.loaded_config_files)
+    if any(_is_project_ini(Path(item)) for item in loaded):
+        _rebuild_options(module)
 
 
 def session_path_escapes(text: str) -> bool:
@@ -624,3 +774,6 @@ def publish_bytes(path: Path, data: bytes, *, root: Path | None = None) -> Path:
 def publish_text(path: Path, text: str, *, root: Path | None = None) -> Path:
     """Replace ``path`` with UTF-8 text without following a link at that name."""
     return publish_bytes(path, text.encode("utf-8"), root=root)
+
+
+prepare_geometry_import()

@@ -583,15 +583,19 @@ def export_with(
     document,
     consent_path: Path | None = None,
 ) -> dict:
-    """Ask a plugin for file contents and write them where the caller asked.
+    """Ask a plugin for file contents and write them inside the project.
 
     The plugin does not choose the path. ``step`` and ``stl`` are refused
-    before the plugin is imported.
+    before the plugin is imported. A path outside the project is refused
+    before the plugin is imported too.
     """
     if format in _RESERVED_FORMATS:
         raise PluginError(
             f"Format {format!r} is built in. Plugin exporters cannot replace STEP or STL."
         )
+    from aicad.paths import require_export_path
+
+    destination = require_export_path(Path(document.workspace), path, "Export path", PluginError)
     loaded = load(plugin, consent_path=consent_path)
     spec = loaded._exporter(format)
     opts = _options_dict(options)
