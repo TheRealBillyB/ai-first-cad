@@ -410,6 +410,7 @@ def test_a_swapped_directory_is_not_written(tmp_path, monkeypatch):
         link.symlink_to(outside, target_is_directory=True)
 
     monkeypatch.setattr(paths, "_before_nofollow", swap)
+    monkeypatch.setattr(paths, "_reopen_accepts_create", lambda _path: False)
     with pytest.raises(OSError):
         paths.publish_text(project / "exports" / "part.txt", _CANARY_TEXT, root=project)
     assert list(outside.iterdir()) == []
@@ -419,6 +420,35 @@ def test_a_swapped_directory_is_not_written(tmp_path, monkeypatch):
     assert list(outside.iterdir()) == []
     _assert_absent(outside / "notes.md")
     _assert_absent(_canary(outside))
+
+
+def test_a_private_file_is_copied_into_the_project(tmp_path, monkeypatch):
+    from aicad import paths
+    from aicad.kernel import export_step_file, make_from_ops
+
+    if not paths.nofollow_writes():
+        pytest.skip("this system cannot open a directory without following a link")
+    copied: list[Path] = []
+    real_copy = paths._copy_into_descriptor
+
+    def copy(descriptor: int, source: Path) -> None:
+        copied.append(source)
+        real_copy(descriptor, source)
+
+    monkeypatch.setattr(paths, "_reopen_accepts_create", lambda _path: False)
+    monkeypatch.setattr(paths, "_copy_into_descriptor", copy)
+    project = tmp_path / "project"
+    project.mkdir()
+    paths.remember_project(project)
+    target = project / "exports" / "part.txt"
+    paths.publish_text(target, "inside\n", root=project)
+    assert target.read_text(encoding="utf-8") == "inside\n"
+    assert target.is_file() and not target.is_symlink()
+    step = project / "exports" / "box.step"
+    export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [4, 4, 4]}]), step)
+    assert step.is_file() and step.stat().st_size > 0 and not step.is_symlink()
+    assert len(copied) == 2
+    assert all(not path.exists() for path in copied)
 
 
 def test_a_part_script_does_not_use_a_hard_link(tmp_path):

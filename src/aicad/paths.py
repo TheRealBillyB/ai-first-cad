@@ -844,6 +844,42 @@ def _fd_path(descriptor: int) -> Path:
     return Path(f"/dev/fd/{descriptor}")
 
 
+def _reopen_accepts_create(path: Path) -> bool:
+    """True when ``path`` can be opened again with a create flag.
+
+    ``/dev/fd/N`` refuses that open, so a writer which creates its file is
+    given a private file and the bytes are copied into the descriptor.
+    """
+    return not os.fspath(path).startswith("/dev/fd/")
+
+
+def _copy_into_descriptor(descriptor: int, source: Path) -> None:
+    """Replace the contents of ``descriptor`` with ``source``."""
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    with source.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            offset = 0
+            while offset < len(chunk):
+                offset += os.write(descriptor, chunk[offset:])
+    os.ftruncate(descriptor, os.lseek(descriptor, 0, os.SEEK_CUR))
+
+
+def _writer_target(descriptor: int, suffix: str) -> tuple[Path, Path | None]:
+    """A path for ``write`` and, when set, a private file to copy back."""
+    direct = _fd_path(descriptor)
+    if _reopen_accepts_create(direct):
+        return direct, None
+    if suffix and not suffix.startswith("."):
+        suffix = "." + suffix
+    raw, name = tempfile.mkstemp(prefix=".aicad-", suffix=suffix)
+    os.close(raw)
+    staged = Path(name)
+    return staged, staged
+
+
 def open_directory(path: Path) -> int:
     """Open one directory. A symlink is refused. The caller closes the descriptor."""
     if not nofollow_writes():
@@ -908,10 +944,14 @@ def replace_file(root: Path, relative: str | Path, write) -> None:
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     descriptor = -1
+    staged: Path | None = None
     placed = False
     try:
         descriptor = _call(_libc().openat(dirfd, os.fsencode(temporary), flags, 0o644), temporary)
-        write(_fd_path(descriptor))
+        target, staged = _writer_target(descriptor, Path(name).suffix)
+        write(target)
+        if staged is not None:
+            _copy_into_descriptor(descriptor, staged)
         os.fsync(descriptor)
         _call(
             _libc().renameat(dirfd, os.fsencode(temporary), dirfd, os.fsencode(name)),
@@ -919,6 +959,8 @@ def replace_file(root: Path, relative: str | Path, write) -> None:
         )
         placed = True
     finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
         if descriptor >= 0 and not placed:
             _libc().unlinkat(dirfd, os.fsencode(temporary), 0)
         if descriptor >= 0:
