@@ -763,7 +763,13 @@ class Document:
             if found is None:
                 known = ", ".join(item["name"] for item in spec["joints"]) or "(none)"
                 raise GeometryError(f"No joint {joint!r} on {name!r}. Joints: {known}.")
-            found["value"] = kernel.finite_number(value, "joint value", unit="deg")
+            angular = found["type"] in ("revolute", "cylindrical")
+            found["value"] = kernel.finite_number(
+                value,
+                "joint value",
+                unit="deg" if angular else "mm",
+                bound=None if angular else kernel.MAX_MM,
+            )
             if slide is not None:
                 found["slide"] = kernel.finite_number(slide, "joint slide")
             result = self._commit_assembly(spec)
