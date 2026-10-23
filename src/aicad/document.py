@@ -1868,13 +1868,11 @@ def _vec3(value, label: str) -> tuple[float, float, float]:
 def _step_import_source(root: Path, raw: str | Path) -> Path:
     """The file ``import_step`` reads.
 
-    An absolute path is a file the person chose. A path inside the project,
-    including a link, must still point at a file inside the project after
-    the link is followed.
+    An absolute path is a file the person chose. A relative path stays inside
+    the project after the link is followed.
     """
-    given = Path(raw)
-    if not given.is_absolute():
-        given = root / given
+    original = Path(raw)
+    given = original if original.is_absolute() else root / original
     source = given.resolve()
     root_resolved = root.resolve()
     try:
@@ -1882,8 +1880,9 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
         lexical_inside = ".." not in given.parts
     except ValueError:
         lexical_inside = False
-    if lexical_inside and not _path_inside(source, root_resolved):
-        raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
+    if not original.is_absolute() or lexical_inside:
+        if not _path_inside(source, root_resolved):
+            raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
     return source
 
 
