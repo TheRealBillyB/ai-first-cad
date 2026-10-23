@@ -30,7 +30,6 @@ from build123d import (
     export_step,
     export_stl,
     extrude,
-    import_step,
     revolve,
 )
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
@@ -574,13 +573,21 @@ def export_stl_file(
 
 
 def import_step_file(path: Path) -> Shape:
+    """Read one STEP file into a solid.
+
+    Only this file is opened. A name inside it that points at another file is
+    not followed, so a shared part cannot read or write outside the project
+    by naming some other path.
+    """
     if not path.is_file():
         raise GeometryError(f"STEP file not found: {path}")
     try:
         # The STEP parser logs through C stdout. That descriptor is the MCP
         # stream when `aicad serve` is running, so the bytes never reach it.
         with divert_native_stdio(stderr=True):
-            imported = import_step(path)
+            imported = _read_step_shape(path)
+    except GeometryError:
+        raise
     except Exception as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
     try:
@@ -588,6 +595,22 @@ def import_step_file(path: Path) -> Shape:
     except GeometryError as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
     return Shape(solid)
+
+
+def _read_step_shape(path: Path):
+    """Read the solids in ``path`` and do not open any other file it names."""
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_Reader
+    from build123d.topology import Shape as BuildShape
+
+    reader = STEPControl_Reader()
+    status = reader.ReadFile(str(path))
+    if status != IFSelect_RetDone or reader.TransferRoots() < 1:
+        raise GeometryError(f"Could not read STEP file {path}.")
+    shape = reader.OneShape()
+    if shape.IsNull():
+        raise GeometryError(f"Could not read STEP file {path}.")
+    return BuildShape.cast(shape)
 
 
 def tessellate(shape: Shape) -> TriangleMesh:
