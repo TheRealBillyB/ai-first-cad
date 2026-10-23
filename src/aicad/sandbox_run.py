@@ -20,6 +20,7 @@ _CHECKS = frozenset(
         "check_cables",
         "check_clearance",
         "check_fatigue",
+        "check_packaging",
         "check_print",
         "check_wall_thickness",
         "estimate_power",

@@ -91,6 +91,7 @@ aicad inspect motor_mount --min-wall 1.2 --workspace ./aicad_workspace
 aicad section motor_mount --axis y --offset 0 --workspace ./aicad_workspace
 aicad features motor_mount --workspace ./aicad_workspace
 aicad check-clearance motor_mount shaft --min 0.1 --workspace ./aicad_workspace
+aicad check-packaging --envelope '{"shape":"box","size":[80,60,30],"center":[0,0,15]}' --parts motor_mount,shaft --min 0.5 --workspace ./aicad_workspace
 aicad catalog "M3 screw" --workspace ./aicad_workspace
 aicad insert m3 --kind socket_head_cap_screw --size M3-0.5 --length 12 --at 0,0,12 --workspace ./aicad_workspace
 aicad export motor_mount --format step --out motor_mount.step --workspace ./aicad_workspace
@@ -405,6 +406,7 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `render_part` | The standard views and the contact sheet, as images. |
 | `check_wall_thickness` | Ray estimate and section estimate. The minimum is scored against a threshold in mm, and `method` says which one won. |
 | `check_clearance` | Overlap volume, or the gap between two parts. |
+| `check_packaging` | Whether parts fit inside an envelope, with wall clearance, protrusion, and part-to-part overlap. |
 | `export_part` | Write STEP or STL. |
 | `list_parts` / `get_part_source` / `delete_part` | Document housekeeping. |
 | `list_materials` | PLA, PETG, ABS, nylon, aluminum 6061, and mild steel, with the modulus and strength the solver will use. |
@@ -521,6 +523,8 @@ A result is either a **verified check** or a **rough estimate**. A verified chec
 
 **Clearance.** The interference volume is the boolean intersection of the two solids. If they do not overlap, `min_distance_mm` is the gap between the surfaces, and the closest points are reported. The gap is not a penetration depth: overlapping parts report distance 0 and a volume.
 
+**Packaging.** `check_packaging` tests whether each part lies inside an envelope, using the solid rather than its bounding box. The envelope is a part (a modeled solid or an imported STEP file), a primitive (`box`, `cylinder`, or `sphere`), or a 2D outline extruded between two limits along an axis. `min_clearance_mm` is the required gap to the envelope wall. The report gives pass or fail for each part, the smallest signed clearance and where it occurs, and, for a part that sticks out, the maximum protrusion and a point on the part. A positive clearance is a gap inside the wall, zero means the part touches the wall, and a negative clearance is the protrusion. Overlap between parts is the boolean intersection that also lies inside the envelope. The check fails if any part is too close to the wall or any overlap is reported. Pass `assembly` with `pose` or `joints` to use a posed assembly; that call does not change the stored pose, so the same check can be repeated at another joint position.
+
 **Catalog parts.** Screws, nuts, washers, and bearings come from [bd_warehouse](https://github.com/gumyr/bd_warehouse), which builds them with build123d from published dimensions. A screw's shank points down (−Z) and the underside of the head sits on local z = 0. Nuts, washers, and bearings sit on z = 0 and grow toward +Z. Screws and nuts are built with `simple=True`, so the thread is not cut; a screw's modeled shank is near the minor diameter, and a clearance check against a hole uses that solid. `import_step` plus `place_part` is the path for a STEP file from McMaster-Carr or anywhere else.
 
 ## Development
@@ -545,6 +549,7 @@ GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/
 - Wall thickness can still miss a thin spot that no ray and no slice crosses. A passing check is evidence, not a guarantee. The probe starts inside the face, at 0.01 mm or a smaller step when that would land on the opposite face. A wall thinner than the smallest step, 0.0004 mm, is an upper bound that cannot pass a minimum. A knife-edge gusset reads as a very thin wall, which is why the example gussets end in a 2.4 mm toe.
 - A section only shows the plane you asked for. Buried geometry between planes is still invisible until you cut there.
 - Clearance does not report how deep an interference goes, only its volume. Catalog screws omit threads, so a fit check is against the simple shank, not the major diameter.
+- Packaging measures the real solids. A polyhedron's protrusion is the farthest vertex outside the envelope. A curved face is maximized on that surface until the step is under 0.000001 mm. A part that sits within 0.0001 mm of the wall counts as touching. The reported point is one place the maximum is reached when a whole face is equally far. The envelope is the allowed volume, so a cavity has to be modeled as that interior solid.
 - The catalog is screws, nuts, washers, and one family of ball bearings. It is not a McMaster mirror. An arbitrary bought part is a STEP import.
 - Renders are shaded orthographic pictures from a software rasterizer, not a dimensioned drawing. Sections are filled profiles with a scale bar, not a hatched drawing. There is no click-to-measure.
 - Sketches are on the XY plane and extrude along +Z. A revolve uses the X or Y axis of that same plane. The initial `at` guess has to be near a shape that satisfies the constraints, or the solver reports that it did not converge. Circle-to-line tangency is built from a point and a perpendicular radius, because the solver's tangent constraint does not take a full circle.

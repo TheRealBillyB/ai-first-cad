@@ -41,6 +41,7 @@ _LOUD = {
     "feature_report",
     "check_wall_thickness",
     "check_clearance",
+    "check_packaging",
     "solve_mechanics",
     "solve_modal",
     "solve_assembly_modal",
@@ -959,6 +960,7 @@ def _summary(name: str, arguments: dict, result: dict, parts: list[str]) -> str:
         "write_document": f"Wrote {arguments.get('name')}",
         "delete_document": f"Deleted note {arguments.get('name')}",
         "check_clearance": "Checked clearance",
+        "check_packaging": "Checked packaging",
         "solve_mechanics": f"Solved the strength of {part}",
         "check_print": f"Checked the print of {part}",
     }
