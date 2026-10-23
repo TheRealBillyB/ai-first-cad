@@ -35,7 +35,7 @@ A design script, one program that calls several steps, stays off until you allow
 
 Opening a project does not run Python stored in it. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data. Importing a STEP file reads that file and does not open another path named inside it.
 
-A reserved device name such as NUL, CON, PRN, AUX, COM1 through COM9, or LPT1 through LPT9 is refused as an output file or folder name, including a superscript digit. An absolute export path is the location the person named.
+A reserved device name such as NUL, CON, PRN, AUX, COM1 through COM9, or LPT1 through LPT9 is refused as an output file or folder name, including a superscript digit. On the command line, an absolute export path is the location the person named. A drawing, bill of materials, or exploded view from the workspace stays inside the project.
 
 The sandbox process uses the project folder as its working directory. That folder is not placed on Python's import path. An import path entry that is the project, or a directory inside it, is removed before the process starts. A relative entry is made absolute from the program that launched the script, so it is not read from the project. A module or package shipped in the project cannot run in place of the sandbox. The limits are applied before the script runs.
 

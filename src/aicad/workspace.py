@@ -928,19 +928,27 @@ def _cmd_render_assembly(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("motion", report)  # noqa: SLF001
 
 
+def _export_path(workspace: Workspace, arguments: dict) -> str | None:
+    """A workspace export path. Omitted means the command's own folder inside the project."""
+    raw = arguments.get("path")
+    if not raw:
+        return None
+    return str(_path_inside_project(workspace.root, raw, "Export path"))
+
+
 def _cmd_export_drawing(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.export_drawing(
         arguments["name"],
         scale=arguments.get("scale"),
         exploded=bool(arguments.get("exploded", False)),
         gap_mm=arguments.get("gap_mm"),
-        out_dir=arguments.get("path"),
+        out_dir=_export_path(workspace, arguments),
     )
     return workspace._remember_panel("drawing", report)  # noqa: SLF001
 
 
 def _cmd_bill_of_materials(workspace: Workspace, arguments: dict) -> dict:
-    report = workspace.document.bill_of_materials(arguments["name"], arguments.get("path"))
+    report = workspace.document.bill_of_materials(arguments["name"], _export_path(workspace, arguments))
     return workspace._remember_panel("bom", report)  # noqa: SLF001
 
 
@@ -949,7 +957,7 @@ def _cmd_exploded_view(workspace: Workspace, arguments: dict) -> dict:
         arguments["name"],
         gap_mm=arguments.get("gap_mm"),
         on_drawing=bool(arguments.get("on_drawing", False)),
-        out_dir=arguments.get("path"),
+        out_dir=_export_path(workspace, arguments),
     )
     return workspace._remember_panel("exploded", report)  # noqa: SLF001
 
