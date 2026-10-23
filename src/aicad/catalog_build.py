@@ -29,6 +29,9 @@ from aicad.catalog_data import (
     stepper_mm,
 )
 from aicad.errors import GeometryError
+from aicad.paths import prepare_geometry_import
+
+prepare_geometry_import()
 
 # ISO 724 basic minor diameter: d3 = d - 1.226869 * P.
 _ISO724_MINOR = 1.226869

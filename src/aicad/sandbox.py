@@ -1067,6 +1067,9 @@ def _windows_font_cache_home() -> Path:
     if target.is_file() and target.stat().st_size > 0:
         return root
     try:
+        from aicad.paths import prepare_geometry_import
+
+        prepare_geometry_import()
         from ezdxf.fonts.fonts import build_font_manager_cache
 
         build_font_manager_cache(target)
