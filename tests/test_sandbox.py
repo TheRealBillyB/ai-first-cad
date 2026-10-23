@@ -960,8 +960,13 @@ print(" | ".join(errors))
     text = payload["stdout"]
     assert "not allowed" in text
     assert "outside the project" in text
-    assert "/etc/passwd" in text
-    assert "/tmp/aicad-sandbox-outside.txt" in text
+    if sys.platform == "win32":
+        # A leading slash joins onto the drive, so the guard names that path.
+        assert "passwd" in text
+        assert "aicad-sandbox-outside" in text
+    else:
+        assert "/etc/passwd" in text
+        assert "/tmp/aicad-sandbox-outside.txt" in text
     assert (tmp_path / "inside.txt").read_text(encoding="utf-8") == "ok"
     assert not Path("/tmp/aicad-sandbox-outside.txt").exists()
     log = script_log_path(tmp_path).read_text(encoding="utf-8")
@@ -1149,20 +1154,22 @@ def test_windows_sandbox_is_an_appcontainer(tmp_path, config_home):
 def test_windows_script_cannot_open_its_parent(tmp_path, config_home):
     """Direct OpenProcess / TerminateProcess on this aicad process is denied."""
     script = (
-        "import ctypes\n"
-        "from ctypes import wintypes\n"
         "import aicad.sandbox as sandbox\n"
-        "kernel = ctypes.WinDLL('kernel32', use_last_error=True)\n"
-        "kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]\n"
-        "kernel.OpenProcess.restype = wintypes.HANDLE\n"
-        "kernel.CloseHandle.argtypes = [wintypes.HANDLE]\n"
+        "kernel = sandbox.ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "kernel.OpenProcess.argtypes = [\n"
+        "    sandbox.ctypes.c_uint32, sandbox.ctypes.c_int, sandbox.ctypes.c_uint32,\n"
+        "]\n"
+        "kernel.OpenProcess.restype = sandbox.ctypes.c_void_p\n"
+        "kernel.CloseHandle.argtypes = [sandbox.ctypes.c_void_p]\n"
         "rights = 0x0001 | 0x1000\n"
-        "handle = kernel.OpenProcess(rights, False, sandbox.os.getppid())\n"
+        "handle = kernel.OpenProcess(rights, 0, sandbox.os.getppid())\n"
         "if handle:\n"
         "    kernel.CloseHandle(handle)\n"
         "    open('open.txt', 'w', encoding='utf-8').write('opened')\n"
         "else:\n"
-        "    open('open.txt', 'w', encoding='utf-8').write('denied:%s' % ctypes.get_last_error())\n"
+        "    open('open.txt', 'w', encoding='utf-8').write(\n"
+        "        'denied:%s' % sandbox.ctypes.get_last_error()\n"
+        "    )\n"
         "part = Box(1, 1, 1)\n"
     )
     run_part_script(script, tmp_path)
@@ -1235,6 +1242,57 @@ def test_cpu_or_memory_limit_stops_the_script(tmp_path, config_home, monkeypatch
     monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "30")
     with pytest.raises(ScriptError, match="memory or CPU"):
         run_part_script("while True:\n    pass\n", tmp_path)
+
+
+def test_windows_cpu_stop_is_user_time_at_the_cap():
+    """User time at the cap is a limit stop. A short crash and a timeout are not."""
+
+    import ctypes
+
+    from aicad import sandbox_windows as win
+
+    assert ctypes.sizeof(win._JobBasicAccounting) == 48
+    limit = 10_000_000
+    assert win._user_time_reached_limit(limit, limit) is True
+    assert win._user_time_reached_limit(limit - 1_000_000, limit) is True
+    assert win._user_time_reached_limit(limit - 1_000_001, limit) is False
+    assert win._user_time_reached_limit(0, limit) is False
+    assert win._user_time_reached_limit(limit, 0) is False
+    short_cap = 500_000
+    assert win._user_time_reached_limit(short_cap, short_cap) is True
+    assert win._user_time_reached_limit(short_cap - 1, short_cap) is False
+    assert win._job_stop_was_a_limit(
+        timed_out=False, violated=False, cpu_reached=True, exit_code=0, memory_peak=False
+    )
+    assert not win._job_stop_was_a_limit(
+        timed_out=True, violated=False, cpu_reached=True, exit_code=0, memory_peak=False
+    )
+    assert not win._job_stop_was_a_limit(
+        timed_out=False, violated=False, cpu_reached=False, exit_code=0, memory_peak=True
+    )
+    assert win._job_stop_was_a_limit(
+        timed_out=False, violated=False, cpu_reached=False, exit_code=1, memory_peak=True
+    )
+    assert not win._job_stop_was_a_limit(
+        timed_out=False, violated=False, cpu_reached=False, exit_code=-7, memory_peak=False
+    )
+
+
+def test_a_crash_without_a_result_does_not_need_sigkill(tmp_path):
+    import signal
+
+    from aicad.sandbox import _died_from_limit_signal, _payload_from_result
+
+    assert _died_from_limit_signal(0) is False
+    assert _died_from_limit_signal(1) is False
+    assert _died_from_limit_signal(-7) is False
+    killed = getattr(signal, "SIGKILL", None)
+    if killed is not None:
+        assert _died_from_limit_signal(-killed) is True
+    with pytest.raises(ScriptError, match="stopped before it could report"):
+        _payload_from_result(tmp_path / "crash", -7, "", "boom", memory_killed=False)
+    with pytest.raises(ScriptError, match="memory or CPU"):
+        _payload_from_result(tmp_path / "limit", -7, "", "", memory_killed=True)
 
 
 def test_memory_limit_stops_a_huge_allocation(tmp_path, config_home, monkeypatch):

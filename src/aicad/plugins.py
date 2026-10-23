@@ -385,9 +385,17 @@ def seal_sandbox_plugins() -> None:
 
 
 def consent_file() -> Path:
-    """Where an allow is recorded. This is user config, never the design folder."""
+    """Where an allow is recorded. This is user config, never the design folder.
+
+    A confined script reports the home config. Windows points ``XDG_CONFIG_HOME``
+    at the project cache so libraries can write, and that cache is not consent.
+    """
     import os
 
+    from aicad.sandbox_state import in_sandbox
+
+    if in_sandbox():
+        return Path.home() / ".config" / "aicad" / "plugins.json"
     override = os.environ.get("AICAD_PLUGIN_CONSENT", "").strip()
     if override:
         return Path(override)

@@ -67,7 +67,11 @@ _JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x00000400
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
 _JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
+_JobObjectBasicAccountingInformation = 1
 _JobObjectExtendedLimitInformation = 9
+# 100 ms, in the job's 100-nanosecond ticks. A CPU kill can land a little
+# under the cap. A short crash stays well under it.
+_CPU_LIMIT_SLACK_TICKS = 1_000_000
 
 _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 0x00000102
@@ -179,6 +183,21 @@ class _JobBasicLimit(ctypes.Structure):
         ("Affinity", ctypes.c_size_t),
         ("PriorityClass", wintypes.DWORD),
         ("SchedulingClass", wintypes.DWORD),
+    ]
+
+
+class _JobBasicAccounting(ctypes.Structure):
+    """JOBOBJECT_BASIC_ACCOUNTING_INFORMATION. 48 bytes, including on 64-bit."""
+
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_int64),
+        ("TotalKernelTime", ctypes.c_int64),
+        ("ThisPeriodTotalUserTime", ctypes.c_int64),
+        ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+        ("TotalPageFaultCount", ctypes.c_uint32),
+        ("TotalProcesses", ctypes.c_uint32),
+        ("ActiveProcesses", ctypes.c_uint32),
+        ("TotalTerminatedProcesses", ctypes.c_uint32),
     ]
 
 
@@ -1350,8 +1369,8 @@ def _job_memory_killed(job: wintypes.HANDLE, memory_bytes: int) -> bool:
     return peak >= int(memory_bytes * 0.85)
 
 
-# JobObjectLimitViolationInformation. The first two fields are enough to see
-# whether the job stopped the process for CPU time or for memory.
+# JobObjectLimitViolationInformation. Memory bits show up here. The CPU-time
+# cap does not, so user-time accounting is checked separately.
 _JobObjectLimitViolationInformation = 13
 _LIMIT_VIOLATION_BITS = (
     _JOB_OBJECT_LIMIT_PROCESS_TIME
@@ -1381,6 +1400,80 @@ class _JobLimitViolation(ctypes.Structure):
         ("RateControlTolerance", wintypes.DWORD),
         ("RateControlToleranceLimit", wintypes.DWORD),
     ]
+
+
+def _user_time_reached_limit(total_user_ticks: int, limit_ticks: int) -> bool:
+    """True when user time is within 100 ms of the per-process cap.
+
+    The recorded time can stop a little short of the cap. A cap shorter than
+    that slack has to be met exactly, so a short crash is not a CPU stop.
+    """
+
+    limit = int(limit_ticks)
+    if limit <= 0:
+        return False
+    threshold = limit - _CPU_LIMIT_SLACK_TICKS
+    if threshold < 0:
+        threshold = limit
+    return int(total_user_ticks) >= threshold
+
+
+def _job_cpu_time_reached(job: wintypes.HANDLE) -> bool:
+    """True when this job's user time has reached its per-process cap.
+
+    The violation record does not include the CPU-time bit, and the process
+    exit can look ordinary. The accounting counter is the record of that cap.
+    """
+
+    kernel32 = _kernel32()
+    accounting = _JobBasicAccounting()
+    returned = wintypes.DWORD(0)
+    if not kernel32.QueryInformationJobObject(
+        job,
+        _JobObjectBasicAccountingInformation,
+        ctypes.byref(accounting),
+        ctypes.sizeof(accounting),
+        ctypes.byref(returned),
+    ):
+        return False
+    limits = _JobExtendedLimit()
+    if not kernel32.QueryInformationJobObject(
+        job,
+        _JobObjectExtendedLimitInformation,
+        ctypes.byref(limits),
+        ctypes.sizeof(limits),
+        ctypes.byref(returned),
+    ):
+        return False
+    flags = int(limits.BasicLimitInformation.LimitFlags)
+    if not flags & _JOB_OBJECT_LIMIT_PROCESS_TIME:
+        return False
+    return _user_time_reached_limit(
+        int(accounting.TotalUserTime),
+        int(limits.BasicLimitInformation.PerProcessUserTimeLimit),
+    )
+
+
+def _job_stop_was_a_limit(
+    *,
+    timed_out: bool,
+    violated: bool,
+    cpu_reached: bool,
+    exit_code: int,
+    memory_peak: bool,
+) -> bool:
+    """True when the job's CPU or memory cap stopped the script.
+
+    A wall-clock timeout is separate. User time at the cap counts even when
+    the exit code is 0. A memory peak counts only on a failed exit, so a
+    script that finishes is not reported as a memory stop.
+    """
+
+    if timed_out:
+        return False
+    if violated or cpu_reached:
+        return True
+    return exit_code != 0 and memory_peak
 
 
 def _job_limit_violated(job: wintypes.HANDLE) -> bool:
@@ -1869,12 +1962,15 @@ def spawn(
         exit_code = int(code.value)
         if exit_code >= 0x80000000:
             exit_code = exit_code - 0x100000000
-        # A CPU-limit kill often leaves a normal-looking exit code. The job's
-        # own violation flags are what say the limit stopped the script.
-        memory_killed = (
-            not timed_out
-            and exit_code != 0
-            and (_job_limit_violated(job) or _job_memory_killed(job, memory_bytes))
+        # A CPU-time kill often leaves an ordinary exit code, and the
+        # violation record does not include that limit. User time at the cap
+        # is what says the limit stopped the script.
+        memory_killed = _job_stop_was_a_limit(
+            timed_out=timed_out,
+            violated=_job_limit_violated(job),
+            cpu_reached=_job_cpu_time_reached(job),
+            exit_code=exit_code,
+            memory_peak=_job_memory_killed(job, memory_bytes),
         )
         # Files the container creates can omit this user's inherited access.
         # Give it back before the parent reads the result.

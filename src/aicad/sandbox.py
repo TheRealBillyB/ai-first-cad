@@ -1636,6 +1636,20 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             shutil.rmtree(probe_root, ignore_errors=True)
 
 
+def _died_from_limit_signal(code: int) -> bool:
+    """True when ``code`` is the memory or CPU signal.
+
+    The names are looked up only if this platform has them. A missing name
+    is not a limit, and reading it must not raise.
+    """
+
+    if code >= 0:
+        return False
+    signals = {getattr(signal, name, None) for name in ("SIGKILL", "SIGXCPU")}
+    signals.discard(None)
+    return -code in signals
+
+
 def _payload_from_result(
     job: Path,
     code: int,
@@ -1656,11 +1670,10 @@ def _payload_from_result(
         tail = stderr[-2000:]
         shutil.rmtree(job, ignore_errors=True)
         # SIGKILL is the memory cap and the parent's kill. SIGXCPU is the CPU
-        # cap. Other signals, including an abort, are crashes.
-        limit_signal = code < 0 and -code in {
-            signal.SIGKILL,
-            getattr(signal, "SIGXCPU", -1),
-        }
+        # cap. Other signals, including an abort, are crashes. Windows has
+        # neither name; a CPU stop on that platform is decided from the job
+        # before this function runs.
+        limit_signal = _died_from_limit_signal(code)
         if memory_killed or limit_signal:
             detail = tail.strip()
             if code < 0:
