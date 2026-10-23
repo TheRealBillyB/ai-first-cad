@@ -478,6 +478,12 @@ def test_a_reserved_windows_name_is_refused(tmp_path):
     assert list(tmp_path.rglob("con.csv")) == []
 
 
+def test_windows_directory_lock_denies_new_files_and_folders():
+    from aicad.paths import _DIRECTORY_LOCK_SDDL
+
+    assert _DIRECTORY_LOCK_SDDL == "D:P(D;;0x00000006;;;WD)(A;;FRFXWD;;;OW)"
+
+
 def test_a_blocked_output_path_is_a_clear_error(tmp_path):
     document = Document(tmp_path)
     _post(document)

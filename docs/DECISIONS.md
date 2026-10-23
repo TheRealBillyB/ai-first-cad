@@ -8,6 +8,7 @@ Add a new date as a section at the top. Add a row at the top of that day's table
 
 | Decision | Rationale |
 | --- | --- |
+| A Windows folder with write access removed cannot gain a child | Read and execute still allowed a new folder. Creating a file or a folder is denied, and the owner can still restore the access list. |
 | Windows firewall rules stay up for the next network-off script | Installing them again for every script made the firewall call time out. A network-on script still removes them first. |
 | A Windows export is judged after trailing dots and spaces are removed | ``.. .`` is ``..`` once Win32 trims the name. That path is refused before anything is written. |
 | A secret file on Windows is an owner-only access list | The mode bits from stat stay world-writable on Windows. The access list is what keeps the file private. |

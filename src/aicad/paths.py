@@ -198,13 +198,22 @@ def file_is_user_private(path: Path) -> bool:
     return "(A;" in text
 
 
+# FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY. Read and execute still let Windows
+# create a folder, so those two creates are denied. WRITE_DAC stays with the
+# owner so the directory can be restored.
+_DIRECTORY_LOCK_SDDL = "D:P(D;;0x00000006;;;WD)(A;;FRFXWD;;;OW)"
+
+
 def deny_directory_write(path: Path) -> None:
-    """Take write access off one directory. The caller restores it."""
+    """Take write access off one directory. The caller restores it.
+
+    A new file or a new folder in that directory is refused.
+    """
 
     if os.name != "nt":
         path.chmod(0o555)
         return
-    _windows_set_dacl(path, "D:P(A;;FRFX;;;OW)")
+    _windows_set_dacl(path, _DIRECTORY_LOCK_SDDL)
 
 
 def allow_directory_write(path: Path) -> None:
