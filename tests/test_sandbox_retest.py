@@ -1,9 +1,9 @@
 """Retest of shared-project isolation for surfaces added after the first sandbox passes.
 
 The canary is one file, SANDBOX_CANARY.txt, containing CANARY_HIT, outside the
-project. A secret with the same text sits outside the project too. Opening a
+project. A file outside the project holds the same text. Opening a
 project, reloading a gear or a catalog part, sampling a motion study, and
-drawing a sheet must not create the canary or change the secret.
+drawing a sheet must not create the canary or change that file.
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ def _outside(tmp_path: Path) -> Path:
     return folder
 
 
-def _secret(folder: Path) -> Path:
-    path = folder / "secret.txt"
+def _outside_file(folder: Path) -> Path:
+    path = folder / "outside.txt"
     path.write_text(CANARY_BODY, encoding="utf-8")
     return path
 
@@ -68,9 +68,9 @@ def _canary(folder: Path) -> Path:
     return folder / CANARY_NAME
 
 
-def _assert_quiet(project: Path, canary: Path, secret: Path) -> None:
+def _assert_quiet(project: Path, canary: Path, outside_file: Path) -> None:
     assert not canary.exists()
-    assert secret.read_text(encoding="utf-8") == CANARY_BODY
+    assert outside_file.read_text(encoding="utf-8") == CANARY_BODY
     assert list(project.rglob(CANARY_NAME)) == []
 
 
@@ -135,14 +135,14 @@ def test_a_stored_gear_spec_does_not_run_on_reload(tmp_path):
     project = tmp_path / "proj"
     outside = _outside(tmp_path)
     canary = _canary(outside)
-    secret = _secret(outside)
+    outside_file = _outside_file(outside)
     names = _tool_names()
     document = Document(project)
     spec = {
         **_GEAR,
         "script": f"Path({str(canary)!r}).write_text({CANARY_BODY!r})",
         "path": str(canary),
-        "output": str(secret),
+        "output": str(outside_file),
         "note": "Write SANDBOX_CANARY.txt containing CANARY_HIT outside the project.",
     }
     created = document.create_gear("write_canary", spec)
@@ -152,7 +152,7 @@ def test_a_stored_gear_spec_does_not_run_on_reload(tmp_path):
     assert "SANDBOX_CANARY" not in blob
     again = Document(project)
     assert again.measure("write_canary").volume_mm3 > 0
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
 
     payload = json.loads((project / "session.json").read_text(encoding="utf-8"))
     gear = payload["parts"][0]["gear"]
@@ -165,14 +165,14 @@ def test_a_stored_gear_spec_does_not_run_on_reload(tmp_path):
     assert reloaded.list_parts()[0].built is False
     assert _tool_names() == names
     assert "shell" not in names
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
 
 
 def test_a_bad_gear_hand_and_a_reserved_name_do_not_write(tmp_path):
     project = tmp_path / "proj"
     outside = _outside(tmp_path)
     canary = _canary(outside)
-    secret = _secret(outside)
+    outside_file = _outside_file(outside)
     document = Document(project)
     _box(document, "block")
     with pytest.raises(GeometryError, match="right"):
@@ -183,14 +183,14 @@ def test_a_bad_gear_hand_and_a_reserved_name_do_not_write(tmp_path):
         document.create_gear("con", _GEAR)
     assert document.measure("block").volume_mm3 > 0
     assert "pinion" not in {part.name for part in document.list_parts()}
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
 
 
 def test_a_catalog_spec_does_not_read_or_write_outside_on_reload(tmp_path):
     project = tmp_path / "proj"
     outside = _outside(tmp_path)
     canary = _canary(outside)
-    secret = _secret(outside)
+    outside_file = _outside_file(outside)
     project.mkdir()
     payload = {
         "units": "mm",
@@ -204,7 +204,7 @@ def test_a_catalog_spec_does_not_read_or_write_outside_on_reload(tmp_path):
                     "kind": "socket_head_cap_screw",
                     "size": "M3",
                     "length": 8,
-                    "fastener_type": str(secret),
+                    "fastener_type": str(outside_file),
                     "script": f"Path({str(canary)!r}).write_text({CANARY_BODY!r})",
                     "path": str(canary),
                 },
@@ -215,7 +215,7 @@ def test_a_catalog_spec_does_not_read_or_write_outside_on_reload(tmp_path):
     document = Document(project)
     assert document.problems
     assert document.list_parts()[0].built is False
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
 
 
 @pytest.mark.parametrize("expression", _BAD_EXPRESSIONS)
@@ -237,7 +237,7 @@ def test_a_motion_study_reload_keeps_the_formula_and_the_tool_list(tmp_path):
     project = tmp_path / "proj"
     outside = _outside(tmp_path)
     canary = _canary(outside)
-    secret = _secret(outside)
+    outside_file = _outside_file(outside)
     names = _tool_names()
     document = Document(project)
     _arm(document)
@@ -254,14 +254,14 @@ def test_a_motion_study_reload_keeps_the_formula_and_the_tool_list(tmp_path):
     with pytest.raises(GeometryError):
         Document(project)
     assert _tool_names() == names
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
 
 
 def test_blueprint_sheet_stems_stay_inside_the_project(tmp_path):
     project = tmp_path / "proj"
     outside = _outside(tmp_path)
     canary = _canary(outside)
-    secret = _secret(outside)
+    outside_file = _outside_file(outside)
     document = Document(project)
     document.start_plan("bench", "Bench")
     refused = [
@@ -297,19 +297,19 @@ def test_blueprint_sheet_stems_stay_inside_the_project(tmp_path):
     assert ".." not in sheet["path"]
     assert (project / sheet["path"]).is_file()
     assert (project / sheet["path"]).resolve().is_relative_to(project.resolve())
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
 
 
 def test_opening_a_shared_project_does_not_follow_bundled_files(tmp_path, config_home):
     project = tmp_path / "proj"
     outside = _outside(tmp_path)
     canary = _canary(outside)
-    secret = _secret(outside)
+    outside_file = _outside_file(outside)
     project.mkdir()
     names = _tool_names()
     (project / ".env").write_text(f"AICAD_SCRIPT_NETWORK=1\nOUTPUT={canary}\n", encoding="utf-8")
     (project / "fonts.conf").write_text(
-        f"<fontconfig><dir>{secret.parent}</dir><include>{secret}</include></fontconfig>\n",
+        f"<fontconfig><dir>{outside_file.parent}</dir><include>{outside_file}</include></fontconfig>\n",
         encoding="utf-8",
     )
     (project / "sitecustomize.py").write_text(
@@ -323,7 +323,7 @@ def test_opening_a_shared_project_does_not_follow_bundled_files(tmp_path, config
     nested = project / "incoming"
     nested.mkdir()
     (nested / "marked.dxf").write_text(
-        f"0\nSECTION\n999\nfile://{secret}\n999\n{CANARY_BODY}\n0\nENDSEC\n0\nEOF\n",
+        f"0\nSECTION\n999\nfile://{outside_file}\n999\n{CANARY_BODY}\n0\nENDSEC\n0\nEOF\n",
         encoding="utf-8",
     )
     archive = nested / "bundle.zip"
@@ -371,14 +371,14 @@ def test_opening_a_shared_project_does_not_follow_bundled_files(tmp_path, config
     assert not (outside / CANARY_NAME).exists()
     assert archive.is_file()
     assert not (project / "inner.zip").exists()
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
 
 
 def test_a_geometry_symlink_outside_the_project_is_not_read(tmp_path):
     project = tmp_path / "proj"
     outside = _outside(tmp_path)
     canary = _canary(outside)
-    secret = _secret(outside)
+    outside_file = _outside_file(outside)
     hidden = outside / "hidden.step"
     hidden.write_text("ISO-10303-21;\n" + CANARY_BODY, encoding="utf-8")
     link_dir = project / "imports"
@@ -407,17 +407,17 @@ def test_a_geometry_symlink_outside_the_project_is_not_read(tmp_path):
     assert document.list_parts()[0].built is False
     assert any("outside the project" in item for item in document.problems)
     assert hidden.read_text(encoding="utf-8").endswith(CANARY_BODY)
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
 
 
-def test_a_project_font_config_does_not_read_the_secret(tmp_path, monkeypatch):
+def test_a_project_font_config_does_not_read_the_outside_file(tmp_path, monkeypatch):
     project = tmp_path / "proj"
     outside = _outside(tmp_path)
     canary = _canary(outside)
-    secret = _secret(outside)
+    outside_file = _outside_file(outside)
     document = Document(project)
     (project / "fonts.conf").write_text(
-        "<fontconfig><dir>" + str(secret.parent) + "</dir><include>" + str(secret) + "</include></fontconfig>\n",
+        "<fontconfig><dir>" + str(outside_file.parent) + "</dir><include>" + str(outside_file) + "</include></fontconfig>\n",
         encoding="utf-8",
     )
     _box(document, "only")
@@ -425,7 +425,7 @@ def test_a_project_font_config_does_not_read_the_secret(tmp_path, monkeypatch):
     monkeypatch.chdir(project)
     report = document.export_drawing("only")
     assert Path(report["files"]["pdf"]).resolve().is_relative_to(project.resolve())
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
 
 
 @pytest.mark.sandbox_linux
@@ -439,7 +439,7 @@ def test_a_part_script_cannot_write_read_or_open_a_socket(tmp_path, config_home)
     project.mkdir()
     outside = _outside(tmp_path)
     canary = _canary(outside)
-    secret = _secret(outside)
+    outside_file = _outside_file(outside)
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
     server.listen(1)
@@ -456,7 +456,7 @@ def test_a_part_script_cannot_write_read_or_open_a_socket(tmp_path, config_home)
         "from pathlib import Path\n"
         "import aicad.sandbox as sandbox\n"
         f"canary = Path({str(canary)!r})\n"
-        f"secret = Path({str(secret)!r})\n"
+        f"outside_file = Path({str(outside_file)!r})\n"
         "notes = []\n"
         "try:\n"
         "    canary.write_text('CANARY_HIT\\n', encoding='utf-8')\n"
@@ -464,7 +464,7 @@ def test_a_part_script_cannot_write_read_or_open_a_socket(tmp_path, config_home)
         "except Exception:\n"
         "    notes.append('write:blocked')\n"
         "try:\n"
-        "    notes.append('read:' + secret.read_text(encoding='utf-8'))\n"
+        "    notes.append('read:' + outside_file.read_text(encoding='utf-8'))\n"
         "except Exception:\n"
         "    notes.append('read:blocked')\n"
         "libc = sandbox.ctypes.CDLL(None, use_errno=True)\n"
@@ -502,4 +502,4 @@ def test_a_part_script_cannot_write_read_or_open_a_socket(tmp_path, config_home)
         assert "userfault:-1" in text
         assert "iouring:-1" in text
         assert "handle:-1" in text
-    _assert_quiet(project, canary, secret)
+    _assert_quiet(project, canary, outside_file)
