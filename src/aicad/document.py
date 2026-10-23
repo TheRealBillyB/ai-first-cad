@@ -19,6 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from aicad import assembly, bom as bom_mod
+from aicad.assembly import posed_shapes as _posed_shapes
 from aicad import drawing as drawing_mod
 from aicad import explode as explode_mod
 from aicad import fea, kernel, library
@@ -30,6 +31,7 @@ from aicad.robot import export_robot
 from aicad.errors import DocumentError, GeometryError, PartNotFound
 from aicad.kinematics import normalize as normalize_assembly
 from aicad.kinematics import solve as solve_assembly
+from aicad.motion_study import run_study, study_by_name
 from aicad.power import actuators_for
 from aicad.models import (
     BoundingBox,
@@ -38,6 +40,9 @@ from aicad.models import (
     FeaReport,
     InspectReport,
     Measurement,
+    PackagingOverlap,
+    PackagingPart,
+    PackagingReport,
     PartInfo,
     RenderedView,
     SectionReport,
@@ -45,6 +50,7 @@ from aicad.models import (
     Vec3,
     WallReport,
     feature_report_from_dict,
+    round_mm,
 )
 from aicad.render import render_motion_frames, render_section, render_sketch, render_views
 from aicad.sketch import Sketch, set_spec_dimension, solve_sketch
@@ -58,6 +64,16 @@ _CLEARANCE_NOTE = (
     "Interference is the volume of the boolean intersection, in mm^3. "
     "When the solids do not intersect, min_distance_mm is the gap between their "
     "surfaces. Penetration depth is not computed."
+)
+
+_PACKAGING_NOTE = (
+    "The envelope solid is the allowed volume. min_clearance_mm is the smallest "
+    "signed distance from a part to the envelope wall: positive is a gap inside "
+    "the wall, zero touches it, and negative means the part sticks out by that "
+    "many millimeters. protrusion_at_mm is a point on the part where the "
+    "protrusion is reached. Overlap is the volume of two parts that also lies "
+    "inside the envelope. A part passes when its clearance meets the required "
+    "gap. The check passes when every part passes and no overlap is reported."
 )
 
 
@@ -323,6 +339,178 @@ class Document:
                 passed=passed,
                 note=_CLEARANCE_NOTE,
             )
+
+    def check_packaging(
+        self,
+        envelope: str | dict,
+        parts: list[str] | None = None,
+        assembly: str | None = None,
+        pose: str | None = None,
+        joints: dict | None = None,
+        min_clearance_mm: float = 0.0,
+    ) -> PackagingReport:
+        """Check that parts fit inside an envelope.
+
+        ``envelope`` is a part name, or an object: a primitive
+        (``shape`` box, cylinder, or sphere) or an ``outline`` extruded
+        along an axis. With ``assembly``, the parts are the posed instances.
+        ``pose`` and ``joints`` select that pose for this check and do not
+        change the stored assembly. ``min_clearance_mm`` is the required gap
+        to the envelope wall. Zero allows a part to touch the wall.
+        """
+        with self._lock:
+            required = kernel.finite_number(min_clearance_mm, "min_clearance_mm")
+            if required < 0:
+                raise GeometryError("min_clearance_mm cannot be negative.")
+            posed = None
+            solved = None
+            assembly_name = None
+            if assembly is not None:
+                if not isinstance(assembly, str) or not assembly.strip():
+                    raise GeometryError("assembly must be a name.")
+                assembly_name = assembly.strip()
+                spec = self._get_assembly(assembly_name)
+                overrides = _packaging_overrides(spec, pose, joints)
+                solved, posed = _posed_shapes(spec, self._assembly_shapes(spec), overrides or None)
+            envelope_shape, envelope_info, envelope_instance = self._packaging_envelope(envelope, posed, solved)
+            names = self._packaging_names(parts, posed, solved, envelope_instance)
+            if envelope_info.get("kind") == "part" and envelope_info.get("name") in names:
+                raise GeometryError(
+                    f"{envelope_info['name']!r} is the envelope, so it is not one of the parts being packed."
+                )
+            shapes = self._packaging_shapes(names, posed)
+            rows: list[PackagingPart] = []
+            for name in names:
+                fit = kernel.fit_in_envelope(shapes[name], envelope_shape)
+                clearance = float(fit["min_clearance_mm"])
+                protrusion = float(fit["max_protrusion_mm"])
+                protrudes = not bool(fit["contained"])
+                point = _pack_vec(fit["clearance_at_mm"])
+                poke = None if fit["protrusion_at_mm"] is None or not protrudes else _pack_vec(fit["protrusion_at_mm"])
+                rows.append(
+                    PackagingPart(
+                        name=name,
+                        passed=clearance + 1e-9 >= required,
+                        contained=bool(fit["contained"]) and not protrudes,
+                        protrudes=protrudes,
+                        min_clearance_mm=round_mm(clearance),
+                        clearance_at_mm=point,
+                        max_protrusion_mm=0.0 if not protrudes else round_mm(protrusion),
+                        protrusion_at_mm=poke,
+                        outside_volume_mm3=0.0 if not protrudes else round_mm(float(fit["outside_volume_mm3"])),
+                        method=str(fit["method"]),
+                    )
+                )
+            overlaps: list[PackagingOverlap] = []
+            ordered = list(names)
+            for index, left in enumerate(ordered):
+                for right in ordered[index + 1 :]:
+                    hit = kernel.overlap_inside(shapes[left], shapes[right], envelope_shape)
+                    if hit is None:
+                        continue
+                    first, second = sorted((left, right))
+                    overlaps.append(
+                        PackagingOverlap(
+                            part_a=first,
+                            part_b=second,
+                            volume_mm3=round_mm(float(hit["volume_mm3"])),
+                            at_mm=_pack_vec(hit["at"]),
+                        )
+                    )
+            overlaps.sort(key=lambda item: (item.part_a, item.part_b))
+            worst = min(rows, key=lambda item: (item.min_clearance_mm, item.name))
+            protruding = tuple(item.name for item in rows if item.protrudes)
+            joint_values = None
+            if solved is not None:
+                joint_values = {joint["name"]: joint["value"] for joint in solved["joints"]}
+            passed = all(item.passed for item in rows) and not overlaps
+            return PackagingReport(
+                passed=passed,
+                required_clearance_mm=round_mm(required),
+                min_clearance_mm=worst.min_clearance_mm,
+                min_clearance_part=worst.name,
+                min_clearance_at_mm=worst.clearance_at_mm,
+                envelope=envelope_info,
+                parts=tuple(rows),
+                protruding=protruding,
+                overlaps=tuple(overlaps),
+                assembly=assembly_name,
+                pose=pose,
+                joints=joint_values,
+                note=_PACKAGING_NOTE,
+            )
+
+    def _packaging_envelope(self, envelope, posed: dict | None, solved: dict | None):
+        if isinstance(envelope, dict):
+            shape = kernel.make_envelope(envelope)
+            if "outline" in envelope:
+                info = {
+                    "kind": "outline",
+                    "name": None,
+                    "axis": list(envelope.get("axis", [0, 0, 1])),
+                }
+            else:
+                info = {
+                    "kind": "primitive",
+                    "name": None,
+                    "shape": envelope.get("shape", envelope.get("primitive")),
+                }
+            return shape, info, None
+        if not isinstance(envelope, str) or not envelope.strip():
+            raise GeometryError("Name an envelope part, or pass a primitive or an outline.")
+        name = envelope.strip()
+        if posed is not None and name in posed:
+            part_name = next(instance["part"] for instance in solved["instances"] if instance["name"] == name)
+            return posed[name], {"kind": "instance", "name": name, "part": part_name}, name
+        if name in self._parts:
+            return self._get(name).shape, {"kind": "part", "name": name}, None
+        if posed is not None:
+            known = ", ".join(posed) or "(none)"
+            raise PartNotFound(
+                f"No envelope named {name!r}. Instances: {known}."
+            )
+        known = ", ".join(self._parts) or "(none)"
+        raise PartNotFound(f"No part named {name!r}. Parts in this document: {known}.")
+
+    def _packaging_names(self, parts, posed: dict | None, solved: dict | None, envelope_instance: str | None) -> list[str]:
+        if parts is None:
+            if posed is None:
+                raise GeometryError("Name the parts to pack, or pass an assembly.")
+            names = [
+                instance["name"]
+                for instance in solved["instances"]
+                if instance["name"] != envelope_instance
+            ]
+        else:
+            if not isinstance(parts, (list, tuple)):
+                raise GeometryError("parts must be a list of names.")
+            names = []
+            for item in parts:
+                if not isinstance(item, str) or not item.strip():
+                    raise GeometryError("Each part name must be a non-empty string.")
+                names.append(item.strip())
+        if len(names) != len(set(names)):
+            raise GeometryError("A part is listed twice.")
+        if envelope_instance is not None and envelope_instance in names:
+            raise GeometryError(
+                f"{envelope_instance!r} is the envelope, so it is not one of the parts being packed."
+            )
+        if not names:
+            raise GeometryError("There is no part to pack. The envelope is not checked against itself.")
+        return names
+
+    def _packaging_shapes(self, names: list[str], posed: dict | None) -> dict[str, kernel.Shape]:
+        shapes: dict[str, kernel.Shape] = {}
+        if posed is not None:
+            known = ", ".join(posed) or "(none)"
+            for name in names:
+                if name not in posed:
+                    raise GeometryError(f"No instance {name!r} in this assembly. Instances: {known}.")
+                shapes[name] = posed[name]
+            return shapes
+        for name in names:
+            shapes[name] = self._get(name).shape
+        return shapes
 
     def render(self, name: str, wall: WallReport | None = None) -> list[RenderedView]:
         with self._lock:
@@ -722,7 +910,7 @@ class Document:
             return {"assembly": copy.deepcopy(spec), "solved": solve_assembly(spec)}
 
     def list_assemblies(self) -> list[dict]:
-        """Names, joint values, poses, and motions. This does not place solids or test collisions."""
+        """Names, joint values, poses, motions, and studies. This does not place solids."""
         with self._lock:
             listed = []
             for spec in self._assemblies.values():
@@ -748,6 +936,7 @@ class Document:
                         ],
                         "poses": sorted(spec["poses"]),
                         "motions": sorted(spec["motions"]),
+                        "studies": sorted(spec.get("studies") or {}),
                         "cables": [cable.get("name", f"cable_{index + 1}") for index, cable in enumerate(spec["cables"])],
                         "actuators": [
                             actuator.get("name") or actuator.get("joint") for actuator in spec["actuators"]
@@ -804,6 +993,29 @@ class Document:
             if render:
                 out = self.workspace / "renders" / "assemblies" / spec["name"]
             return assembly.run_motion(spec, self._assembly_shapes(spec), chosen, out)
+
+    def run_motion_study(
+        self,
+        name: str,
+        sequence: str | None = None,
+        study: dict | None = None,
+        steps: int | None = None,
+        clearance_mm: float | None = None,
+    ) -> dict:
+        """Drive the assembly through a motion study and report collisions and limit hits."""
+        with self._lock:
+            spec = self._get_assembly(name)
+            chosen = study_by_name(spec, sequence, study)
+            if chosen is None:
+                known = ", ".join(spec.get("studies") or {}) or "(none)"
+                raise GeometryError(f"Name a motion study on {name!r}, or pass one. Studies: {known}.")
+            return run_study(
+                spec,
+                self._assembly_shapes(spec),
+                chosen,
+                steps=steps,
+                clearance_mm=clearance_mm,
+            )
 
     def check_cables(self, name: str, sequence: str | None = None, motion: dict | None = None) -> dict:
         with self._lock:
@@ -1448,6 +1660,34 @@ def _output_stem(name: str) -> tuple[str, str]:
     if stem.upper() in _WINDOWS_RESERVED:
         return f"{stem}_file", stem
     return stem, ""
+
+
+def _pack_vec(point: tuple[float, float, float]) -> Vec3:
+    return Vec3(round_mm(point[0]), round_mm(point[1]), round_mm(point[2]))
+
+
+def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> dict[str, float]:
+    overrides: dict[str, float] = {}
+    if pose is not None:
+        if not isinstance(pose, str) or not pose.strip():
+            raise GeometryError("pose must be a name.")
+        if pose not in spec["poses"]:
+            known = ", ".join(spec["poses"]) or "(none)"
+            raise GeometryError(f"No pose {pose!r} on {spec['name']!r}. Poses: {known}.")
+        overrides.update({str(key): float(value) for key, value in spec["poses"][pose].items()})
+    if joints is not None:
+        if not isinstance(joints, dict):
+            raise GeometryError("joints must be an object of joint names and values.")
+        for key, value in joints.items():
+            overrides[str(key)] = kernel.finite_number(value, f"joint {key}", unit="deg or mm")
+    known = {joint["name"] for joint in spec["joints"]}
+    unknown = [name for name in overrides if name not in known]
+    if unknown:
+        listed = ", ".join(sorted(known)) or "(none)"
+        raise GeometryError(
+            f"Unknown joint {unknown[0]!r} on {spec['name']!r}. Joints: {listed}."
+        )
+    return overrides
 
 
 def _validate_name(name: str) -> None:
