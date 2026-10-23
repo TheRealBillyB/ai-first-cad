@@ -128,18 +128,33 @@ def normalize(spec: dict) -> dict:
 
 
 def solve(spec: dict, overrides: dict | None = None) -> dict:
-    """Forward kinematics. ``overrides`` replace stored joint values before relations run."""
+    """Forward kinematics. ``overrides`` replace stored joint values before relations run.
+
+    A number overrides the joint angle or the prismatic travel. A cylindrical
+    joint also accepts ``{"value": degrees, "slide": millimeters}``. A joint
+    stop is applied before a gear, linkage, or cylinder reads that joint.
+    """
     spec = normalize(spec)
     overrides = overrides or {}
     commanded: dict[str, float] = {}
     slides: dict[str, float] = {}
     for joint in spec["joints"]:
-        commanded[joint["name"]] = float(overrides.get(joint["name"], joint["value"]))
-        if isinstance(overrides.get(joint["name"]), dict):
-            blob = overrides[joint["name"]]
-            commanded[joint["name"]] = float(blob.get("value", joint["value"]))
-            slides[joint["name"]] = float(blob.get("slide", joint["slide"]))
+        raw = overrides.get(joint["name"], joint["value"])
+        # A cylindrical joint carries an angle and a slide. Check the shape
+        # before float(): float(dict) raises TypeError and the slide is ignored.
+        if isinstance(raw, dict):
+            try:
+                commanded[joint["name"]] = float(raw.get("value", joint["value"]))
+                slides[joint["name"]] = float(raw.get("slide", joint["slide"]))
+            except (TypeError, ValueError) as exc:
+                raise GeometryError(
+                    f"Override for {joint['name']} needs a numeric value and slide."
+                ) from exc
         else:
+            try:
+                commanded[joint["name"]] = float(raw)
+            except (TypeError, ValueError) as exc:
+                raise GeometryError(f"Override for {joint['name']} must be a number.") from exc
             slides[joint["name"]] = float(joint["slide"])
     driven = set()
     for relation in spec["relations"]:
@@ -147,18 +162,31 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
         if relation["type"] == "cylinder":
             driven.add(relation["stroke"])
     joint_index = {joint["name"]: joint for joint in spec["joints"]}
+    # Stops apply to the driver before a relation runs. Using the unclamped
+    # command puts the driven joint at ratio times a pose the driver never reaches.
+    active = dict(commanded)
+    for joint in spec["joints"]:
+        if joint["name"] in driven:
+            continue
+        active[joint["name"]], _which = _clamp(commanded[joint["name"]], joint)
     warnings = []
     for _ in range(8):
         for relation in spec["relations"]:
-            driver = commanded[relation["driver"]]
+            driver = active[relation["driver"]]
             if relation["type"] == "gear":
-                commanded[relation["driven"]] = relation["ratio"] * driver + relation["offset"]
+                raw_value = relation["ratio"] * driver + relation["offset"]
+                commanded[relation["driven"]] = raw_value
+                active[relation["driven"]], _which = _clamp(raw_value, joint_index[relation["driven"]])
             elif relation["type"] == "linkage":
-                commanded[relation["driven"]] = _four_bar(relation, driver)
+                raw_value = _four_bar(relation, driver)
+                commanded[relation["driven"]] = raw_value
+                active[relation["driven"]], _which = _clamp(raw_value, joint_index[relation["driven"]])
             else:
                 angle, extension, offset_mm = _cylinder(relation, joint_index, driver)
                 commanded[relation["driven"]] = angle
+                active[relation["driven"]], _which = _clamp(angle, joint_index[relation["driven"]])
                 commanded[relation["stroke"]] = extension
+                active[relation["stroke"]], _which = _clamp(extension, joint_index[relation["stroke"]])
                 if offset_mm > 2.0:
                     note = (
                         f"{relation['name']} is {offset_mm:.1f} mm out of the plane of its pin. "
