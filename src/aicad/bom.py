@@ -1,9 +1,10 @@
 """A count of what an assembly contains.
 
 Rows are modeled parts, catalog fasteners, other catalog parts such as
-bearings, and hoses or cables. Quantities come from the instances and the
-routes. There is no price and no supplier. A mass, when it is present, is
-the solid's volume times the handbook density, and the row says so.
+bearings, seals, motors, and gearboxes, and hoses or cables. Quantities come
+from the instances and the routes. There is no price and no supplier. A mass
+is a published catalog mass when the table has one. Otherwise it is the
+solid's volume times the handbook density, and the row says which.
 """
 
 from __future__ import annotations
@@ -28,17 +29,12 @@ OMITS = [
 ASSUMPTIONS = [
     "One row is one part name, or one catalog size and length, at one material. A different spelling or a handbook alias of that material stays on the same row.",
     "Two instances of the same part add up. Two screws of the same size and length add up.",
-    "A catalog screw, nut, or washer is a fastener. A catalog bearing is a standard part.",
+    "A catalog screw, nut, or washer is a fastener. A bearing, seal, motor, or gearbox is a standard part.",
     "A hose or a cable is a route on the assembly. It is not a solid, so it has no mass here.",
-    "Mass is volume times the handbook density of the instance material. It is an estimate.",
+    "A published catalog mass is used when the table has one. It does not follow the instance material.",
+    "Without a published mass, mass is volume times the handbook density. A motor or gearbox envelope is left blank.",
 ]
 _FASTENERS = {"socket_head_cap_screw", "hex_nut", "plain_washer"}
-_STANDARDS = {
-    "socket_head_cap_screw": "ISO 4762",
-    "hex_nut": "ISO 4032",
-    "plain_washer": "ISO 7089",
-    "ball_bearing": "SKT",
-}
 _ORDER = {"part": 0, "fastener": 1, "standard": 2, "hose": 3, "cable": 4, "other": 5}
 
 
@@ -83,10 +79,18 @@ def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, di
 
     rows = list(grouped.values())
     for row in rows:
-        if row.get("mass_estimate_kg") is not None:
+        basis = row.pop("mass_basis", None)
+        if row.get("mass_estimate_kg") is None or basis is None:
+            continue
+        if basis == "volume":
             row["note"] = (
                 "Mass is the total for this line: each solid's volume times the handbook density. "
                 "It is not a weighed mass."
+            )
+        elif basis == "catalog" and "total for this line" not in str(row.get("note") or ""):
+            row["note"] = (
+                str(row.get("note") or "Catalog mass.").rstrip()
+                + " The number is the total for this line."
             )
     for cable in spec.get("cables") or []:
         rows.append(_route_row(cable, len(rows)))
@@ -109,7 +113,7 @@ def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, di
         "assumptions": [
             "One row is one part name, or one catalog size and length, at one material. A different spelling or a handbook alias of that material stays on the same row.",
             "Two instances of the same part add up. Two screws of the same size and length add up.",
-            "A catalog screw, nut, or washer is a fastener. A catalog bearing is a standard part.",
+            "A catalog screw, nut, or washer is a fastener. A bearing, seal, motor, or gearbox is a standard part.",
             "A hose or a cable is a route on the assembly. It is not a solid.",
         ],
     }
@@ -117,13 +121,18 @@ def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, di
         "result_kind": ROUGH_ESTIMATE,
         "result_label": "Rough estimate",
         "result_name": "Mass",
-        "result_what": "A mass is the solid's volume times the handbook density. It is not a weighed mass.",
+        "result_what": (
+            "A mass is a published catalog mass when the part has one. "
+            "Otherwise it is volume times the handbook density. It is not a weighed mass."
+        ),
         "limits": [
-            "A material with no handbook density leaves the mass blank.",
+            "A material with no handbook density leaves a volume-based mass blank.",
+            "A motor or gearbox with no published mass is left blank. The envelope is not that mass.",
             "A hose or a cable is a route, so it has no mass here.",
         ],
         "assumptions": [
-            "Mass is volume times the handbook density of the instance material. It is an estimate.",
+            "A published catalog mass does not follow the instance material.",
+            "A part with no published mass uses volume times the handbook density of the instance material.",
         ],
     }
     blocks = [quantities, mass]
@@ -146,7 +155,7 @@ def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, di
         name="Bill of materials",
         what=(
             "The quantities are a count of this assembly. "
-            "A mass, when a number is shown, is volume times a handbook density. "
+            "A mass is a published catalog mass when the part has one, and otherwise volume times a handbook density. "
             "There are no prices."
         ),
         limits=list(OMITS),
@@ -274,18 +283,26 @@ def _catalog_row(part: str, spec: dict, material: str, shape: kernel.Shape | Non
     size = library._canonical_size(kind, str(spec.get("size") or ""))  # noqa: SLF001
     length = spec.get("length")
     length_mm = None if length is None else float(length)
-    standard = _STANDARDS.get(kind)
+    meta = library.metadata(kind, size, length_mm)
+    standard = str(meta.get("standard") or "") or None
     category = "fastener" if kind in _FASTENERS else "standard"
-    noun = {
-        "socket_head_cap_screw": "socket head cap screw",
-        "hex_nut": "hex nut",
-        "plain_washer": "plain washer",
-        "ball_bearing": "deep-groove ball bearing",
-    }.get(kind, kind.replace("_", " "))
-    description = f"{standard + ' ' if standard else ''}{noun} {size}"
-    if length_mm is not None:
+    description = str(meta.get("description") or size)
+    if length_mm is not None and kind == "socket_head_cap_screw":
         description += f" x {length_mm:g} mm"
-    mass, mass_note = _mass(shape, material, 1)
+    if meta.get("mass_estimate_kg") is not None:
+        mass = round(float(meta["mass_estimate_kg"]), 4)
+        mass_note = str(meta.get("mass_note") or "Catalog mass.")
+        basis = "catalog"
+    elif meta.get("mass_from_volume", True):
+        mass, mass_note = _mass(shape, material, 1)
+        basis = "volume"
+    else:
+        mass = None
+        mass_note = str(meta.get("mass_note") or "No published mass. The envelope is not used as a mass.")
+        basis = "none"
+    rating = _rating_note(meta.get("load_ratings"))
+    if rating:
+        mass_note = f"{mass_note} {rating}".strip()
     name = size if length_mm is None else f"{size} x {length_mm:g}"
     return {
         "category": category,
@@ -299,7 +316,27 @@ def _catalog_row(part: str, spec: dict, material: str, shape: kernel.Shape | Non
         "source": "library",
         "mass_estimate_kg": mass,
         "note": mass_note,
+        "mass_basis": basis,
     }
+
+
+def _rating_note(ratings: object) -> str:
+    if not isinstance(ratings, dict):
+        return ""
+    bits = []
+    if ratings.get("dynamic_n") is not None:
+        bits.append(f"dynamic {ratings['dynamic_n']} N")
+    if ratings.get("static_n") is not None:
+        bits.append(f"static {ratings['static_n']} N")
+    if ratings.get("continuous_shaft_torque_nm") is not None:
+        bits.append(f"continuous shaft torque {ratings['continuous_shaft_torque_nm']} N·m")
+    if ratings.get("permissible_torque_nm") is not None:
+        bits.append(f"permissible torque {ratings['permissible_torque_nm']} N·m")
+    if not bits:
+        return ""
+    source = str(ratings.get("source") or "").strip()
+    listed = ", ".join(bits)
+    return f"Load rating: {listed}" + (f" ({source})." if source else ".")
 
 
 def _route_row(cable: dict, index: int) -> dict:

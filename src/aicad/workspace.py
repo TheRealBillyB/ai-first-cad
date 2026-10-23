@@ -1239,8 +1239,8 @@ _add(Command(
 ))
 _add(Command(
     "search_parts",
-    "Search screws, nuts, washers, and bearings.",
-    _obj({"query": _string("Text such as M3 or 608.")}, []),
+    "Search bearings, seals, fasteners, motors, and gearboxes by designation.",
+    _obj({"query": _string("Text such as M5, 608, 30205, 20x35x7, or NEMA17.")}, []),
     _cmd_search,
 ))
 _add(Command(
@@ -1260,7 +1260,7 @@ _add(Command(
 ))
 _add(Command(
     "insert_standard_part",
-    "Insert a catalog part and place it.",
+    "Insert a catalog part by designation and place it.",
     _obj(
         {
             "name": _string("New part name."),

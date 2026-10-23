@@ -417,6 +417,8 @@ def test_pack_named_as_the_core_distribution_is_not_run_when_listed_or_allowed(t
     )
     monkeypatch.syspath_prepend(str(base))
     offer = _offer("h-core")
+    # The package name is not enough to count as this install, so it still needs an allow.
+    # Listing it and recording that allow does not import the module.
     assert offer.third_party is True
     assert offer.distribution == "aicad"
     warning = plugins.warning_text(offer)
