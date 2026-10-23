@@ -18,7 +18,7 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from aicad import assembly, bom as bom_mod
+from aicad import assembly, bom as bom_mod, gears as gears_mod
 from aicad.assembly import posed_shapes as _posed_shapes
 from aicad import drawing as drawing_mod
 from aicad import explode as explode_mod
@@ -95,6 +95,7 @@ class _Part:
         script_sha256: str | None = None,
         script_pending: bool = False,
         rebuild_error: str | None = None,
+        gear_spec: dict | None = None,
     ):
         self.name = name
         self.source = source
@@ -111,6 +112,7 @@ class _Part:
         self.script_sha256 = script_sha256
         self.script_pending = script_pending
         self.rebuild_error = rebuild_error
+        self.gear_spec = gear_spec
 
     @property
     def shape(self) -> kernel.Shape:
@@ -208,6 +210,7 @@ class Document:
             part.ops = None
             part.step_file = None
             part.library_spec = None
+            part.gear_spec = None
             part.sketch_name = None
             part.sketch_steps = None
             part.placement = _identity_placement()
@@ -228,6 +231,7 @@ class Document:
             part.script = None
             part.step_file = None
             part.library_spec = None
+            part.gear_spec = None
             part.sketch_name = None
             part.sketch_steps = None
             part.placement = _identity_placement()
@@ -261,6 +265,8 @@ class Document:
                 "ops": part.ops,
                 "step_file": part.step_file,
                 "library": part.library_spec,
+                "gear": copy.deepcopy(part.gear_spec) if part.gear_spec else None,
+                "gear_data": gears_mod.gear_data(part.gear_spec) if part.gear_spec else None,
                 "placement": part.placement,
                 "sketch": part.sketch_name,
                 "steps": part.sketch_steps,
@@ -674,6 +680,7 @@ class Document:
             part.ops = None
             part.step_file = None
             part.library_spec = None
+            part.gear_spec = None
             part.sketch_name = sketch_name
             part.sketch_steps = stored_steps
             part.placement = _identity_placement()
@@ -752,6 +759,66 @@ class Document:
             )
             self._save()
             return self._info(self._parts[name])
+
+    def create_gear(
+        self,
+        name: str,
+        spec: dict,
+        position: list | tuple | None = None,
+        rotation_deg: list | tuple | None = None,
+    ) -> dict:
+        """Build an involute gear. The spec is stored and the solid is rebuilt from it."""
+        with self._lock:
+            self._require_new_name(name)
+            return self._write_gear(name, spec, position, rotation_deg)
+
+    def update_gear(
+        self,
+        name: str,
+        spec: dict,
+        position: list | tuple | None = None,
+        rotation_deg: list | tuple | None = None,
+    ) -> dict:
+        """Replace a part with a gear. A failed build leaves the previous solid."""
+        with self._lock:
+            self._get(name)
+            return self._write_gear(name, spec, position, rotation_deg)
+
+    def _write_gear(self, name: str, spec: dict, position, rotation_deg) -> dict:
+        from aicad.honesty import VERIFIED_CHECK, finish
+
+        clean = gears_mod.normalize_spec(spec)
+        base = kernel.adopt(gears_mod.build_gear(clean))
+        placed_at = _vec3(position or [0, 0, 0], "position")
+        rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
+        shape = kernel.place(base, placed_at, rotation)
+        self._parts[name] = _Part(
+            name,
+            "gear",
+            shape,
+            base=base,
+            placement={"position": list(placed_at), "rotation_deg": list(rotation)},
+            gear_spec=clean,
+        )
+        self._save()
+        payload = self._info(self._parts[name]).to_dict()
+        payload["gear"] = gears_mod.gear_data(clean)
+        return finish(
+            payload,
+            kind=VERIFIED_CHECK,
+            name=name,
+            what=(
+                "Nominal involute gear from the cited tooth standard. "
+                "The solid and the pitch, base, and cone figures describe that model."
+            ),
+            limits=[
+                "Tooth thickness is the nominal zero-backlash size, not a tolerance grade.",
+                "A helical fillet uses the ISO 53 normal tip radius as a circle in the transverse plane.",
+                "A bevel solid rules the back-cone involute between the inner and outer cone distances. Reported face and root angles are the Gleason parallel-clearance angles.",
+                "A spiral trace is a constant-angle spiral, not a circular cutter path.",
+                "Hypoid gears, with a shaft offset, are not generated.",
+            ],
+        )
 
     def place_part(
         self,
@@ -1473,6 +1540,7 @@ class Document:
                     "ops": copy.deepcopy(part.ops) if part.ops is not None else None,
                     "step_file": part.step_file,
                     "library": copy.deepcopy(part.library_spec) if part.library_spec is not None else None,
+                    "gear": copy.deepcopy(part.gear_spec) if part.gear_spec is not None else None,
                     "placement": copy.deepcopy(part.placement),
                     "sketch": part.sketch_name,
                     "steps": copy.deepcopy(part.sketch_steps) if part.sketch_steps is not None else None,
@@ -1555,6 +1623,11 @@ class Document:
                             spec.get("fastener_type"),
                         )
                     )
+                elif source == "gear":
+                    spec = record.get("gear")
+                    if not isinstance(spec, dict):
+                        raise DocumentError(f"Part {name!r} is a gear but has no gear spec.")
+                    base = kernel.adopt(gears_mod.build_gear(spec))
                 elif source == "sketch":
                     sketch_name = record.get("sketch")
                     sketch = self._sketches.get(sketch_name)
@@ -1613,6 +1686,7 @@ class Document:
                 base=base,
                 placement=stored_placement,
                 library_spec=record.get("library"),
+                gear_spec=record.get("gear") if source == "gear" else None,
                 sketch_name=record.get("sketch") if source == "sketch" else None,
                 sketch_steps=record.get("steps") if source == "sketch" else None,
                 geometry_file=record.get("geometry_file") if source == "script" else None,
