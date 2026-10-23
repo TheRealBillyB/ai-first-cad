@@ -476,6 +476,10 @@ def test_a_reserved_windows_name_is_refused(tmp_path):
         document.create_assembly({"name": "con", "instances": [{"name": "base", "part": "base"}], "joints": []})
     assert list(tmp_path.rglob("con.pdf")) == []
     assert list(tmp_path.rglob("con.csv")) == []
+    assert list(tmp_path.rglob("con_file*")) == []
+    root = Path(__file__).resolve().parents[1]
+    assert "con_file" not in (root / "README.md").read_text(encoding="utf-8")
+    assert "con_file" not in (root / "docs" / "DECISIONS.md").read_text(encoding="utf-8")
 
 
 def test_a_blocked_output_path_is_a_clear_error(tmp_path):
