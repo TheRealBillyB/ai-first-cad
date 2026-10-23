@@ -243,16 +243,11 @@ def _safe_stem(stem: str, payload: dict) -> str:
         part = part.get("name") or ""
     raw = f"{stem}_{part}" if part else stem
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(raw)).strip("_") or "result"
+    from aicad.paths import is_reserved_device_name
+
     # con.png is a device on Windows, whatever the extension is.
-    if cleaned.split(".")[0].upper() in {
-        "CON",
-        "PRN",
-        "AUX",
-        "NUL",
-        *(f"COM{index}" for index in range(1, 10)),
-        *(f"LPT{index}" for index in range(1, 10)),
-    }:
-        cleaned = f"{cleaned}_file"
+    if is_reserved_device_name(cleaned):
+        raise GeometryError(f"{cleaned} is reserved on Windows. Pick another name.")
     return cleaned[:80]
 
 

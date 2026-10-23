@@ -25,7 +25,6 @@ _FOLDER_LIMIT = 200
 # next to the edited one disappears. One kilometer is still a huge part.
 _MAX_MM = 1_000_000
 _MAX_ANGLE_DEG = 3600
-_WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL"}
 _FORBIDDEN_NAME = set('<>:"|?*')
 
 # Commands that change the model or answer a check. Reads stay out of the feed.
@@ -177,6 +176,10 @@ def save_project_as(workspace, path: str, name: str | None = None) -> dict:
     if name is not None:
         destination = (parent / _folder_name(name)).resolve()
     else:
+        from aicad.paths import is_reserved_device_name
+
+        if is_reserved_device_name(parent.name):
+            raise GeometryError(f"{parent.name} is reserved on Windows. Pick another folder name.")
         destination = parent.resolve()
     source = workspace.root.resolve()
     if _same_folder(destination, source):
@@ -691,11 +694,9 @@ def _folder_name(name: str) -> str:
         raise GeometryError("The folder name cannot start or end with a space or a dot.")
     if any(ord(character) < 32 or character in _FORBIDDEN_NAME or character in "/\\" for character in name):
         raise GeometryError("The folder name cannot contain a slash or any of : * ? \" < > |.")
-    stem = name.split(".", 1)[0].upper()
-    reserved = stem in _WINDOWS_RESERVED or (
-        len(stem) == 4 and stem[:3] in {"COM", "LPT"} and stem[3] in "123456789"
-    )
-    if reserved:
+    from aicad.paths import is_reserved_device_name
+
+    if is_reserved_device_name(name):
         raise GeometryError(f"{name} is reserved on Windows. Pick another folder name.")
     return name
 

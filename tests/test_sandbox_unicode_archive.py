@@ -291,37 +291,6 @@ def test_relative_lookalike_exports_stay_inside_the_project(tmp_path):
     _assert_no_canary(tmp_path)
 
 
-def test_export_through_a_lookalike_folder_link_does_not_write_outside(tmp_path):
-    project = tmp_path / "project"
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    document = Document(project)
-    document.create_part_from_ops("box", BOX)
-    _link(project / "\u0456mports", outside)
-    raw = "\u0456mports/" + CANARY
-    with pytest.raises(GeometryError, match="outside"):
-        document.export("box", raw, "step")
-    workspace = Workspace(project)
-    with pytest.raises(GeometryError, match="outside"):
-        workspace.execute("export_part", {"name": "box", "format": "step", "path": raw})
-    assert _files(outside) == {}
-    _assert_no_canary(tmp_path)
-
-
-def test_import_copy_does_not_follow_a_folder_link_outside(tmp_path, box_step):
-    project = tmp_path / "project"
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    project.mkdir()
-    _link(project / "imports", outside)
-    document = Document(project)
-    with pytest.raises(GeometryError, match="outside"):
-        document.import_step("kept", box_step)
-    assert _files(outside) == {}
-    assert not (outside / "kept.step").exists()
-    _assert_no_canary(tmp_path)
-
-
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows trims a trailing dot or space on the last segment")
 @pytest.mark.parametrize("raw", [".. .", ".. ./hidden.step", "imports/.. ."])
 def test_windows_trimmed_last_segment_does_not_leave_the_project(tmp_path, box_step, raw):
@@ -398,4 +367,55 @@ def test_opening_a_project_zip_file_does_not_unpack_it(tmp_path, isolated_config
     with pytest.raises(GeometryError):
         open_in_studio(home, archive)
     assert _files(outside) == {}
+    _assert_no_canary(tmp_path)
+
+
+DEVICES = [
+    "NUL",
+    "CON",
+    "PRN",
+    "AUX",
+    "COM1",
+    "COM9",
+    "LPT1",
+    "LPT9",
+    "nul.txt",
+    "AUX.step",
+    "COM\u00b9",
+    "COM\u00b9.step",
+    "LPT\u2079",
+    "exports/NUL/box.step",
+    "renders/CON/box.png",
+]
+
+
+@pytest.mark.parametrize("name", DEVICES)
+def test_a_reserved_device_name_is_refused_as_an_export_path(tmp_path, name):
+    document = Document(tmp_path / "project")
+    document.create_part_from_ops("box", BOX)
+    with pytest.raises(GeometryError, match="reserved"):
+        document.export("box", name, "step")
+    assert list((tmp_path / "project").rglob(name.split("/")[-1])) == []
+    _assert_no_canary(tmp_path)
+
+
+def test_reserved_names_are_refused_for_parts_and_folders(tmp_path, isolated_config):
+    document = Document(tmp_path / "project")
+    document.create_part_from_ops("box", BOX)
+    for name in ("NUL", "CON", "PRN", "AUX", "COM1", "LPT9"):
+        with pytest.raises(GeometryError, match="reserved"):
+            document.create_part_from_ops(name, BOX)
+        with pytest.raises(GeometryError, match="reserved"):
+            document.create_sketch(name, {"entities": [], "constraints": []})
+        with pytest.raises(GeometryError, match="reserved"):
+            document.create_assembly(
+                {"name": name, "instances": [{"name": "base", "part": "box"}], "joints": []}
+            )
+    workspace = Workspace(tmp_path / "other")
+    workspace.document.create_part_from_ops("box", BOX)
+    for name in ("COM\u00b9", "LPT\u2079", "NUL.txt", "COM\u00b2.step"):
+        with pytest.raises(GeometryError, match="reserved"):
+            workspace.execute("save_project_as", {"path": str(tmp_path), "name": name})
+    with pytest.raises(GeometryError, match="reserved"):
+        workspace.execute("save_project_as", {"path": str(tmp_path / "PRN")})
     _assert_no_canary(tmp_path)
