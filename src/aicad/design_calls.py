@@ -388,6 +388,10 @@ def script_document(document, calls: list[dict]):
     import threading
     import weakref
 
+    from aicad.thread_stack import prepare_geometry_thread_stack
+
+    # The calls run on this thread, including geometry.
+    prepare_geometry_thread_stack()
     pending: queue.Queue[Path | None] = queue.Queue()
     before: dict = {}
     if hasattr(document, "session_payload"):

@@ -2569,16 +2569,28 @@ class _DesignRecord:
                     roots.append(entry)
         if roots:
             env["PYTHONPATH"] = os.pathsep.join(roots)
+        from aicad.thread_stack import child_inherits_geometry_stack
+
         try:
-            self.proc = subprocess.Popen(
-                [sys.executable, "-P", "-B", "-u", str(_sandbox_runner()), "--model", str(self.job), str(self.record)],
-                cwd=str(self.workspace),
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=log_fd,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
+            with child_inherits_geometry_stack():
+                self.proc = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-P",
+                        "-B",
+                        "-u",
+                        str(_sandbox_runner()),
+                        "--model",
+                        str(self.job),
+                        str(self.record),
+                    ],
+                    cwd=str(self.workspace),
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_fd,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
         finally:
             os.close(log_fd)
 
@@ -2816,7 +2828,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             popen_kwargs["close_fds"] = True
             popen_kwargs["pass_fds"] = (sentinel_fd,)
             account = _Account()
-        proc = subprocess.Popen(command, **popen_kwargs)
+        from aicad.thread_stack import child_inherits_geometry_stack
+
+        with child_inherits_geometry_stack():
+            proc = subprocess.Popen(command, **popen_kwargs)
         if account is not None and sentinel_path is not None:
             identity = process_identity(proc.pid)
             if identity is not None:
