@@ -1,11 +1,12 @@
 /* Controls for library, gears, mesh, train, motion study, kinematics,
-   packaging, drawing, bill of materials, exploded view, and animation.
-   Each button calls the existing command. */
+   packaging, drawing, bill of materials, exploded view, animation,
+   fatigue, clearance, and STEP import. Each button calls the existing command. */
 
 function bindWorkspaceTools() {
   $("app-notice-dismiss").onclick = () => clearNotice();
   $("open-library").onclick = () => selectModelTab("library");
   $("open-gear").onclick = () => selectModelTab("gear");
+  $("open-step").onclick = () => selectModelTab("step");
   const tools = {
     "assembly-mesh": "mesh",
     "assembly-train": "train",
@@ -982,6 +983,184 @@ function baseName(path) {
   const text = String(path || "");
   const parts = text.split(/[\\/]/);
   return parts[parts.length - 1] || text;
+}
+
+function renderFatiguePanel() {
+  const root = $("panel");
+  const report = ui.state && ui.state.panels ? ui.state.panels.fatigue : null;
+  const materials = ((ui.state && ui.state.materials && ui.state.materials.materials) || [])
+    .map((item) => `<option value="${escapeAttr(item.id)}" ${item.id === "steel" ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
+    .join("");
+  root.innerHTML = `<h3>Fatigue</h3>
+    <form id="fatigue-form" class="tool-form">
+      <p class="muted">A Goodman estimate of a stress you type in. It does not mesh the part. This calls check_fatigue.</p>
+      <div class="field-grid">
+        <label>Material <select id="fatigue-material">${materials || `<option value="steel">mild steel</option>`}</select></label>
+        <label>Stress amplitude MPa <input id="fatigue-amplitude" type="number" min="0" step="1" /></label>
+        <label>Mean stress MPa <input id="fatigue-mean" type="number" step="1" value="0" /></label>
+        <label>Surface
+          <select id="fatigue-surface">
+            <option value="polished">Polished</option>
+            <option value="machined" selected>Machined</option>
+            <option value="as_rolled">As rolled</option>
+            <option value="printed">Printed</option>
+          </select>
+        </label>
+        <label>Section mm <input id="fatigue-section" type="number" min="0" step="0.1" value="8" /></label>
+        <label>Target safety factor <input id="fatigue-target" type="number" min="0" step="0.1" value="2" /></label>
+      </div>
+      <p data-tool-progress class="muted" role="status"></p>
+      <p data-tool-error class="warn" hidden></p>
+      <button type="submit" id="fatigue-run" class="primary">Check fatigue</button>
+    </form>
+    <div id="fatigue-result">${report ? fatigueHtml(report) : `<p class="muted">The safety factor shows here. A pass against the target is not a certified life.</p>`}</div>`;
+  $("fatigue-form").onsubmit = (event) => {
+    event.preventDefault();
+    runFatigue().catch(showError);
+  };
+}
+
+function fatigueHtml(report) {
+  return `${claimBlock(report)}<div class="kv">
+      <span>Status</span><b>${escapeHtml(report.status || "")}</b>
+      <span>Safety factor</span><b>${report.safety_factor != null ? report.safety_factor : "n/a"}</b>
+      <span>Endurance</span><b>${report.endurance_mpa != null ? `${report.endurance_mpa} MPa` : "n/a"}</b>
+      <span>Amplitude</span><b>${report.compared_amplitude_mpa != null ? `${report.compared_amplitude_mpa} MPa` : ""}</b>
+    </div>
+    <p class="muted">${escapeHtml(report.note || "")}</p>`;
+}
+
+async function runFatigue() {
+  const amplitude = requiredNumber($("fatigue-amplitude").value, "Enter the stress amplitude in MPa.");
+  const spec = {
+    material: $("fatigue-material").value,
+    stress_amplitude_mpa: amplitude,
+    surface: $("fatigue-surface").value,
+    section_mm: requiredNumber($("fatigue-section").value, "Enter the section thickness in millimeters."),
+    target_safety_factor: requiredNumber($("fatigue-target").value, "Enter the target safety factor."),
+  };
+  const mean = optionalNumber($("fatigue-mean").value, "Mean stress must be a number.");
+  if (mean != null) spec.mean_stress_mpa = mean;
+  const report = await runTool($("fatigue-run"), "Checking fatigue…", () => command("check_fatigue", { spec }));
+  if (!report) return;
+  clearNotice();
+  await refresh();
+  if ($("fatigue-result")) $("fatigue-result").innerHTML = fatigueHtml(report);
+}
+
+function renderClearancePanel() {
+  const root = $("panel");
+  const report = ui.state && ui.state.panels ? ui.state.panels.clearance : null;
+  const parts = (ui.state && ui.state.parts) || [];
+  const options = parts.map((part) => `<option value="${escapeAttr(part.name)}">${escapeHtml(part.name)}</option>`).join("");
+  const empty = parts.length < 2
+    ? `<p class="muted">Add two parts, then check the gap between them.</p>`
+    : "";
+  root.innerHTML = `<h3>Clearance</h3>
+    <form id="clearance-form" class="tool-form">
+      <p class="muted">Overlap volume, or the gap between two parts. This calls check_clearance.</p>
+      ${empty}
+      <div class="field-grid">
+        <label>Part A <select id="clearance-a">${options || `<option value="">No parts</option>`}</select></label>
+        <label>Part B <select id="clearance-b">${options || `<option value="">No parts</option>`}</select></label>
+        <label>Min gap mm <input id="clearance-gap" type="number" min="0" step="0.1" value="0" /></label>
+      </div>
+      <p data-tool-progress class="muted" role="status"></p>
+      <p data-tool-error class="warn" hidden></p>
+      <button type="submit" id="clearance-run" class="primary">Check clearance</button>
+    </form>
+    <div id="clearance-result">${report ? clearanceHtml(report) : `<p class="muted">The gap or the overlap shows here.</p>`}</div>`;
+  const second = $("clearance-b");
+  if (second && second.options.length > 1) second.selectedIndex = 1;
+  $("clearance-form").onsubmit = (event) => {
+    event.preventDefault();
+    runClearance().catch(showError);
+  };
+}
+
+function clearanceHtml(report) {
+  const points = report.closest_point_a_mm && report.closest_point_b_mm
+    ? `<p class="muted">Closest points ${formatPoint(report.closest_point_a_mm)} and ${formatPoint(report.closest_point_b_mm)}.</p>`
+    : "";
+  return `${claimBlock(report)}<div class="kv">
+      <span>Parts</span><b>${escapeHtml(report.part_a || "")} × ${escapeHtml(report.part_b || "")}</b>
+      <span>Intersecting</span><b>${report.intersecting ? "yes" : "no"}</b>
+      <span>Overlap</span><b>${report.interference_volume_mm3 != null ? `${report.interference_volume_mm3} mm³` : ""}</b>
+      <span>Gap</span><b>${report.min_distance_mm != null ? `${report.min_distance_mm} mm` : ""}</b>
+      <span>Passed</span><b>${report.passed == null ? "" : report.passed ? "yes" : "no"}</b>
+    </div>
+    ${points}
+    <p class="muted">${escapeHtml(report.note || "")}</p>`;
+}
+
+function formatPoint(point) {
+  if (!point) return "";
+  const values = [point.x, point.y, point.z].map((value) => (value == null ? "" : value));
+  return escapeHtml(values.join(", "));
+}
+
+async function runClearance() {
+  const partA = $("clearance-a").value;
+  const partB = $("clearance-b").value;
+  if (!partA || !partB) throw new Error("Choose two parts.");
+  if (partA === partB) throw new Error("Choose two different parts.");
+  const gap = optionalNumber($("clearance-gap").value, "The minimum gap must be a number.");
+  const args = { part_a: partA, part_b: partB };
+  if (gap != null) args.min_clearance_mm = gap;
+  const report = await runTool($("clearance-run"), "Checking clearance…", () => command("check_clearance", args));
+  if (!report) return;
+  clearNotice();
+  await refresh();
+  if ($("clearance-result")) $("clearance-result").innerHTML = clearanceHtml(report);
+}
+
+function renderStepPanel() {
+  const root = $("panel");
+  const draft = ui.reports.stepDraft || { name: "imported", path: "" };
+  const report = ui.reports.step;
+  const project = ui.state && ui.state.project ? ui.state.project.path : "";
+  root.innerHTML = `<h3>STEP</h3>
+    <form id="step-form" class="tool-form">
+      <p class="muted">Copy a STEP file in as a part. This calls import_step. The file is read as itself. A name inside it that points outside its folder is refused, and a web address is not fetched.</p>
+      <div class="field-grid">
+        <label>Part name <input id="step-name" value="${escapeAttr(draft.name)}" /></label>
+        <label>Path <input id="step-path" value="${escapeAttr(draft.path)}" /></label>
+      </div>
+      <p class="muted">${project ? `A file in ${escapeHtml(project)} can use a relative path. An absolute path is a file you chose.` : "An absolute path is a file you chose. A relative path stays in this project."}</p>
+      <p data-tool-progress class="muted" role="status"></p>
+      <p data-tool-error class="warn" hidden></p>
+      <button type="submit" id="step-import" class="primary">Import STEP</button>
+    </form>
+    <div id="step-result">${report ? stepHtml(report) : `<p class="muted">The imported solid shows in the model view.</p>`}</div>`;
+  $("step-form").onsubmit = (event) => {
+    event.preventDefault();
+    runImportStep().catch(showError);
+  };
+}
+
+function stepHtml(report) {
+  const part = report && report.part ? report.part : report || {};
+  return `${claimBlock(report)}<div class="kv">
+      <span>Name</span><b>${escapeHtml(part.name || "")}</b>
+      <span>Source</span><b>${escapeHtml(part.source || "")}</b>
+      <span>Watertight</span><b>${part.watertight ? "yes" : "no"}</b>
+      <span>Volume</span><b>${part.volume_mm3 != null ? `${part.volume_mm3} mm³` : ""}</b>
+    </div>
+    <p class="muted">The part is in the model view.</p>`;
+}
+
+async function runImportStep() {
+  const name = $("step-name").value.trim();
+  if (!name) throw new Error("Name the part.");
+  const path = $("step-path").value.trim();
+  if (!path) throw new Error("Name the STEP file on this computer.");
+  ui.reports.stepDraft = { name, path };
+  const report = await runTool($("step-import"), "Importing the STEP file…", () => command("import_step", { name, path }));
+  if (!report) return;
+  clearNotice();
+  ui.reports.step = report;
+  ui.part = name;
+  await refresh({ fit: "part", focus: name, solid: true });
 }
 
 boot().catch(showError);
