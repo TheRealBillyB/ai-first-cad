@@ -994,6 +994,30 @@ def _cmd_run_motion_study(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("motion_study", report)  # noqa: SLF001
 
 
+def _cmd_check_position_error(workspace: Workspace, arguments: dict) -> dict:
+    if isinstance(arguments.get("request"), dict):
+        request = dict(arguments["request"])
+    else:
+        request = {}
+        for key in (
+            "tool",
+            "tolerance_mm",
+            "at",
+            "rotation_deg",
+            "joints",
+            "slides",
+            "poses",
+            "path",
+            "sources",
+            "links",
+        ):
+            if arguments.get(key) is not None:
+                request[key] = arguments[key]
+    report = workspace.document.check_position_error(arguments["name"], request)
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("position_error", report)  # noqa: SLF001
+
+
 def _cmd_solve_kinematics(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.solve_kinematics(
         arguments["name"],
@@ -1654,6 +1678,40 @@ _add(Command(
         ["name", "tool"],
     ),
     _cmd_solve_kinematics,
+))
+_add(Command(
+    "check_position_error",
+    "Tip position error of a serial chain from encoder resolution, backlash, joint stiffness, and link deflection. "
+    "The pass is the worst case against tolerance_mm. Root-sum-square is reported and does not grant a pass.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "tool": _string("Instance at the end of the chain."),
+            "tolerance_mm": _number("Pass when the worst-case tip error is within this many millimeters."),
+            "at": {"type": "array", "description": "Tool point in the tool instance, millimeters."},
+            "rotation_deg": {"type": "array", "description": "Tool frame rotation, degrees about X, then Y, then Z."},
+            "joints": {"type": "object", "description": "Joint values for the pose. Revolute is degrees. Prismatic is millimeters."},
+            "slides": {"type": "object", "description": "Cylindrical slide in millimeters."},
+            "poses": {
+                "type": "array",
+                "description": "Pose names, or objects with name, joints, and slides. Omit to use joints. Not with path.",
+            },
+            "path": {
+                "type": "object",
+                "description": "kind line or waypoints, the same path as solve_kinematics. Not with poses.",
+            },
+            "sources": {
+                "type": "object",
+                "description": "Per joint: encoder (resolution_deg, resolution_mm, or counts), backlash (deg, arcmin, mm with radius_mm, or mesh), and stiffness (torque over nmm_per_rad, or force over n_per_mm).",
+            },
+            "links": {
+                "type": "object",
+                "description": "Per instance: translation_mm and rotation_rad, or fea with the strength-check setup.",
+            },
+        },
+        ["name", "tool", "tolerance_mm"],
+    ),
+    _cmd_check_position_error,
 ))
 _add(Command(
     "check_cables",

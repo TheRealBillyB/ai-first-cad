@@ -275,6 +275,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON request: tool, optional at, joints, target, or path.",
     )
 
+    error_budget = commands.add_parser(
+        "error-budget",
+        parents=[common],
+        help="Tip position error of a serial chain against a tolerance.",
+    )
+    error_budget.add_argument("name")
+    error_budget.add_argument(
+        "--file",
+        type=Path,
+        required=True,
+        help="JSON request: tool, tolerance_mm, sources, links, poses, or path.",
+    )
+
     cables = commands.add_parser("cables", parents=[common], help="Check cables, hoses, and tendon routes.")
     cables.add_argument("name")
     cables.add_argument(
@@ -833,6 +846,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 path=request.get("path"),
             )
         )
+    if args.command == "error-budget":
+        return emit(document.check_position_error(args.name, _json_object(args.file)))
     if args.command == "cables":
         if args.file and args.study:
             raise GeometryError("Pass --study or --file, not both.")
