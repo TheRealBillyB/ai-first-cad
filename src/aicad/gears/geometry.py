@@ -350,6 +350,12 @@ def normalize_spec(spec: dict) -> dict:
     if keyway and bore is None:
         raise GeometryError("A keyway needs bore_mm.")
 
+    transverse = module / math.cos(math.radians(helix if gear_type == "helical" else 0.0))
+    _reject_oversize(teeth * transverse, "pitch diameter")
+    _reject_oversize(face, "face_width_mm")
+    if bore is not None:
+        _reject_oversize(bore, "bore_mm")
+
     return {
         "type": gear_type,
         "module_mm": module,
@@ -1362,6 +1368,18 @@ def _contact_ratio(
 def _reject_unknown(name: str) -> None:
     known = ", ".join(sorted(set(CYLINDRICAL | BEVEL | {"hypoid"})))
     raise GeometryError(f"Unknown gear type {name!r}. Use one of: {known}.")
+
+
+def _reject_oversize(value: float, label: str) -> None:
+    """The same kilometre bound the kernel uses for a solid."""
+    from aicad.kernel import MAX_MM
+
+    limit = MAX_MM
+    if value > limit:
+        raise GeometryError(
+            f"{label} is {value:.12g} mm, past the {limit:.12g} mm limit. "
+            "Ordinary parts stay within a kilometer."
+        )
 
 
 def _required_positive(spec: dict, key: str) -> float:

@@ -363,6 +363,10 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 
 
 def serve(workspace: str | Path, connect: str | None = None) -> None:
+    from aicad.thread_stack import prepare_geometry_thread_stack
+
+    # Tool calls can run on a worker thread started while the server runs.
+    prepare_geometry_thread_stack()
     if not connect:
         from aicad.sandbox import warn_design_scripts
 
@@ -372,6 +376,9 @@ def serve(workspace: str | Path, connect: str | None = None) -> None:
 
 
 def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer:
+    from aicad.thread_stack import prepare_geometry_thread_stack
+
+    prepare_geometry_thread_stack()
     if connect:
         from aicad.app import HttpCommandClient
 
