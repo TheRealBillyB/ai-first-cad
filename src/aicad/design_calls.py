@@ -112,8 +112,25 @@ def _dispatch_name(name: str, args: tuple, kwargs: dict):
     return name, args, kwargs
 
 
-def design_proxy(directory: Path):
-    """The ``document`` name. Calls are sent to ``directory`` and run elsewhere."""
+def _recorded(result):
+    """Text for the report. A value that cannot be stored still names the call."""
+    from aicad.sandbox_run import _jsonable
+
+    try:
+        return _jsonable(result)
+    except Exception:
+        pass
+    try:
+        return str(result)
+    except Exception:
+        return type(result).__name__
+
+
+def design_proxy(directory: Path, live: dict | None = None):
+    """The ``document`` name. Calls are sent to ``directory`` and run elsewhere.
+
+    ``live`` is only for a test in this process. The script process does not have it.
+    """
     import threading
 
     from aicad.parity import SCRIPT_METHODS
@@ -122,7 +139,7 @@ def design_proxy(directory: Path):
     state = {"n": 0}
     lock = threading.Lock()
 
-    def submit(op: str, name: str | None, args, kwargs) -> dict:
+    def submit(op: str, name: str | None, args, kwargs) -> tuple[dict, int]:
         with lock:
             number = state["n"]
             state["n"] += 1
@@ -141,24 +158,26 @@ def design_proxy(directory: Path):
             except OSError as exc:
                 raise RuntimeError("The call was refused.") from exc
             if payload is not None:
-                return payload
+                return payload, number
             time.sleep(0.01)
 
     def dispatch(name: str, args, kwargs):
         _dispatch_name(name, tuple(args), dict(kwargs))
-        payload = submit("call", name, args, kwargs)
+        payload, number = submit("call", name, args, kwargs)
         if not payload.get("ok"):
             _raise_remote(str(payload.get("error_type") or "RuntimeError"), str(payload.get("error") or ""))
+        if live is not None and number in live:
+            return live.pop(number)
         return _restore(payload.get("result"))
 
     def finish() -> None:
-        payload = submit("finish", None, (), {})
+        payload, _number = submit("finish", None, (), {})
         if not payload.get("ok"):
             _raise_remote(str(payload.get("error_type") or "RuntimeError"), str(payload.get("error") or ""))
 
     wrappers = {}
     for name in SCRIPT_METHODS:
-        namespace = {"dispatch": dispatch, "name": name, "__builtins__": {}}
+        namespace = {"dispatch": dispatch, "name": name, "AttributeError": AttributeError, "__builtins__": {}}
         exec("def call(*args, **kwargs):\n    return dispatch(name, args, kwargs)\n", namespace)  # noqa: S102
         wrappers[name] = namespace["call"]
     return ScriptDocument(wrappers), finish
@@ -197,10 +216,9 @@ def _effects(document, before: dict, calls: list[dict]) -> dict:
     }
 
 
-def serve_calls(directory: Path, document, calls: list[dict], before: dict) -> dict:
+def serve_calls(directory: Path, document, calls: list[dict], before: dict, live: dict | None = None) -> dict:
     """Run calls from ``directory`` until ``STOP`` appears. Return the report."""
     from aicad.parity import SCRIPT_METHODS
-    from aicad.sandbox_run import _jsonable
 
     directory.mkdir(parents=True, exist_ok=True)
     number = 0
@@ -254,12 +272,10 @@ def serve_calls(directory: Path, document, calls: list[dict], before: dict) -> d
                 {"ok": False, "error_type": type(exc).__name__, "error": str(exc)},
             )
         else:
-            try:
-                recorded = _jsonable(result)
-            except Exception:
-                recorded = str(result)
-            calls.append({"method": name, "result": recorded})
-            _write_json(directory / f"{number}.res.json", {"ok": True, "result": recorded})
+            if live is not None:
+                live[number] = result
+            calls.append({"method": name, "result": _recorded(result)})
+            _write_json(directory / f"{number}.res.json", {"ok": True, "result": calls[-1]["result"]})
         number += 1
     return _effects(document, before, calls)
 
@@ -302,12 +318,14 @@ def script_document(document, calls: list[dict]):
         except Exception:
             before = {}
 
+    live: dict = {}
+
     def run() -> None:
         try:
-            serve_calls(directory, document, calls, before)
+            serve_calls(directory, document, calls, before, live)
         except Exception:
             return
 
     threading.Thread(target=run, name="aicad-design-calls", daemon=True).start()
-    proxy, _finish = design_proxy(directory)
+    proxy, _finish = design_proxy(directory, live)
     return proxy
