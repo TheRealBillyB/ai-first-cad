@@ -14,6 +14,8 @@ resident memory and stops it above the memory cap, because the address-space
 cap counts a system library cache and was stopping every script. Windows uses
 an AppContainer and a Job Object. CPU time, memory, and a wall-clock limit are
 set on that process. If those limits cannot be applied, the script is not run.
+On Linux the process filter is installed on every thread that already exists.
+If another thread is already there, the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
@@ -22,7 +24,9 @@ A link that points outside the project is not written. A file with more
 than one name is not used for the run, because writing it would change
 every name. A script result that is a link is not read. Geometry and
 pictures named by that result are opened only when they stay inside the
-project. The script log is not read when it has another name.
+project. The check report is written by the process that ran the calls,
+so the script does not supply it. The script log is not read when it has
+another name.
 """
 
 from __future__ import annotations
@@ -182,6 +186,26 @@ _SIGNAL_SYSCALLS = {
     "aarch64": {"kill": 129, "tkill": 130, "tgkill": 131, "rt_sigqueueinfo": 138, "rt_tgsigqueueinfo": 240},
 }
 _GETTID = {"x86_64": 186, "aarch64": 178}
+# Install the filter on every thread that already exists, not only the caller.
+_SECCOMP_FILTER_FLAG_TSYNC = 1
+_THREAD_CONFINE_ERROR = "Could not confine every thread, so the script was not run."
+# Calls that create or replace a file. Used only when a thread already exists
+# and the script is about to be refused.
+_NEW_FILE_SYSCALLS = {
+    "x86_64": (
+        2, 85, 257, 437, 83, 258, 87, 263, 82, 264, 316, 86, 265, 88, 266, 133, 259, 76, 77, 285, 40, 275, 326,
+    ),
+    "aarch64": (56, 437, 34, 35, 38, 276, 37, 36, 33, 46, 47, 71, 76, 285),
+}
+# Writes. Allowed only for the standard streams and the result the parent already opened.
+_WRITE_SYSCALLS = {
+    "x86_64": (1, 18, 20, 296, 328),
+    "aarch64": (64, 68, 66, 70, 287),
+}
+# A shared mapping of a file can change that file without write. Anonymous memory stays allowed.
+_MMAP = {"x86_64": 9, "aarch64": 222}
+_MAP_SHARED = 0x01
+_MAP_ANONYMOUS = 0x20
 # A resource limit names a process in its first argument. Pid 0 is this process.
 _PRLIMIT64 = {"x86_64": 302, "aarch64": 261}
 # Owner, signal, and lease commands. The command is the second argument.
@@ -1021,13 +1045,86 @@ def _block_sockets(*, network: bool) -> None:
         allow=allow,
     )
     program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    _install_filter(program)
+
+
+def _install_filter(program: list) -> None:
+    """Install ``program`` on this thread and on every thread that already exists."""
+    arch = _arch()
+    if arch is None:
+        raise ScriptError(sandbox_supported()[1])
     filters = (_SockFilter * len(program))(*program)
     prog = _SockFprog(len(program), filters)
-    libc = _libc()
-    if libc.syscall(_SECCOMP[arch], 1, 0, ctypes.byref(prog)) != 0:
+    if _libc().syscall(_SECCOMP[arch], 1, _SECCOMP_FILTER_FLAG_TSYNC, ctypes.byref(prog)) != 0:
         raise ScriptError(
             "Could not apply the script's process limits, so the script was not run."
         )
+
+
+def _python_thread_exists() -> bool:
+    """True when Python already started a thread besides this one.
+
+    A geometry library can start its own threads. Those are created after
+    confinement, so they inherit it. A thread that is already running does not.
+    """
+    import threading
+
+    return threading.active_count() > 1
+
+
+def _block_new_files(result_fd: int | None) -> None:
+    """Refuse new files, and writes except the standard streams and ``result_fd``.
+
+    Called only after the process filter is in place and only when another
+    thread already exists. The script is not run on that path.
+    """
+    arch = _arch()
+    if arch is None:
+        raise ScriptError(sandbox_supported()[1])
+    bpf_ld = 0x00 | 0x00 | 0x20
+    bpf_jeq = 0x05 | 0x10 | 0x00
+    bpf_jset = 0x05 | 0x40 | 0x00
+    bpf_ret = 0x06
+    allow = 0x7FFF0000
+    errno_eperm = 0x00050000 | 1
+    program = [
+        _SockFilter(bpf_ld, 0, 0, 4),
+        _SockFilter(bpf_jeq, 1, 0, _AUDIT_ARCH[arch]),
+        _SockFilter(bpf_ret, 0, 0, errno_eperm),
+        _SockFilter(bpf_ld, 0, 0, 0),
+    ]
+    if arch == "x86_64":
+        program.append(_SockFilter(bpf_jset, 0, 1, _X32_SYSCALL_BIT))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    for number in _NEW_FILE_SYSCALLS[arch]:
+        program.append(_SockFilter(bpf_jeq, 0, 1, number))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    allowed = [1, 2]
+    if result_fd is not None and result_fd not in allowed and 0 <= result_fd <= 0xFFFFFFFF:
+        allowed.append(result_fd)
+    count = len(allowed)
+    for number in _WRITE_SYSCALLS[arch]:
+        program.append(_SockFilter(bpf_jeq, 0, 6 + count, number))
+        program.append(_SockFilter(bpf_ld, 0, 0, 20))
+        program.append(_SockFilter(bpf_jeq, 1, 0, 0))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+        program.append(_SockFilter(bpf_ld, 0, 0, 16))
+        for index, descriptor in enumerate(allowed):
+            program.append(_SockFilter(bpf_jeq, count - index, 0, descriptor))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+        program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    # Shared file mappings can change a file. Anonymous memory stays available.
+    program.append(_SockFilter(bpf_jeq, 0, 8, _MMAP[arch]))
+    program.append(_SockFilter(bpf_ld, 0, 0, 44))
+    program.append(_SockFilter(bpf_jeq, 1, 0, 0))
+    program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    program.append(_SockFilter(bpf_ld, 0, 0, 40))
+    program.append(_SockFilter(bpf_jset, 1, 0, _MAP_ANONYMOUS))
+    program.append(_SockFilter(bpf_jset, 1, 0, _MAP_SHARED))
+    program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    _install_filter(program)
 
 
 # A literal public address. Loopback is often allowed inside a container, and a
@@ -1357,8 +1454,20 @@ def _refuse_foreign_kill() -> None:
     os.kill = kill  # type: ignore[method-assign]
 
 
-def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
-    """Confine the current process. Called only in the script's child process."""
+def apply_sandbox(
+    workspace: Path,
+    network: bool,
+    result_fd: int | None = None,
+    *,
+    extra_thread: bool = False,
+    result_path: Path | None = None,
+) -> list[Path]:
+    """Confine the current process. Called only in the script's child process.
+
+    ``result_fd`` is a result file this process already opened. It is used only
+    when another thread already exists and the script is refused. ``extra_thread``
+    is set when a thread existed before this module was imported.
+    """
     from aicad.plugins import seal_sandbox_plugins
     from aicad.sandbox_state import mark_sandboxed
 
@@ -1415,9 +1524,29 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
         raise ScriptError(reason)
     _adopt_orphans()
     _join_pids_cgroup()
-    _set_limits()
+    # The address cap is applied after the geometry libraries are mapped.
+    # Mapping them under the cap fails before the script can run.
     _landlock(workspace, network=network, read_roots=roots)
+    extra = extra_thread or _python_thread_exists()
     _block_sockets(network=network)
+    if extra or _python_thread_exists():
+        fd = result_fd
+        opened = False
+        if fd is None and result_path is not None:
+            fd = os.open(
+                result_path,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            opened = True
+        _block_new_files(fd)
+        if opened and fd is not None:
+            os.write(
+                fd,
+                (json.dumps({"ok": False, "error": _THREAD_CONFINE_ERROR}) + "\n").encode(),
+            )
+            os.close(fd)
+        raise ScriptError(_THREAD_CONFINE_ERROR)
     return roots
 
 
@@ -2068,6 +2197,180 @@ def _child_command(job: Path) -> list[str]:
     return [sys.executable, "-P", "-B", "-u", runner, str(job)]
 
 
+class _DesignRecord:
+    """The process that runs a design script's document calls and records them."""
+
+    def __init__(self, workspace: Path, job: Path):
+        self.workspace = workspace
+        self.job = job
+        self.proc: subprocess.Popen | None = None
+        self.record: Path | None = None
+        self._log: Path | None = None
+        self._device = None
+        self._inode = None
+
+    def start(self) -> None:
+        calls = self.job / "calls"
+        calls.mkdir(mode=0o700)
+        descriptor, name = tempfile.mkstemp(prefix="aicad-design-checks-", suffix=".json")
+        os.close(descriptor)
+        self.record = Path(name)
+        info = os.lstat(self.record)
+        self._device = info.st_dev
+        self._inode = info.st_ino
+        log_fd = os.open(name + ".log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        self._log = Path(name + ".log")
+        env = _child_env(self.workspace, self.job, network=False)
+        # This process runs the calls. It is not the confined script.
+        env.pop("AICAD_SANDBOX_CHILD", None)
+        # Use the libraries this process already loaded. A redirected home
+        # must not hide that install, and the project is not an import root.
+        roots: list[str] = []
+        for entry in sys.path:
+            if not entry:
+                continue
+            try:
+                resolved = Path(entry).resolve()
+            except OSError:
+                continue
+            if _inside(resolved, self.workspace):
+                continue
+            text = str(resolved)
+            if text not in roots:
+                roots.append(text)
+        current = env.get("PYTHONPATH")
+        if current:
+            for entry in current.split(os.pathsep):
+                if entry and entry not in roots:
+                    roots.append(entry)
+        if roots:
+            env["PYTHONPATH"] = os.pathsep.join(roots)
+        try:
+            self.proc = subprocess.Popen(
+                [sys.executable, "-P", "-B", "-u", str(_sandbox_runner()), "--model", str(self.job), str(self.record)],
+                cwd=str(self.workspace),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_fd,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        finally:
+            os.close(log_fd)
+
+    def failure_detail(self) -> str:
+        proc = self.proc
+        if proc is None or proc.poll() in (0, None) or self._log is None:
+            return ""
+        try:
+            text = self._log.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+        if len(text) > 500:
+            text = text[-500:]
+        return text
+
+    def _refuse(self) -> None:
+        detail = self.failure_detail()
+        message = "The design script could not record its checks."
+        if detail:
+            message = f"{message}\n{detail}"
+        raise ScriptError(message)
+
+    def merge(self, payload: dict) -> dict:
+        if self.proc is None or self.record is None:
+            raise ScriptError("The design script could not record its checks.")
+        if self.proc.poll() not in (0, None):
+            self._refuse()
+        stop = self.job / "calls" / "STOP"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            descriptor = os.open(stop, flags, 0o600)
+        except FileExistsError:
+            descriptor = None
+        except OSError as exc:
+            try:
+                os.lstat(stop)
+            except OSError:
+                raise ScriptError("The design script could not record its checks.") from exc
+            descriptor = None
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            self.proc.communicate(timeout=wall_seconds())
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.communicate(timeout=5)
+            self._refuse()
+        if self.proc.returncode != 0:
+            self._refuse()
+        read_flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            read_flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            read_flags |= os.O_CLOEXEC
+        try:
+            descriptor = os.open(self.record, read_flags)
+        except OSError as exc:
+            raise ScriptError("The design script could not record its checks.") from exc
+        try:
+            info = os.fstat(descriptor)
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISREG(info.st_mode)
+                or info.st_dev != self._device
+                or info.st_ino != self._inode
+                or info.st_nlink != 1
+                or info.st_size > 32_000_000
+            ):
+                raise ScriptError("The design script could not record its checks.")
+            chunks: list[bytes] = []
+            while True:
+                block = os.read(descriptor, 1024 * 1024)
+                if not block:
+                    break
+                chunks.append(block)
+                if sum(len(part) for part in chunks) > 32_000_000:
+                    raise ScriptError("The design script could not record its checks.")
+        finally:
+            os.close(descriptor)
+        try:
+            report = json.loads(b"".join(chunks).decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ScriptError("The design script could not record its checks.") from exc
+        if not isinstance(report, dict):
+            raise ScriptError("The design script could not record its checks.")
+        payload["checks"] = report.get("checks") if isinstance(report.get("checks"), list) else []
+        payload["changed_parts"] = report.get("changed_parts") if isinstance(report.get("changed_parts"), list) else []
+        payload["deleted_parts"] = report.get("deleted_parts") if isinstance(report.get("deleted_parts"), list) else []
+        payload["views"] = report.get("views") if isinstance(report.get("views"), list) else []
+        notes = report.get("notes") if isinstance(report.get("notes"), list) else []
+        errors = payload.get("errors") if isinstance(payload.get("errors"), list) else []
+        payload["errors"] = [item for item in errors if isinstance(item, str)] + [
+            item for item in notes if isinstance(item, str)
+        ]
+        return payload
+
+    def close(self) -> None:
+        proc = self.proc
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        if self.record is not None:
+            self.record.unlink(missing_ok=True)
+            self.record = None
+        if self._log is not None:
+            self._log.unlink(missing_ok=True)
+            self._log = None
+
+
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
@@ -2127,10 +2430,14 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     process_hit = threading.Event()
     process_cap = _PROCESS_CAP if sys.platform.startswith("linux") else None
     pids_cgroup: Path | None = None
+    design_record: _DesignRecord | None = None
     account: _Account | None = None
     sentinel_fd: int | None = None
     sentinel_path: str | None = None
     try:
+        if kind == "design":
+            design_record = _DesignRecord(workspace, job)
+            design_record.start()
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
 
@@ -2148,9 +2455,18 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 stderr_path=job / "stderr.txt",
             )
             if timed_out:
+                detail = design_record.failure_detail() if design_record is not None else ""
                 shutil.rmtree(job, ignore_errors=True)
-                raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.")
-            return _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
+                message = f"The script ran longer than {wall} seconds, so it was stopped."
+                if detail:
+                    message = f"{message}\n{detail}"
+                raise ScriptError(message)
+            if design_record is not None and design_record.proc is not None and design_record.proc.poll() not in (0, None):
+                design_record._refuse()
+            payload = _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
+            if design_record is not None:
+                payload = design_record.merge(payload)
+            return payload
         if sys.platform.startswith("linux"):
             pids_cgroup = _prepare_pids_cgroup()
         env = _child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir)
@@ -2216,12 +2532,18 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                     _reap_macos(proc.pid, sentinel_path, account, seen, seen_lock)
                 except ScriptError:
                     pass
+            detail = design_record.failure_detail() if design_record is not None else ""
             shutil.rmtree(job, ignore_errors=True)
-            raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.") from None
+            message = f"The script ran longer than {wall} seconds, so it was stopped."
+            if detail:
+                message = f"{message}\n{detail}"
+            raise ScriptError(message) from None
         _kill_process_tree(proc.pid, seen, seen_lock)
         if account is not None and sentinel_path is not None:
             _reap_macos(proc.pid, sentinel_path, account, seen, seen_lock)
-        return _payload_from_result(
+        if design_record is not None and design_record.proc is not None and design_record.proc.poll() not in (0, None):
+            design_record._refuse()
+        payload = _payload_from_result(
             job,
             proc.returncode if proc.returncode is not None else -1,
             stdout_b.decode("utf-8", "replace"),
@@ -2229,6 +2551,9 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             memory_killed=memory_hit.is_set(),
             process_killed=process_hit.is_set(),
         )
+        if design_record is not None:
+            payload = design_record.merge(payload)
+        return payload
     finally:
         if stop_watch is not None:
             stop_watch.set()
@@ -2243,6 +2568,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             close_sentinel(sentinel_fd, sentinel_path)
         if probe_root is not None:
             shutil.rmtree(probe_root, ignore_errors=True)
+        if design_record is not None:
+            design_record.close()
 
 
 def _died_from_limit_signal(code: int) -> bool:

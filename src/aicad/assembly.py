@@ -461,24 +461,28 @@ def _pinches(cable: dict, points: list[dict], placed: dict[str, kernel.Shape]) -
     limit = cable["diameter_mm"] / 2.0 + cable["pinch_mm"]
     # A clip is allowed to sit on its own part. Samples next to that waypoint are the seat.
     seat = max(step, cable["diameter_mm"])
+    radius = cable["diameter_mm"] / 2.0
     hits = []
     for instance, shape in placed.items():
+        chosen = None
         for sample in samples:
             if _near_waypoint(sample, points, instance, seat):
                 continue
             gap = kernel.distance_to_point(shape, sample)
-            clearance = -gap["distance_mm"] if gap["inside"] else gap["distance_mm"] - cable["diameter_mm"] / 2.0
-            if gap["inside"] or gap["distance_mm"] < limit:
-                hits.append(
-                    {
-                        "part": instance,
-                        "at_mm": [round(component, 3) for component in sample],
-                        "distance_mm": gap["distance_mm"],
-                        "inside": gap["inside"],
-                        "clearance_mm": round(clearance, 3),
-                    }
-                )
-                break
+            if not gap["inside"] and gap["distance_mm"] >= limit:
+                continue
+            clearance = -gap["distance_mm"] if gap["inside"] else gap["distance_mm"] - radius
+            if not cable_mod.prefer_sample(chosen, gap["inside"], round(clearance, 3)):
+                continue
+            chosen = {
+                "part": instance,
+                "at_mm": [round(component, 3) for component in sample],
+                "distance_mm": gap["distance_mm"],
+                "inside": gap["inside"],
+                "clearance_mm": round(clearance, 3),
+            }
+        if chosen is not None:
+            hits.append(chosen)
     return hits
 
 

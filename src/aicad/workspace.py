@@ -141,6 +141,7 @@ class Workspace:
                     "gears",
                     "gear_train",
                     "kinematics",
+                    "position_error",
                     "packaging",
                     "clearance",
                     "drawing",
