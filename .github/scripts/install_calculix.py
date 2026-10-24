@@ -22,7 +22,7 @@ import sys
 import tarfile
 import urllib.error
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCK_PATH = ROOT / ".github" / "calculix.lock.json"
@@ -50,12 +50,18 @@ def validate_lock(lock: dict) -> None:
         raise ValueError("the lock must cover osx-arm64 and win-64")
     for key in ("osx-arm64", "win-64"):
         _validate_fetch(micromamba.get(key), f"micromamba {key}")
+        fetched = micromamba.get(key)
+        if not isinstance(fetched, dict) or not _lock_relative(fetched.get("executable")):
+            raise ValueError(f"micromamba {key} executable must stay inside the work directory")
         spec = platforms[key]
         if not isinstance(spec, dict):
             raise ValueError(f"{key} is not an object")
         path_dirs = spec.get("path")
         if not isinstance(path_dirs, list) or not path_dirs or not all(isinstance(d, str) and d for d in path_dirs):
             raise ValueError(f"{key} needs the directories that hold ccx")
+        for directory in path_dirs:
+            if not _lock_relative(directory):
+                raise ValueError(f"{key} path must stay inside the prefix")
         packages = spec.get("packages")
         if not isinstance(packages, list) or not packages:
             raise ValueError(f"{key} has no packages")
@@ -74,6 +80,8 @@ def validate_lock(lock: dict) -> None:
             if pkg["name"] == "calculix" and (pkg.get("version") != "2.23" or not pkg.get("build")):
                 raise ValueError(f"{key} calculix must be version 2.23 with a build string")
             filename = pkg["filename"]
+            if not _single_filename(filename):
+                raise ValueError(f"{filename} must stay inside the work directory")
             if Path(str(pkg["url"])).name != filename:
                 raise ValueError(f"{filename} does not match its url")
 
@@ -221,10 +229,47 @@ def _link(micromamba: Path, prefix: Path, root: Path, packages: list[Path]) -> N
         raise SystemExit(f"micromamba could not link CalculiX (exit {completed.returncode})")
 
 
+def _lock_relative(text: object) -> bool:
+    """True when ``text`` is a relative path with no parent segment."""
+
+    if not isinstance(text, str) or not text or "\x00" in text or "//" in text or "\\\\" in text:
+        return False
+    for parser in (PurePosixPath, PureWindowsPath):
+        parsed = parser(text)
+        if parsed.is_absolute() or parsed.drive or parsed.root:
+            return False
+        if any(part in {"", ".", ".."} for part in parsed.parts):
+            return False
+    return True
+
+
+def _single_filename(text: object) -> bool:
+    if not _lock_relative(text) or not isinstance(text, str):
+        return False
+    return PurePosixPath(text).name == text and PureWindowsPath(text).name == text
+
+
+def work_path(root: Path, relative: str) -> Path:
+    """A path inside ``root``. A path that leaves that directory is refused."""
+
+    if not _lock_relative(relative):
+        raise ValueError("a lock path must stay inside the work directory")
+    base = Path(root).resolve()
+    parts = PurePosixPath(relative.replace("\\", "/")).parts
+    destination = base.joinpath(*parts)
+    resolved = destination.resolve()
+    try:
+        resolved.relative_to(base)
+    except ValueError as exc:
+        raise ValueError("a lock path must stay inside the work directory") from exc
+    return destination
+
+
 def _find_ccx(prefix: Path, relative_dirs: list[str]) -> Path:
     for relative in relative_dirs:
+        directory = work_path(prefix, relative)
         for name in ("ccx", "ccx.exe"):
-            candidate = prefix / relative / name
+            candidate = directory / name
             if candidate.is_file():
                 return candidate
     raise SystemExit(f"ccx was not linked under {prefix}")
@@ -458,15 +503,15 @@ def install(lock: dict, *, system: str, machine: str, work: Path, prefix: Path) 
     work.mkdir(parents=True, exist_ok=True)
     archive = work / "micromamba.tar.bz2"
     _download(micromamba_spec["url"], archive, micromamba_spec["sha256"], micromamba_spec["size"])
-    micromamba = work / "micromamba-bin" / micromamba_spec["executable"]
+    micromamba = work_path(work / "micromamba-bin", micromamba_spec["executable"])
     _extract_member(archive, micromamba_spec["executable"], micromamba)
     packages: list[Path] = []
     for package in spec["packages"]:
-        dest = work / "pkgs" / package["filename"]
+        dest = work_path(work / "pkgs", package["filename"])
         _download(package["url"], dest, package["sha256"], package["size"])
         packages.append(dest)
     _link(micromamba, prefix, work / "root", packages)
-    linked = [prefix / relative for relative in spec["path"]]
+    linked = [work_path(prefix, relative) for relative in spec["path"]]
     binary = _find_ccx(prefix, spec["path"])
     solver_bin = stage_solver_bin(binary, linked, prefix / "solver-bin")
     staged = solver_bin / binary.name
