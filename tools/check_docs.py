@@ -44,9 +44,11 @@ EXACT = frozenset(
 )
 
 PREFIXES = (
+    "docs/decisions/",
     "docs/guides/",
     "docs/reference/",
     "docs/roadmap/",
+    "docs/tools/",
 )
 
 TEXT_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".txt", ".adoc", ".asciidoc"})
