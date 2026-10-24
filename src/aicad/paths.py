@@ -903,7 +903,34 @@ def _open_child(dirfd: int, name: str, *, create: bool) -> int:
         err = ctypes.get_errno()
         if err != errno.EEXIST:
             raise OSError(err, os.strerror(err), name)
+    else:
+        # mkdirat's mode is not applied on every system, same as openat.
+        # chmod through the parent descriptor so a directory created with no
+        # search bit can still be given one before it is opened.
+        _chmod_new_directory(dirfd, name)
     return _call(libc.openat(dirfd, encoded, flags, 0), name)
+
+
+def _chmod_new_directory(dirfd: int, name: str) -> None:
+    """Give a directory this process just created owner search and write.
+
+    ``chmod`` through the parent descriptor does not need the new directory to
+    be searchable. Some systems reject that for a directory, and then the
+    directory is opened and ``fchmod`` is used on the descriptor instead.
+    """
+    try:
+        os.chmod(name, 0o755, dir_fd=dirfd, follow_symlinks=False)
+        return
+    except NotImplementedError:
+        pass
+    except OSError as exc:
+        if exc.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL}:
+            raise
+    descriptor = _call(_libc().openat(dirfd, os.fsencode(name), _directory_flags(), 0), name)
+    try:
+        os.fchmod(descriptor, 0o755)
+    finally:
+        os.close(descriptor)
 
 
 def open_relative(root: Path, relative: str | Path, *, create: bool = False) -> int:
