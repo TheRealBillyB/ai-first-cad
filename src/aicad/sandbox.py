@@ -21,7 +21,7 @@ A link that points outside the project is not written. A file with more
 than one name is not used for the run, because writing it would change
 every name. A script result that is a link is not read. Geometry and
 pictures named by that result are opened only when they stay inside the
-project.
+project. The script log is not read when it has another name.
 """
 
 from __future__ import annotations
@@ -479,13 +479,19 @@ def script_log_path(workspace: Path) -> Path:
 
 
 def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> None:
-    """Append one design-script row. A log path that leaves the project is skipped."""
-    from aicad.paths import output_path, publish_text
+    """Append one design-script row. A log path that leaves the project is skipped.
+
+    A symlink, junction, or file with another name is left as it is. Reading
+    it would copy that other file into the project.
+    """
+    from aicad.paths import is_reparse, output_path, publish_text, shared_file
 
     root = Path(workspace).resolve()
     try:
         path = output_path(root, script_log_path(root), "Script log", ScriptError)
     except ScriptError:
+        return
+    if is_reparse(path) or shared_file(path):
         return
     row = {"time": _now(), "kind": "design", "ok": ok, "error": error, "script": script}
     line = json.dumps(row) + "\n"
