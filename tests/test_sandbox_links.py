@@ -593,3 +593,34 @@ def test_a_directory_is_not_created_through_a_link_that_stays_inside(tmp_path, m
     assert made.is_dir()
     assert (root / "renders" / "box").is_dir()
     assert not (kept / "renders").exists()
+
+
+def test_a_link_that_leaves_the_project_is_still_outside(tmp_path, monkeypatch):
+    from aicad.errors import GeometryError
+    from aicad.paths import output_dir, output_path
+
+    root = tmp_path / "project"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = root / "alias"
+    if sys.platform == "win32":
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            pytest.skip("this machine cannot create a junction")
+    else:
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("this machine cannot create a directory symlink")
+        monkeypatch.setattr("aicad.paths.nofollow_writes", lambda: False)
+    with pytest.raises(GeometryError, match="outside the project"):
+        output_dir(root, link / "new-folder", "Render", GeometryError)
+    with pytest.raises(GeometryError, match="outside the project"):
+        output_path(root, link / "new-folder" / "part.step", "Export", GeometryError)
+    assert list(outside.iterdir()) == []

@@ -1162,7 +1162,8 @@ def output_dir(root: Path, path: str | Path, label: str, error: type[Exception])
     Nothing is created when the path resolves outside the project. Missing
     directories inside the project are created. A symlink or junction in the
     path is not followed when this system cannot open directories without
-    following links.
+    following links, including a link whose target stays inside the project.
+    A link that leaves the project is still reported as outside the project.
     """
     root_resolved = Path(root).resolve()
     raw = Path(path)
@@ -1170,14 +1171,14 @@ def output_dir(root: Path, path: str | Path, label: str, error: type[Exception])
         raw = root_resolved / raw
     if not _lexical_inside(raw, root_resolved):
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
-    if not nofollow_writes() and _reparse_between(root_resolved, raw):
-        raise error(f"Could not create {label} {path}. {path} is a link and was not followed.")
     try:
         resolved = raw.resolve()
     except OSError as exc:
         raise error(f"{label} {path} is outside the project folder {root_resolved}.") from exc
     if not _is_inside(resolved, root_resolved):
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    if not nofollow_writes() and _reparse_between(root_resolved, raw):
+        raise error(f"Could not create {label} {path}. {path} is a link and was not followed.")
     remember_project(root_resolved)
     if nofollow_writes():
         try:
@@ -1233,14 +1234,14 @@ def output_path(
         if absolute and allow_absolute_outside:
             return Path(os.path.abspath(raw))
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
-    if not nofollow_writes() and _reparse_between(root_resolved, raw):
-        raise error(f"Could not create {label} {path}. {path} is a link and was not followed.")
     try:
         resolved = raw.resolve()
     except OSError as exc:
         raise error(f"{label} {path} is outside the project folder {root_resolved}.") from exc
     if not _is_inside(resolved, root_resolved):
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    if not nofollow_writes() and _reparse_between(root_resolved, raw):
+        raise error(f"Could not create {label} {path}. {path} is a link and was not followed.")
     parent = output_dir(root_resolved, resolved.parent, label, error)
     name = resolved.name
     if _refused_file_name(name) or _windows_reserved_punctuation(name):
