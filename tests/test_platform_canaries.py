@@ -440,23 +440,30 @@ def test_docs_entries_do_not_change_a_marker_or_the_master(tmp_path):
         encoding="utf-8",
     )
     link = root / "docs" / "decisions" / "2026-10-24-link.md"
+    linked = False
     try:
         link.symlink_to(outside_entry)
-    except OSError as exc:
-        pytest.skip(f"symlinks are not available: {exc}")
-    errors = build.build(root)
-    assert errors
-    master = root / "docs" / "DECISIONS.md"
-    master_text = master.read_text(encoding="utf-8") if master.is_file() else ""
-    assert "Outside title" not in master_text
-    link.unlink()
+    except OSError:
+        linked = False
+    else:
+        linked = True
+        errors = build.build(root)
+        assert errors
+        master = root / "docs" / "DECISIONS.md"
+        master_text = master.read_text(encoding="utf-8") if master.is_file() else ""
+        assert "Outside title" not in master_text
+        link.unlink()
+    hard = root / "docs" / "decisions" / "2026-10-24-hard.md"
     try:
-        os.link(canary, root / "docs" / "decisions" / "2026-10-24-hard.md")
+        os.link(canary, hard)
     except OSError as exc:
-        pytest.skip(f"hard links are not available: {exc}")
-    errors = build.build(root)
-    assert errors
-    assert canary.read_bytes() == before
+        if not linked:
+            pytest.skip(f"links are not available: {exc}")
+    else:
+        errors = build.build(root)
+        assert errors
+        assert canary.read_bytes() == before
+        hard.unlink()
 
 
 def test_a_design_script_check_record_is_the_call_that_ran(tmp_path, config_home):
