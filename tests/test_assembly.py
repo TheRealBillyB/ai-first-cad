@@ -347,6 +347,37 @@ def test_sharp_cable_fails_bend_and_a_route_through_a_solid_pinches(tmp_path):
     assert report["assumptions"]
 
 
+def test_a_repeated_waypoint_is_not_a_sharp_bend(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "block", [10, 10, 10], [0, 0, 40])
+    document.create_assembly(
+        {
+            "name": "routed",
+            "instances": [{"name": "base", "part": "block"}],
+            "joints": [],
+            "cables": [
+                {
+                    "name": "repeat",
+                    "kind": "cable",
+                    "diameter_mm": 4,
+                    "min_bend_radius_mm": 20,
+                    "waypoints": [
+                        {"instance": "base", "at": [0, 0, 0], "clip": True},
+                        {"instance": "base", "at": [0, 0, 0], "clip": True},
+                        {"instance": "base", "at": [100, 0, 0], "clip": True},
+                    ],
+                }
+            ],
+        }
+    )
+    cable = document.check_cables("routed")["cables"][0]
+    assert cable["status"] == "pass"
+    assert cable["min_bend_radius_mm"] is None
+    assert cable["frames"][0]["bend_ok"] is True
+    assert cable["frames"][0]["bends"][0]["ok"] is True
+    assert cable["frames"][0]["bends"][0]["radius_mm"] is None
+
+
 def test_holding_torque_and_hydraulic_pressure(tmp_path):
     document = Document(tmp_path)
     _box(document, "base", [20, 20, 20], [0, 0, 0])
