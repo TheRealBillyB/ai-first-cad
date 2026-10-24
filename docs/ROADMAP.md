@@ -11,13 +11,13 @@ Where the software work stands. Statuses describe this repository. They are not 
 | **Planned** | The direction after those tracks |
 | **Later** | Far enough out that the shape can still change |
 
-The order below is a part you can trust, then a place where a person can design, then machines that move, with hoses, cables, and a power estimate. The rules for that order are in [Principles](PRINCIPLES.md).
+What is already in the tree is listed under Done. The next release does not add a feature track. The tracks after that release are the ones that are not in the tree yet.
 
 ## Done
 
 ### A shared way to build a part and check it
 
-A Python library, a command-line tool (`aicad`), and an MCP server (`aicad serve`). The same operations are available on all three.
+A Python library, a command-line tool (`aicad`), and an MCP server (`aicad serve`). The same operations are available on all three. The workspace app is a fourth door onto that same command layer.
 
 - **Views.** Front, back, left, right, top, bottom, and isometric, plus one contact sheet. A headless rasterizer draws them with no screen and no graphics card.
 - **Measurements.** Bounding box, volume, surface area, center of mass, and whether the solid is valid and watertight (a closed surface, one real inside and outside).
@@ -26,6 +26,8 @@ A Python library, a command-line tool (`aicad`), and an MCP server (`aicad serve
 - **Packaging.** Whether a set of parts fits inside an envelope. The envelope is a solid, a primitive, or a flat outline extruded along an axis. The check uses the part geometry, including a posed assembly, and reports clearance, protrusion, and part-to-part overlap.
 - **Files.** Export STEP (the format other CAD tools and machine shops expect) and STL (the triangle file a 3D printer slices).
 - **An example.** A motor-mount bracket, and a shaft meant to pass through its bore. Units are millimeters.
+- **Design scripts.** A script runs in a confined child process on Linux, Windows, and macOS. The network stays off unless it is turned on for that run. If this computer cannot confine the script, the script does not run.
+- **Plugins.** An analysis, a part library, or an exporter can be added as an entry point with a static manifest. It runs only after an explicit allow.
 
 ### Seeing inside the part, and a small catalog of real parts
 
@@ -38,83 +40,96 @@ A Python library, a command-line tool (`aicad`), and an MCP server (`aicad serve
 
 Two-dimensional sketches whose lines and arcs are held by constraints (a length, a right angle, two lines that must stay parallel), solved by SolveSpace.
 
-The sketch says when it is under-constrained (it can still wiggle; a dimension is missing) and when it is over-constrained (the dimensions disagree). Changing a dimension rebuilds the solid. This is also the groundwork for tolerances: how far a size is allowed to drift and still count as correct.
+The sketch says when it is under-constrained (it can still wiggle; a dimension is missing) and when it is over-constrained (the dimensions disagree). Changing a dimension rebuilds the solid. A stored tolerance says how far a size is allowed to drift. It does not move the geometry.
 
 ### A first strength check
 
 Linear static FEA: a numerical estimate of stress under a steady load. Gmsh meshes the solid and CalculiX solves it.
 
-A run has a material, loads, and a safety factor (how much stronger the part needs to be than the load). The result includes a stress map and the assumptions, written out: what was held still, what was pushed, and what this kind of analysis leaves out. A design review reads that result and says what passed, what failed, and why, so the next edit is aimed at the failure.
-
-## Next
-
-These tracks follow what is already in the tree. They are separate enough to be built in parallel once the command layer they share is settled.
+A run has a material, loads, and a safety factor (how much stronger the part needs to be than the load). The result includes a stress map and the assumptions, written out: what was held still, what was pushed, and what this kind of analysis leaves out. A design review reads that result and says what passed, what failed, and why, so the next edit is aimed at the failure. A coarse mesh cannot support a pass.
 
 ### The Workspace app
 
-A real editing application. A browser interface talks to a local Python backend. Wrapping that as a desktop app can come after the interface is solid.
+A browser interface talks to a local Python backend (`aicad app`). Sketch, extrude, face selection, and dimension edits are the same commands the assistant uses. The screen has a live 3D view, a chat panel, and a documents page where requirements and design notes are kept. Requirements are checked against the current design, including load, mass, and printer fit. Undo restores the open project. A desktop shell around the server is not packaged.
 
-A person designs the part here: sketch, extrude, select a face, edit a dimension. Those are the same commands the assistant uses. The screen has:
+- **Design session record.** While a session runs from the app, the command line, or MCP, an opt-in record stores each design step. Replay reads that record and does not run the stored commands. Export writes a timelapse GIF, and MP4 or WebM when ffmpeg is on PATH.
 
-- a live 3D view
-- a chat panel where the user connects their own AI
-- a Documents page where requirements and design decisions are written and kept
+### Plans
 
-Requirements are checked against every design. The first kinds of goal: it holds this load, it fits the printer bed, it stays under this mass.
+A plan can hold research, assumptions, open questions, and rough blueprint sheets before a solid exists. Modeling or simulation started from that plan waits until the plan is approved in the app. The assistant cannot approve it.
 
-- **Design session record.** **Done.** While a session runs from the app, the command line, or MCP, an opt-in record stores each design step. Replay steps through that record. Export writes a timelapse GIF, and MP4 or WebM when ffmpeg is on PATH.
+### Gears and mechanisms
 
-### Gears, mechanisms, and checks
-
-**Planned.**
-
-- **Gear generator.** Done. Spur and helical gears from ISO 21771 and the ISO 53 basic rack, and straight and spiral bevel gears from ISO 23509 pitch cones with the AGMA 2005 virtual cylindrical gear. Module, tooth count, pressure angle, face width, helix or spiral angle, and profile shift. Bores, hubs, DIN 6885-1 keyways, and ISO 14 or DIN 5480 splines are optional.
-- **Hypoid gears.** Done. A ring and pinion from ratio, pinion offset, shaft angle, ring diameter, face width, and spiral angle. The ring tooth is a face-mill blade cone. The pinion is the blank left after that tooth is rolled about the offset shafts at the tooth ratio. Face-hobbing is not generated, and the edge radius is recorded rather than cut.
-- **Gear mesh and backlash check.** Done. A spur, helical, or bevel pair, or every such pair in an assembly, reports centre distance against the zero-backlash centre, circumferential and normal backlash against a range, contact ratio, undercut, and interference through one full turn of the smaller gear. A hypoid pair reports the axis offset, the tooth ratio, backlash along the tooth, and interference of the face-mill solids through one pinion tooth. The check reads the placement and clocking of a mounted pair. That sweep is not a full turn and not a spiral bevel.
-- **Gear-train solver.** Done. Speed and torque for a simple or compound train, an idler, a planetary set, and an open differential. The report says when the train is under-constrained or over-constrained.
-- **Motion study.** **Done.** Drives assembly joints through angles or paths over time, and reports collisions and joint-limit violations.
-- **Kinematics.** **Done.** Solves forward and inverse kinematics for a serial chain of joints, including the joint values that reach a target pose, and steps a tool path through the motion study.
-- **Positional error budget.** **Done.** The tip position error of a serial chain is the positional Jacobian times each joint bound (an encoder half-step, a gear-mesh or stated backlash, and a stated load over joint stiffness), plus a small screw for link deflection from the strength check or a stated deflection. Each contribution is listed. The worst case tries every sign of those contributions. A root-sum-square is reported beside it and does not grant a pass. The check names the pose, on a pose list or a tool path, where the worst case is largest. It passes when that worst case is within the tolerance and every contribution was computed. An offset gear pair's backlash along the tooth is not turned into an angle. Link rotation is fit only from three probe points; one probe is a translation. The strength check is the link in its own frame, and a degraded mesh cannot support a pass. Thermal growth, bearing runout, and an assembly stack-up are omitted unless they are stated as one of those contributions.
-- **Cable and pulley routing.** **Done.** Routes cables over pulleys and guides through joints, and checks how cable length and tension change across a joint's range of motion.
-- **Standard parts library.** **Done.** Inserts bearings, seals, fasteners, small motors, and gearboxes by catalog designation.
-- **Animated renders.** **Done.** Writes a motion study, a camera orbit, or an exploded opening to a GIF, and to MP4 or WebM when ffmpeg is on PATH.
+- **Gear generator.** Spur and helical gears from ISO 21771 and the ISO 53 basic rack, and straight and spiral bevel gears from ISO 23509 pitch cones with the AGMA 2005 virtual cylindrical gear. Module, tooth count, pressure angle, face width, helix or spiral angle, and profile shift. A bore, a hub, a DIN 6885-1 keyway, or an ISO 14 or DIN 5480 spline is optional.
+- **Hypoid gears.** A ring and pinion from ratio, pinion offset, shaft angle, ring diameter, face width, and spiral angle. The ring tooth is a face-mill blade cone. The pinion is the blank left after that tooth is rolled about the offset shafts at the tooth ratio. Face-hobbing is not generated, and the edge radius is recorded rather than cut.
+- **Gear mesh and backlash.** A spur, helical, or bevel pair, or every such pair in an assembly, reports centre distance against the zero-backlash centre, circumferential and normal backlash, contact ratio, undercut, and interference through one full turn of the smaller gear. A hypoid pair reports the axis offset, the tooth ratio, backlash along the tooth, and interference of the face-mill solids through one pinion tooth at the mounted placement. That sweep is one pinion tooth, not a full turn, and it is not a spiral-bevel sweep.
+- **Gear-train solver.** Speed and torque for a simple or compound train, an idler, a planetary set, and an open differential. The report says when the train is under-constrained or over-constrained.
 
 ### Assemblies and motion
 
-Parts joined by real joints. A revolute joint is a hinge. A prismatic joint is a slider. Gears, and other joint types, belong here too.
+Parts join with fixed, revolute, prismatic, and cylindrical joints. A gear relation is a linear map between joint values. A linkage is a planar four-bar and does not close a spatial loop. A cylinder relation writes the barrel angle and the rod extension so the rod eye stays on the moving clevis. The joint tree stays a tree.
 
-The motion can be swept through its range while the program looks for collisions. Scripted tests cover what a machine actually does: walking, lifting, standing.
+Named poses and motions sweep that range and report collisions and joint-limit stops. A motion study drives joints by an expression or by keyframes over time. The examples include a lift and a short walk cycle that collides when the foot is planted. There is no standing controller.
 
-### Cabling and hoses
+- **Kinematics.** Forward and inverse kinematics for a serial chain, including the joint values that reach a target pose, and a tool path stepped through the motion study.
+- **Positional error budget.** The tip position error of a serial chain is the positional Jacobian times each joint bound (an encoder step, a gear-mesh or stated backlash, and a stated load over joint stiffness), plus a small screw for link deflection from the strength check or a stated deflection. Each contribution is listed. The worst case tries every sign. A root-sum-square is reported beside it and does not grant a pass. The check names the pose where the worst case is largest. It passes when that worst case is within the tolerance and every contribution was computed. An offset gear pair's backlash along the tooth is not turned into an angle. Thermal growth, bearing runout, and an assembly stack-up are omitted unless they are stated as one of those contributions.
+- **Animated renders.** A motion study, a camera orbit, or an exploded opening, written as a GIF, and as MP4 or WebM when ffmpeg is on PATH.
 
-Route electrical cables, hydraulic lines, and the brackets and clips that hold them. Checks cover bend radius (the tightest curve the line can take), how the length changes through the motion, the strain that causes, pinching, and collisions with the mechanism.
+### Cables and hoses
 
-This is the start of flexible-body behavior. The lines have to bend, change length, and move the way hoses and cables do.
+Cable routes and hose routes are both in the tree. A route is a polyline through waypoints fixed on parts, and each waypoint can be a clip. The check reports length change, strain, tension, bend radius at each corner, and pinch against the moving solids, including across a motion. A hose uses that same check. Its default strain limit is tighter than a cable's. Samples next to a waypoint are the clip seat and are not counted as a pinch of that part.
+
+A tendon is the same family of check on a different path: anchors, pulleys, guides, and wraps. Length is the straight spans plus the arc. Tension follows the capstan equation from a stated actuator force. Bend radius and pinch are checked, including along the pulley arc.
+
+The line does not sag, and clips do not slip. A flexible-body rod is not in the tree. The length, bend, and gap numbers above are the limits that model would still have to pass.
 
 ### Power and fluid estimates
 
-Start from the loads and the motions, and estimate what it takes to drive them:
+Quasi-static loads from gravity, part mass, and payload, over the stored pose or a named motion:
 
-- force and torque at each actuator
-- hydraulic pressure, flow, fluid volume, and pump power
-- motor current, electrical power, and battery size
+- force and torque at each actuator, with a gear, linkage, or cylinder reflecting the driven load onto the driver when the driven joint has no actuator of its own
+- hydraulic pressure, flow, displaced volume, and pump power
+- motor current, electrical power, and battery energy and charge
 
-The numbers are estimates with their assumptions attached, in the same spirit as the strength check.
+The report states the assumptions. Inertia, friction, seal drag, line pressure drop, and pump dynamics are omitted. A hydraulic moment arm is a number on the actuator, not a cylinder solid in the assembly. Electric braking energy is counted as spent.
 
-## Planned
+### Vibration, fatigue, and bolted joints
 
-### Print and manufacturing prep
+Natural frequencies come from a CalculiX frequency solve, for one solid or for a posed assembly tied at its joints. A running speed (motor, drill, or pump, including harmonics) is compared with those frequencies. Harmonic response and a Miles random-vibration estimate are closed-form add-ons. Fatigue is a Goodman check of a stated stress amplitude, not a second finite-element solve. A bolted joint reports preload, tightening torque, clamp, slip, thread stripping, and yield. Slip below 1 is the loosening case, and it can occur while the bolt is still below yield.
 
-For printing: overhangs, supports, and a slicer, so print time and filament cost are numbers. For other processes: checks aimed at CNC machining and sheet metal.
+### Print preparation
+
+**In progress.** The printing checks are in. The other manufacturing checks are not.
+
+- **Printing.** An overhang map for the six axis orientations, the support area after the bed face is excluded, and fit against the build volumes in the printer table (Bambu Lab A1, A1 mini, P1, and X1, Prusa MK4, and Ender 3). A requirement kind `fits_printer` is that fit. When PrusaSlicer or OrcaSlicer is on PATH, the report also reads time and filament grams from the slicer comments. A missing slicer is reported, and the overhang and fit checks still stand. A diagonal orientation is not searched, and the slicer runs its default profile.
+- **CNC machining and sheet metal.** Not in the tree. They are the first feature track after v1.0.
 
 ### Robot export
 
-Write the files a physics simulator already understands, such as URDF and MJCF, so a robot design can be dropped in and tried at walking, lifting, and drilling.
+An assembly can be written as URDF (`robot.urdf`), MJCF (`robot.xml`), and STL meshes. Meshes stay in millimeters and the robot file scales them to meters. Mass and inertia use the model volume and a handbook density, plus a payload point mass when one is set. Joint limits are written. A cylindrical joint becomes a revolute plus a prismatic. Gear, linkage, and cylinder relations are comments, so a simulator does not enforce them. Effort and velocity in the file are placeholders, not the power estimate. When MuJoCo or PyBullet is installed, the export loads the file and steps it. A missing install still writes the files and says they were not stepped.
+
+### Layout drawings, parts lists, and exploded views
+
+A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a title block, and a scale. It is a layout drawing. A bill of materials is a count of parts, catalog items, and routes, with a handbook mass where the solid has a volume. An exploded view pulls parts apart along their joints. The gap is not a dimension. These three are commands in the workspace, the command line, and MCP.
+
+## Next release
+
+**v1.0** is a stability and safety release for the feature set already in this repository. No new feature track starts before it.
+
+## After v1.0
+
+The tracks that follow v1.0, in order, are power and fluid estimates, hose routing with bend-radius and pinch checks, robot export (URDF and MJCF), and CNC machining and sheet-metal checks.
+
+The power estimate, the hose checks, and the robot export are already in the tree and are described under Done. The first of these tracks that is not in the tree is:
+
+### CNC machining and sheet-metal checks
+
+**Next.** Checks aimed at CNC machining and at sheet metal. Print overhangs, support area, printer fit, and an optional slicer estimate stay the print half of print preparation. They do not cover a toolpath, a bend allowance, or a flat pattern.
 
 ## Later
 
-- **Drawings.** A layout sheet and a parts count are in. Still later: tolerances, GD&T (the standard language for how far a size and a form may vary), and prices on the bill of materials.
-- **History you can see.** Visual version history, and diffs an assistant can compare, so "what changed, and did it get better?" has a picture as well as a sentence.
+- **Drawings.** The layout sheet, the parts count, and the exploded view are in. Still later: tolerances, GD&T (the standard language for how far a size and a form may vary), and prices on the bill of materials.
+- **History you can see.** Visual version history, and diffs an assistant can compare, so "what changed, and did it get better?" has a picture as well as a sentence. The design session record is a timelapse of steps. It is not this history.
 - **Electronics.** Board layout through an existing tool, with KiCad the likely one, under the same "reuse the engine" rule.
 
 ## Related
