@@ -1073,7 +1073,9 @@ def cylindrical_mount(left: dict, right: dict, centre_mm: float | None = None) -
         raise GeometryError("A cylindrical pair needs helix angles of equal magnitude.")
     warnings = []
     if left["helix_angle_deg"] * right["helix_angle_deg"] > 1e-9:
-        warnings.append("External helical gears need opposite hands. These two have the same hand.")
+        raise GeometryError(
+            "External helical gears need opposite hands, so these two do not mesh on parallel shafts."
+        )
     if abs(left["helix_angle_deg"]) > 1e-9 and abs(left["helix_angle_deg"] + right["helix_angle_deg"]) > 1e-6:
         warnings.append("The helix angles are not equal and opposite, so the shafts are not parallel.")
     alpha_t = math.radians(left["transverse_pressure_angle_deg"])
@@ -1201,7 +1203,7 @@ def _bevel_pair(left: dict, right: dict) -> dict:
         if abs(abs(left["spiral_angle_deg"]) - abs(right["spiral_angle_deg"])) > 1e-6:
             raise GeometryError("A spiral bevel pair needs equal mean spiral angles.")
         if left["spiral_angle_deg"] * right["spiral_angle_deg"] > 1e-9:
-            warnings.append("A spiral bevel pair needs opposite hands.")
+            raise GeometryError("A spiral bevel pair needs opposite hands, so these two do not mesh.")
     eps_a, eps_b = _bevel_contact(left, right)
     shaft = left["shaft_angle_deg"]
     spin = 180.0 * (1.0 + 1.0 / right["teeth"])
