@@ -1497,33 +1497,16 @@ def _kill_pid(pid: int) -> None:
         pass
 
 
-def _descendant_tree(leader: int, children_of) -> set[int] | None:
-    """Every pid under ``leader``. None when a listing could not be read."""
-    found: set[int] = set()
-    first = children_of(leader)
-    if first is None:
-        return None
-    stack = list(first)
-    while stack:
-        pid = stack.pop()
-        if pid in found or pid <= 1:
-            continue
-        found.add(pid)
-        children = children_of(pid)
-        if children is None:
-            return None
-        stack.extend(children)
-    return found
-
-
-def _parent_map() -> dict[int, int] | None:
-    """Pid to parent pid. None when the listing could not be read."""
+def _descendants(leader: int) -> set[int]:
+    """Pids whose parent is ``leader`` or one of its descendants."""
+    if leader <= 1:
+        return set()
     parent_of: dict[int, int] = {}
     if sys.platform.startswith("linux"):
         try:
             names = os.listdir("/proc")
         except OSError:
-            return None
+            return set()
         for name in names:
             if not name.isdigit():
                 continue
@@ -1535,10 +1518,7 @@ def _parent_map() -> dict[int, int] | None:
                             break
             except (OSError, ValueError):
                 continue
-        return parent_of
-    if sys.platform == "darwin":
-        # libproc is the usual listing. ps is only the fallback, and it can
-        # take longer than the moment a child is still attached to the script.
+    elif sys.platform == "darwin":
         try:
             completed = subprocess.run(
                 ["ps", "-axo", "pid=,ppid="],
@@ -1548,7 +1528,7 @@ def _parent_map() -> dict[int, int] | None:
                 timeout=2,
             )
         except (OSError, subprocess.TimeoutExpired):
-            return None
+            return set()
         for line in completed.stdout.splitlines():
             parts = line.split()
             if len(parts) != 2:
@@ -1557,32 +1537,20 @@ def _parent_map() -> dict[int, int] | None:
                 parent_of[int(parts[0])] = int(parts[1])
             except ValueError:
                 continue
-        return parent_of
-    return None
-
-
-def _descendants(leader: int) -> set[int]:
-    """Pids whose parent is ``leader`` or one of its descendants."""
-    if leader <= 1:
-        return set()
-    if sys.platform == "darwin":
-        from aicad.sandbox_macos import child_pids
-
-        found = _descendant_tree(leader, child_pids)
-        if found is not None:
-            return found
-    parent_of = _parent_map()
-    if parent_of is None:
+    else:
         return set()
     children: dict[int, list[int]] = {}
     for pid, ppid in parent_of.items():
         children.setdefault(ppid, []).append(pid)
-
-    def children_of(pid: int) -> list[int]:
-        return children.get(pid, [])
-
-    found = _descendant_tree(leader, children_of)
-    return set() if found is None else found
+    found: set[int] = set()
+    stack = list(children.get(leader, []))
+    while stack:
+        pid = stack.pop()
+        if pid in found or pid <= 1:
+            continue
+        found.add(pid)
+        stack.extend(children.get(pid, []))
+    return found
 
 
 def _tree_resident_bytes(leader: int, children: set[int]) -> int | None:
