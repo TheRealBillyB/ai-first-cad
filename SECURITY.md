@@ -37,6 +37,8 @@ Opening a project does not run Python stored in it. A script part shows its text
 
 A reserved device name such as NUL, CON, PRN, AUX, COM1 through COM9, or LPT1 through LPT9 is refused as an output file or folder name, including a superscript digit. On the command line, an absolute export path is the location the person named. A drawing, bill of materials, or exploded view from the workspace stays inside the project.
 
+A URDF or MJCF export escapes a part or joint name. A quote in that name stays inside its attribute, and the file parses as one document.
+
 ffmpeg, CalculiX, and a slicer are started from PATH outside the project. A copy in the project is not started, and the current directory is not searched.
 
 The sandbox process uses the project folder as its working directory. That folder is not placed on Python's import path. An import path entry that is the project, or a directory inside it, is removed before the process starts. A relative entry is made absolute from the program that launched the script, so it is not read from the project. A module or package shipped in the project cannot run in place of the sandbox. The same rule applies when the project is built again. The limits are applied before the script runs.
