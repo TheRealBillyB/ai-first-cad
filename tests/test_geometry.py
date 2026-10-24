@@ -255,7 +255,7 @@ def test_macos_python_threads_get_a_geometry_stack():
 
 
 def test_child_processes_inherit_a_geometry_stack():
-    from aicad.thread_stack import GEOMETRY_THREAD_STACK, child_inherits_geometry_stack
+    from aicad.thread_stack import _limit_covers_geometry, child_inherits_geometry_stack
 
     try:
         import resource
@@ -264,16 +264,31 @@ def test_child_processes_inherit_a_geometry_stack():
             return
         return
     before = resource.getrlimit(resource.RLIMIT_STACK)
-    hard_allows = before[1] == resource.RLIM_INFINITY or before[1] >= GEOMETRY_THREAD_STACK
-    expect_raise = sys.platform == "darwin" and before[0] < GEOMETRY_THREAD_STACK and hard_allows
+    soft0, hard0 = before
+    # A limit already within 64 KiB of 8 MiB is the macOS maximum and stays.
+    already = _limit_covers_geometry(soft0) or not _limit_covers_geometry(hard0)
     with child_inherits_geometry_stack():
         soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
-        if expect_raise:
-            assert soft >= GEOMETRY_THREAD_STACK
-            assert hard == before[1]
+        if sys.platform == "darwin" and not already:
+            assert _limit_covers_geometry(soft)
+            assert soft >= soft0
+            assert hard == hard0
         else:
             assert (soft, hard) == before
     assert resource.getrlimit(resource.RLIMIT_STACK) == before
+    if sys.platform != "darwin" or soft0 <= 1024 * 1024:
+        return
+    # A child started from a small limit still receives a geometry stack.
+    resource.setrlimit(resource.RLIMIT_STACK, (1024 * 1024, hard0))
+    try:
+        with child_inherits_geometry_stack():
+            soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+            assert _limit_covers_geometry(soft)
+            assert soft >= 1024 * 1024
+            assert hard == hard0
+        assert resource.getrlimit(resource.RLIMIT_STACK) == (1024 * 1024, hard0)
+    finally:
+        resource.setrlimit(resource.RLIMIT_STACK, before)
 
 
 def test_the_sandbox_child_sets_its_stack_before_geometry(tmp_path):

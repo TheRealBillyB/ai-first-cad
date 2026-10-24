@@ -119,13 +119,29 @@ def current_thread_can_run_geometry() -> bool:
     return size + _STACK_REPORT_SLACK >= GEOMETRY_THREAD_STACK
 
 
+def _limit_covers_geometry(limit: int) -> bool:
+    """A stack limit the child can run geometry on.
+
+    macOS keeps the process stack limit one 16 KiB page under 8 MiB and
+    rejects a request for the full 8 MiB. The same 64 KiB slack used when
+    reading a thread covers that page.
+    """
+
+    import resource
+
+    if limit == resource.RLIM_INFINITY:
+        return True
+    return limit + _STACK_REPORT_SLACK >= GEOMETRY_THREAD_STACK
+
+
 @contextmanager
 def child_inherits_geometry_stack() -> Iterator[None]:
-    """Let a new process inherit a main-thread stack of at least 8 MiB.
+    """Let a new process inherit a main-thread stack large enough for geometry.
 
     The child reads the stack limit when it starts. This does not grow a
-    thread that already exists. The previous limit is restored after the
-    child has been created. Other systems are unchanged.
+    thread that already exists. A limit already within 64 KiB of 8 MiB is
+    left as it is. The previous limit is restored after the child has been
+    created. Other systems are unchanged.
     """
 
     if sys.platform != "darwin":
@@ -134,13 +150,14 @@ def child_inherits_geometry_stack() -> Iterator[None]:
     import resource
 
     soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
-    unlimited = hard == resource.RLIM_INFINITY
-    if soft >= GEOMETRY_THREAD_STACK or (not unlimited and hard < GEOMETRY_THREAD_STACK):
+    if _limit_covers_geometry(soft) or not _limit_covers_geometry(hard):
         yield
         return
-    try:
-        resource.setrlimit(resource.RLIMIT_STACK, (GEOMETRY_THREAD_STACK, hard))
-    except (OSError, ValueError):
+    target = GEOMETRY_THREAD_STACK
+    if hard != resource.RLIM_INFINITY and hard < target:
+        target = hard
+    applied = _raise_stack_limit(soft, hard, target)
+    if not applied:
         yield
         return
     try:
@@ -150,3 +167,25 @@ def child_inherits_geometry_stack() -> Iterator[None]:
             resource.setrlimit(resource.RLIMIT_STACK, (soft, hard))
         except (OSError, ValueError):
             pass
+
+
+def _raise_stack_limit(soft: int, hard: int, target: int) -> bool:
+    """Raise the soft stack limit to ``target``, or one slack below it.
+
+    The second request covers a kernel whose reported hard limit is
+    unlimited and whose real maximum is one page under 8 MiB.
+    """
+
+    import resource
+
+    try:
+        resource.setrlimit(resource.RLIMIT_STACK, (target, hard))
+    except (OSError, ValueError):
+        fallback = target - _STACK_REPORT_SLACK
+        if fallback <= soft or not _limit_covers_geometry(fallback):
+            return False
+        try:
+            resource.setrlimit(resource.RLIMIT_STACK, (fallback, hard))
+        except (OSError, ValueError):
+            return False
+    return True
