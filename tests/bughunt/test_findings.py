@@ -329,3 +329,25 @@ def test_bh_f14_cli_module_runs(tmp_path):
     )
     assert completed.returncode != 0
     assert completed.stderr.startswith("error:")
+
+
+def test_a_design_script_cannot_read_the_document_wrapper():
+    from aicad.sandbox_run import ScriptDocument
+
+    class Doc:
+        def measure(self):
+            return {"volume_mm3": 1}
+
+        def approve_plan(self):
+            raise AssertionError("approve_plan was called")
+
+    calls: list[dict] = []
+    proxy = ScriptDocument(Doc(), calls)
+    assert proxy.measure()["volume_mm3"] == 1
+    assert calls == [{"method": "measure", "result": {"volume_mm3": 1}}]
+    for name in ("_state", "_document", "_calls", "__dict__"):
+        with pytest.raises(AttributeError):
+            getattr(proxy, name)
+    with pytest.raises(AttributeError):
+        proxy.approve_plan()
+    assert calls == [{"method": "measure", "result": {"volume_mm3": 1}}]
