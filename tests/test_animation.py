@@ -167,7 +167,7 @@ def test_an_exploded_opening_moves_between_the_ends(tmp_path):
 
 
 def test_a_missing_ffmpeg_still_writes_the_gif(tmp_path, monkeypatch):
-    monkeypatch.setattr("aicad.animation.shutil.which", lambda _name: None)
+    monkeypatch.setattr("aicad.animation.find_program", lambda *_args, **_kwargs: None)
     document = Document(tmp_path)
     _stand(document)
     report = document.render_animation(

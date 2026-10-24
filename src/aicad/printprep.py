@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import math
 import re
-import shutil
 import stat
 import struct
 import subprocess
@@ -263,9 +262,11 @@ def find_slicer() -> str | None:
 
 
 def find_slicers() -> list[str]:
+    from aicad.prereqs import find_program
+
     found = []
     for name in _SLICERS:
-        path = shutil.which(name)
+        path = find_program(name)
         if path and path not in found:
             found.append(path)
     return found

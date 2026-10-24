@@ -2419,7 +2419,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         os.close(descriptor)
         profile_path = Path(name)
         profile_path.write_text(profile, encoding="utf-8")
-        command = [*command_prefix(str(profile_path)), *command]
+        command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds()
     stop_watch: threading.Event | None = None
     watcher: threading.Thread | None = None

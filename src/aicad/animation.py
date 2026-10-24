@@ -3,7 +3,8 @@
 A motion study, a camera orbit, or an exploded opening is drawn with the same
 software rasterizer as the still views. Nothing here opens a window or uses a
 GPU. The GIF is written with Pillow, which is already a dependency. MP4 and
-WebM are written by ``ffmpeg`` when that program is on PATH. It is not
+WebM are written by ``ffmpeg`` when that program is on PATH outside the
+project. A copy in the project is not started. ``ffmpeg`` is not
 downloaded. When it is missing, or when it cannot encode the frames, the GIF
 is still written and the report says so.
 
@@ -38,6 +39,7 @@ from aicad.paths import (
     refuse_reserved_device,
     require_export_path,
 )
+from aicad.prereqs import find_program
 from aicad.render import _PAPER, _VIEWS, _camera_basis, frame_scale, render_frame
 
 _FILE_SUFFIXES = {".gif", ".mp4", ".webm"}
@@ -773,7 +775,7 @@ def _write_gif(path: Path, images: list[Image.Image], frame_ms: int) -> None:
 def _write_videos(root: Path, targets: dict, images: list[Image.Image], fps: int, formats: list[str]):
     if not formats:
         return {}, None
-    executable = shutil.which("ffmpeg")
+    executable = find_program("ffmpeg", project=root)
     if not executable:
         return {}, _FFMPEG_MISSING
     frame_dir = output_dir(root, targets["frames"], "Render", GeometryError)
@@ -818,7 +820,7 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
             "-start_number",
             "0",
             "-i",
-            "frame_%04d.png",
+            (frame_dir / "frame_%04d.png").as_posix(),
             "-frames:v",
             str(count),
             "-an",
@@ -828,7 +830,7 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
         try:
             completed = subprocess.run(
                 command,
-                cwd=frame_dir,
+                cwd=str(Path(executable).resolve().parent),
                 capture_output=True,
                 timeout=90,
                 check=False,

@@ -984,8 +984,13 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
         lines += ["*NODE FILE", "U", "*EL FILE", "S", "*END STEP"]
         (path / "job.inp").write_text("\n".join(lines) + "\n", encoding="utf-8")
         # ccx is GPL-2.0-only. It stays a separate process and is not linked.
+        from aicad.prereqs import find_program
+
+        solver = find_program("ccx")
+        if solver is None:
+            return None, None, "CalculiX (ccx) is not on PATH."
         completed = subprocess.run(
-            ["ccx", "-i", "job"],
+            [solver, "-i", "job"],
             cwd=directory,
             capture_output=True,
             text=True,
