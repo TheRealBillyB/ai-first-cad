@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 
 from aicad.document import Document
-from aicad.errors import AICADError, GeometryError
+from aicad.errors import AICADError, DocumentError, GeometryError
 from aicad.kernel import divert_native_stdio
-from aicad.paths import session_path_escapes
+from aicad.paths import require_session_file, session_path_escapes
 from aicad.workspace import Workspace
 
 BOX = [{"op": "add", "shape": "box", "size": [4, 4, 4]}]
@@ -131,6 +131,17 @@ def test_a_symlinked_step_directory_outside_the_project_is_not_read(tmp_path):
     info = reopened.list_parts()[0]
     assert info.built is False
     assert any("outside" in problem for problem in reopened.problems)
+
+
+def test_a_session_path_trims_like_a_windows_export(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "hidden.step"
+    outside.write_bytes(b"step")
+    for raw in (".. .", ".. ./hidden.step", "imports/.. .", "..../..../hidden.step", r"....\....\hidden.step"):
+        with pytest.raises(DocumentError, match="outside"):
+            require_session_file(project, raw, "STEP file", DocumentError)
+    assert outside.read_bytes() == b"step"
 
 
 def test_export_rejects_windows_escapes_and_keeps_paths_inside(tmp_path):
