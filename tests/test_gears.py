@@ -481,6 +481,21 @@ def test_document_reloads_a_gear_and_the_command_layer_matches(tmp_path: Path):
     assert replaced["gear"]["teeth"] == 16
     assert abs(replaced["volume_mm3"] - volume) / volume > 0.05
 
+    document.place_part("pinion", [10, 20, 30], [0, 0, 15])
+    kept = document.update_gear("pinion", {**spec, "teeth": 18})
+    assert kept["gear"]["teeth"] == 18
+    assert document.get_source("pinion")["placement"] == {
+        "position": [10.0, 20.0, 30.0],
+        "rotation_deg": [0.0, 0.0, 15.0],
+    }
+    kept_box = document.measure("pinion").bounding_box
+    kept_center_x = (kept_box.min.x + kept_box.max.x) / 2
+    assert kept_center_x == pytest.approx(10, abs=0.5)
+    moved = document.update_gear("pinion", {**spec, "teeth": 18}, position=[1, 2, 3])
+    assert document.get_source("pinion")["placement"]["position"] == [1.0, 2.0, 3.0]
+    assert document.get_source("pinion")["placement"]["rotation_deg"] == [0.0, 0.0, 15.0]
+    _ = moved
+
     workspace = Workspace(tmp_path / "app")
     report = workspace.execute("create_gear", {"name": "pinion", "spec": spec, "position": [0, 0, 0]})
     assert report["result_kind"] == "verified_check"
