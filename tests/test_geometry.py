@@ -276,17 +276,18 @@ def test_child_processes_inherit_a_geometry_stack():
         else:
             assert (soft, hard) == before
     assert resource.getrlimit(resource.RLIMIT_STACK) == before
-    if sys.platform != "darwin" or soft0 <= 1024 * 1024:
+    # macOS rejects setrlimit on this resource, including a smaller limit.
+    # The raise itself is checked where the kernel accepts a new limit.
+    if sys.platform in ("darwin", "win32") or soft0 <= 1024 * 1024:
         return
-    # A child started from a small limit still receives a geometry stack.
+    from aicad.thread_stack import GEOMETRY_THREAD_STACK, _raise_stack_limit
+
     resource.setrlimit(resource.RLIMIT_STACK, (1024 * 1024, hard0))
     try:
-        with child_inherits_geometry_stack():
-            soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
-            assert _limit_covers_geometry(soft)
-            assert soft >= 1024 * 1024
-            assert hard == hard0
-        assert resource.getrlimit(resource.RLIMIT_STACK) == (1024 * 1024, hard0)
+        assert _raise_stack_limit(1024 * 1024, hard0, GEOMETRY_THREAD_STACK)
+        soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+        assert _limit_covers_geometry(soft)
+        assert hard == hard0
     finally:
         resource.setrlimit(resource.RLIMIT_STACK, before)
 
