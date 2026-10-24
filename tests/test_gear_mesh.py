@@ -19,9 +19,20 @@ from aicad.gears import (
     registered_mesh_checks,
 )
 from aicad.server import build_server
-from aicad.workspace import Workspace
+from aicad.workspace import COMMANDS, Workspace
 
 _RANGE = {"min": 0.0, "max": 0.05}
+
+
+def test_check_gears_describes_the_hypoid_sweep():
+    command = COMMANDS["check_gears"]
+    assert "one pinion tooth" in command.description
+    assert "one turn of the smaller gear" in command.description
+    offset = command.parameters["properties"]["offset_mm"]["description"]
+    assert "hypoid mesh check" in offset
+    assert "later" not in offset
+    steps = command.parameters["properties"]["steps"]["description"]
+    assert "one pinion tooth" in steps
 
 
 def _spur(teeth: int) -> dict:
