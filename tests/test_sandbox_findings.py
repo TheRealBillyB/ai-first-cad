@@ -15,7 +15,14 @@ import time
 
 import pytest
 
-from aicad.sandbox import allow_design_scripts, run_design_script, run_part_script, sandbox_supported
+from aicad.errors import ScriptError
+from aicad.sandbox import (
+    _block_sockets,
+    allow_design_scripts,
+    run_design_script,
+    run_part_script,
+    sandbox_supported,
+)
 from aicad.workspace import Workspace
 
 
@@ -87,6 +94,8 @@ def test_the_process_filter_refuses_a_signal_to_another_process(tmp_path):
             once("parent-kill", signals["kill"], parent, 0),
             once("init-kill", signals["kill"], 1, 0),
             once("group-kill", signals["kill"], 0, 0),
+            once("minus-one", signals["kill"], -1, 0),
+            once("negative-self", signals["kill"], -pid, 0),
             once("self-tkill", signals["tkill"], tid, 0),
             once("parent-tkill", signals["tkill"], parent, 0),
             once("self-tgkill", signals["tgkill"], pid, tid, 0),
@@ -122,6 +131,8 @@ def test_the_process_filter_refuses_a_signal_to_another_process(tmp_path):
         "parent-kill",
         "init-kill",
         "group-kill",
+        "minus-one",
+        "negative-self",
         "parent-tkill",
         "parent-tgkill",
         "parent-rt",
@@ -132,32 +143,142 @@ def test_the_process_filter_refuses_a_signal_to_another_process(tmp_path):
         assert rows[label] == "denied:1"
 
 
-def test_a_script_cannot_signal_outside_its_own_process(tmp_path):
+def test_a_confined_script_cannot_cap_the_landlock_abi(monkeypatch):
+    from aicad.sandbox import _landlock_abi_cap
+
+    monkeypatch.setattr("aicad.sandbox_state.in_sandbox", lambda: True)
+    with pytest.raises(ScriptError):
+        _landlock_abi_cap(5, from_host=True)
+    assert _landlock_abi_cap(5, from_host=False) == 5
+
+
+def test_the_script_is_not_run_when_the_process_filter_cannot_install(monkeypatch):
+    monkeypatch.setattr("aicad.sandbox._arch", lambda: "x86_64")
+
+    class Libc:
+        def syscall(self, number, *_args):
+            if number == 186:
+                return 1234
+            return -1
+
+    monkeypatch.setattr("aicad.sandbox._libc", lambda: Libc())
+    with pytest.raises(ScriptError, match="process limits"):
+        _block_sockets(network=False)
+
+
+def test_signals_are_refused_when_landlock_cannot_scope_them(tmp_path):
     if not sys.platform.startswith("linux"):
         pytest.skip("Linux applies the signal filter in the kernel")
     _sandbox_or_skip()
-    script = (
-        "import aicad.sandbox as sandbox\n"
-        "def once(label, pid):\n"
-        "    try:\n"
-        "        sandbox.os.kill(pid, 0)\n"
-        "    except OSError as exc:\n"
-        "        return '%s:denied:%s' % (label, exc.errno)\n"
-        "    return '%s:allowed' % label\n"
-        "open('signals.txt', 'w', encoding='utf-8').write('\\n'.join([\n"
-        "    once('self', sandbox.os.getpid()),\n"
-        "    once('parent', sandbox.os.getppid()),\n"
-        "    once('init', 1),\n"
-        "    once('group', 0),\n"
-        "]) + '\\n')\n"
-        "part = Box(1, 1, 1)\n"
+    script = textwrap.dedent(
+        """
+        import aicad.sandbox as sandbox
+
+        os = sandbox.os
+        ctypes = sandbox.ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.syscall.restype = ctypes.c_long
+        arch = sandbox._arch()
+        signals = sandbox._SIGNAL_SYSCALLS[arch]
+        pid = os.getpid()
+        tid = int(libc.syscall(sandbox._GETTID[arch]))
+        outside = os.getppid()
+        lines = [
+            "abi:%s" % sandbox._landlock_abi_used,
+            "scope:%s" % sandbox._landlock_signal_scope,
+        ]
+
+        def once(number, *args):
+            ctypes.set_errno(0)
+            result = libc.syscall(number, *args)
+            if result == 0:
+                return "allowed"
+            return "denied:%s" % ctypes.get_errno()
+
+        def record(label, number, *args):
+            lines.append("%s:%s" % (label, once(number, *args)))
+
+        def oskill(label, target):
+            try:
+                os.kill(target, 0)
+            except OSError as exc:
+                lines.append("%s:denied:%s" % (label, exc.errno))
+            else:
+                lines.append("%s:allowed" % label)
+
+        record("self-kill", signals["kill"], pid, 0)
+        record("parent-kill", signals["kill"], outside, 0)
+        record("init-kill", signals["kill"], 1, 0)
+        record("group-kill", signals["kill"], 0, 0)
+        record("minus-one", signals["kill"], -1, 0)
+        record("negative-self", signals["kill"], -pid, 0)
+        record("pidfd", 424, 0, 0, 0, 0)
+        oskill("os-self", pid)
+        oskill("os-parent", outside)
+        oskill("os-init", 1)
+        oskill("os-group", 0)
+        oskill("os-minus-one", -1)
+        oskill("os-negative-self", -pid)
+        read_fd, write_fd = os.pipe()
+        child = os.fork()
+        if child == 0:
+            os.close(read_fd)
+            child_lines = []
+
+            def crecord(label, number, *args):
+                child_lines.append("%s:%s" % (label, once(number, *args)))
+
+            crecord("child-self", signals["kill"], os.getpid(), 0)
+            crecord("child-script", signals["kill"], pid, 0)
+            crecord("child-outside", signals["kill"], outside, 0)
+            crecord("child-init", signals["kill"], 1, 0)
+            crecord("child-group", signals["kill"], 0, 0)
+            crecord("child-minus-one", signals["kill"], -1, 0)
+            crecord("child-negative", signals["kill"], -pid, 0)
+            crecord("child-pidfd", 424, 0, 0, 0, 0)
+            os.write(write_fd, ("\\n".join(child_lines) + "\\n").encode())
+            os.close(write_fd)
+            os._exit(0)
+        os.close(write_fd)
+        os.waitpid(child, 0)
+        child_text = os.read(read_fd, 65536).decode()
+        os.close(read_fd)
+        open("signals.txt", "w", encoding="utf-8").write("\\n".join(lines) + "\\n" + child_text)
+        part = Box(1, 1, 1)
+        """
     )
-    run_part_script(script, tmp_path)
+    run_part_script(script, tmp_path, _test_landlock_abi=5)
     text = (tmp_path / "signals.txt").read_text(encoding="utf-8")
-    assert "self:allowed" in text
-    assert "parent:denied:" in text
-    assert "init:denied:" in text
-    assert "group:denied:" in text
+    rows = dict(line.split(":", 1) for line in text.splitlines() if ":" in line)
+    assert rows["abi"] == "5"
+    assert rows["scope"] == "False"
+    assert rows["self-kill"] == "allowed"
+    assert rows["os-self"] == "allowed"
+    # A forked child inherits the filter baked with the script pid, so it can
+    # signal that script and no other pid. The script process is inside the sandbox.
+    assert rows["child-script"] == "allowed"
+    refused = (
+        "parent-kill",
+        "init-kill",
+        "group-kill",
+        "minus-one",
+        "negative-self",
+        "pidfd",
+        "os-parent",
+        "os-init",
+        "os-group",
+        "os-minus-one",
+        "os-negative-self",
+        "child-self",
+        "child-outside",
+        "child-init",
+        "child-group",
+        "child-minus-one",
+        "child-negative",
+        "child-pidfd",
+    )
+    for label in refused:
+        assert rows[label] == "denied:1", label
 
 
 def test_bh_s01_design_script_cannot_clear_the_plugin_gate(tmp_path, config_home):
