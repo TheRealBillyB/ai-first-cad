@@ -41,7 +41,7 @@ is more than the part needs. Each operation can include a `name`.
 Wall thickness is the smaller of a ray estimate and a section estimate, and
 the result says which one was used. `section_part` shows a cross-section.
 `search_parts` and `insert_standard_part` bring in bearings, seals, fasteners, motors, and gearboxes.
-`create_gear` builds a spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width.
+`create_gear` builds a spur, helical, straight bevel, spiral bevel, or hypoid gear.
 `check_gears` reports centre distance, backlash, contact ratio, undercut, and interference through one turn of the smaller gear.
 Clearance between two parts reports interference volume or the gap.
 
@@ -190,12 +190,16 @@ in an arbitrary STEP file, such as a McMaster-Carr download. Then
 
 ## Gears
 
-`create_gear` builds an external spur, helical, straight bevel, or spiral
-bevel. The spec uses millimeters: `module_mm`, `teeth`, `pressure_angle_deg`,
-and `face_width_mm`. A bevel also needs `mate_teeth` or `ratio`, and
-`shaft_angle_deg` when the shafts are not at 90 degrees. A positive helix or
-spiral angle is right-hand. Optional `bore_mm`, `hub`, `keyway` (DIN 6885-1),
-and `spline` (ISO 14 or DIN 5480) cut the blank. Hypoid gears are not built.
+`create_gear` builds an external spur, helical, straight bevel, spiral bevel,
+or hypoid. The spec uses millimeters: `teeth` and `face_width_mm`, plus
+`module_mm` and `pressure_angle_deg` for a spur, helical, or bevel. A bevel
+also needs `mate_teeth` or `ratio`, and `shaft_angle_deg` when the shafts are
+not at 90 degrees. A positive helix or spiral angle is right-hand. Optional
+`bore_mm`, `hub`, `keyway` (DIN 6885-1), and `spline` (ISO 14 or DIN 5480)
+cut the blank. A hypoid needs `offset_mm`, `ring_diameter_mm`,
+`spiral_angle_deg`, and `role` (`pinion` or `ring`). `ratio` is ring teeth
+divided by pinion teeth. The ring tooth is a face-mill blade. The pinion is
+the blank left after that tooth is rolled.
 `check_gears` takes two gear specs or part names, or an assembly, and a backlash range
 `{min, max}` in millimetres. It compares the centre distance with the zero-backlash
 centre, reports circumferential and normal backlash, the contact ratio, undercut,
@@ -330,7 +334,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `solve_gear_train` reads the assembly gear train and the tooth counts of the generated gears. It returns the speed and torque of every shaft for an input speed and torque. An external mesh reverses direction. An idler cancels. A compound train multiplies the stage ratios. A planetary set with the ring fixed turns the carrier at z_sun / (z_sun + z_ring) of the sun. An open differential keeps the average of the two outputs equal to the carrier. In a turn, one output speeds up as much as the other slows down, and the two torques stay equal. status is under_constrained or over_constrained when those speeds do not determine the train. Efficiency on a mesh defaults to 1.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
-- `check_gears` checks a spur, helical, or bevel pair, or every gear pair in an assembly. Pass backlash_mm as `{min, max}`. The report has centre distance against the ideal, circumferential and normal backlash, contact ratio, undercut, and interference over one turn of the smaller gear. Read assumptions and limits.
+- `check_gears` checks a spur, helical, or bevel pair, or every such pair in an assembly. Pass backlash_mm as `{min, max}`. The report has centre distance against the ideal, circumferential and normal backlash, contact ratio, undercut, and interference over one turn of the smaller gear. An offset pair is refused until a checker for that layout is registered. Read assumptions and limits.
 - `check_bolts` takes size, grade, axial_n, shear_n, and vibration (`mild`, `moderate`, `intense`). Slip under transverse load is the loosening mechanism. The countermeasures explain what a nyloc nut, a wedge washer, threadlocker, and safety wire do and do not do.
 - `check_fatigue` is a Goodman check of a stress you supply. It is not a cycle-by-cycle solve.
 - `export_drawing` writes a third-angle sheet (front, top, right, isometric) as PDF and DXF, with overall dimensions, a title block, and a scale. The sizes are the axis-aligned box of the posed solids. It is a layout drawing. It has no GD&T, no tolerances, and no threads. Read `result_label` and `limits`.
@@ -648,14 +652,17 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         position: list[float] | None = None,
         rotation_deg: list[float] | None = None,
     ) -> dict:
-        """Create or replace a spur, helical, straight bevel, or spiral bevel gear.
+        """Create or replace a spur, helical, bevel, or hypoid gear.
 
-        spec needs type, module_mm, teeth, and face_width_mm. pressure_angle_deg
-        defaults to 20. module_mm is the normal module, or the outer transverse
-        module for a bevel. A bevel needs mate_teeth or ratio. helix_angle_deg
-        and spiral_angle_deg are positive for a right-hand tooth. bore_mm, hub,
-        keyway (DIN 6885-1), and spline (ISO 14 or DIN 5480) are optional.
-        position and rotation_deg are [x, y, z]. Hypoid gears are not built.
+        spec needs type, teeth, and face_width_mm. A spur, helical, or bevel
+        also needs module_mm. pressure_angle_deg defaults to 20. module_mm is
+        the normal module, or the outer transverse module for a bevel. A bevel
+        needs mate_teeth or ratio. A hypoid needs offset_mm, ring_diameter_mm,
+        spiral_angle_deg, and role (pinion or ring). ratio is ring teeth
+        divided by pinion teeth. helix_angle_deg and spiral_angle_deg are
+        positive for a right-hand tooth. bore_mm, hub, keyway (DIN 6885-1),
+        and spline (ISO 14 or DIN 5480) are optional. position and
+        rotation_deg are [x, y, z].
         """
         return guard(
             lambda: run(

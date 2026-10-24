@@ -62,16 +62,94 @@ def _circle_angles(points, radius: float) -> list[float]:
     return hits
 
 
-def test_families_leave_hypoid_unregistered():
-    layouts = {item["axis_layout"] for item in families().values()}
-    assert layouts == {"parallel", "intersecting"}
-    assert set(families()) == {"spur", "helical", "straight_bevel", "spiral_bevel"}
-    spec = {"type": "hypoid", "module_mm": 2, "teeth": 20, "face_width_mm": 8, "offset_mm": 10}
-    with pytest.raises(GeometryError, match="Hypoid"):
-        gear_data(spec)
+def _hypoid_member(role: str) -> dict:
+    teeth, mate = (8, 16) if role == "pinion" else (16, 8)
+    return {
+        "type": "hypoid",
+        "role": role,
+        "teeth": teeth,
+        "mate_teeth": mate,
+        "offset_mm": 12,
+        "shaft_angle_deg": 90,
+        "ring_diameter_mm": 80,
+        "face_width_mm": 10,
+        "spiral_angle_deg": 35,
+        "pressure_angle_deg": 20,
+    }
+
+
+def test_hypoid_is_registered_and_other_families_keep_zero_offset():
+    assert families()["hypoid"]["axis_layout"] == "offset"
+    assert "hypoid" in families()
     spur = {"type": "spur", "module_mm": 2, "teeth": 20, "face_width_mm": 8, "offset_mm": 1}
-    with pytest.raises(GeometryError, match="Hypoid"):
+    with pytest.raises(GeometryError, match="offset_mm"):
         gear_data(spur)
+    hob = _hypoid_member("pinion")
+    hob["cutter"] = {"process": "face_hob"}
+    with pytest.raises(GeometryError, match="face_mill"):
+        gear_data(hob)
+
+
+def test_hypoid_ratio_and_offset_are_not_a_slid_bevel():
+    from aicad.gears.hypoid import line_distance
+
+    pinion = gear_data(_hypoid_member("pinion"))
+    ring = gear_data(_hypoid_member("ring"))
+    assert pinion["ratio"] == 2
+    assert ring["ratio"] == 2
+    assert pinion["offset_mm"] == 12
+    # A bevel with this ratio at 90 degrees would split the shaft angle between the cones.
+    assert abs(pinion["pinion_pitch_angle_deg"] + pinion["ring_pitch_angle_deg"] - 90) > 0.2
+    assert abs(abs(pinion["pinion_spiral_angle_deg"]) - abs(pinion["ring_spiral_angle_deg"])) > 1
+    assembly = pinion["assembly"]
+    distance = line_distance(
+        assembly["pinion_axis_point_mm"],
+        assembly["pinion_axis_direction"],
+        assembly["gear_axis_point_mm"],
+        assembly["gear_axis_direction"],
+    )
+    assert abs(distance - 12) < 1e-6
+    report = pair_geometry(_hypoid_member("pinion"), _hypoid_member("ring"))
+    assert report["ratio"] == 2
+    assert report["offset_mm"] == 12
+    assert report["axis_layout"] == "offset"
+
+
+def test_hypoid_pair_is_a_closed_solid_and_meshes():
+    pinion = kernel.adopt(build_gear(_hypoid_member("pinion")))
+    ring = kernel.adopt(build_gear(_hypoid_member("ring")))
+    for shape in (pinion, ring):
+        measured = kernel.measure(shape)
+        assert measured.watertight and measured.valid
+        assert measured.volume_mm3 > 1000
+    for angle in (0.0, 8.0, 16.0):
+        placement = mesh_placement(_hypoid_member("pinion"), _hypoid_member("ring"), angle)
+        assert placement["offset_mm"] == 12
+        first = kernel.place(
+            pinion,
+            tuple(placement["pinion"]["position_mm"]),
+            tuple(placement["pinion"]["rotation_deg"]),
+        )
+        second = kernel.place(
+            ring,
+            tuple(placement["gear"]["position_mm"]),
+            tuple(placement["gear"]["rotation_deg"]),
+        )
+        overlap, gap, *_ = kernel.clearance_between(first, second)
+        assert overlap < 1e-4
+        assert gap < 0.05
+    # A move along the offset, with the rotation left at the mesh pose, has to hit.
+    placement = mesh_placement(_hypoid_member("pinion"), _hypoid_member("ring"), 0.0)
+    position = list(placement["pinion"]["position_mm"])
+    position[1] += 0.5
+    plunged = kernel.place(pinion, tuple(position), tuple(placement["pinion"]["rotation_deg"]))
+    seated = kernel.place(
+        ring,
+        tuple(placement["gear"]["position_mm"]),
+        tuple(placement["gear"]["rotation_deg"]),
+    )
+    overlap_plunge, *_ = kernel.clearance_between(plunged, seated)
+    assert overlap_plunge > 0.3
 
 
 def test_spur_and_helical_match_iso_21771():

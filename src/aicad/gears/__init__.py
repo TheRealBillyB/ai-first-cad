@@ -1,7 +1,7 @@
-"""Involute gears: spur, helical, straight bevel, and spiral bevel.
+"""Involute gears: spur, helical, straight bevel, spiral bevel, and hypoid.
 
-Hypoid gears are not built. :func:`register_family` accepts an ``offset``
-axis layout so that family can be added beside these four.
+A hypoid is an offset-axis ring and pinion. The ring tooth is a face-mill
+blade. The pinion is the blank left after that blade is rolled at the tooth ratio.
 """
 
 from aicad.gears.geometry import (
@@ -17,13 +17,14 @@ from aicad.gears.geometry import (
     register_family,
 )
 from aicad.gears.geometry import compute_bevel, compute_cylindrical
+from aicad.gears.hypoid import compute_hypoid
 from aicad.gears.meshcheck import (
     check_pair,
     register_mesh_check,
     registered_mesh_checks,
     unregister_mesh_check,
 )
-from aicad.gears.solid import build_bevel, build_cylindrical, build_gear
+from aicad.gears.solid import build_bevel, build_cylindrical, build_gear, build_hypoid
 
 __all__ = [
     "INTERSECTING",
@@ -74,6 +75,13 @@ def _register() -> None:
         compute_bevel,
         build_bevel,
         "Spiral bevel gear. The same virtual spur, rotated by a constant spiral angle.",
+    )
+    register_family(
+        "hypoid",
+        OFFSET,
+        compute_hypoid,
+        build_hypoid,
+        "Hypoid ring and pinion. The ring tooth is a face-mill blade; the pinion is the blank that blade leaves.",
     )
 
 

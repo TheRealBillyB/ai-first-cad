@@ -509,11 +509,11 @@ def build_parser() -> argparse.ArgumentParser:
     gear = commands.add_parser(
         "gear",
         parents=[common],
-        help="Create or replace a spur, helical, straight bevel, or spiral bevel gear.",
+        help="Create or replace a spur, helical, bevel, or hypoid gear.",
     )
     gear.add_argument("name")
     gear.add_argument("--file", type=Path, default=None, help="JSON gear spec. Flags override it.")
-    gear.add_argument("--type", default=None, help="spur, helical, straight_bevel, or spiral_bevel.")
+    gear.add_argument("--type", default=None, help="spur, helical, straight_bevel, spiral_bevel, or hypoid.")
     gear.add_argument("--module", type=float, default=None, help="Normal module, or outer transverse module for a bevel.")
     gear.add_argument("--teeth", type=int, default=None)
     gear.add_argument("--pressure-angle", type=float, default=None)
@@ -526,6 +526,10 @@ def build_parser() -> argparse.ArgumentParser:
     gear.add_argument("--bore", type=float, default=None)
     gear.add_argument("--rack", default=None, help="ISO 53 basic rack A, B, C, or D.")
     gear.add_argument("--hand", default=None, choices=["right", "left"])
+    gear.add_argument("--offset", type=float, default=None, help="Hypoid pinion offset in mm. Positive puts the pinion axis on +Y.")
+    gear.add_argument("--ratio", type=float, default=None, help="Ring teeth divided by pinion teeth.")
+    gear.add_argument("--ring-diameter", type=float, default=None, help="Hypoid ring mean pitch diameter in mm.")
+    gear.add_argument("--role", default=None, choices=["pinion", "ring"], help="Which member of a hypoid pair this gear is.")
     gear.add_argument("--at", default=None, help="Position x,y,z in mm.")
     gear.add_argument("--rot", default=None, help="Rotation about X, Y, Z in degrees.")
 
@@ -679,6 +683,10 @@ def _dispatch(args: argparse.Namespace) -> int:
             "bore_mm": args.bore,
             "rack": args.rack,
             "hand": args.hand,
+            "offset_mm": args.offset,
+            "ratio": args.ratio,
+            "ring_diameter_mm": args.ring_diameter,
+            "role": args.role,
         }
         for key, value in overrides.items():
             if value is not None:
