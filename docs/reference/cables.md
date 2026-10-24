@@ -6,7 +6,7 @@ A route is either a clip polyline or a tendon. The report says which. Neither on
 
 ## Clip polyline
 
-`waypoints` are points fixed on parts: `instance`, `at` in that part's frame, and `clip`. The path is the polyline through those points after the joints move. Bend radius is the circumradius of each three consecutive points. A repeated waypoint has no corner, so that radius is unlimited, the same as a straight run. Strain is `(length - rest length) / rest length`. Tension is stiffness times positive strain. Stiffness is `low`, `medium`, `high`, or a number of newtons per unit strain. A shorter route is slack, not compression.
+`waypoints` are points fixed on parts: `instance`, `at` in that part's frame, and `clip`. The path is the polyline through those points after the joints move. Bend radius is the circumradius of each three consecutive points. A repeated waypoint has no corner, so that radius is unlimited, the same as a straight run. Two spans that do not share a waypoint fail when the shortest distance between those segments is less than the cable diameter. Strain is `(length - rest length) / rest length`. Tension is stiffness times positive strain. Stiffness is `low`, `medium`, `high`, or a number of newtons per unit strain. A shorter route is slack, not compression.
 
 ## Tendon
 

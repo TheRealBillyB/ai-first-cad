@@ -232,9 +232,13 @@ def _stop(root: Path) -> dict:
 
 def _status_summary(report: dict) -> str:
     count = int(report.get("steps") or 0)
+    if count == 1:
+        stored = "1 step is stored."
+    else:
+        stored = f"{count} steps are stored."
     if report.get("enabled"):
-        return f"Recording is on. {count} steps are stored."
-    return f"Recording is off. {count} steps are stored."
+        return f"Recording is on. {stored}"
+    return f"Recording is off. {stored}"
 
 
 def _replay(root: Path, steps_value, step_value) -> dict:

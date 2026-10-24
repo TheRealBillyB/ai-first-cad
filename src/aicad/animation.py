@@ -30,7 +30,14 @@ from aicad.errors import GeometryError
 from aicad.fea import lookup_material
 from aicad.kinematics import solve as solve_joints
 from aicad.motion_study import posed_at, study_by_name
-from aicad.paths import output_dir, output_path, publish_file, refuse_reserved_device, require_export_path
+from aicad.paths import (
+    is_reparse,
+    output_dir,
+    output_path,
+    publish_file,
+    refuse_reserved_device,
+    require_export_path,
+)
 from aicad.render import _PAPER, _VIEWS, _camera_basis, frame_scale, render_frame
 
 _FILE_SUFFIXES = {".gif", ".mp4", ".webm"}
@@ -839,7 +846,9 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
 
 def _remove_frames(folder: Path, root: Path) -> None:
     try:
-        if folder.is_symlink():
+        # resolve() follows a directory junction. Removing that result would
+        # delete the directory the junction points at.
+        if is_reparse(folder):
             return
         resolved = folder.resolve()
         root_resolved = root.resolve()
@@ -847,7 +856,7 @@ def _remove_frames(folder: Path, root: Path) -> None:
         return
     if resolved == root_resolved or root_resolved not in resolved.parents:
         return
-    if resolved.is_symlink():
+    if is_reparse(resolved):
         return
     shutil.rmtree(resolved, ignore_errors=True)
 
