@@ -45,6 +45,8 @@ Plugins are separate. Installed packs are listed from entry points without impor
 
 A one-shot network grant is used up only when the design script finishes without an error. If the script fails, the next run still has the grant.
 
+Master documents are generated from the entry files in the repository. A symlink or junction on that path is not followed, and a file with another name is not read or written. Generating the masters does not run an entry as code.
+
 This sandbox is for one person on their own machine. It is not a boundary between tenants. The choices are recorded in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 The workspace app listens on this computer only. It answers `localhost` and `127.0.0.1` on the port it opened, and it refuses a request whose `Origin` is some other site. A command that does not name this app as its origin is refused too. A read from the page often sends no origin; that read still needs the session token. Each launch picks a new session token, puts that token in the page it serves, and accepts an API call only when the page sends the token back. The picture requests are the one exception: an image tag cannot set a header, so those carry the same token in the query. A call from the page is the person. A call from the attached assistant is the assistant. The command body cannot choose which of those it is.

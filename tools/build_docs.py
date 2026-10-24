@@ -13,13 +13,19 @@ does not compare a master document with the entries, so a pull request can
 add an entry without editing the master. After the entries land on ``main``,
 ``.github/workflows/regenerate-docs.yml`` opens one pull request with the
 rebuilt masters.
+
+A symlink, a junction, or a file with another name is not read or written.
+The generator stays on the file the repository path names.
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
+import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import date
@@ -62,6 +68,166 @@ TOOL_NOTE = (
 
 class FormatProblem(ValueError):
     """One entry file failed validation."""
+
+
+# A mount-point reparse tag is a Windows junction. Other reparse tags, such as
+# a placeholder for a file that is not stored locally, are left alone.
+_MOUNT_POINT = 0xA0000003
+
+
+def _absolute(path: Path) -> Path:
+    """Absolute path without resolving a symlink or junction."""
+    return Path(os.path.abspath(path))
+
+
+def _lstat(path: Path):
+    try:
+        return os.lstat(path)
+    except OSError:
+        return None
+
+
+def _is_symlink(path: Path) -> bool:
+    info = _lstat(path)
+    return info is not None and stat.S_ISLNK(info.st_mode)
+
+
+def _is_junction(path: Path) -> bool:
+    """True for a Windows directory junction, including on Python 3.11."""
+    checker = getattr(os.path, "isjunction", None)
+    if checker is not None:
+        try:
+            return bool(checker(os.fspath(path)))
+        except (OSError, ValueError):
+            return False
+    if os.name != "nt" or _lstat(path) is None:
+        return False
+    return _mount_point(path)
+
+
+def _mount_point(path: Path) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_attrs = kernel32.GetFileAttributesW
+    get_attrs.argtypes = [wintypes.LPCWSTR]
+    get_attrs.restype = wintypes.DWORD
+    attributes = get_attrs(os.fspath(path))
+    if attributes == 0xFFFFFFFF or not attributes & 0x400:
+        return False
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    create.restype = ctypes.c_void_p
+    handle = create(
+        os.fspath(path),
+        0x80,
+        0x1 | 0x2 | 0x4,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if not handle or handle == invalid:
+        return False
+    try:
+        buffer = ctypes.create_string_buffer(16 * 1024)
+        returned = wintypes.DWORD(0)
+        control = kernel32.DeviceIoControl
+        control.argtypes = [
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        control.restype = wintypes.BOOL
+        ok = control(handle, 0x000900A8, None, 0, buffer, len(buffer), ctypes.byref(returned), None)
+        if not ok or returned.value < 4:
+            return False
+        tag = int.from_bytes(buffer.raw[:4], "little")
+        return tag == _MOUNT_POINT
+    finally:
+        close = kernel32.CloseHandle
+        close.argtypes = [ctypes.c_void_p]
+        close.restype = wintypes.BOOL
+        close(handle)
+
+
+def _extra_name(path: Path) -> bool:
+    """True when a regular file has another directory entry."""
+    info = _lstat(path)
+    if info is None or stat.S_ISLNK(info.st_mode) or stat.S_ISDIR(info.st_mode):
+        return False
+    return info.st_nlink > 1
+
+
+def _link_problem(root: Path, path: Path) -> str | None:
+    """The repository-relative component that is a link, if any.
+
+    Ancestors of ``root`` are not checked. A checkout directory can sit under
+    a symlink, and that directory is still the repository.
+    """
+    root_abs = _absolute(root)
+    path_abs = _absolute(path)
+    try:
+        relative = path_abs.relative_to(root_abs)
+    except ValueError:
+        return "path is outside the repository"
+    current = root_abs
+    walked: list[str] = []
+    for part in relative.parts:
+        walked.append(part)
+        current = current / part
+        if _is_symlink(current) or _is_junction(current) or _extra_name(current):
+            return f"{'/'.join(walked)}: a link is not followed"
+        if _lstat(current) is None:
+            return None
+    return None
+
+
+def _refuse_link(path: Path, root: Path | None) -> None:
+    if root is not None:
+        problem = _link_problem(root, path)
+        if problem:
+            raise FormatProblem(problem)
+        return
+    if _is_symlink(path) or _is_junction(path) or _extra_name(path):
+        raise FormatProblem(f"{path.name}: a link is not followed")
+
+
+def _link_errno(exc: OSError) -> bool:
+    return exc.errno in {errno.ELOOP, getattr(errno, "EMLINK", -1)}
+
+
+def _read_bytes(path: Path) -> bytes:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as handle:
+        return handle.read()
+
+
+def _write_bytes(path: Path, data: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o644)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
 
 
 @dataclass(frozen=True)
@@ -114,11 +280,22 @@ def repo_relative(root: Path, file: Path) -> str:
     return "/".join(file.relative_to(root).parts)
 
 
-def read_text(path: Path) -> str:
-    """Read UTF-8 text and return LF endings, including from a CRLF checkout."""
+def read_text(path: Path, *, root: Path | None = None) -> str:
+    """Read UTF-8 text and return LF endings, including from a CRLF checkout.
+
+    The final component is opened without following a symlink. When ``root``
+    is set, a symlink or junction in any component under that directory is
+    refused before the open.
+    """
+    _refuse_link(path, root)
     try:
-        with path.open("r", encoding="utf-8", newline="\n") as handle:
-            text = handle.read()
+        raw = _read_bytes(path)
+    except OSError as exc:
+        if _link_errno(exc):
+            raise FormatProblem(f"{path.name}: a link is not followed") from exc
+        raise
+    try:
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise FormatProblem("file is not utf-8 text") from exc
     if text.startswith("\ufeff"):
@@ -128,12 +305,21 @@ def read_text(path: Path) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def write_text(path: Path, text: str) -> None:
-    """Write LF only, including on Windows where the default translation is CRLF."""
+def write_text(path: Path, text: str, *, root: Path | None = None) -> None:
+    """Write LF only, including on Windows where the default translation is CRLF.
+
+    Nothing is written when the path, or a parent under ``root``, is a link.
+    """
+    _refuse_link(path, root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_link(path, root)
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    with path.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(normalized)
+    try:
+        _write_bytes(path, normalized.encode("utf-8"))
+    except OSError as exc:
+        if _link_errno(exc):
+            raise FormatProblem(f"{path.name}: a link is not followed") from exc
+        raise
 
 
 def escape_cell(text: str) -> str:
@@ -389,10 +575,21 @@ def format_tool_file(entry: ToolEntry) -> str:
 def _iter_markdown(root: Path, relative: str) -> tuple[list[Path], list[str]]:
     folder = entry_directory(root, relative)
     errors: list[str] = []
+    problem = _link_problem(root, folder)
+    if problem:
+        return [], [problem]
     if not folder.is_dir():
         return [], [f"{normalize_repo_path(relative)}: entry folder is missing"]
     files: list[Path] = []
-    for child in folder.iterdir():
+    try:
+        children = list(folder.iterdir())
+    except OSError:
+        return [], [f"{normalize_repo_path(relative)}: entry folder is missing"]
+    for child in children:
+        problem = _link_problem(root, child)
+        if problem:
+            errors.append(problem)
+            continue
         rel = repo_relative(root, child)
         if child.is_file() and child.suffix == ".md":
             files.append(child)
@@ -408,7 +605,7 @@ def load_decisions(root: Path) -> tuple[list[DecisionEntry], list[str]]:
     for file in files:
         rel = repo_relative(root, file)
         try:
-            entries.append(parse_decision_file(file.name, read_text(file)))
+            entries.append(parse_decision_file(file.name, read_text(file, root=root)))
         except FormatProblem as exc:
             errors.append(f"{rel}: {exc}")
     return entries, errors
@@ -420,7 +617,7 @@ def load_tools(root: Path) -> tuple[list[ToolEntry], list[str]]:
     for file in files:
         rel = repo_relative(root, file)
         try:
-            entries.append(parse_tool_file(file.name, read_text(file)))
+            entries.append(parse_tool_file(file.name, read_text(file, root=root)))
         except FormatProblem as exc:
             errors.append(f"{rel}: {exc}")
     return entries, errors
@@ -632,24 +829,37 @@ def tool_entries_from_table(text: str) -> list[ToolEntry]:
 def write_decision_entries(root: Path, entries: list[DecisionEntry]) -> None:
     folder = entry_directory(root, DECISIONS_DIR)
     for entry in entries:
-        write_text(folder / entry.filename, format_decision_file(entry))
+        write_text(folder / entry.filename, format_decision_file(entry), root=root)
 
 
 def write_tool_entries(root: Path, entries: list[ToolEntry]) -> None:
     folder = entry_directory(root, TOOLS_DIR)
     for entry in entries:
-        write_text(folder / entry.filename, format_tool_file(entry))
+        write_text(folder / entry.filename, format_tool_file(entry), root=root)
+
+
+def _master_problem(root: Path, path: Path, label: str) -> str | None:
+    problem = _link_problem(root, path)
+    if problem is None:
+        return None
+    if problem.startswith("path is outside"):
+        return f"{label}: {problem}"
+    return problem
 
 
 def check(root: Path) -> list[str]:
     """Validate entries and markers. A stale master is not a failure."""
+    root = Path(root)
     _, decision_errors = load_decisions(root)
     _, tool_errors = load_tools(root)
     errors = decision_errors + tool_errors
     readme = root / README_MASTER
-    if readme.is_file():
+    problem = _master_problem(root, readme, README_MASTER)
+    if problem:
+        errors.append(problem)
+    elif readme.is_file():
         try:
-            text = read_text(readme)
+            text = read_text(readme, root=root)
         except FormatProblem as exc:
             errors.append(f"{README_MASTER}: {exc}")
         else:
@@ -661,25 +871,34 @@ def check(root: Path) -> list[str]:
 
 
 def build(root: Path) -> list[str]:
+    root = Path(root)
     decisions, decision_errors = load_decisions(root)
     tools, tool_errors = load_tools(root)
     errors = decision_errors + tool_errors
+    master = entry_directory(root, DECISIONS_MASTER)
+    readme = root / README_MASTER
+    for path, label in ((master, DECISIONS_MASTER), (readme, README_MASTER)):
+        problem = _master_problem(root, path, label)
+        if problem:
+            errors.append(problem)
     if errors:
         return errors
     decision_text = render_decisions(decisions)
-    readme = root / README_MASTER
     readme_text: str | None = None
     if readme.is_file():
         try:
-            readme_text = update_readme(read_text(readme), tools)
+            readme_text = update_readme(read_text(readme, root=root), tools)
         except FormatProblem as exc:
             message = str(exc)
             if not message.startswith("README.md"):
                 message = f"{README_MASTER}: {message}"
             return [message]
-    write_text(entry_directory(root, DECISIONS_MASTER), decision_text)
-    if readme_text is not None:
-        write_text(readme, readme_text)
+    try:
+        write_text(master, decision_text, root=root)
+        if readme_text is not None:
+            write_text(readme, readme_text, root=root)
+    except FormatProblem as exc:
+        return [str(exc)]
     return []
 
 
