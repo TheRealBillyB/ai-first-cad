@@ -35,6 +35,7 @@ _CHECKS = frozenset(
         "run_motion_study",
         "section",
         "solve_assembly_modal",
+        "solve_kinematics",
         "solve_mechanics",
         "solve_modal",
     }

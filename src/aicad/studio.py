@@ -52,6 +52,7 @@ _LOUD = {
     "estimate_power",
     "run_motion",
     "run_motion_study",
+    "solve_kinematics",
     "check_requirements",
 }
 # Undoable edits that are notes or requirements, not a shape the camera should chase.
@@ -1032,6 +1033,8 @@ def _summary(name: str, arguments: dict, result: dict, parts: list[str]) -> str:
         "set_joint": f"Set joint {arguments.get('joint')} to {arguments.get('value')}",
         "set_pose": f"Applied pose {arguments.get('pose')}",
         "run_motion": f"Ran motion on {part}",
+        "run_motion_study": f"Ran a motion study on {part}",
+        "solve_kinematics": f"Solved kinematics for {part}",
         "render_animation": f"Rendered an animation of {part}",
         "write_document": f"Wrote {arguments.get('name')}",
         "delete_document": f"Deleted note {arguments.get('name')}",

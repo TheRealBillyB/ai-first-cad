@@ -262,6 +262,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum allowed gap in millimeters. A smaller gap is interference.",
     )
 
+    kinematics = commands.add_parser(
+        "kinematics",
+        parents=[common],
+        help="Solve forward or inverse kinematics, or step a tool path.",
+    )
+    kinematics.add_argument("name")
+    kinematics.add_argument(
+        "--file",
+        type=Path,
+        required=True,
+        help="JSON request: tool, optional at, joints, target, or path.",
+    )
+
     cables = commands.add_parser("cables", parents=[common], help="Check cables, hoses, and tendon routes.")
     cables.add_argument("name")
     cables.add_argument(
@@ -760,6 +773,25 @@ def _dispatch(args: argparse.Namespace) -> int:
                 study=inline,
                 steps=args.steps,
                 clearance_mm=args.clearance,
+            )
+        )
+    if args.command == "kinematics":
+        request = json.loads(args.file.read_text(encoding="utf-8"))
+        if not isinstance(request, dict):
+            raise GeometryError("Kinematics request must be an object.")
+        unknown = set(request) - {"tool", "at", "rotation_deg", "joints", "slides", "target", "path"}
+        if unknown:
+            raise GeometryError(f"Kinematics request has unknown fields: {', '.join(sorted(unknown))}.")
+        return emit(
+            document.solve_kinematics(
+                args.name,
+                request.get("tool"),
+                at=request.get("at"),
+                rotation_deg=request.get("rotation_deg"),
+                joints=request.get("joints"),
+                slides=request.get("slides"),
+                target=request.get("target"),
+                path=request.get("path"),
             )
         )
     if args.command == "cables":

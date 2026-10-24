@@ -71,7 +71,7 @@ Requirements are checked against every design. The first kinds of goal: it holds
 - **Gear mesh and backlash check.** Done. A spur, helical, or bevel pair, or every gear pair in an assembly, reports centre distance against the zero-backlash centre, circumferential and normal backlash against a range, contact ratio, undercut, and interference through one full turn of the smaller gear. A hypoid pair is the same report once its checker is registered.
 - **Gear-train solver.** Done. Speed and torque for a simple or compound train, an idler, a planetary set, and an open differential. The report says when the train is under-constrained or over-constrained.
 - **Motion study.** **Done.** Drives assembly joints through angles or paths over time, and reports collisions and joint-limit violations.
-- **Kinematics.** Solves forward and inverse kinematics for a serial chain of joints, including the joint angles that reach a target pose.
+- **Kinematics.** **Done.** Solves forward and inverse kinematics for a serial chain of joints, including the joint values that reach a target pose, and steps a tool path through the motion study.
 - **Positional error budget.** Estimates the end-point position error of a jointed mechanism from link deflection (using the strength check), gear backlash, joint stiffness, and encoder resolution, and reports pass or fail against a tolerance.
 - **Cable and pulley routing.** **Done.** Routes cables over pulleys and guides through joints, and checks how cable length and tension change across a joint's range of motion.
 - **Standard parts library.** **Done.** Inserts bearings, seals, fasteners, small motors, and gearboxes by catalog designation.

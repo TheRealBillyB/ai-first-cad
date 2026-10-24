@@ -967,6 +967,21 @@ def _cmd_run_motion_study(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("motion_study", report)  # noqa: SLF001
 
 
+def _cmd_solve_kinematics(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.solve_kinematics(
+        arguments["name"],
+        arguments["tool"],
+        at=arguments.get("at"),
+        rotation_deg=arguments.get("rotation_deg"),
+        joints=arguments.get("joints"),
+        slides=arguments.get("slides"),
+        target=arguments.get("target"),
+        path=arguments.get("path"),
+    )
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("kinematics", report)  # noqa: SLF001
+
+
 def _cmd_check_cables(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.check_cables(
         arguments["name"],
@@ -1588,6 +1603,30 @@ _add(Command(
         ["name"],
     ),
     _cmd_run_motion_study,
+))
+_add(Command(
+    "solve_kinematics",
+    "Solve forward or inverse kinematics for a serial chain, or step a tool along a line or waypoints and check that path for collisions and joint limits.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "tool": _string("Instance at the end of the chain."),
+            "at": {"type": "array", "description": "Tool point in the tool instance, millimeters."},
+            "rotation_deg": {"type": "array", "description": "Tool frame rotation, degrees about X, then Y, then Z."},
+            "joints": {"type": "object", "description": "Joint values. Revolute is degrees. Prismatic is millimeters."},
+            "slides": {"type": "object", "description": "Cylindrical slide in millimeters."},
+            "target": {
+                "type": "object",
+                "description": "Position, rotation_deg, or a rigid matrix. Not both a matrix and rotation_deg.",
+            },
+            "path": {
+                "type": "object",
+                "description": "kind line or waypoints, with steps. A line needs target. Waypoints need at least two poses.",
+            },
+        },
+        ["name", "tool"],
+    ),
+    _cmd_solve_kinematics,
 ))
 _add(Command(
     "check_cables",

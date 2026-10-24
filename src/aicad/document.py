@@ -29,6 +29,7 @@ from aicad.printprep import analyze_print
 from aicad.printprep import list_printers as printer_catalog
 from aicad.robot import export_robot
 from aicad.errors import DocumentError, GeometryError, PartNotFound
+from aicad.chain import solve_kinematics as solve_chain
 from aicad.kinematics import normalize as normalize_assembly
 from aicad.kinematics import solve as solve_assembly
 from aicad.motion_study import run_study, study_by_name
@@ -1133,6 +1134,38 @@ class Document:
                 steps=steps,
                 clearance_mm=clearance_mm,
             )
+
+    def solve_kinematics(
+        self,
+        name: str,
+        tool: str,
+        at: list | None = None,
+        rotation_deg: list | None = None,
+        joints: dict | None = None,
+        slides: dict | None = None,
+        target: dict | None = None,
+        path: dict | None = None,
+    ) -> dict:
+        """Forward or inverse kinematics for the chain that ends at ``tool``.
+
+        ``target`` is a position, an orientation, or a rigid matrix. ``path``
+        steps the tool along a line or through waypoints and checks those
+        poses with the motion study.
+        """
+        request: dict = {"tool": tool}
+        for key, value in (
+            ("at", at),
+            ("rotation_deg", rotation_deg),
+            ("joints", joints),
+            ("slides", slides),
+            ("target", target),
+            ("path", path),
+        ):
+            if value is not None:
+                request[key] = value
+        with self._lock:
+            spec = self._get_assembly(name)
+            return solve_chain(spec, self._assembly_shapes(spec), request)
 
     def check_cables(
         self,

@@ -63,6 +63,10 @@ A cylinder relation sets a barrel angle and a rod extension from a revolute.
 `run_motion` sweeps those joints and reports collisions, with a picture per
 frame. `run_motion_study` drives joints from expressions or keyframes, applies
 gear couplings, and reports collisions and joint-limit violations.
+`solve_kinematics` solves one serial chain to a tool: the forward pose,
+the joint values for a target position and orientation, or a straight-line
+or waypoint path. The path is checked by the motion study. The record is
+`kinematics.v1`.
 `check_cables` measures length, strain, bend radius, and pinching. A tendon
 adds pulley wrap, slack or stretch, capstan tension, and collisions.
 `estimate_power` turns gravity and payloads into joint torque and then into
@@ -320,6 +324,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
 - `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
 - `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
+- `solve_kinematics` solves the chain from the grounded part to `tool`. Pass `joints` for a forward pose. Pass `target` (`position`, `rotation_deg`, or `matrix`) for inverse kinematics. A planar elbow returns both bends. A spherical wrist returns each shoulder, elbow, and wrist branch that reaches. An unreachable, singular, or out-of-limit target is reported, and a value past a stop is not a solution. Pass `path` (`kind` `line` or `waypoints`) to step the tool and reuse the motion study for collisions and joint limits. The record is `kinematics.v1`.
 - `check_cables` routes polylines through waypoints fixed on parts, and tendons through anchors, pulleys, guides, and an end anchor. It reports length change, slack or stretch, strain, bend-radius violations, wrap angle, capstan tension from `actuator_force_n`, and pinching or collision. A tendon length includes the wrap arc. `sequence` may name a motion study. It does not simulate a flexible body.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
 - `solve_gear_train` reads the assembly gear train and the tooth counts of the generated gears. It returns the speed and torque of every shaft for an input speed and torque. An external mesh reverses direction. An idler cancels. A compound train multiplies the stage ratios. A planetary set with the ring fixed turns the carrier at z_sun / (z_sun + z_ring) of the sun. An open differential keeps the average of the two outputs equal to the carrier. In a turn, one output speeds up as much as the other slows down, and the two torques stay equal. status is under_constrained or over_constrained when those speeds do not determine the train. Efficiency on a mesh defaults to 1.
@@ -893,6 +898,50 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 study=study,
                 steps=steps,
                 clearance_mm=clearance_mm,
+            )
+        )
+
+    @mcp.tool()
+    def solve_kinematics(
+        name: str,
+        tool: str,
+        at: list[float] | None = None,
+        rotation_deg: list[float] | None = None,
+        joints: dict[str, float] | None = None,
+        slides: dict[str, float] | None = None,
+        target: dict[str, Any] | None = None,
+        path: dict[str, Any] | None = None,
+    ) -> dict:
+        """Solve forward or inverse kinematics for the chain that ends at a tool.
+
+        joints sets the free joint values for the forward pose. Revolute values
+        are degrees. Prismatic values are millimeters. A cylindrical joint's
+        slide is in slides, in millimeters. at is the tool point in the tool
+        instance, and rotation_deg is that frame's X, then Y, then Z rotation.
+        target is {position} or {position, rotation_deg} or {matrix}. Two
+        parallel revolute joints return elbow up and elbow down. Six revolute
+        joints whose last three axes meet return each shoulder, elbow, and
+        wrist branch that reaches the pose. Any other chain starts from joints.
+        A solution is kept only when the forward pose matches. Unreachable,
+        singular, and limit are reported, and a joint value past its stop is
+        not used.
+        path is {kind: line, target, steps} from the current pose, or
+        {kind: waypoints, waypoints, steps}. steps counts both ends of a line
+        or of each waypoint segment. The joint values are then a motion study,
+        with the same collision and joint-limit checks. The record is
+        kinematics.v1. path.motion_study is motion_study.v1.
+        """
+        return guard(
+            lambda: run(
+                "solve_kinematics",
+                name=name,
+                tool=tool,
+                at=at,
+                rotation_deg=rotation_deg,
+                joints=joints,
+                slides=slides,
+                target=target,
+                path=path,
             )
         )
 
