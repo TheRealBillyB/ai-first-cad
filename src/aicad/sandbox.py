@@ -3,7 +3,8 @@
 Linux confines the process with Landlock (files, TCP, and signals) and a small
 seccomp filter. That filter accepts only the native instruction set. It refuses
 io_uring, ptrace, and cross-process memory, and it blocks every other socket
-and a new session. Landlock also refuses a symlink, named pipe, socket node, or
+and a new session. It also refuses a resource limit aimed at another process,
+and a file-owner or terminal notice that can deliver a signal. Landlock also refuses a symlink, named pipe, socket node, or
 device node outside the project. The process cap counts only that script's
 threads: a cgroup ``pids.max`` when this user can create one, and otherwise the
 parent stops the script's process tree. It is not the user-wide process limit,
@@ -181,6 +182,14 @@ _SIGNAL_SYSCALLS = {
     "aarch64": {"kill": 129, "tkill": 130, "tgkill": 131, "rt_sigqueueinfo": 138, "rt_tgsigqueueinfo": 240},
 }
 _GETTID = {"x86_64": 186, "aarch64": 178}
+# A resource limit names a process in its first argument. Pid 0 is this process.
+_PRLIMIT64 = {"x86_64": 302, "aarch64": 261}
+# Owner, signal, and lease commands. The command is the second argument.
+_FCNTL = {"x86_64": 72, "aarch64": 25}
+_FCNTL_SIGNAL_COMMANDS = (8, 9, 10, 11, 15, 16, 1024, 1025, 1026)
+# Terminal and socket notices that deliver a signal. The request is the second argument.
+_IOCTL = {"x86_64": 16, "aarch64": 29}
+_IOCTL_SIGNAL_COMMANDS = (0x40045436, 0x8901, 0x8902, 0x5410, 0x5414)
 # seccomp_data.arch. A 32-bit int 0x80 call on x86_64 is a different architecture
 # and a different syscall number, so a filter that only compares the native
 # number would let it through. x32 numbers set bit 30 on this same architecture.
@@ -884,6 +893,56 @@ def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
         )
 
 
+def _deny_commands(
+    program: list,
+    number: int,
+    commands: tuple[int, ...],
+    *,
+    bpf_jeq: int,
+    bpf_ld: int,
+    bpf_ret: int,
+    errno_eperm: int,
+    allow: int,
+) -> None:
+    """Refuse ``number`` when its second argument is one of ``commands``.
+
+    A nonzero high half is refused too. Any other command of this call is allowed.
+    """
+    count = len(commands)
+    program.append(_SockFilter(bpf_jeq, 0, 6 + count, number))
+    program.append(_SockFilter(bpf_ld, 0, 0, 28))
+    program.append(_SockFilter(bpf_jeq, 1, 0, 0))
+    program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    program.append(_SockFilter(bpf_ld, 0, 0, 24))
+    for index, command in enumerate(commands):
+        program.append(_SockFilter(bpf_jeq, count - index, 0, command))
+    program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+
+
+def _allow_only_this_process(
+    program: list,
+    number: int,
+    pid: int,
+    *,
+    bpf_jeq: int,
+    bpf_ld: int,
+    bpf_ret: int,
+    errno_eperm: int,
+    allow: int,
+) -> None:
+    """Allow ``number`` only for pid 0 or ``pid``. Both mean this process."""
+    program.append(_SockFilter(bpf_jeq, 0, 8, number))
+    program.append(_SockFilter(bpf_ld, 0, 0, 20))
+    program.append(_SockFilter(bpf_jeq, 1, 0, 0))
+    program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    program.append(_SockFilter(bpf_ld, 0, 0, 16))
+    program.append(_SockFilter(bpf_jeq, 2, 0, 0))
+    program.append(_SockFilter(bpf_jeq, 1, 0, pid))
+    program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    program.append(_SockFilter(bpf_ret, 0, 0, allow))
+
+
 def _own_process_ids(arch: str) -> tuple[int, int]:
     """The process and thread this filter may signal. Anything else is refused."""
     pid = os.getpid()
@@ -931,6 +990,36 @@ def _block_sockets(*, network: bool) -> None:
         program.append(_SockFilter(bpf_jeq, 1, 0, tid if name == "tkill" else pid))
         program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
         program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    _allow_only_this_process(
+        program,
+        _PRLIMIT64[arch],
+        pid,
+        bpf_jeq=bpf_jeq,
+        bpf_ld=bpf_ld,
+        bpf_ret=bpf_ret,
+        errno_eperm=errno_eperm,
+        allow=allow,
+    )
+    _deny_commands(
+        program,
+        _FCNTL[arch],
+        _FCNTL_SIGNAL_COMMANDS,
+        bpf_jeq=bpf_jeq,
+        bpf_ld=bpf_ld,
+        bpf_ret=bpf_ret,
+        errno_eperm=errno_eperm,
+        allow=allow,
+    )
+    _deny_commands(
+        program,
+        _IOCTL[arch],
+        _IOCTL_SIGNAL_COMMANDS,
+        bpf_jeq=bpf_jeq,
+        bpf_ld=bpf_ld,
+        bpf_ret=bpf_ret,
+        errno_eperm=errno_eperm,
+        allow=allow,
+    )
     program.append(_SockFilter(bpf_ret, 0, 0, allow))
     filters = (_SockFilter * len(program))(*program)
     prog = _SockFprog(len(program), filters)
