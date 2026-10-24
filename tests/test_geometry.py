@@ -1,6 +1,8 @@
 """Geometry measurements, scripts, operations, and checks."""
 
 import math
+import os
+import sys
 
 import pytest
 
@@ -189,3 +191,19 @@ def test_interference_and_clearance(tmp_path):
     assert fit.passed is True
     tight = document.check_clearance("block", "pin", min_clearance_mm=0.5)
     assert tight.passed is False
+
+
+def test_macos_keeps_opencascade_on_the_calling_thread():
+    import aicad.kernel  # noqa: F401
+    from OCP.OSD import OSD_Parallel, OSD_ThreadPool
+
+    pool = OSD_ThreadPool.DefaultPool_s()
+    if sys.platform == "darwin" and os.environ.get("AICAD_MACOS_OCCT_WORKERS") != "default":
+        assert pool.NbThreads() == 1
+        assert not pool.HasThreads()
+        assert pool.NbDefaultThreadsToLaunch() == 1
+        assert OSD_Parallel.ToUseOcctThreads_s()
+        return
+    if sys.platform == "darwin":
+        return
+    assert pool.NbThreads() == OSD_Parallel.NbLogicalProcessors_s()

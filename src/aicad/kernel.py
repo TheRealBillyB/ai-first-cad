@@ -23,6 +23,38 @@ import numpy as np
 from aicad.paths import prepare_geometry_import
 
 prepare_geometry_import()
+
+
+def _keep_opencascade_on_the_calling_thread() -> None:
+    """Run OpenCascade on the caller on macOS.
+
+    A thread other than the main thread starts with a 512 KiB stack there.
+    OpenCascade creates its pool with ``pthread_create`` and the default
+    attributes, so it does not enlarge that stack. A boolean or a mesh
+    recurses further than 512 KiB. The process is killed, and the pytest
+    worker exits with no Python traceback. ``threading.stack_size`` only
+    affects threads Python starts. The calling thread already has the
+    ordinary stack, which is the one Linux and Windows use for this work.
+    One pool thread is that caller, so the parallel algorithms stay on it.
+
+    ``AICAD_MACOS_OCCT_WORKERS=default`` leaves the stock pool. The macOS
+    crash reproducer sets it for one run and then removes the switch.
+    """
+    if sys.platform != "darwin":
+        return
+    if os.environ.get("AICAD_MACOS_OCCT_WORKERS") == "default":
+        return
+    from OCP.OSD import OSD_Parallel, OSD_ThreadPool
+
+    # Prefer these threads over an auxiliary pool. A build without one
+    # ignores the request. Either way the pool below is a single thread.
+    OSD_Parallel.SetUseOcctThreads_s(True)
+    pool = OSD_ThreadPool.DefaultPool_s(1)
+    pool.Init(1)
+    pool.SetNbDefaultThreadsToLaunch(1)
+
+
+_keep_opencascade_on_the_calling_thread()
 from build123d import (
     Axis,
     Box,
