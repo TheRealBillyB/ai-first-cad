@@ -448,6 +448,44 @@ def test_repository_entries_round_trip_and_keep_migrated_rows():
     assert "\\" not in (ROOT / "docs" / "DECISIONS.md").read_text(encoding="utf-8").split("docs/decisions", 1)[0]
 
 
+@pytest.mark.parametrize("mark", ["\u2028", "\u2029", "\v", "\f", "\u0085"])
+def test_a_line_separator_in_an_entry_is_refused(tmp_path, mark):
+    build = _build()
+    root = _tree(tmp_path)
+    _write(root, "docs/decisions/2026-10-24-alpha.md", _decision(rationale=f"Because alpha.{mark}Next"))
+    _write(root, "docs/tools/inspect-part.md", _tool())
+    (root / "docs" / "DECISIONS.md").write_text("OLD\n", encoding="utf-8")
+    errors = build.build(root)
+    assert errors
+    assert any("one line" in error for error in errors)
+    assert (root / "docs" / "DECISIONS.md").read_text(encoding="utf-8") == "OLD\n"
+
+
+def test_a_comment_cannot_end_the_generated_tool_section(tmp_path):
+    build = _build()
+    root = _tree(tmp_path)
+    readme = root / "README.md"
+    readme.write_text(
+        "# Guide\n\n<!-- generated:tools -->\n"
+        "| Tool | What it does |\n| --- | --- |\n"
+        "| `inspect_part` | Measure it. |\n"
+        "<!-- /generated:tools -->\n\nKeep this paragraph.\n",
+        encoding="utf-8",
+    )
+    before = readme.read_text(encoding="utf-8")
+    _write(root, "docs/decisions/2026-10-24-alpha.md", _decision())
+    _write(
+        root,
+        "docs/tools/inspect-part.md",
+        _tool(title="`inspect_part` <!-- /generated:tools -->", summary="Measure it."),
+    )
+    errors = build.build(root)
+    assert errors
+    assert any("cannot include a comment" in error for error in errors)
+    assert readme.read_text(encoding="utf-8") == before
+    assert before.count("<!-- /generated:tools -->") == 1
+
+
 def _ready(root: Path) -> None:
     _write(root, "docs/decisions/2026-10-24-alpha.md", _decision())
     _write(root, "docs/tools/inspect-part.md", _tool())

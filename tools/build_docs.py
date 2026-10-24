@@ -468,6 +468,17 @@ def _split_front_matter(text: str) -> tuple[dict[str, str] | None, str]:
     return fields, body
 
 
+# Characters that start another line in a master document without being "\n".
+_LINE_BREAKS = ("\n", "\r", "\v", "\f", "\u0085", "\u2028", "\u2029")
+
+
+def _require_one_line(label: str, text: str) -> None:
+    if any(mark in text for mark in _LINE_BREAKS):
+        raise FormatProblem(f"{label} must be one line")
+    if "<!--" in text:
+        raise FormatProblem(f"{label} cannot include a comment")
+
+
 def _parse_title_body(body: str) -> tuple[str, str]:
     if not body.endswith("\n"):
         raise FormatProblem("file must end with a newline")
@@ -487,8 +498,8 @@ def _parse_title_body(body: str) -> tuple[str, str]:
         raise FormatProblem("title must be one non-empty line")
     if not rationale or rationale != rationale.strip():
         raise FormatProblem("rationale must be one non-empty line")
-    if "\n" in title or "\n" in rationale:
-        raise FormatProblem("title and rationale must be one line each")
+    _require_one_line("title", title)
+    _require_one_line("rationale", rationale)
     return title, rationale
 
 
