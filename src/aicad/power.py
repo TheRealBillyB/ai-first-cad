@@ -92,6 +92,26 @@ def reflect(loads: list[dict], solved: dict, spec: dict, actuators: list[dict]) 
         else:
             driver_row["torque_nm"] = round(driver_row["torque_nm"] - ratio * driven_row["torque_nm"], 4)
         driver_row["reflected_from"] = driven
+    for relation in spec.get("relations") or []:
+        if relation.get("type") != "cylinder":
+            continue
+        stroke_name = relation.get("stroke")
+        driver = relation["driver"]
+        if stroke_name not in by_name or driver not in by_name:
+            continue
+        # The arm moment is on the driver. The cylinder's actuator is the stroke.
+        # Leave the driver torque alone when that joint has its own actuator.
+        if stroke_name not in actuated or driver in actuated:
+            continue
+        ratio = _stroke_ratio(relation, solved, spec)
+        if abs(ratio) < 1e-9:
+            continue
+        driver_row = by_name[driver]
+        stroke_row = by_name[stroke_name]
+        # τ dθ = F dx, with θ in degrees and x in millimetres.
+        extra = driver_row["torque_nm"] * (math.pi / 180.0) * 1000.0 / ratio
+        stroke_row["force_n"] = round(stroke_row["force_n"] - extra, 4)
+        stroke_row["reflected_from"] = driver
     return list(by_name.values())
 
 
@@ -283,6 +303,19 @@ def _rate(previous: dict | None, load: dict, dt: float) -> dict:
     return {"value_per_s": delta / dt, "delta_value": delta}
 
 
+def _stroke_ratio(relation: dict, solved: dict, spec: dict) -> float:
+    """Millimetres of cylinder stroke per degree of the driver joint."""
+    from aicad.kinematics import _cylinder
+
+    driver = next(joint["value"] for joint in solved["joints"] if joint["name"] == relation["driver"])
+    slide = next(joint["slide"] for joint in solved["joints"] if joint["name"] == relation["driver"])
+    joints = {joint["name"]: joint for joint in spec["joints"]}
+    step = 0.5
+    _angle, high, _offset = _cylinder(relation, joints, driver + step, slide)
+    _angle, low, _offset = _cylinder(relation, joints, driver - step, slide)
+    return (high - low) / (2 * step)
+
+
 def _instant_ratio(relation: dict, solved: dict, spec: dict) -> float:
     if relation["type"] == "gear":
         return float(relation.get("ratio") or 1.0)
@@ -331,7 +364,8 @@ def _assumptions() -> list[str]:
         f"Gravity is {GRAVITY} m/s² along −Z. Mass is volume times the material density, plus payload_kg at payload_at or at the center of mass.",
         "A revolute torque is the moment of supported weight about the joint axis, in N·m. A prismatic force is the opposing component of that weight along the slide.",
         "A gear or linkage reflects the driven load onto the driver when the driven joint has no actuator. Ratio is d(driven)/d(driver).",
-        "A hydraulic cylinder turns torque into force with moment_arm_mm. Pressure is force over piston area. Extend uses the bore; retract uses bore minus rod.",
+        "A cylinder relation reflects the driver moment onto an actuator on the stroke joint, using millimetres of stroke per degree of the driver. It does this only when the driver joint has no actuator of its own.",
+        "A hydraulic cylinder on a revolute joint turns torque into force with moment_arm_mm. Pressure is force over piston area. Extend uses the bore; retract uses bore minus rod.",
         "Flow is area times the speed of the piston. Power is pressure times flow divided by efficiency. 1 MPa · mm³/s = 0.001 W.",
         "An electric motor torque is the joint torque divided by gear ratio and efficiency. Current is that torque divided by the torque constant. Power is joint torque times speed, divided by efficiency. Braking energy is counted as spent, not regenerated.",
         "Battery energy is the sum of electric actuator energy. Charge is that energy divided by the stated voltage.",

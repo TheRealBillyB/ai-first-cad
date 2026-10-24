@@ -14,6 +14,7 @@ from pathlib import Path
 
 _REQUEST_LIMIT = 2_000_000
 _RESPONSE_LIMIT = 32_000_000
+_BUSY_TRIES = 200
 
 
 class _View(dict):
@@ -32,6 +33,18 @@ def _restore(value):
     if isinstance(value, list):
         return [_restore(item) for item in value]
     return value
+
+
+def _busy(exc: OSError) -> bool:
+    """A sharing lock while another writer still has the file.
+
+    A link, a file past the size limit, and a file that is not JSON are not busy.
+    """
+    if isinstance(exc, PermissionError):
+        return True
+    if getattr(exc, "winerror", None) in (32, 33):
+        return True
+    return exc.errno in (errno.EACCES, errno.EPERM, errno.EAGAIN, errno.EWOULDBLOCK)
 
 
 def _read_json(path: Path, limit: int) -> dict | None:
@@ -150,13 +163,19 @@ def design_proxy(directory: Path, live: dict | None = None):
         path = directory / f"{number}.req.json"
         _write_json(path, request)
         response_path = directory / f"{number}.res.json"
+        busy = 0
         while True:
             if (directory / "STOP").exists() and not response_path.exists():
                 raise RuntimeError("The call was refused.")
             try:
                 payload = _read_json(response_path, _RESPONSE_LIMIT)
             except OSError as exc:
+                if _busy(exc) and busy < _BUSY_TRIES:
+                    busy += 1
+                    time.sleep(0.01)
+                    continue
                 raise RuntimeError("The call was refused.") from exc
+            busy = 0
             if payload is not None:
                 return payload, number
             time.sleep(0.01)
@@ -222,6 +241,7 @@ def serve_calls(directory: Path, document, calls: list[dict], before: dict, live
 
     directory.mkdir(parents=True, exist_ok=True)
     number = 0
+    busy = 0
     while True:
         stop = directory / "STOP"
         if stop.is_symlink() or stop.exists():
@@ -233,12 +253,18 @@ def serve_calls(directory: Path, document, calls: list[dict], before: dict, live
         try:
             request = _read_json(path, _REQUEST_LIMIT)
         except OSError as exc:
+            if _busy(exc) and busy < _BUSY_TRIES:
+                busy += 1
+                time.sleep(0.01)
+                continue
+            busy = 0
             _write_json(
                 directory / f"{number}.res.json",
                 {"ok": False, "error_type": "RuntimeError", "error": str(exc)},
             )
             number += 1
             continue
+        busy = 0
         if request is None:
             time.sleep(0.01)
             continue

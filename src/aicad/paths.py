@@ -642,6 +642,83 @@ def _lexical_inside(path: Path, root: Path) -> bool:
     return True
 
 
+# Win32 reparse tags. Python 3.12 has os.path.isjunction. The Windows CI
+# image is Python 3.11, which does not, so the mount-point tag is read here.
+_INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+
+
+def _mount_point_tag(attributes: int, tag: int | None) -> bool:
+    """True when the Win32 attributes are a directory junction."""
+    if attributes == _INVALID_FILE_ATTRIBUTES or not attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    return tag == _IO_REPARSE_TAG_MOUNT_POINT
+
+
+def _windows_mount_point(path: Path) -> bool:
+    """True for a directory junction when os.path.isjunction is not available."""
+    if os.name != "nt":
+        return False
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_attrs = kernel32.GetFileAttributesW
+    get_attrs.argtypes = [wintypes.LPCWSTR]
+    get_attrs.restype = wintypes.DWORD
+    attributes = int(get_attrs(os.fspath(path)))
+    if attributes == _INVALID_FILE_ATTRIBUTES or not attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    create.restype = ctypes.c_void_p
+    handle = create(
+        os.fspath(path),
+        0x80,
+        0x1 | 0x2 | 0x4,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if not handle or handle == invalid:
+        return False
+    try:
+        buffer = ctypes.create_string_buffer(16 * 1024)
+        returned = wintypes.DWORD(0)
+        control = kernel32.DeviceIoControl
+        control.argtypes = [
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        control.restype = wintypes.BOOL
+        ok = control(handle, 0x000900A8, None, 0, buffer, len(buffer), ctypes.byref(returned), None)
+        if not ok or returned.value < 4:
+            return False
+        tag = int.from_bytes(buffer.raw[:4], "little")
+        return _mount_point_tag(int(attributes), tag)
+    finally:
+        close = kernel32.CloseHandle
+        close.argtypes = [ctypes.c_void_p]
+        close.restype = wintypes.BOOL
+        close(handle)
+
+
 def is_reparse(path: Path) -> bool:
     """True for a symlink or a Windows directory junction."""
     try:
@@ -650,12 +727,12 @@ def is_reparse(path: Path) -> bool:
     except OSError:
         return False
     checker = getattr(os.path, "isjunction", None)
-    if checker is None:
-        return False
-    try:
-        return bool(checker(os.fspath(path)))
-    except (OSError, ValueError):
-        return False
+    if checker is not None:
+        try:
+            return bool(checker(os.fspath(path)))
+        except (OSError, ValueError):
+            return False
+    return _windows_mount_point(path)
 
 
 def stays_inside(root: Path, path: Path) -> bool:
