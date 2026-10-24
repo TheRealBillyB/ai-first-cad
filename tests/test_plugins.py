@@ -1,6 +1,7 @@
 """The plugin door lists packs without importing them, and runs one only after an allow."""
 
 import importlib
+import importlib.util
 import json
 import shutil
 import sys
@@ -101,8 +102,19 @@ def test_importing_the_plugin_module_does_not_scan(monkeypatch):
         return real(**kwargs)
 
     monkeypatch.setattr(importlib.metadata, "entry_points", spy)
-    importlib.reload(plugins)
-    assert calls == []
+    # A second copy. Reloading the live module rebinds PluginError, and a test
+    # that already imported that class then misses the exception.
+    name = "aicad_plugins_import_scan"
+    spec = importlib.util.spec_from_file_location(name, plugins.__file__)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+        assert calls == []
+        assert module.ENTRY_GROUP == "aicad.plugins"
+    finally:
+        sys.modules.pop(name, None)
 
 
 def test_docs_record_the_door_and_the_agpl_note():
