@@ -18,6 +18,7 @@ import ctypes
 import os
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable, Sequence
 
 _SYSTEM_ROOTS = (
@@ -254,3 +255,165 @@ def resident_bytes(pid: int) -> int | None:
     if size is not None:
         return size
     return _resident_via_ps(pid)
+
+
+# proc_uniqidentifierinfo. The two ids sit at the same offset in the public layouts.
+_PROC_PIDUNIQIDENTIFIERINFO = 17
+
+
+class _ProcUniqueId(ctypes.Structure):
+    _fields_ = [
+        ("p_uuid", ctypes.c_uint8 * 16),
+        ("p_uniqueid", ctypes.c_uint64),
+        ("p_puniqueid", ctypes.c_uint64),
+        ("p_tail", ctypes.c_uint8 * 24),
+    ]
+
+
+def _bind(lib, name: str, argtypes: list) -> Callable | None:
+    try:
+        fn = getattr(lib, name)
+    except AttributeError:
+        return None
+    fn.argtypes = argtypes
+    fn.restype = ctypes.c_int
+    return fn
+
+
+def _read_pids(call: Callable[[ctypes.Array, int], int], *, capacity: int = 256) -> list[int] | None:
+    """Read a pid list whose return value may be a count or a byte count.
+
+    None means the listing itself failed. An empty list means there were no pids.
+    """
+    for _attempt in range(5):
+        buf = (ctypes.c_int * capacity)()
+        ctypes.set_errno(0)
+        try:
+            written = int(call(buf, ctypes.sizeof(buf)))
+        except (OSError, ctypes.ArgumentError):
+            return None
+        if written < 0 or (written == 0 and ctypes.get_errno()):
+            return None
+        if written == 0:
+            return []
+        if written > capacity:
+            capacity = min(max(written, written // 4) + 32, 100_000)
+            continue
+        pids = [int(buf[index]) for index in range(written) if int(buf[index]) > 1]
+        if written < capacity:
+            return pids
+        capacity = min(capacity * 4, 100_000)
+    return None
+
+
+def child_pids(ppid: int) -> list[int] | None:
+    """Direct children of ``ppid``.
+
+    None means libproc could not be asked. An empty list means there are no children.
+    """
+    lib = _proc_pidinfo()
+    if lib is None or ppid <= 1:
+        return None
+    fn = _bind(lib, "proc_listchildpids", [ctypes.c_int, ctypes.c_void_p, ctypes.c_int])
+    if fn is None:
+        return None
+
+    def call(buf: ctypes.Array, size: int) -> int:
+        return fn(ppid, ctypes.byref(buf), size)
+
+    return _read_pids(call)
+
+
+def all_pids() -> list[int] | None:
+    """Every pid libproc can see. None when that listing fails."""
+    lib = _proc_pidinfo()
+    if lib is None:
+        return None
+    fn = _bind(lib, "proc_listpids", [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int])
+    if fn is None:
+        return None
+
+    def call(buf: ctypes.Array, size: int) -> int:
+        return fn(1, 0, ctypes.byref(buf), size)
+
+    return _read_pids(call, capacity=1024)
+
+
+def pids_holding_path(path: str) -> list[int] | None:
+    """Pids that have ``path`` open. None when libproc cannot answer."""
+    lib = _proc_pidinfo()
+    if lib is None or not path:
+        return None
+    fn = _bind(
+        lib,
+        "proc_listpidspath",
+        [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int],
+    )
+    if fn is None:
+        return None
+    encoded = os.fsencode(path)
+
+    def call(buf: ctypes.Array, size: int) -> int:
+        return fn(1, 0, encoded, 0, ctypes.byref(buf), size)
+
+    return _read_pids(call)
+
+
+def process_identity(pid: int) -> tuple[int, int] | None:
+    """``(unique_id, parent_unique_id)`` for ``pid``.
+
+    The parent id is the process that created it. It does not change when the
+    process leaves its group or is reparented. None if the process is already
+    gone or libproc cannot be asked.
+    """
+    lib = _proc_pidinfo()
+    if lib is None or pid <= 1:
+        return None
+    info = _ProcUniqueId()
+    ctypes.set_errno(0)
+    try:
+        written = int(lib.proc_pidinfo(pid, _PROC_PIDUNIQIDENTIFIERINFO, 0, ctypes.byref(info), ctypes.sizeof(info)))
+    except (OSError, ctypes.ArgumentError):
+        return None
+    if written < 32 or info.p_uniqueid == 0:
+        return None
+    return int(info.p_uniqueid), int(info.p_puniqueid)
+
+
+def open_sentinel() -> tuple[int, str] | None:
+    """An inheritable file descendants keep open, or None if it cannot be created.
+
+    Fork keeps this descriptor open, including after the child leaves the
+    process group. The caller lists holders with libproc. A close-guard is not
+    used: that guard also forces the descriptor closed in a forked child.
+    """
+    try:
+        fd, name = tempfile.mkstemp(prefix="aicad-reap-", suffix=".hold")
+    except OSError:
+        return None
+    try:
+        os.write(fd, b"\n")
+        os.set_inheritable(fd, True)
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        return None
+    return fd, name
+
+
+def close_sentinel(fd: int, path: str) -> None:
+    """Drop the parent's copy of the sentinel. Ignore a descriptor that is already closed."""
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    try:
+        os.unlink(path)
+    except OSError:
+        pass

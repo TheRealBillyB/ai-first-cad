@@ -130,6 +130,61 @@ def solve_kinematics(spec: dict, shapes: dict | None, request: dict) -> dict:
     return finish(report, kind=VERIFIED_CHECK, name="Kinematics", what=_what(task), limits=_limits(task),)
 
 
+def positional_jacobian(spec, values, slides, tool, at, rotation_deg=None) -> dict:
+    """Positional Jacobian of the tool point.
+
+    Columns follow the movable joints on the chain, including a joint a
+    relation drives. A revolute or cylindrical angle is millimeters of tool
+    motion per degree. A prismatic travel or a cylindrical slide is millimeters
+    per millimeter. The derivative is the same joint-frame column the inverse
+    kinematics Jacobian uses, with no orientation rows.
+    """
+    spec = normalize(spec)
+    if rotation_deg is None:
+        rotation_deg = [0.0, 0.0, 0.0]
+    at = [0.0, 0.0, 0.0] if at is None else list(at)
+    chain = _chain(spec, tool)
+    driven = _driven_map(spec)
+    movable = [joint for joint in chain if joint["type"] in _FREE]
+    variables = _variables(movable)
+    full_values = {joint["name"]: float(values.get(joint["name"], joint["value"])) for joint in spec["joints"]}
+    full_slides = {joint["name"]: float(slides.get(joint["name"], joint["slide"])) for joint in spec["joints"]}
+    pose = _frame(spec, full_values, full_slides, tool, list(rotation_deg), at)
+    dummy = {"position": pose["position_mm"], "rotation": None}
+    matrix, _residual, _ignored = _jacobian(
+        spec, variables, full_values, full_slides, tool, list(rotation_deg), at, pose, dummy, False
+    )
+    columns = []
+    width = 0 if matrix.ndim < 2 else int(matrix.shape[1])
+    for index, variable in enumerate(variables):
+        if index >= width:
+            break
+        vector = [float(matrix[row, index]) for row in range(3)]
+        columns.append(
+            {
+                "joint": variable["name"],
+                "field": variable["field"],
+                "unit": "deg" if variable["angular"] else "mm",
+                "vector_mm": vector,
+                "driven": variable["name"] in driven,
+            }
+        )
+    sigma: list[float] = []
+    rank = 0
+    if matrix.size and matrix.ndim == 2:
+        sigma = [float(value) for value in np.linalg.svd(matrix, compute_uv=False)]
+        scale = max(sigma[0], 1e-12) if sigma else 1.0
+        rank = sum(1 for value in sigma if value > 1e-8 * scale)
+    return {
+        "position_mm": [float(component) for component in pose["position_mm"]],
+        "rotation_deg": [float(component) for component in pose["rotation_deg"]],
+        "columns": columns,
+        "singular_values": sigma,
+        "rank": rank,
+        "chain": [_chain_row(joint, driven) for joint in chain],
+    }
+
+
 def _what(task: str) -> str:
     if task == "path":
         return (

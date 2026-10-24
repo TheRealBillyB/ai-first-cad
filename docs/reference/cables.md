@@ -6,7 +6,7 @@ A route is either a clip polyline or a tendon. The report says which. Neither on
 
 ## Clip polyline
 
-`waypoints` are points fixed on parts: `instance`, `at` in that part's frame, and `clip`. The path is the polyline through those points after the joints move. Bend radius is the circumradius of each three consecutive points. Strain is `(length - rest length) / rest length`. Tension is stiffness times positive strain. Stiffness is `low`, `medium`, `high`, or a number of newtons per unit strain. A shorter route is slack, not compression.
+`waypoints` are points fixed on parts: `instance`, `at` in that part's frame, and `clip`. The path is the polyline through those points after the joints move. Bend radius is the circumradius of each three consecutive points. A repeated waypoint has no corner, so that radius is unlimited, the same as a straight run. Strain is `(length - rest length) / rest length`. Tension is stiffness times positive strain. Stiffness is `low`, `medium`, `high`, or a number of newtons per unit strain. A shorter route is slack, not compression.
 
 ## Tendon
 
@@ -42,7 +42,7 @@ A route is either a clip polyline or a tendon. The report says which. Neither on
 
 Length is the straight spans plus `radius_mm` times the wrap angle in radians on each sheave. Rest length is `rest_length_mm`, or the length of the first sample when that field is omitted. A path more than 0.01 mm shorter than the rest length is slack. A path more than 0.01 mm longer is stretch. Strain uses the same change. The default strain limit is 0.02.
 
-The bend radius of a pulley or a wrap is `radius_mm`, and only when the cable actually wraps. A guide's bend radius is the circumradius of the incoming point, the guide, and the outgoing point. The default limit is eight times the diameter. A smaller radius fails.
+The bend radius of a pulley or a wrap is `radius_mm`, and only when the cable actually wraps. A guide's bend radius is the circumradius of the incoming point, the guide, and the outgoing point. A guide that sits on the incoming or outgoing point is not a corner. The default limit is eight times the diameter. A smaller radius fails.
 
 `material` is a name from the material library. Elastic elongation is `actuator_force_n` times length, divided by Young's modulus times the circular area `π d² / 4`. It is not added to the path length.
 

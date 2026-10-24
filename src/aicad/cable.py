@@ -159,7 +159,7 @@ def sample_route(points: list[dict], step_mm: float) -> list[list[float]]:
 def assumptions() -> list[str]:
     return [
         "The route is a polyline through waypoints and clips that are fixed on parts. It does not sag under gravity.",
-        "Bend radius is the circumradius of three consecutive waypoints. A smooth fillet would be at least this large only when the points already lie on that arc.",
+        "Bend radius is the circumradius of three consecutive waypoints. A smooth fillet would be at least this large only when the points already lie on that arc. A repeated waypoint is not a corner: a zero-length span leaves the bend radius unlimited, the same as a straight run.",
         "Strain is (length - rest length) / rest length. Rest length is the authored value, or the length of the first frame when it is omitted.",
         "Tension is stiffness times positive strain. Stiffness is newtons per unit strain, a stand-in for EA. A shorter route is slack, not compression.",
         "A pinch is a centerline sample closer to a solid than the cable radius plus pinch_mm, or two non-adjacent spans closer than the diameter. When several samples meet one part, the report keeps the closest of that kind, and a centerline inside the solid is kept ahead of a rub. Samples within one sample step of a waypoint are the clip seat on that part and are not counted against it.",
@@ -176,7 +176,8 @@ def _bend(a: list[float], b: list[float], c: list[float]) -> tuple[float, float]
     bc = _dist(b, c)
     ac = _dist(a, c)
     if ab < 1e-9 or bc < 1e-9:
-        return 0.0, 0.0
+        # A repeated point is not a corner. Radius 0 would fail every bend limit.
+        return math.inf, 0.0
     area = _triangle_area(a, b, c)
     turn = math.acos(max(-1.0, min(1.0, _cosine(a, b, c))))
     # turn is the interior angle at b. A straight route is pi.

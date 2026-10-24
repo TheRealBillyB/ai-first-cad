@@ -335,8 +335,13 @@ def _signed_offset(pinion_origin, pinion_axis, ring_origin, ring_axis) -> float:
 
 
 def _shaft_angle(pinion_axis, ring_axis) -> float:
+    """Angle between the axis directions, from 0 to 180 degrees.
+
+    A hypoid shaft angle may be obtuse. Folding it with ``abs`` would report
+    the supplement and flag a pair that was generated at the requested angle.
+    """
     cosine = float(np.clip(np.dot(pinion_axis, ring_axis), -1.0, 1.0))
-    return math.degrees(math.acos(abs(cosine)))
+    return math.degrees(math.acos(cosine))
 
 
 def _twist(axis, before, after) -> float:

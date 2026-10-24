@@ -692,6 +692,110 @@ def test_profile_shifts_with_no_zero_backlash_centre_are_refused():
         pair_geometry(spec, spec)
 
 
+def _hypoid_at(role: str, shaft_angle_deg: float, offset_mm: float) -> dict:
+    teeth, mate = (8, 16) if role == "pinion" else (16, 8)
+    return {
+        "type": "hypoid",
+        "role": role,
+        "teeth": teeth,
+        "mate_teeth": mate,
+        "offset_mm": offset_mm,
+        "shaft_angle_deg": shaft_angle_deg,
+        "ring_diameter_mm": 80,
+        "face_width_mm": 10,
+        "spiral_angle_deg": 35,
+        "pressure_angle_deg": 20,
+    }
+
+
+def test_a_hypoid_without_a_pitch_point_is_refused_before_the_roll():
+    refused = (
+        (60, 3), (60, 8), (60, 12), (60, 18),
+        (75, 20),
+        (90, 18), (90, 20),
+        (100, 18), (100, 20),
+        (110, 18), (110, 20),
+        (120, 12), (120, 18), (120, 20),
+    )
+    accepted = (
+        (60, 6), (60, 20),
+        (75, 8), (75, 12), (75, 18),
+        (90, 8), (90, 12),
+        (100, 8), (100, 12),
+        (110, 8), (110, 12),
+        (120, 3), (120, 8),
+    )
+    for shaft, offset in refused:
+        with pytest.raises(GeometryError, match="offset_mm") as caught:
+            gear_data(_hypoid_at("pinion", shaft, offset))
+        text = str(caught.value)
+        assert "shaft_angle_deg" in text
+        assert "ring_diameter_mm" in text
+        assert "spiral_angle_deg" in text
+        assert "missed the pinion" not in text
+        assert "did not leave a toothed" not in text
+    for shaft, offset in accepted:
+        data = gear_data(_hypoid_at("pinion", shaft, offset))
+        assert data["shaft_angle_deg"] == shaft
+        assert data["offset_mm"] == offset
+    # The solid builder refuses the same inputs, still before the roll.
+    for shaft, offset in ((60, 12), (100, 20), (120, 12)):
+        with pytest.raises(GeometryError, match="Change one of those four") as caught:
+            build_gear(_hypoid_at("pinion", shaft, offset))
+        text = str(caught.value)
+        assert "missed the pinion" not in text
+        assert "did not leave a toothed" not in text
+
+
+def test_a_hypoid_tooth_that_cannot_be_cut_is_refused_before_the_roll():
+    # 120 degrees and a 6 mm offset has a pitch point, and the tooth at that
+    # point does not leave a valid pinion. The refusal names the inputs.
+    with pytest.raises(GeometryError, match="Change one of those four") as caught:
+        build_gear(_hypoid_at("pinion", 120, 6))
+    text = str(caught.value)
+    assert "offset_mm" in text
+    assert "shaft_angle_deg" in text
+    assert "ring_diameter_mm" in text
+    assert "spiral_angle_deg" in text
+    assert "missed the pinion" not in text
+    assert "did not leave a toothed" not in text
+
+
+def test_a_hypoid_pair_at_100_degrees_builds_both_solids():
+    pinion = kernel.measure(kernel.adopt(build_gear(_hypoid_at("pinion", 100, 12))))
+    ring = kernel.measure(kernel.adopt(build_gear(_hypoid_at("ring", 100, 12))))
+    for measured in (pinion, ring):
+        assert measured.watertight and measured.valid
+        assert measured.volume_mm3 > 1000
+    # The uncut blank is about 25 cm³. A finished pinion is the blank minus the teeth.
+    assert 12000 < pinion.volume_mm3 < 21000
+    assert ring.volume_mm3 > 40000
+
+
+def test_a_hypoid_pinion_builds_across_shaft_angles():
+    for shaft, offset in ((75, 12), (120, 8), (60, 6), (100, 8)):
+        shape = kernel.adopt(build_gear(_hypoid_at("pinion", shaft, offset)))
+        measured = kernel.measure(shape)
+        assert measured.watertight and measured.valid, (shaft, offset)
+        assert 5000 < measured.volume_mm3 < 22000, (shaft, offset, measured.volume_mm3)
+    # 110 degrees still has a pitch point. The pinion is built, or the inputs are
+    # refused before a pose is reported as a missed tooth.
+    try:
+        shape = kernel.adopt(build_gear(_hypoid_at("pinion", 110, 12)))
+    except GeometryError as exc:
+        text = str(exc)
+        assert "offset_mm" in text
+        assert "shaft_angle_deg" in text
+        assert "ring_diameter_mm" in text
+        assert "spiral_angle_deg" in text
+        assert "missed the pinion" not in text
+        assert "did not leave a toothed" not in text
+        return
+    measured = kernel.measure(shape)
+    assert measured.watertight and measured.valid
+    assert 5000 < measured.volume_mm3 < 22000
+
+
 def test_bevel_mate_ratio_and_pitch_angle_must_agree():
     common = {"module_mm": 3, "pressure_angle_deg": 20, "face_width_mm": 12, "shaft_angle_deg": 90}
     with pytest.raises(GeometryError, match="pitch_angle"):

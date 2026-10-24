@@ -447,3 +447,36 @@ def _wall_hit(cable: dict) -> dict:
     frame = cable["frames"][0]
     hits = frame.get("collisions") or frame.get("pinches") or []
     return next(hit for hit in hits if hit["part"] == "wall")
+
+
+def test_a_guide_on_the_previous_anchor_is_not_a_sharp_bend(tmp_path: Path):
+    document = Document(tmp_path)
+    _box(document, "block", [10, 10, 10], [0, 0, 40])
+    document.create_assembly(
+        {
+            "name": "span",
+            "instances": [{"name": "frame", "part": "block"}],
+            "joints": [],
+            "cables": [
+                {
+                    "name": "repeat",
+                    "kind": "tendon",
+                    "diameter_mm": 2,
+                    "material": "steel",
+                    "min_bend_radius_mm": 20,
+                    "points": [
+                        {"role": "anchor", "instance": "frame", "at": [0, 0, 0]},
+                        {"role": "guide", "name": "same", "instance": "frame", "at": [0, 0, 0]},
+                        {"role": "anchor", "instance": "frame", "at": [100, 0, 0]},
+                    ],
+                }
+            ],
+        }
+    )
+    cable = document.check_cables("span")["cables"][0]
+    assert cable["status"] == "pass"
+    assert cable["min_bend_radius_mm"] is None
+    bend = cable["frames"][0]["bends"][0]
+    assert bend["ok"] is True
+    assert bend["radius_mm"] is None
+    assert bend["name"] == "same"

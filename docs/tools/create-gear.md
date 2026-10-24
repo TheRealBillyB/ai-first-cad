@@ -4,4 +4,4 @@ order: 11
 
 # `create_gear`
 
-Spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width.
+Spur, helical, straight bevel, spiral bevel, or hypoid gear from tooth count, face width, and the family fields.

@@ -35,6 +35,7 @@ _CHECKS = frozenset(
         "run_motion_study",
         "section",
         "solve_assembly_modal",
+        "solve_gear_train",
         "solve_kinematics",
         "solve_mechanics",
         "solve_modal",
@@ -80,6 +81,18 @@ def _jsonable(value):
     return str(value)
 
 
+def _recorded(result):
+    """A value for the report. A result that cannot be stored still ran."""
+    try:
+        return _jsonable(result)
+    except Exception:
+        pass
+    try:
+        return str(result)
+    except Exception:
+        return type(result).__name__
+
+
 _CALL_EVENT = "aicad.design_call"
 _WRAPPER_FILE = "<aicad-design-wrapper>"
 
@@ -109,7 +122,13 @@ def _wrapper_source(name: str) -> str:
 
 
 def _make_wrapper(token: object, name: str):
-    namespace = {"audit": sys.audit, "token": token, "__builtins__": {}}
+    # The wrapper has no builtins. AttributeError is the refusal that wrapper raises.
+    namespace = {
+        "audit": sys.audit,
+        "token": token,
+        "AttributeError": AttributeError,
+        "__builtins__": {},
+    }
     exec(compile(_wrapper_source(name), _WRAPPER_FILE, "exec"), namespace)  # noqa: S102
     return namespace["call"]
 
@@ -170,13 +189,12 @@ def script_document(document, calls: list[dict]) -> "ScriptDocument":
                     calls.append({"method": name, "error": f"{type(exc).__name__}: {exc}"})
                 box.append(("err", _plain_error(exc)))
             else:
-                if outer:
-                    try:
-                        recorded = _jsonable(result)
-                    except Exception:
-                        recorded = str(result)
-                    calls.append({"method": name, "result": recorded})
-                box.append(("ok", result))
+                # The script receives the result even when the report cannot store it.
+                try:
+                    if outer:
+                        calls.append({"method": name, "result": _recorded(result)})
+                finally:
+                    box.append(("ok", result))
             finally:
                 depth[0] -= 1
         except Exception:

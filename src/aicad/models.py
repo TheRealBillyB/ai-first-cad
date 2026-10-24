@@ -607,6 +607,7 @@ class FeaReport:
     review: dict[str, object] | None
     views: list[RenderedView]
     note: str
+    probes: tuple | None = None
 
     def to_dict(self) -> dict[str, object]:
         def _point(value: Vec3 | None) -> dict[str, float] | None:
@@ -657,6 +658,7 @@ class FeaReport:
                 "review": self.review,
                 "views": [view.to_dict() for view in self.views],
                 "note": self.note,
+                **({} if self.probes is None else {"probes": list(self.probes)}),
             },
             kind=ROUGH_ESTIMATE,
             name="Strength",

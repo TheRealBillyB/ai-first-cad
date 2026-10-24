@@ -1,0 +1,279 @@
+{
+  "calculix_version": "2.23",
+  "note": "Pinned conda-forge packages for the CI runners. aicad does not download CalculiX for a person installing it. Each file is checked against sha256 before it is linked. ccx stays a separate program.",
+  "micromamba": {
+    "version": "2.3.3",
+    "osx-arm64": {
+      "url": "https://micro.mamba.pm/api/micromamba/osx-arm64/2.3.3",
+      "sha256": "bd5b8d3f151c3ad2d92f0fb918806543d713c7f67895c020db4041097a7f004d",
+      "size": 6340022,
+      "executable": "bin/micromamba"
+    },
+    "win-64": {
+      "url": "https://micro.mamba.pm/api/micromamba/win-64/2.3.3",
+      "sha256": "df531329cb3dd59d93f569bb597c715cc8ac239144718b5c530ca325d5d2e42d",
+      "size": 4248712,
+      "executable": "Library/bin/micromamba.exe"
+    }
+  },
+  "platforms": {
+    "osx-arm64": {
+      "path": [
+        "bin"
+      ],
+      "packages": [
+        {
+          "name": "llvm-openmp",
+          "version": "23.1.4",
+          "build": "hdb3d66b_0",
+          "filename": "llvm-openmp-23.1.4-hdb3d66b_0.conda",
+          "size": 287495,
+          "sha256": "cc6d67df56d4ea967e17d938d3108cdf7d971531350df9e7fc5e18cb89066a70",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/llvm-openmp-23.1.4-hdb3d66b_0.conda"
+        },
+        {
+          "name": "libcxx",
+          "version": "23.1.4",
+          "build": "h55c6f16_2",
+          "filename": "libcxx-23.1.4-h55c6f16_2.conda",
+          "size": 577255,
+          "sha256": "9c390b4f403db32346754ccef6b84b7e5d9b70cb6d76258fd23b05f2db2ab216",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/libcxx-23.1.4-h55c6f16_2.conda"
+        },
+        {
+          "name": "_openmp_mutex",
+          "version": "4.5",
+          "build": "8_kmp_llvm",
+          "filename": "_openmp_mutex-4.5-8_kmp_llvm.conda",
+          "size": 8016,
+          "sha256": "c7c98ce74f6a7ff25aaa4706d06fa41d63a333add4d697b73aa4d8d2d7ad7651",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/_openmp_mutex-4.5-8_kmp_llvm.conda"
+        },
+        {
+          "name": "libgcc",
+          "version": "16.2.0",
+          "build": "h3cf6597_7",
+          "filename": "libgcc-16.2.0-h3cf6597_7.conda",
+          "size": 365973,
+          "sha256": "deacf62bd6cbbe05eb085dd69a2ca120053597c37066d53c8f7cf6815f26e9eb",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/libgcc-16.2.0-h3cf6597_7.conda"
+        },
+        {
+          "name": "libgfortran5",
+          "version": "16.2.0",
+          "build": "hdb7a957_7",
+          "filename": "libgfortran5-16.2.0-hdb7a957_7.conda",
+          "size": 554793,
+          "sha256": "19297e5cf39de976cdd1a46499a4e15fdf54d249d3231f3b2a9d43af3be0bc66",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/libgfortran5-16.2.0-hdb7a957_7.conda"
+        },
+        {
+          "name": "libgfortran",
+          "version": "16.2.0",
+          "build": "h07b0088_7",
+          "filename": "libgfortran-16.2.0-h07b0088_7.conda",
+          "size": 99745,
+          "sha256": "a5b4b63d0ef4c7c59c37225b9f0307b5cd2a3a8499b2a40b6ddd2b9f072712a8",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/libgfortran-16.2.0-h07b0088_7.conda"
+        },
+        {
+          "name": "libopenblas",
+          "version": "0.3.34",
+          "build": "openmp_h5e6e99c_1",
+          "filename": "libopenblas-0.3.34-openmp_h5e6e99c_1.conda",
+          "size": 4249236,
+          "sha256": "18f167fdaa26f67a123c59766f4730b41866d2c0920b5c29d74a93d3a2e92a96",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/libopenblas-0.3.34-openmp_h5e6e99c_1.conda"
+        },
+        {
+          "name": "libblas",
+          "version": "3.11.0",
+          "build": "11_h51639a9_openblas",
+          "filename": "libblas-3.11.0-11_h51639a9_openblas.conda",
+          "size": 18300,
+          "sha256": "718c3e1a16ad946caeeba041520dc18b7af461226bd8c28faef78b181920dbb4",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/libblas-3.11.0-11_h51639a9_openblas.conda"
+        },
+        {
+          "name": "liblapack",
+          "version": "3.11.0",
+          "build": "11_hd9741b5_openblas",
+          "filename": "liblapack-3.11.0-11_hd9741b5_openblas.conda",
+          "size": 18284,
+          "sha256": "e7697df761eeb243272801a8c883dc1de6018a7f738746b443ef1396f0a78075",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/liblapack-3.11.0-11_hd9741b5_openblas.conda"
+        },
+        {
+          "name": "arpack",
+          "version": "3.9.1",
+          "build": "nompi_h1f29f7c_102",
+          "filename": "arpack-3.9.1-nompi_h1f29f7c_102.conda",
+          "size": 120348,
+          "sha256": "314fb780a811d1bcd31b34266016d1d49e754e37a476f8b18d8ea81599865444",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/arpack-3.9.1-nompi_h1f29f7c_102.conda"
+        },
+        {
+          "name": "calculix",
+          "version": "2.23",
+          "build": "pl5321hd17ca8b_8",
+          "filename": "calculix-2.23-pl5321hd17ca8b_8.conda",
+          "size": 2643454,
+          "sha256": "fc117d68514422cb38c65fd977aaf53a2f0a3f439336e93b61e7c417711d1c40",
+          "url": "https://conda.anaconda.org/conda-forge/osx-arm64/calculix-2.23-pl5321hd17ca8b_8.conda"
+        }
+      ]
+    },
+    "win-64": {
+      "path": [
+        "Library/bin",
+        "Library/mingw-w64/bin"
+      ],
+      "packages": [
+        {
+          "name": "ucrt",
+          "version": "10.0.26100.0",
+          "build": "h57928b3_0",
+          "filename": "ucrt-10.0.26100.0-h57928b3_0.conda",
+          "size": 694692,
+          "sha256": "3005729dce6f3d3f5ec91dfc49fc75a0095f9cd23bab49efb899657297ac91a5",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/ucrt-10.0.26100.0-h57928b3_0.conda"
+        },
+        {
+          "name": "vcomp14",
+          "version": "14.51.36247",
+          "build": "habf1de7_41",
+          "filename": "vcomp14-14.51.36247-habf1de7_41.conda",
+          "size": 155910,
+          "sha256": "731e043390c9457299484d39e427221fc868a9249540a498a5a4f6456c7744d1",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/vcomp14-14.51.36247-habf1de7_41.conda"
+        },
+        {
+          "name": "libwinpthread",
+          "version": "12.0.0.r4.gg4f2fc60ca",
+          "build": "h57928b3_10",
+          "filename": "libwinpthread-12.0.0.r4.gg4f2fc60ca-h57928b3_10.conda",
+          "size": 36621,
+          "sha256": "0fccf2d17026255b6e10ace1f191d0a2a18f2d65088fd02430be17c701f8ffe0",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/libwinpthread-12.0.0.r4.gg4f2fc60ca-h57928b3_10.conda"
+        },
+        {
+          "name": "vc14_runtime",
+          "version": "14.51.36247",
+          "build": "habf1de7_41",
+          "filename": "vc14_runtime-14.51.36247-habf1de7_41.conda",
+          "size": 767955,
+          "sha256": "4e4cb599cdc41bf2109d1464c127b5bcbddf548ce3e322e612afb691338b48f8",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/vc14_runtime-14.51.36247-habf1de7_41.conda"
+        },
+        {
+          "name": "libgomp",
+          "version": "16.2.0",
+          "build": "h8ee18e1_7",
+          "filename": "libgomp-16.2.0-h8ee18e1_7.conda",
+          "size": 688609,
+          "sha256": "4b8a747f047d069ccd2a6cf2f4fdbc6b0c0e4dcd840998d1fe607b8c234e707b",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/libgomp-16.2.0-h8ee18e1_7.conda"
+        },
+        {
+          "name": "vc",
+          "version": "14.5",
+          "build": "ha367084_41",
+          "filename": "vc-14.5-ha367084_41.conda",
+          "size": 21383,
+          "sha256": "35444c55a92e2f7f7ba26bc70f81e56e52344f7d064c0fd4b40a46a58517b79c",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/vc-14.5-ha367084_41.conda"
+        },
+        {
+          "name": "_openmp_mutex",
+          "version": "4.5",
+          "build": "20_gnu",
+          "filename": "_openmp_mutex-4.5-20_gnu.conda",
+          "size": 52252,
+          "sha256": "8a1cee28bd0ee7451ada1cd50b64720e57e17ff994fc62dd8329bef570d382e4",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/_openmp_mutex-4.5-20_gnu.conda"
+        },
+        {
+          "name": "libopenblas",
+          "version": "0.3.34",
+          "build": "pthreads_h952cde7_2",
+          "filename": "libopenblas-0.3.34-pthreads_h952cde7_2.conda",
+          "size": 4772945,
+          "sha256": "138056f68cf8f92cb1830fe1ed950d70856cc840f5f4b2569f9e849cb109bf7e",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/libopenblas-0.3.34-pthreads_h952cde7_2.conda"
+        },
+        {
+          "name": "libgcc",
+          "version": "16.2.0",
+          "build": "h110b43a_7",
+          "filename": "libgcc-16.2.0-h110b43a_7.conda",
+          "size": 826913,
+          "sha256": "59feb6d16cba13a70f22dae70a44670eb2cc45e652e9a34a014814c2ca871132",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/libgcc-16.2.0-h110b43a_7.conda"
+        },
+        {
+          "name": "libblas",
+          "version": "3.11.0",
+          "build": "11_h0adab6e_openblas",
+          "filename": "libblas-3.11.0-11_h0adab6e_openblas.conda",
+          "size": 67011,
+          "sha256": "64bf8d49bdd385193c68b56b0a11a256f1d7fa5711edfc9e9c7bcbf2ca25f636",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/libblas-3.11.0-11_h0adab6e_openblas.conda"
+        },
+        {
+          "name": "libgfortran5",
+          "version": "16.2.0",
+          "build": "h7c9de5e_7",
+          "filename": "libgfortran5-16.2.0-h7c9de5e_7.conda",
+          "size": 2814898,
+          "sha256": "e9b86fe14cb9938abd08f0b1685b04457339f71d9f00783fe9258a1eb0229963",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/libgfortran5-16.2.0-h7c9de5e_7.conda"
+        },
+        {
+          "name": "libstdcxx",
+          "version": "16.2.0",
+          "build": "hae5796f_7",
+          "filename": "libstdcxx-16.2.0-hae5796f_7.conda",
+          "size": 7217469,
+          "sha256": "5984f81dcb289446fb3cdb0117c0680bded57eaa98da193f705400ec94fc71ae",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/libstdcxx-16.2.0-hae5796f_7.conda"
+        },
+        {
+          "name": "liblapack",
+          "version": "3.11.0",
+          "build": "11_hd232482_openblas",
+          "filename": "liblapack-3.11.0-11_hd232482_openblas.conda",
+          "size": 79611,
+          "sha256": "0021c607d065b309d5fd19b48f0ebaf94ef3a680feecc3a728ab15900746efa8",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/liblapack-3.11.0-11_hd232482_openblas.conda"
+        },
+        {
+          "name": "libgfortran",
+          "version": "16.2.0",
+          "build": "h719f0c7_7",
+          "filename": "libgfortran-16.2.0-h719f0c7_7.conda",
+          "size": 50071,
+          "sha256": "8e0d3445b5bdde22b6dfc2a7766b9336e448b240ff2015cd2cc73ca85f9b2130",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/libgfortran-16.2.0-h719f0c7_7.conda"
+        },
+        {
+          "name": "arpack",
+          "version": "3.9.1",
+          "build": "nompi_h1f7371d_102",
+          "filename": "arpack-3.9.1-nompi_h1f7371d_102.conda",
+          "size": 162939,
+          "sha256": "393a0f11fe53c9a4ce8e003f0f9816ce098179d4c06eacffd573afbb0f2e2f0c",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/arpack-3.9.1-nompi_h1f7371d_102.conda"
+        },
+        {
+          "name": "calculix",
+          "version": "2.23",
+          "build": "pl5321h7abefab_8",
+          "filename": "calculix-2.23-pl5321h7abefab_8.conda",
+          "size": 2625351,
+          "sha256": "a6c1e75c092893d73d0bb3902cba9db7e14ba3fe4d2f8cd74cdfbc1bc041d1d1",
+          "url": "https://conda.anaconda.org/conda-forge/win-64/calculix-2.23-pl5321h7abefab_8.conda"
+        }
+      ]
+    }
+  }
+}

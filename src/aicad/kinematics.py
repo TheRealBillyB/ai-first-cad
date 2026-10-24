@@ -3,7 +3,8 @@
 A structural joint (fixed, revolute, prismatic, cylindrical) is an edge in a
 tree. Gear and linkage relations write one driven joint from a driver. A
 cylinder relation writes two: the barrel angle and the rod extension, from
-the pin-to-pin distance of a driver revolute. That keeps a hydraulic cylinder
+the pin-to-pin distance of a revolute or cylindrical driver. A cylindrical
+driver includes its slide. That keeps a hydraulic cylinder
 on its clevises without a spatial loop. A linkage here is a planar four-bar
 map, and a gear is a linear map between joint values.
 
@@ -215,7 +216,9 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
                 commanded[relation["driven"]] = raw_value
                 active[relation["driven"]], _which = _clamp(raw_value, joint_index[relation["driven"]])
             else:
-                angle, extension, offset_mm = _cylinder(relation, joint_index, driver)
+                angle, extension, offset_mm = _cylinder(
+                    relation, joint_index, driver, slides[relation["driver"]]
+                )
                 commanded[relation["driven"]] = angle
                 active[relation["driven"]], _which = _clamp(angle, joint_index[relation["driven"]])
                 commanded[relation["stroke"]] = extension
@@ -406,7 +409,9 @@ def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
         rod = joints[stroke]
         arm = joints[driver]
         if arm["type"] not in ("revolute", "cylindrical"):
-            raise GeometryError(f"Cylinder {name!r} drives from a revolute. {driver!r} is {arm['type']}.")
+            raise GeometryError(
+                f"Cylinder {name!r} drives from a revolute or a cylindrical joint. {driver!r} is {arm['type']}."
+            )
         if barrel["type"] != "revolute":
             raise GeometryError(f"Cylinder {name!r} barrel joint {driven!r} must be revolute.")
         if rod["type"] != "prismatic":
@@ -441,13 +446,21 @@ def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
     return record
 
 
-def _cylinder(relation: dict, joints: dict[str, dict], driver_degrees: float) -> tuple[float, float, float]:
+def _cylinder(
+    relation: dict,
+    joints: dict[str, dict],
+    driver_degrees: float,
+    slide_mm: float = 0.0,
+) -> tuple[float, float, float]:
     """Barrel angle (degrees), rod extension (mm), and the out-of-plane offset (mm).
 
     The moving clevis is a point on the driver child. The fixed clevis is the
     barrel joint's parent anchor. Both are in the shared parent frame. With
     the barrel pin as the axis, angle 0 points ``bore_axis`` along the barrel
-    child. Extension is pin-to-pin length minus ``retracted_mm``.
+    child. Extension is pin-to-pin length minus ``retracted_mm``. A cylindrical
+    driver also shifts that clevis by its slide along the joint axis, the same
+    travel the joint matrix uses. A revolute has no slide, and a caller that
+    omits the type leaves the clevis unshifted.
     """
     driver = joints[relation["driver"]]
     barrel = joints[relation["driven"]]
@@ -457,7 +470,12 @@ def _cylinder(relation: dict, joints: dict[str, dict], driver_degrees: float) ->
         for i in range(3)
     ]
     rotated = _matvec(rotation, local)
-    point_b = [driver["parent_anchor"][i] + rotated[i] for i in range(3)]
+    travel = float(slide_mm) if driver.get("type") == "cylindrical" else 0.0
+    driver_axis = driver["axis"]
+    point_b = [
+        driver["parent_anchor"][i] + rotated[i] + driver_axis[i] * travel
+        for i in range(3)
+    ]
     point_a = barrel["parent_anchor"]
     delta = [point_b[i] - point_a[i] for i in range(3)]
     length = math.sqrt(sum(component * component for component in delta))
