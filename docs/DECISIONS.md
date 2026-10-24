@@ -10,6 +10,8 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A design script cannot record a check it did not run | The check report lists only public document calls the script made. |
+| An entry line cannot break the generated master | A title and a rationale stay one line, so they cannot end the generated section or start another line. |
 | The doc generator does not follow links | A symlink, junction, or second file name would read or write a different file when the masters are generated. |
 
 ## 2026-10-23
