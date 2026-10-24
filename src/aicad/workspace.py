@@ -124,7 +124,7 @@ class Workspace:
                 self.geometry_revision += 1
                 self._mesh_cache.clear()
                 self._requirement_cache.clear()
-                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power", "vibration", "bolts", "fatigue", "print", "robot", "drawing", "bom", "exploded"):
+                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power", "vibration", "bolts", "fatigue", "print", "robot", "drawing", "bom", "exploded", "animation"):
                     self.panels.pop(panel, None)
             self.event_id += 1
             event = self._event(name, arguments, result, source)
@@ -1004,6 +1004,33 @@ def _cmd_bill_of_materials(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("bom", report)  # noqa: SLF001
 
 
+def _cmd_render_animation(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.render_animation(
+        arguments["name"],
+        kind=arguments.get("kind"),
+        sequence=arguments.get("sequence"),
+        study=arguments.get("study"),
+        frames=arguments.get("frames"),
+        fps=arguments.get("fps"),
+        duration_s=arguments.get("duration_s"),
+        width=arguments.get("width"),
+        height=arguments.get("height"),
+        camera=arguments.get("camera"),
+        camera_path=arguments.get("camera_path"),
+        turns=arguments.get("turns"),
+        elevation_deg=arguments.get("elevation_deg"),
+        background=arguments.get("background"),
+        colors=arguments.get("colors"),
+        materials=arguments.get("materials"),
+        overlay=arguments.get("overlay"),
+        joint=arguments.get("joint"),
+        gap_mm=arguments.get("gap_mm"),
+        video=arguments.get("video"),
+        path=_export_path(workspace, arguments),
+    )
+    return workspace._remember_panel("animation", report)  # noqa: SLF001
+
+
 def _cmd_exploded_view(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.exploded_view(
         arguments["name"],
@@ -1581,6 +1608,40 @@ _add(Command(
         ["name"],
     ),
     _cmd_bill_of_materials,
+))
+_add(Command(
+    "render_animation",
+    "Write a GIF of a motion study, a camera orbit, or an exploded opening. MP4 and WebM are written when ffmpeg is on PATH. The files stay in the project.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "kind": _string("motion, orbit, or exploded. Omit to orbit, or to play a study when one is passed."),
+            "sequence": _string("Named motion study on the assembly."),
+            "study": {"type": "object", "description": "Inline motion study. frames on this command replaces the study step count."},
+            "frames": _number("Pictures, including both ends. From 2 to 300."),
+            "fps": _number("Playback frames per second, from 1 to 60."),
+            "duration_s": _number("Playback length in seconds when frames is omitted. At most 120."),
+            "width": _number("Picture width in pixels. An even number from 16 to 1280."),
+            "height": _number("Picture height in pixels. An even number from 16 to 1280."),
+            "camera": _string("iso, front, back, left, right, top, bottom, or orbit."),
+            "camera_path": {
+                "type": "array",
+                "description": "Points {azimuth_deg, elevation_deg}. The camera moves from the first to the last.",
+            },
+            "turns": _number("Orbits. Greater than 0 and at most 8."),
+            "elevation_deg": _number("Orbit elevation in degrees, from -80 to 80."),
+            "background": _string("paper, white, black, or #rrggbb."),
+            "colors": {"type": "object", "description": "Instance name to #rrggbb or [r, g, b]. Pictures only."},
+            "materials": {"type": "object", "description": "Instance name to a material such as steel or pla. Pictures only."},
+            "overlay": _string("none, step, time, or value."),
+            "joint": _string("Joint whose value is drawn when overlay is value."),
+            "gap_mm": _number("Millimeters each joint opens in an exploded animation."),
+            "video": _string("gif, mp4, webm, or both. gif skips the video. mp4 and webm need ffmpeg."),
+            "path": _string("A .gif, .mp4, or .webm file, or a directory, inside the project."),
+        },
+        ["name"],
+    ),
+    _cmd_render_animation,
 ))
 _add(Command(
     "exploded_view",
