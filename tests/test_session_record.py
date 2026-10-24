@@ -196,6 +196,30 @@ def test_recording_drops_secrets_paths_and_outside_file_contents(tmp_path, confi
     assert secret_file.read_text(encoding="utf-8") == "UNIQUE_OUTSIDE_FILE_BODY\n"
 
 
+def test_recording_marks_a_drive_relative_path_outside(tmp_path, config_home):
+    project = tmp_path / "project"
+    workspace = Workspace(project)
+    workspace.execute("session_record", {"action": "start"}, source="ui")
+    inside = project / "notes.md"
+    note = (
+        r"open C:secret.txt and C:..\outside\token.txt and ....\....\hidden.txt "
+        f"and keep {inside} plus exports/kept.step"
+    )
+    workspace.execute(
+        "write_document",
+        {"name": "notes.md", "markdown": note},
+        source="agent",
+    )
+    text = (project / "records" / "session.json").read_text(encoding="utf-8")
+    assert "secret.txt" not in text
+    assert "token.txt" not in text
+    assert "hidden.txt" not in text
+    assert "<outside-project>" in text
+    assert "notes.md" in text
+    assert "exports/kept.step" in text
+    assert str(inside) not in text
+
+
 def test_the_command_line_records_a_step_without_an_outside_script(tmp_path, config_home):
     project = tmp_path / "project"
     outside = tmp_path / "outside"
