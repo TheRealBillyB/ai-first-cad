@@ -406,6 +406,18 @@ function renderPanel() {
     $("print-run").onclick = () => runPrint().catch(showError);
     return;
   }
+  if (ui.tab === "fatigue") {
+    renderFatiguePanel();
+    return;
+  }
+  if (ui.tab === "clearance") {
+    renderClearancePanel();
+    return;
+  }
+  if (ui.tab === "step") {
+    renderStepPanel();
+    return;
+  }
   if (ui.tab === "library") {
     renderLibraryPanel();
     return;

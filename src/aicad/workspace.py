@@ -142,6 +142,7 @@ class Workspace:
                     "gear_train",
                     "kinematics",
                     "packaging",
+                    "clearance",
                     "drawing",
                     "bom",
                     "exploded",
@@ -590,9 +591,10 @@ def _cmd_wall(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_clearance(workspace: Workspace, arguments: dict) -> dict:
-    return workspace.document.check_clearance(
+    report = workspace.document.check_clearance(
         arguments["part_a"], arguments["part_b"], float(arguments.get("min_clearance_mm") or 0.0)
     ).to_dict()
+    return workspace._remember_panel("clearance", report)  # noqa: SLF001
 
 
 def _cmd_packaging(workspace: Workspace, arguments: dict) -> dict:
