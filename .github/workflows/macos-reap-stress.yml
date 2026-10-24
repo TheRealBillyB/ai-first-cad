@@ -50,23 +50,25 @@ jobs:
           echo "parallel"
           pids=()
           fail=0
+          drain() {
+            if [ "${#pids[@]}" -eq 0 ]; then
+              return 0
+            fi
+            for pid in "${pids[@]}"; do
+              if ! wait "$pid"; then
+                fail=1
+              fi
+            done
+            pids=()
+          }
           for i in $(seq 1 8); do
             "$PY" -p no:xdist -q --tb=line "${tests[@]}" > "stress-$i.log" 2>&1 &
             pids+=($!)
             if [ "${#pids[@]}" -eq 4 ]; then
-              for pid in "${pids[@]}"; do
-                if ! wait "$pid"; then
-                  fail=1
-                fi
-              done
-              pids=()
+              drain
             fi
           done
-          for pid in "${pids[@]}"; do
-            if ! wait "$pid"; then
-              fail=1
-            fi
-          done
+          drain
           if [ "$fail" -ne 0 ]; then
             echo "parallel stress failed"
             for i in $(seq 1 8); do
