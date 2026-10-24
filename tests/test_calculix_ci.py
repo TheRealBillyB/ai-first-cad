@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -76,39 +77,151 @@ def test_the_ccx_directory_is_searched_first():
     path: list[str] = []
     for line in lines:
         path.insert(0, line)
-    assert path[0] == "/solver/Library/bin"
-    assert path[1] == "/solver/Library/mingw-w64/bin"
+    assert path[0] == str(directories[0])
+    assert path[1] == str(directories[1])
 
 
 def test_the_link_uses_one_package_cache_that_the_job_creates():
     module = _installer()
+    cache = Path("/work/root/pkgs")
     env = module.link_environment(
         {"CONDA_PKGS_DIRS": "/missing/runner/pkgs", "PATH": "/usr/bin"},
-        Path("/work/root/pkgs"),
+        cache,
     )
-    assert env["CONDA_PKGS_DIRS"] == "/work/root/pkgs"
+    assert env["CONDA_PKGS_DIRS"] == str(cache)
     assert env["PATH"] == "/usr/bin"
 
 
-def test_a_dll_that_is_not_beside_ccx_exe_is_copied_there(tmp_path):
+def test_windows_system_dlls_are_not_copied_onto_path():
     module = _installer()
-    exe_dir = tmp_path / "Library" / "bin"
-    other = tmp_path / "Library" / "mingw-w64" / "bin"
-    exe_dir.mkdir(parents=True)
-    other.mkdir(parents=True)
-    exe = exe_dir / "ccx.exe"
-    exe.write_bytes(b"exe")
-    (exe_dir / "libblas.dll").write_bytes(b"blas")
-    (other / "libarpack.dll").write_bytes(b"arpack")
-    (other / "libblas.dll").write_bytes(b"other-blas")
-    copied = module.stage_sibling_dlls(exe, [exe_dir, other])
-    assert [path.name for path in copied] == ["libarpack.dll"]
-    assert (exe_dir / "libarpack.dll").read_bytes() == b"arpack"
-    assert (exe_dir / "libblas.dll").read_bytes() == b"blas"
+    assert module.is_windows_system_dll("KERNEL32.dll")
+    assert module.is_windows_system_dll("api-ms-win-crt-runtime-l1-1-0.dll")
+    assert module.is_windows_system_dll("ucrtbase.dll")
+    assert module.is_windows_system_dll("vcruntime140.dll")
+    assert not module.is_windows_system_dll("libarpack.dll")
+    assert not module.is_windows_system_dll("libgfortran-5.dll")
+
+
+def _pe_with_imports(names: list[str]) -> bytes:
+    """A PE32+ image whose import table names ``names`` and nothing else."""
+
+    def align(value: int, boundary: int) -> int:
+        return (value + boundary - 1) & ~(boundary - 1)
+
+    blobs = [name.encode("ascii") + b"\0" for name in names]
+    descriptor = len(names) * 20 + 20
+    rva_base = 0x1000
+    payload = bytearray(descriptor + sum(len(blob) for blob in blobs))
+    cursor = descriptor
+    for blob in blobs:
+        payload[cursor : cursor + len(blob)] = blob
+        cursor += len(blob)
+    cursor = descriptor
+    for index, blob in enumerate(blobs):
+        name_rva = rva_base + cursor
+        struct.pack_into("<IIIII", payload, index * 20, 0, 0, 0, name_rva, 0)
+        cursor += len(blob)
+    raw = align(len(payload), 0x200)
+    payload.extend(b"\0" * (raw - len(payload)))
+
+    dos = bytearray(64)
+    dos[0:2] = b"MZ"
+    e_lfanew = 64
+    struct.pack_into("<I", dos, 0x3C, e_lfanew)
+    pe = bytearray(b"PE\0\0")
+    # COFF. Optional header is the PE32+ size with 16 data directories: 112 + 128 = 240.
+    size_opt = 240
+    pe += struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, size_opt, 0)
+    optional = bytearray(size_opt)
+    struct.pack_into("<H", optional, 0, 0x20B)
+    # Import directory is data directory index 1, at offset 112.
+    struct.pack_into("<II", optional, 112 + 8, rva_base, len(payload))
+    section = bytearray(40)
+    section[0:6] = b".rdata"
+    struct.pack_into("<IIII", section, 8, len(payload), rva_base, len(payload), 0x200)
+    header = bytes(dos) + bytes(pe) + bytes(optional) + bytes(section)
+    header += b"\0" * (0x200 - len(header))
+    return header + bytes(payload)
+
+
+def _pe_forwarding_to(dll: str) -> bytes:
+    """A PE32+ whose only export is forwarded to ``dll``."""
+
+    forward = f"{dll}.symbol".encode("ascii") + b"\0"
+    export_dir = 40
+    functions = 4
+    payload = bytearray(export_dir + functions + len(forward))
+    string_rva = 0x1000 + export_dir + functions
+    struct.pack_into("<I", payload, export_dir, string_rva)
+    # NumberOfFunctions at offset 20, AddressOfFunctions at offset 28.
+    struct.pack_into("<I", payload, 20, 1)
+    struct.pack_into("<I", payload, 24, 1)  # Base
+    struct.pack_into("<I", payload, 28, 0x1000 + export_dir)
+    payload[export_dir + functions : export_dir + functions + len(forward)] = forward
+    raw = (len(payload) + 0x1FF) & ~0x1FF
+    payload.extend(b"\0" * (raw - len(payload)))
+    dos = bytearray(64)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 64)
+    size_opt = 240
+    pe = bytearray(b"PE\0\0")
+    pe += struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, size_opt, 0)
+    optional = bytearray(size_opt)
+    struct.pack_into("<H", optional, 0, 0x20B)
+    struct.pack_into("<II", optional, 112, 0x1000, len(payload))
+    section = bytearray(40)
+    section[0:6] = b".edata"
+    struct.pack_into("<IIII", section, 8, len(payload), 0x1000, len(payload), 0x200)
+    header = bytes(dos) + bytes(pe) + bytes(optional) + bytes(section)
+    header += b"\0" * (0x200 - len(header))
+    return header + bytes(payload)
+
+
+def test_a_forwarded_export_names_the_real_blas_dll(tmp_path):
+    module = _installer()
+    library = tmp_path / "Library" / "bin"
+    library.mkdir(parents=True)
+    exe = library / "ccx.exe"
+    exe.write_bytes(_pe_with_imports(["libblas.dll"]))
+    (library / "libblas.dll").write_bytes(_pe_forwarding_to("openblas"))
+    (library / "openblas.dll").write_bytes(_pe_with_imports(["KERNEL32.dll"]))
+    assert module.pe_forwarded_dlls(library / "libblas.dll") == ["openblas.dll"]
+    destination = tmp_path / "solver-bin"
+    module.stage_solver_bin(exe, [library], destination)
+    assert (destination / "openblas.dll").is_file()
+    assert not (destination / "KERNEL32.dll").exists()
+
+
+def test_a_solver_bin_keeps_ccx_libraries_and_leaves_system_dlls(tmp_path):
+    module = _installer()
+    library = tmp_path / "Library" / "bin"
+    mingw = tmp_path / "Library" / "mingw-w64" / "bin"
+    library.mkdir(parents=True)
+    mingw.mkdir(parents=True)
+    exe = library / "ccx.exe"
+    exe.write_bytes(_pe_with_imports(["KERNEL32.dll", "libarpack.dll", "libblas.dll"]))
+    (library / "libblas.dll").write_bytes(_pe_with_imports(["KERNEL32.dll", "openblas.dll"]))
+    (library / "openblas.dll").write_bytes(_pe_with_imports(["VCRUNTIME140.dll"]))
+    (library / "ucrtbase.dll").write_bytes(b"ucrt")
+    (mingw / "libarpack.dll").write_bytes(_pe_with_imports(["libblas.dll", "libgfortran-5.dll"]))
+    (library / "libgfortran-5.dll").write_bytes(_pe_with_imports(["libgcc_s_seh-1.dll"]))
+    (library / "libgcc_s_seh-1.dll").write_bytes(_pe_with_imports(["KERNEL32.dll"]))
+    destination = tmp_path / "solver-bin"
+    result = module.stage_solver_bin(exe, [library, mingw], destination)
+    assert result == destination
+    names = sorted(path.name.lower() for path in destination.iterdir())
+    assert names == [
+        "ccx.exe",
+        "libarpack.dll",
+        "libblas.dll",
+        "libgcc_s_seh-1.dll",
+        "libgfortran-5.dll",
+        "openblas.dll",
+    ]
     posix = tmp_path / "bin" / "ccx"
     posix.parent.mkdir()
     posix.write_bytes(b"ccx")
-    assert module.stage_sibling_dlls(posix, [other]) == []
+    assert module.stage_solver_bin(posix, [library], tmp_path / "unused") == posix.parent
 
 
 def test_a_missing_library_is_not_treated_as_a_started_solver():

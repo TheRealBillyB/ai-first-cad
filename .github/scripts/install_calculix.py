@@ -16,6 +16,7 @@ import os
 import platform
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -229,29 +230,183 @@ def _find_ccx(prefix: Path, relative_dirs: list[str]) -> Path:
     raise SystemExit(f"ccx was not linked under {prefix}")
 
 
-def stage_sibling_dlls(binary: Path, directories: list[Path]) -> list[Path]:
-    """Copy DLLs that conda placed away from ccx.exe into its directory.
+# Names Windows resolves from the system directory or the API-set schema.
+# They must not be copied onto PATH: a conda copy of one of them makes
+# powershell.exe fail to start, and the script network block is installed
+# by powershell.exe.
+_SYSTEM_DLLS = frozenset(
+    {
+        "advapi32.dll",
+        "bcrypt.dll",
+        "gdi32.dll",
+        "kernel32.dll",
+        "kernelbase.dll",
+        "ntdll.dll",
+        "ole32.dll",
+        "oleaut32.dll",
+        "shell32.dll",
+        "ucrtbase.dll",
+        "user32.dll",
+        "ws2_32.dll",
+    }
+)
 
-    Windows searches the executable's directory before PATH. conda-forge puts
-    ``libarpack.dll`` in ``Library/mingw-w64/bin``, so ``ccx.exe`` exits with a
-    missing-library status until that file sits beside it. An existing file is
-    left alone. Other systems do not use this layout.
+
+def is_windows_system_dll(name: str) -> bool:
+    low = name.lower()
+    if low.startswith(("api-ms-", "ext-ms-")):
+        return True
+    if low.startswith(("vcruntime", "msvcp", "concrt", "vcomp", "vcamp", "vccorlib")):
+        return True
+    return low in _SYSTEM_DLLS
+
+
+def _pe_view(path: Path):
+    """Bytes, RVA converter, and the data-directory offset. None when it is not a PE."""
+
+    data = path.read_bytes()
+    if len(data) < 64 or data[:2] != b"MZ":
+        return None
+    e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+    if e_lfanew + 24 > len(data) or data[e_lfanew : e_lfanew + 4] != b"PE\0\0":
+        return None
+    coff = e_lfanew + 4
+    _machine, nsections, _t, _s, _p, size_opt, _c = struct.unpack_from("<HHIIIHH", data, coff)
+    opt = coff + 20
+    if opt + 2 > len(data):
+        return None
+    magic = struct.unpack_from("<H", data, opt)[0]
+    if magic == 0x20B:
+        directory = opt + 112
+    elif magic == 0x10B:
+        directory = opt + 96
+    else:
+        return None
+    section_table = opt + size_opt
+    sections: list[tuple[int, int, int]] = []
+    for index in range(nsections):
+        off = section_table + index * 40
+        if off + 24 > len(data):
+            return None
+        virtual_size, virtual_address, raw_size, raw_pointer = struct.unpack_from("<IIII", data, off + 8)
+        sections.append((virtual_address, max(virtual_size, raw_size), raw_pointer))
+
+    def rva_to_offset(rva: int) -> int:
+        for virtual_address, span, raw_pointer in sections:
+            if virtual_address <= rva < virtual_address + span:
+                return raw_pointer + (rva - virtual_address)
+        raise ValueError(f"{path.name} has an RVA outside its sections")
+
+    return data, rva_to_offset, directory
+
+
+def pe_imported_dlls(path: Path) -> list[str]:
+    """DLL names in a PE import table. Empty when the file is not a PE."""
+
+    view = _pe_view(path)
+    if view is None:
+        return []
+    data, rva_to_offset, directory = view
+    if directory + 16 > len(data):
+        return []
+    import_rva, import_size = struct.unpack_from("<II", data, directory + 8)
+    if import_rva == 0 or import_size == 0:
+        return []
+    names: list[str] = []
+    cursor = rva_to_offset(import_rva)
+    while cursor + 20 <= len(data):
+        original, _stamp, _forwarder, name_rva, first = struct.unpack_from("<IIIII", data, cursor)
+        if original == 0 and name_rva == 0 and first == 0:
+            break
+        name_off = rva_to_offset(name_rva)
+        end = data.index(b"\0", name_off)
+        names.append(data[name_off:end].decode("ascii"))
+        cursor += 20
+    return names
+
+
+def pe_forwarded_dlls(path: Path) -> list[str]:
+    """DLLs named by export forwarders, such as libblas forwarding to OpenBLAS.
+
+    A forwarder is ``otherdll.symbol``. The loader opens that DLL when the
+    importing program starts, so it has to sit beside ``ccx.exe``.
+    """
+
+    view = _pe_view(path)
+    if view is None:
+        return []
+    data, rva_to_offset, directory = view
+    if directory + 8 > len(data):
+        return []
+    export_rva, export_size = struct.unpack_from("<II", data, directory)
+    if export_rva == 0 or export_size == 0:
+        return []
+    base = rva_to_offset(export_rva)
+    number_of_functions = struct.unpack_from("<I", data, base + 20)[0]
+    address_of_functions = struct.unpack_from("<I", data, base + 28)[0]
+    names: list[str] = []
+    seen: set[str] = set()
+    table = rva_to_offset(address_of_functions)
+    for index in range(number_of_functions):
+        function_rva = struct.unpack_from("<I", data, table + 4 * index)[0]
+        if not (export_rva <= function_rva < export_rva + export_size):
+            continue
+        text = data[rva_to_offset(function_rva) :].split(b"\0", 1)[0].decode("ascii", "replace")
+        head = text.split(".", 1)[0]
+        if not head:
+            continue
+        if not head.lower().endswith(".dll"):
+            head += ".dll"
+        key = head.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(head)
+    return names
+
+
+def stage_solver_bin(binary: Path, search_dirs: list[Path], destination: Path) -> Path:
+    """Directory that should be put on PATH so ``ccx`` starts.
+
+    On macOS that is the directory that already holds ``ccx``. On Windows it is
+    a new directory with ``ccx.exe`` and the libraries it imports, and not the
+    conda UCRT or API-set shims. Those shims live in ``Library/bin``. Putting
+    that directory on PATH makes ``powershell.exe`` fail to start.
     """
 
     if binary.suffix.lower() != ".exe":
-        return []
-    destination = binary.parent
-    copied: list[Path] = []
-    for directory in directories:
-        if not directory.is_dir() or directory.resolve() == destination.resolve():
+        return binary.parent
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(binary, destination / binary.name)
+    available: dict[str, Path] = {}
+    for directory in search_dirs:
+        if not directory.is_dir():
             continue
-        for source in sorted(directory.glob("*.dll")):
-            target = destination / source.name
-            if target.exists():
-                continue
+        for source in directory.glob("*.dll"):
+            available.setdefault(source.name.lower(), source)
+    def referenced(path: Path) -> list[str]:
+        return [
+            name
+            for name in pe_imported_dlls(path) + pe_forwarded_dlls(path)
+            if not is_windows_system_dll(name)
+        ]
+
+    pending = referenced(binary)
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        source = available.get(key)
+        if source is None:
+            raise SystemExit(f"{binary.name} needs {name}, and that file is not in the CalculiX prefix.")
+        target = destination / source.name
+        if not target.exists():
             shutil.copy2(source, target)
-            copied.append(target)
-    return copied
+        pending.extend(referenced(target))
+    return destination
 
 
 def _probe(binary: Path) -> None:
@@ -311,12 +466,13 @@ def install(lock: dict, *, system: str, machine: str, work: Path, prefix: Path) 
         _download(package["url"], dest, package["sha256"], package["size"])
         packages.append(dest)
     _link(micromamba, prefix, work / "root", packages)
-    directories = [prefix / relative for relative in spec["path"]]
+    linked = [prefix / relative for relative in spec["path"]]
     binary = _find_ccx(prefix, spec["path"])
-    for copied in stage_sibling_dlls(binary, directories):
-        print(f"placed {copied.name} beside {binary.name}")
-    _publish(directories)
-    _probe(binary)
+    solver_bin = stage_solver_bin(binary, linked, prefix / "solver-bin")
+    staged = solver_bin / binary.name
+    print(f"ccx is on PATH from {solver_bin}")
+    _publish([solver_bin])
+    _probe(staged)
     return 0
 
 
