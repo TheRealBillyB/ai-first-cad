@@ -347,7 +347,12 @@ def _hypoid_assembly(document: Document, name: str, pinion_at, ring_at) -> None:
     )
 
 
-def test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
+def _mounted_hypoid(tmp_path: Path):
+    """One hypoid pair in a document, plus the assembly placement of that mesh.
+
+    Each check rebuilds both solids. Four checks in one test cross the per-test
+    limit on a busy macOS runner, so each situation is its own test.
+    """
     pinion_spec = _hypoid("pinion")
     ring_spec = _hypoid("ring")
     placement = mesh_placement(pinion_spec, ring_spec)
@@ -364,11 +369,6 @@ def test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
         position=placement["gear"]["position_mm"],
         rotation_deg=placement["gear"]["rotation_deg"],
     )
-    seated = document.check_gears({"pinion": "pinion", "gear": "ring", "backlash_mm": {"min": 0.0, "max": 0.30}})
-    assert seated["status"] == "pass", seated["findings"]
-    assert abs(seated["pinion_clock_deg"]) < 1e-3
-    assert abs(seated["gear_clock_deg"]) < 1e-3
-
     pinion_at = {
         "position_mm": list(placement["pinion"]["position_mm"]),
         "rotation_deg": _assembly_rotation(placement["pinion"]["position_mm"], placement["pinion"]["rotation_deg"]),
@@ -377,11 +377,27 @@ def test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
         "position_mm": list(placement["gear"]["position_mm"]),
         "rotation_deg": _assembly_rotation(placement["gear"]["position_mm"], placement["gear"]["rotation_deg"]),
     }
+    return document, pinion_at, ring_at
+
+
+def test_a_seated_hypoid_pair_passes(tmp_path: Path):
+    document, _pinion_at, _ring_at = _mounted_hypoid(tmp_path)
+    seated = document.check_gears({"pinion": "pinion", "gear": "ring", "backlash_mm": {"min": 0.0, "max": 0.30}})
+    assert seated["status"] == "pass", seated["findings"]
+    assert abs(seated["pinion_clock_deg"]) < 1e-3
+    assert abs(seated["gear_clock_deg"]) < 1e-3
+
+
+def test_a_seated_hypoid_assembly_passes(tmp_path: Path):
+    document, pinion_at, ring_at = _mounted_hypoid(tmp_path)
     _hypoid_assembly(document, "seated", pinion_at, ring_at)
     assembled = document.check_gears({"assembly": "seated", "backlash_mm": {"min": 0.0, "max": 0.30}})
     assert assembled["status"] == "pass", assembled["pairs"][0]["findings"]
     assert assembled["pairs"][0]["offset_error_mm"] == pytest.approx(0, abs=1e-3)
 
+
+def test_a_misclocked_hypoid_assembly_is_flagged(tmp_path: Path):
+    document, pinion_at, ring_at = _mounted_hypoid(tmp_path)
     clocked = {
         "position_mm": ring_at["position_mm"],
         "rotation_deg": [ring_at["rotation_deg"][0], ring_at["rotation_deg"][1], ring_at["rotation_deg"][2] + 2.0],
@@ -393,6 +409,9 @@ def test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
     assert abs(clocked_pair["gear_clock_deg"]) == pytest.approx(2.0, abs=0.05)
     assert any("clocked" in item.lower() for item in clocked_pair["findings"])
 
+
+def test_a_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
+    document, pinion_at, ring_at = _mounted_hypoid(tmp_path)
     shifted = {
         "position_mm": [pinion_at["position_mm"][0], pinion_at["position_mm"][1] + 0.5, pinion_at["position_mm"][2]],
         "rotation_deg": pinion_at["rotation_deg"],
