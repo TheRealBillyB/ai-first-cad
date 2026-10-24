@@ -1258,7 +1258,7 @@ _add(Command(
 ))
 _add(Command(
     "create_gear",
-    "Create or replace an involute spur, helical, straight bevel, or spiral bevel gear.",
+    "Create or replace an involute spur, helical, bevel, or hypoid gear.",
     _obj(
         {
             "name": _string("Part name."),

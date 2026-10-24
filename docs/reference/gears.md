@@ -1,6 +1,6 @@
 # Gears
 
-`aicad.gears` builds external spur, helical, straight bevel, and spiral bevel solids, and the same numbers the solid is drawn from. Units are millimetres. A hypoid gear (a shaft angle plus a nonzero offset) is not built. The module keeps an `offset` axis layout free so that family can be added without a new bore, hub, or report shape.
+`aicad.gears` builds external spur, helical, straight bevel, spiral bevel, and hypoid solids, and the same numbers the solid is drawn from. Units are millimetres. A hypoid uses the offset axis layout: a shaft angle plus a pinion offset. Bores, hubs, keyways, and splines are the same for every family.
 
 The Python calls are `gear_data`, `build_gear`, `pair_geometry`, and `mesh_placement`. The command line is `aicad gear`. The assistant tool is `create_gear`. A part stored this way has source `gear` and is rebuilt from the spec.
 
@@ -80,6 +80,18 @@ Positive βm is right-hand. It is not a circular-cutter trace. A pair needs oppo
 
 Do not pass `profile_shift` on a bevel. The addendum split above is the shift, and the two members sum to zero.
 
+## Hypoid
+
+A hypoid is a ring and a pinion whose shafts do not intersect. `offset_mm` is the shortest distance between the two axes. Positive puts the pinion axis on +Y. `ratio` is ring teeth divided by pinion teeth. `ring_diameter_mm` is the ring mean pitch diameter. `spiral_angle_deg` is the ring mean spiral; positive is right-hand, and the pinion hand is the opposite. `shaft_angle_deg` defaults to 90. `role` is `pinion` or `ring`.
+
+The pitch point is not a spiral bevel slid sideways. It is the point at the ring pitch radius where three things are true together: the pitch cones share a tangent plane, the tooth counts share one normal module, and the sliding runs along the ring tooth. Among those cones the one with the least sliding is kept. The cone angles do not add up to the shaft angle, and the two spiral angles are not equal.
+
+The ring tooth is the cone of one circular face-mill blade. `pressure_angle_deg` sets both blade angles unless `drive_pressure_angle_deg` and `coast_pressure_angle_deg` are given. `cutter.radius_mm` defaults to a circle a little larger than the ring pitch radius. `cutter.point_width_mm` defaults to half the normal circular pitch. `cutter.edge_radius_mm` defaults to a small fraction of the module and is recorded only; it is not cut as a fillet. `cutter.process` must be `face_mill`. Face-hobbing, a timed group of blades, is refused.
+
+The pinion is the blank left after that same tooth is rolled. Both shafts turn at the tooth ratio about the offset axes, and each pose of the tooth is cut out of a tip-cone blank. The groove is then copied around the pinion. The ring flank is shifted a little into the metal, and the cutting tooth is shifted a little into the space, so a flat facet of the blade cannot cross the mate. The reported backlash is those two shifts. Between the sampled turns the pinion can sit slightly closer. Root clearance is deeper than the mate tip. The proportions are a simple addendum split, not a cited hypoid standard.
+
+A zero offset is a spiral bevel, not a hypoid. A very large offset, or a pinion with too few teeth for the blade, is refused when the tooth is cut away. This is not a tolerance grade and not a load rating.
+
 ## Bore, hub, keyway, spline
 
 The axis is +Z and tooth 0 is centred on +X. A cylindrical face runs from −b/2 to +b/2. A bevel has its pitch apex at the origin and the heel toward +Z.
@@ -98,6 +110,8 @@ A keyway and a spline are not combined. A spline sets its own hole; `bore_mm` ha
 
 A bevel pair keeps both pitch apexes at the origin. The mate is rotated about Y by the shaft angle, after a spin about its own axis that puts a tooth space on the common pitch generator. In the placement record that is `[0, shaft_angle, spin]`, applied as X, then Y, then Z.
 
+A hypoid ring stays on +Z through the origin. The pinion axis is the reported direction through `pinion_axis_point_mm`, and the shortest distance between the axes is `offset_mm`. `mesh_placement(..., gear_angle_deg)` turns the ring and the pinion together at the tooth ratio. Rotation is degrees about X, then Y, then Z.
+
 ## Not in this module
 
-Tolerance grades, backlash other than the zero-backlash nominal, a hypoid offset, a circular face-mill or face-hob path, and a gear-train load are not generated here.
+Tolerance grades, a specified backlash other than the small hypoid flank shift, face-hobbing, and a gear-train load are not generated here.

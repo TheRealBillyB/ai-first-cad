@@ -179,12 +179,16 @@ in an arbitrary STEP file, such as a McMaster-Carr download. Then
 
 ## Gears
 
-`create_gear` builds an external spur, helical, straight bevel, or spiral
-bevel. The spec uses millimeters: `module_mm`, `teeth`, `pressure_angle_deg`,
-and `face_width_mm`. A bevel also needs `mate_teeth` or `ratio`, and
-`shaft_angle_deg` when the shafts are not at 90 degrees. A positive helix or
-spiral angle is right-hand. Optional `bore_mm`, `hub`, `keyway` (DIN 6885-1),
-and `spline` (ISO 14 or DIN 5480) cut the blank. Hypoid gears are not built.
+`create_gear` builds an external spur, helical, straight bevel, spiral bevel,
+or hypoid. The spec uses millimeters: `teeth` and `face_width_mm`, plus
+`module_mm` and `pressure_angle_deg` for a spur, helical, or bevel. A bevel
+also needs `mate_teeth` or `ratio`, and `shaft_angle_deg` when the shafts are
+not at 90 degrees. A positive helix or spiral angle is right-hand. Optional
+`bore_mm`, `hub`, `keyway` (DIN 6885-1), and `spline` (ISO 14 or DIN 5480)
+cut the blank. A hypoid needs `offset_mm`, `ring_diameter_mm`,
+`spiral_angle_deg`, and `role` (`pinion` or `ring`). `ratio` is ring teeth
+divided by pinion teeth. The ring tooth is a face-mill blade. The pinion is
+the blank left after that tooth is rolled.
 
 ## Sketches
 
@@ -627,14 +631,17 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         position: list[float] | None = None,
         rotation_deg: list[float] | None = None,
     ) -> dict:
-        """Create or replace a spur, helical, straight bevel, or spiral bevel gear.
+        """Create or replace a spur, helical, bevel, or hypoid gear.
 
-        spec needs type, module_mm, teeth, and face_width_mm. pressure_angle_deg
-        defaults to 20. module_mm is the normal module, or the outer transverse
-        module for a bevel. A bevel needs mate_teeth or ratio. helix_angle_deg
-        and spiral_angle_deg are positive for a right-hand tooth. bore_mm, hub,
-        keyway (DIN 6885-1), and spline (ISO 14 or DIN 5480) are optional.
-        position and rotation_deg are [x, y, z]. Hypoid gears are not built.
+        spec needs type, teeth, and face_width_mm. A spur, helical, or bevel
+        also needs module_mm. pressure_angle_deg defaults to 20. module_mm is
+        the normal module, or the outer transverse module for a bevel. A bevel
+        needs mate_teeth or ratio. A hypoid needs offset_mm, ring_diameter_mm,
+        spiral_angle_deg, and role (pinion or ring). ratio is ring teeth
+        divided by pinion teeth. helix_angle_deg and spiral_angle_deg are
+        positive for a right-hand tooth. bore_mm, hub, keyway (DIN 6885-1),
+        and spline (ISO 14 or DIN 5480) are optional. position and
+        rotation_deg are [x, y, z].
         """
         return guard(
             lambda: run(

@@ -840,21 +840,34 @@ class Document:
         self._save()
         payload = self._info(self._parts[name]).to_dict()
         payload["gear"] = gears_mod.gear_data(clean)
-        return finish(
-            payload,
-            kind=VERIFIED_CHECK,
-            name=name,
-            what=(
+        if clean["type"] == "hypoid":
+            what = (
+                "Hypoid ring or pinion. The ring tooth is a face-mill blade cone. "
+                "The pinion is the blank left after that tooth is rolled at the tooth ratio."
+            )
+            limits = [
+                "This is not a tolerance grade or a load rating.",
+                "The cutter is one face-mill blade cone. Face-hobbing is not generated.",
+                "The edge radius is recorded and is not cut as a fillet.",
+                "The flanks are shifted slightly apart so a flat facet cannot cross the mate.",
+            ]
+        else:
+            what = (
                 "Nominal involute gear from the cited tooth standard. "
                 "The solid and the pitch, base, and cone figures describe that model."
-            ),
-            limits=[
+            )
+            limits = [
                 "Tooth thickness is the nominal zero-backlash size, not a tolerance grade.",
                 "A helical fillet uses the ISO 53 normal tip radius as a circle in the transverse plane.",
                 "A bevel solid rules the back-cone involute between the inner and outer cone distances. Reported face and root angles are the Gleason parallel-clearance angles.",
                 "A spiral trace is a constant-angle spiral, not a circular cutter path.",
-                "Hypoid gears, with a shaft offset, are not generated.",
-            ],
+            ]
+        return finish(
+            payload,
+            kind=VERIFIED_CHECK,
+            name=name,
+            what=what,
+            limits=limits,
         )
 
     def place_part(

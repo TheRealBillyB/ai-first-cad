@@ -10,10 +10,10 @@ for spiral bevels. The flank is the involute of that virtual gear, wrapped
 onto the back cone and ruled to the pitch apex (an octoid). A spiral tooth
 trace is a constant-angle spiral on the pitch cone at the mean spiral angle.
 
-Hypoid gears are not built. They need a nonzero axis offset and a tooth
-surface from a generating process. :func:`register_family` accepts an
-``offset`` layout so that generator can be added without changing bores, hubs,
-or the metadata shared by every family.
+A hypoid pair uses the offset layout: a shaft angle plus a pinion offset.
+The ring tooth is a face-mill blade cone and the pinion tooth is the
+envelope of that blade. Bores, hubs, and the shared metadata are the same
+as the other families.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def register_family(
 
     ``axis_layout`` is ``parallel`` (spur, helical), ``intersecting``
     (straight and spiral bevel), or ``offset`` (hypoid: a shaft angle plus
-    a hypoid offset). No offset family is registered.
+    a pinion offset).
     """
     if axis_layout not in {PARALLEL, INTERSECTING, OFFSET}:
         raise GeometryError(
@@ -98,8 +98,12 @@ def require_builder(spec: dict) -> tuple[dict, Callable]:
     return clean, family["build"]
 
 
-def pair_geometry(pinion: dict, gear: dict) -> dict:
-    """Centre distance or shaft angle, contact ratio, and a zero-backlash pose."""
+def pair_geometry(pinion: dict, gear: dict, gear_angle_deg: float = 0.0) -> dict:
+    """Centre distance, shaft angle, or hypoid offset, and a meshing pose.
+
+    ``gear_angle_deg`` advances a hypoid ring and its pinion together at the
+    tooth ratio. Other families ignore it.
+    """
     left = gear_data(pinion)
     right = gear_data(gear)
     if left["axis_layout"] != right["axis_layout"]:
@@ -112,19 +116,37 @@ def pair_geometry(pinion: dict, gear: dict) -> dict:
     elif left["axis_layout"] == INTERSECTING:
         report = _bevel_pair(left, right)
     else:
-        raise GeometryError("An offset (hypoid) pair is not generated.")
-    report["pinion"] = {"type": left["type"], "teeth": left["teeth"], "hand": left["hand"]}
-    report["gear"] = {"type": right["type"], "teeth": right["teeth"], "hand": right["hand"]}
+        from aicad.gears.hypoid import pair_hypoid
+
+        report = pair_hypoid(left, right, gear_angle_deg)
+    # A hypoid report already names the pinion and the ring, in that order.
+    if left["axis_layout"] != OFFSET:
+        report["pinion"] = {"type": left["type"], "teeth": left["teeth"], "hand": left["hand"]}
+        report["gear"] = {"type": right["type"], "teeth": right["teeth"], "hand": right["hand"]}
+    else:
+        report["pinion"] = {
+            "type": "hypoid",
+            "role": "pinion",
+            "teeth": left["pinion_teeth"],
+            "hand": left["pinion_hand"],
+        }
+        report["gear"] = {
+            "type": "hypoid",
+            "role": "ring",
+            "teeth": left["ring_teeth"],
+            "hand": left["ring_hand"],
+        }
     return _round_tree(report)
 
 
-def mesh_placement(pinion: dict, gear: dict) -> dict:
-    """Rigid placement of a zero-backlash pair. Rotations are degrees about X, then Y, then Z."""
-    report = pair_geometry(pinion, gear)
+def mesh_placement(pinion: dict, gear: dict, gear_angle_deg: float = 0.0) -> dict:
+    """Rigid placement of a meshing pair. Rotations are degrees about X, then Y, then Z."""
+    report = pair_geometry(pinion, gear, gear_angle_deg)
     return {
         "axis_layout": report["axis_layout"],
         "centre_distance_mm": report.get("centre_distance_mm"),
         "shaft_angle_deg": report.get("shaft_angle_deg"),
+        "offset_mm": report.get("offset_mm"),
         "pinion": report["placement"]["pinion"],
         "gear": report["placement"]["gear"],
         "note": report["placement"]["note"],
@@ -134,7 +156,7 @@ def mesh_placement(pinion: dict, gear: dict) -> dict:
 def profile_points(spec: dict) -> list[tuple[float, float]]:
     """Closed transverse outline of a cylindrical gear. Tooth 0 is on +X."""
     clean = normalize_spec(spec)
-    if clean["type"] in BEVEL:
+    if clean["type"] not in CYLINDRICAL:
         raise GeometryError("profile_points is the transverse outline of a spur or helical gear.")
     return transverse_outline(clean)
 
@@ -185,7 +207,7 @@ def _require_consistent_bevel(
 
 
 def normalize_spec(spec: dict) -> dict:
-    """Fill defaults and reject a hypoid or an unknown family."""
+    """Fill defaults and reject an unknown family."""
     if not isinstance(spec, dict):
         raise GeometryError("A gear spec must be an object.")
     raw_type = str(spec.get("type") or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -195,15 +217,18 @@ def normalize_spec(spec: dict) -> dict:
         "spiral": "spiral_bevel",
         "spiralbevel": "spiral_bevel",
         "bevel": "straight_bevel",
+        "hypoid_bevel": "hypoid",
     }
     gear_type = aliases.get(raw_type, raw_type)
+    if gear_type == "hypoid":
+        from aicad.gears.hypoid import normalize_hypoid
+
+        return normalize_hypoid(spec)
     offset = _number(spec.get("offset_mm"), "offset_mm", default=0.0)
-    if gear_type in {"hypoid", "hypoid_bevel"} or abs(offset) > 1e-12:
+    if abs(offset) > 1e-12:
         raise GeometryError(
-            "Hypoid gears are not generated. They need a shaft angle and a nonzero "
-            "offset, and the tooth surface comes from simulating the generating cut. "
-            "The gear module reserves axis layout 'offset' for that family. "
-            "Spur, helical, straight bevel, and spiral bevel are available."
+            "offset_mm is the hypoid pinion offset. Use type 'hypoid' for that pair. "
+            "Spur, helical, straight bevel, and spiral bevel keep the offset at zero."
         )
     if gear_type not in CYLINDRICAL | BEVEL:
         _reject_unknown(gear_type or "(missing)")
@@ -1213,11 +1238,8 @@ def _contact_ratio(
 
 
 def _reject_unknown(name: str) -> None:
-    known = ", ".join(sorted(set(CYLINDRICAL | BEVEL)))
-    raise GeometryError(
-        f"Unknown gear type {name!r}. Use one of: {known}. "
-        "Hypoid is an offset-axis family and is not registered."
-    )
+    known = ", ".join(sorted(set(CYLINDRICAL | BEVEL | {"hypoid"})))
+    raise GeometryError(f"Unknown gear type {name!r}. Use one of: {known}.")
 
 
 def _required_positive(spec: dict, key: str) -> float:
