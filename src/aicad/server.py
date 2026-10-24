@@ -42,6 +42,7 @@ Wall thickness is the smaller of a ray estimate and a section estimate, and
 the result says which one was used. `section_part` shows a cross-section.
 `search_parts` and `insert_standard_part` bring in bearings, seals, fasteners, motors, and gearboxes.
 `create_gear` builds a spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width.
+`check_gears` reports centre distance, backlash, contact ratio, undercut, and interference through one turn of the smaller gear.
 Clearance between two parts reports interference volume or the gap.
 
 For a shape that should stay consistent when a size changes, use a sketch:
@@ -62,10 +63,12 @@ A cylinder relation sets a barrel angle and a rod extension from a revolute.
 `run_motion` sweeps those joints and reports collisions, with a picture per
 frame. `run_motion_study` drives joints from expressions or keyframes, applies
 gear couplings, and reports collisions and joint-limit violations.
-`check_cables` measures length, strain, bend radius, and pinching.
+`check_cables` measures length, strain, bend radius, and pinching. A tendon
+adds pulley wrap, slack or stretch, capstan tension, and collisions.
 `estimate_power` turns gravity and payloads into joint torque and then into
 hydraulic pressure and flow, or motor current and a rough battery figure.
-Read the assumptions on those reports. Cables are kinematic polylines.
+Read the assumptions on those reports. A clip route is a kinematic polyline.
+A tendon is anchors, pulleys, and an end anchor.
 
 `check_print` turns a part, colors the faces that need support, and checks the
 oriented size against a Bambu, Prusa, or Ender bed. `fits_printer` is the
@@ -189,6 +192,12 @@ and `face_width_mm`. A bevel also needs `mate_teeth` or `ratio`, and
 `shaft_angle_deg` when the shafts are not at 90 degrees. A positive helix or
 spiral angle is right-hand. Optional `bore_mm`, `hub`, `keyway` (DIN 6885-1),
 and `spline` (ISO 14 or DIN 5480) cut the blank. Hypoid gears are not built.
+`check_gears` takes two gear specs or part names, or an assembly, and a backlash range
+`{min, max}` in millimetres. It compares the centre distance with the zero-backlash
+centre, reports circumferential and normal backlash, the contact ratio, undercut,
+and interference while the smaller gear turns through one full rotation. A bevel
+centre distance is a signed axis offset from the intersecting mount. An offset
+(hypoid) pair is refused until a checker for that layout is registered.
 
 ## Sketches
 
@@ -311,11 +320,12 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
 - `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
 - `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
-- `check_cables` routes polylines through waypoints fixed on parts. It reports length change, strain, bend-radius violations, and pinching. It does not simulate a flexible body.
+- `check_cables` routes polylines through waypoints fixed on parts, and tendons through anchors, pulleys, guides, and an end anchor. It reports length change, slack or stretch, strain, bend-radius violations, wrap angle, capstan tension from `actuator_force_n`, and pinching or collision. A tendon length includes the wrap arc. `sequence` may name a motion study. It does not simulate a flexible body.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
 - `solve_gear_train` reads the assembly gear train and the tooth counts of the generated gears. It returns the speed and torque of every shaft for an input speed and torque. An external mesh reverses direction. An idler cancels. A compound train multiplies the stage ratios. A planetary set with the ring fixed turns the carrier at z_sun / (z_sun + z_ring) of the sun. An open differential keeps the average of the two outputs equal to the carrier. In a turn, one output speeds up as much as the other slows down, and the two torques stay equal. status is under_constrained or over_constrained when those speeds do not determine the train. Efficiency on a mesh defaults to 1.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
+- `check_gears` checks a spur, helical, or bevel pair, or every gear pair in an assembly. Pass backlash_mm as `{min, max}`. The report has centre distance against the ideal, circumferential and normal backlash, contact ratio, undercut, and interference over one turn of the smaller gear. Read assumptions and limits.
 - `check_bolts` takes size, grade, axial_n, shear_n, and vibration (`mild`, `moderate`, `intense`). Slip under transverse load is the loosening mechanism. The countermeasures explain what a nyloc nut, a wedge washer, threadlocker, and safety wire do and do not do.
 - `check_fatigue` is a Goodman check of a stress you supply. It is not a cycle-by-cycle solve.
 - `export_drawing` writes a third-angle sheet (front, top, right, isometric) as PDF and DXF, with overall dimensions, a title block, and a scale. The sizes are the axis-aligned box of the posed solids. It is a layout drawing. It has no GD&T, no tolerances, and no threads. Read `result_label` and `limits`.
@@ -653,6 +663,21 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         )
 
     @mcp.tool()
+    def check_gears(spec: dict[str, Any]) -> dict:
+        """Mesh, backlash, contact ratio, and interference for a gear pair or an assembly.
+
+        spec.pinion and spec.gear are gear specs or the names of gear parts.
+        spec.assembly checks every gear relation, or every pair of gear instances
+        when the assembly has none. centre_distance_mm is the actual distance
+        between spur or helical axes. For a bevel it is a signed axis offset, and
+        zero is the intersecting mount. backlash_mm is {min, max} in millimetres
+        and applies to circumferential and normal backlash, or pass separate
+        circumferential and normal ranges. The smaller gear is turned through one
+        full rotation. Hypoid pairs are not checked.
+        """
+        return guard(lambda: run("check_gears", spec=spec))
+
+    @mcp.tool()
     def place_part(
         name: str,
         position: list[float],
@@ -872,15 +897,39 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         )
 
     @mcp.tool()
-    def check_cables(name: str, sequence: str | None = None, motion: dict[str, Any] | None = None) -> dict:
-        """Check cables and hoses through the current pose or a motion.
+    def check_cables(
+        name: str,
+        sequence: str | None = None,
+        motion: dict[str, Any] | None = None,
+        study: dict[str, Any] | None = None,
+        steps: int | None = None,
+    ) -> dict:
+        """Check cables, hoses, and tendons through a pose, a motion, or a motion study.
 
-        Each route has waypoints {instance, at, clip}, diameter_mm, min_bend_radius_mm,
-        and stiffness (low, medium, high, or newtons per unit strain). The report
-        has length change, strain, bend-radius violations, and pinches. The route
-        is a polyline. It does not sag.
+        A clip route has waypoints {instance, at, clip}, diameter_mm,
+        min_bend_radius_mm, and stiffness (low, medium, high, or newtons per
+        unit strain). A tendon has points: an anchor, then pulleys, guides, or
+        wraps fixed on parts, then an end anchor, plus diameter_mm and material.
+        A pulley has at (the center), axis, radius_mm for the cable centerline,
+        optional wrap of cw or ccw, and optional friction. Length includes the
+        wrap arc. The report has length change, slack or stretch, wrap angle,
+        bend-radius violations, and tension from actuator_force_n. Friction
+        multiplies tension by exp(-friction * wrap radians) on the far side of
+        each pulley. A centerline sample inside a solid, or closer than the
+        cable radius plus pinch_mm, is a collision. The line does not sag.
+        sequence names a motion, or a study when no motion uses that name.
+        study is an inline motion study. steps overrides how many poses are solved.
         """
-        return guard(lambda: run("check_cables", name=name, sequence=sequence, motion=motion))
+        return guard(
+            lambda: run(
+                "check_cables",
+                name=name,
+                sequence=sequence,
+                motion=motion,
+                study=study,
+                steps=steps,
+            )
+        )
 
     @mcp.tool()
     def solve_gear_train(name: str, drive: dict[str, Any]) -> dict:
