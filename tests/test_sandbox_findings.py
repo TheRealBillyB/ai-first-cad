@@ -743,6 +743,31 @@ def test_bh_s03_script_cannot_leave_a_detached_child(tmp_path):
     assert not (tmp_path / "phase2.txt").exists()
 
 
+def test_a_reparented_child_stays_in_the_set_and_a_failed_listing_is_not_clean():
+    """A child that has left its parent is still tied to the script by parent id.
+
+    The parent unique id does not follow the process group. A listing that
+    failed is not reported as an empty, clean tree.
+    """
+    from aicad.sandbox import _refuse_unaccounted, _related_pids
+
+    identities = {
+        5: (200, 100),
+        6: (300, 200),
+        9: (400, 1),
+    }
+    found = _related_pids({100}, identities, set())
+    assert found == {5, 6}
+    assert _related_pids({100}, identities, {7}) == {5, 6, 7}
+    assert 9 not in found
+
+    _refuse_unaccounted(True, set())
+    with pytest.raises(ScriptError, match="could not account"):
+        _refuse_unaccounted(False, set())
+    with pytest.raises(ScriptError, match="could not account"):
+        _refuse_unaccounted(True, {6})
+
+
 def test_bh_f06_a_failed_script_keeps_the_network_grant(tmp_path, config_home):
     _sandbox_or_skip()
     allow_design_scripts(tmp_path)
