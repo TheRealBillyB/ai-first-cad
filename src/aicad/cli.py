@@ -560,6 +560,30 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--speed", type=float, default=None, help="Input speed in revolutions per minute.")
     train.add_argument("--torque", type=float, default=None, help="Input torque in newton-metres.")
 
+    recorded = commands.add_parser(
+        "record",
+        parents=[common],
+        help="Record design steps, replay that record, or write a timelapse.",
+    )
+    recorded.add_argument("action", choices=["start", "stop", "status", "replay", "export"])
+    recorded.add_argument("--fps", type=int, default=None, help="Playback frames per second, from 1 to 60.")
+    recorded.add_argument(
+        "--camera",
+        default=None,
+        help="iso, front, back, left, right, top, or bottom.",
+    )
+    recorded.add_argument("--steps", default=None, help="Step numbers to include, such as 1,3-5. Omit for every step.")
+    recorded.add_argument("--step", type=int, default=None, help="One step to show when the action is replay.")
+    recorded.add_argument(
+        "--video",
+        choices=["gif", "mp4", "webm", "both"],
+        default=None,
+        help="gif writes only the GIF. mp4 and webm need ffmpeg.",
+    )
+    recorded.add_argument("--width", type=int, default=None, help="Picture width in pixels. Even, from 16 to 1280.")
+    recorded.add_argument("--height", type=int, default=None, help="Picture height in pixels. Even, from 16 to 1280.")
+    recorded.add_argument("--out", type=Path, default=None, help="A .gif, .mp4, or .webm file, or a directory, inside the project.")
+
     from aicad.plugins import add_cli
 
     add_cli(commands, common)
@@ -602,7 +626,14 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.command,
                 root=document.workspace,
             )
+        if isinstance(stamped, dict):
+            _remember_cli_step(document, args, stamped)
         return _emit(stamped)
+
+    if args.command == "record":
+        from aicad.session_record import run_action
+
+        return emit(run_action(document, _record_arguments(args)))
 
     if args.command == "run":
         script = args.script.read_text(encoding="utf-8")
@@ -1036,6 +1067,37 @@ def _json_object(path: Path) -> dict:
     if not isinstance(payload, dict):
         raise AICADError(f"{path} must be a JSON object.")
     return payload
+
+
+def _record_arguments(args: argparse.Namespace) -> dict:
+    payload: dict = {"action": args.action}
+    if args.fps is not None:
+        payload["fps"] = args.fps
+    if args.camera is not None:
+        payload["camera"] = args.camera
+    if args.steps is not None:
+        payload["steps"] = args.steps
+    if args.step is not None:
+        payload["step"] = args.step
+    if args.video is not None:
+        payload["video"] = args.video
+    if args.width is not None:
+        payload["width"] = args.width
+    if args.height is not None:
+        payload["height"] = args.height
+    if args.out is not None:
+        payload["path"] = args.out
+    return payload
+
+
+def _remember_cli_step(document, args: argparse.Namespace, result: dict) -> None:
+    from aicad.parity import CLI_TOOLS
+    from aicad.session_record import cli_arguments, record_command
+
+    name = CLI_TOOLS.get(args.command)
+    if not name:
+        return
+    record_command(document, name, cli_arguments(args), result, source="cli")
 
 
 def _emit(payload: dict) -> int:
