@@ -1034,6 +1034,7 @@ def _summary(name: str, arguments: dict, result: dict, parts: list[str]) -> str:
         "run_motion": f"Ran motion on {part}",
         "run_motion_study": f"Ran a motion study on {part}",
         "solve_kinematics": f"Solved kinematics for {part}",
+        "render_animation": f"Rendered an animation of {part}",
         "write_document": f"Wrote {arguments.get('name')}",
         "delete_document": f"Deleted note {arguments.get('name')}",
         "check_clearance": "Checked clearance",

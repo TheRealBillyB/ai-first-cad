@@ -3,4 +3,5 @@
 set -eu
 root=$(git rev-parse --show-toplevel)
 cd "$root"
-exec python3 tools/check_docs.py --staged
+python3 tools/check_docs.py --staged
+exec python3 tools/build_docs.py --check
