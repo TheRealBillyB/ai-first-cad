@@ -1,6 +1,8 @@
 """Speed and torque of a gear train, including a planetary set and a differential."""
 
+import errno
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -411,6 +413,44 @@ def test_a_design_script_records_a_gear_train_solve():
             "result": {"status": "ok", "name": "axle", "inputs": 1},
         }
     ]
+
+
+def test_a_briefly_busy_result_file_is_read_again(monkeypatch):
+    from aicad.sandbox_run import script_document
+
+    real_open = os.open
+    opened = {"results": 0}
+
+    def guarded_open(path, flags, *args, **kwargs):
+        text = os.fsdecode(path)
+        if text.endswith(".res.json"):
+            opened["results"] += 1
+            if opened["results"] == 1:
+                raise PermissionError(errno.EACCES, "busy", text)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", guarded_open)
+
+    class Doc:
+        def solve_gear_train(self, name, drive):
+            return {"status": "ok", "name": name}
+
+    proxy = script_document(Doc(), [])
+    report = proxy.solve_gear_train("axle", {"inputs": []})
+    assert report["status"] == "ok"
+    assert opened["results"] >= 2
+
+
+def test_a_linked_result_file_is_not_treated_as_busy(tmp_path: Path):
+    from aicad.design_calls import _busy, _read_json
+
+    target = tmp_path / "target.json"
+    target.write_text('{"ok": true, "result": {"status": "forged"}}\n', encoding="utf-8")
+    link = tmp_path / "0.res.json"
+    link.symlink_to(target)
+    with pytest.raises(OSError) as raised:
+        _read_json(link, 1000)
+    assert _busy(raised.value) is False
 
 
 def test_a_train_without_meshes_is_refused(tmp_path: Path):
