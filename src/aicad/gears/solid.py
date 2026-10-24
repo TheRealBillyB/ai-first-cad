@@ -98,13 +98,25 @@ def _generated_pinion(spec: dict):
     design = pitch_design(spec)
     blank = _lofted_shell(pinion_blank_rings(design))
     tooth = _lofted_tooth(tool_tooth_rings(design))
+    # The index pose is the pitch point. If it cannot be cut, the roll would
+    # only fail later, so refuse before cutting the rest of the tooth.
+    indexed = _rolled_pose(blank, _moved(tooth, pinion_trsf(design["phi_star"], design)))
+    if blank.volume - indexed.volume < 1.0:
+        raise GeometryError(
+            "This offset_mm, shaft_angle_deg, ring_diameter_mm, and spiral_angle_deg "
+            "do not leave a pinion tooth. Change one of those four."
+        )
     solid = blank
     for phi in roll_angles(design):
-        solid = _cut(solid, _moved(tooth, pinion_trsf(phi, design)))
-    chip = _cut(blank, solid)
-    if chip.volume < 1.0:
+        # A pose past a right angle can leave a bad edge. Heal that pose, or
+        # leave it out, and keep going. The pitch point was already accepted.
+        solid = _rolled_pose(solid, _moved(tooth, pinion_trsf(phi, design)))
+    chip = _groove(blank, solid)
+    removed = blank.volume - solid.volume
+    if chip.volume < 1.0 or abs(chip.volume - removed) > max(5.0, 0.35 * max(removed, 1.0)):
         raise GeometryError(
-            "The face-mill tooth missed the pinion. Increase cutter.radius_mm or shorten the face."
+            "This offset_mm, shaft_angle_deg, ring_diameter_mm, and spiral_angle_deg "
+            "do not leave a pinion tooth. Change one of those four."
         )
     step = 2.0 * math.pi / design["z1"]
     chips = chip
@@ -634,6 +646,114 @@ def _cut(blank, tool):
         return blank - tool
     except Exception as exc:
         raise GeometryError(f"Could not cut the bore, keyway, or spline: {exc}") from exc
+
+
+def _rolled_pose(current, tool):
+    """One face-mill pose cut out of the pinion blank.
+
+    The exact cut is kept when it is one valid solid. Past a right angle the
+    same pose can leave a bad edge. A small fuzzy tolerance is then used only
+    when it keeps that pocket. A pose that still will not cut is left out, so
+    one graze cannot spoil the rest of the roll.
+    """
+    base = current.volume
+    exact = None
+    try:
+        exact = current - tool
+    except Exception:
+        exact = None
+    if exact is not None and _roll_ok(exact, base):
+        return exact
+    exact_volume = _solid_volume(exact)
+    for fuzzy in (0.002, 0.005, 0.01, 0.02):
+        healed = _fuzzy_cut(current, tool, fuzzy)
+        if not _keeps_pocket(healed, base, exact_volume):
+            continue
+        return healed
+    return current
+
+
+def _keeps_pocket(healed, base: float, exact_volume: float | None) -> bool:
+    """A healed pose is kept only when it matches the exact pocket."""
+    if healed is None or not _roll_ok(healed, base):
+        return False
+    if exact_volume is None:
+        return base - healed.volume >= 0.5
+    return abs(healed.volume - exact_volume) <= max(1.5, 0.25 * abs(base - exact_volume))
+
+
+def _groove(blank, rolled):
+    """The metal the roll took out of the blank.
+
+    The difference is that groove. When the rolled solid sits a little off the
+    blank, the same difference also returns the remaining blank, and the groove
+    is the smaller piece.
+    """
+    difference = _cut(blank, rolled)
+    pieces = [piece for piece in difference.solids() if piece.volume >= 1.0]
+    if len(pieces) <= 1:
+        return pieces[0] if pieces else difference
+    expected = blank.volume - rolled.volume
+    closest = min(pieces, key=lambda piece: abs(piece.volume - expected))
+    if abs(closest.volume - expected) > max(5.0, 0.35 * max(expected, 1.0)):
+        return difference
+    return closest
+
+
+def _roll_ok(result, previous_volume: float) -> bool:
+    """One solid that lost metal, or none, and did not collapse."""
+    solids = list(result.solids())
+    if len(solids) != 1:
+        return False
+    volume = solids[0].volume
+    if volume > previous_volume + 0.2 or volume < previous_volume * 0.55:
+        return False
+    if not solids[0].is_manifold:
+        return False
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    return BRepCheck_Analyzer(solids[0].wrapped).IsValid()
+
+
+def _solid_volume(result) -> float | None:
+    if result is None:
+        return None
+    solids = list(result.solids())
+    if len(solids) != 1:
+        return None
+    return solids[0].volume
+
+
+def _fuzzy_cut(current, tool, fuzzy: float):
+    """Boolean cut with a tolerance, or None when it is not one solid."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.collections import List_TopoDS_Shape
+
+    arguments = List_TopoDS_Shape()
+    arguments.Append(current.wrapped)
+    tools = List_TopoDS_Shape()
+    tools.Append(tool.wrapped)
+    operation = BRepAlgoAPI_Cut()
+    operation.SetArguments(arguments)
+    operation.SetTools(tools)
+    operation.SetFuzzyValue(fuzzy)
+    operation.Build()
+    if not operation.IsDone():
+        return None
+    found = []
+    explorer = TopExp_Explorer(operation.Shape(), TopAbs_SOLID)
+    while explorer.More():
+        found.append(TopoDS.Solid(explorer.Current()))
+        explorer.Next()
+    if len(found) != 1:
+        return None
+    wrapped = Solid(found[0])
+    if wrapped.volume <= 0:
+        return None
+    return wrapped
 
 
 def _one(shape):
