@@ -559,3 +559,37 @@ def test_export_does_not_follow_a_junction(tmp_path):
     )
     assert list(outside.rglob("*")) == []
     _assert_absent(_canary(outside))
+
+
+def test_a_directory_is_not_created_through_a_link_that_stays_inside(tmp_path, monkeypatch):
+    from aicad.errors import GeometryError
+    from aicad.paths import output_dir, output_path
+
+    root = tmp_path / "project"
+    kept = root / "kept"
+    kept.mkdir(parents=True)
+    link = root / "alias"
+    if sys.platform == "win32":
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(kept)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            pytest.skip("this machine cannot create a junction")
+    else:
+        try:
+            link.symlink_to(kept, target_is_directory=True)
+        except OSError:
+            pytest.skip("this machine cannot create a directory symlink")
+        monkeypatch.setattr("aicad.paths.nofollow_writes", lambda: False)
+    with pytest.raises(GeometryError, match="link and was not followed"):
+        output_dir(root, link / "new-folder", "Render", GeometryError)
+    with pytest.raises(GeometryError, match="link and was not followed"):
+        output_path(root, link / "new-folder" / "part.step", "Export", GeometryError)
+    assert not (kept / "new-folder").exists()
+    made = output_dir(root, root / "renders" / "box", "Render", GeometryError)
+    assert made.is_dir()
+    assert (root / "renders" / "box").is_dir()
+    assert not (kept / "renders").exists()
