@@ -544,7 +544,7 @@ def build_parser() -> argparse.ArgumentParser:
     mesh.add_argument("--assembly", default=None, help="Check every gear pair in this assembly.")
     mesh.add_argument("--centre", type=float, default=None, help="Actual centre distance, or a signed bevel axis offset.")
     mesh.add_argument("--shaft-angle", type=float, default=None, help="Actual shaft angle in degrees.")
-    mesh.add_argument("--offset", type=float, default=None, help="Axis offset in millimetres. Reserved for a hypoid pair.")
+    mesh.add_argument("--offset", type=float, default=None, help="Axis offset in millimetres. For a hypoid pair this is the pinion offset.")
     mesh.add_argument("--backlash-min", type=float, default=None, help="Minimum circumferential and normal backlash, mm.")
     mesh.add_argument("--backlash-max", type=float, default=None, help="Maximum circumferential and normal backlash, mm.")
     mesh.add_argument("--steps", type=int, default=None, help="Samples over one turn of the smaller gear.")

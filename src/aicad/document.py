@@ -1302,6 +1302,8 @@ class Document:
             else:
                 mounting["centre_distance_mm"] = measured["centre_distance_mm"]
                 mounting["shaft_angle_deg"] = measured["shaft_angle_deg"]
+            mounting["pinion_matrix"] = frames[left_name]
+            mounting["gear_matrix"] = frames[right_name]
             for key in ("centre_distance_mm", "shaft_angle_deg", "offset_mm", "pinion_phase_deg", "gear_phase_deg"):
                 if spec.get(key) is not None:
                     mounting[key] = spec[key]
@@ -1437,6 +1439,11 @@ class Document:
             if "pinion_phase_deg" in measured:
                 mounting.setdefault("pinion_phase_deg", measured["pinion_phase_deg"])
                 mounting.setdefault("gear_phase_deg", measured["gear_phase_deg"])
+        if pinion_part is not None and gear_part is not None:
+            mounting.setdefault("pinion_position_mm", list(pinion_part.placement["position"]))
+            mounting.setdefault("pinion_rotation_deg", list(pinion_part.placement["rotation_deg"]))
+            mounting.setdefault("gear_position_mm", list(gear_part.placement["position"]))
+            mounting.setdefault("gear_rotation_deg", list(gear_part.placement["rotation_deg"]))
         return mounting
 
     def check_bolts(self, spec: dict) -> dict:

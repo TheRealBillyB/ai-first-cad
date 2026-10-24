@@ -42,7 +42,7 @@ Wall thickness is the smaller of a ray estimate and a section estimate, and
 the result says which one was used. `section_part` shows a cross-section.
 `search_parts` and `insert_standard_part` bring in bearings, seals, fasteners, motors, and gearboxes.
 `create_gear` builds a spur, helical, straight bevel, spiral bevel, or hypoid gear.
-`check_gears` reports centre distance, backlash, contact ratio, undercut, and interference through one turn of the smaller gear.
+`check_gears` reports centre distance, backlash, contact ratio, undercut, and interference through one turn of the smaller gear. A hypoid pair reports offset, ratio, backlash along the tooth, and interference of the face-mill solids.
 Clearance between two parts reports interference volume or the gap.
 
 For a shape that should stay consistent when a size changes, use a sketch:
@@ -204,8 +204,9 @@ the blank left after that tooth is rolled.
 `{min, max}` in millimetres. It compares the centre distance with the zero-backlash
 centre, reports circumferential and normal backlash, the contact ratio, undercut,
 and interference while the smaller gear turns through one full rotation. A bevel
-centre distance is a signed axis offset from the intersecting mount. An offset
-(hypoid) pair is refused until a checker for that layout is registered.
+centre distance is a signed axis offset from the intersecting mount. A hypoid
+pair is checked on the face-mill solids through one pinion tooth, at the
+placement of a mounted pair. That sweep is not a full turn and not a spiral bevel.
 
 ## Sketches
 
@@ -334,7 +335,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `solve_gear_train` reads the assembly gear train and the tooth counts of the generated gears. It returns the speed and torque of every shaft for an input speed and torque. An external mesh reverses direction. An idler cancels. A compound train multiplies the stage ratios. A planetary set with the ring fixed turns the carrier at z_sun / (z_sun + z_ring) of the sun. An open differential keeps the average of the two outputs equal to the carrier. In a turn, one output speeds up as much as the other slows down, and the two torques stay equal. status is under_constrained or over_constrained when those speeds do not determine the train. Efficiency on a mesh defaults to 1.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
-- `check_gears` checks a spur, helical, or bevel pair, or every such pair in an assembly. Pass backlash_mm as `{min, max}`. The report has centre distance against the ideal, circumferential and normal backlash, contact ratio, undercut, and interference over one turn of the smaller gear. An offset pair is refused until a checker for that layout is registered. Read assumptions and limits.
+- `check_gears` checks a spur, helical, or bevel pair, or every such pair in an assembly. Pass backlash_mm as `{min, max}`. The report has centre distance against the ideal, circumferential and normal backlash, contact ratio, undercut, and interference over one turn of the smaller gear. A hypoid pair reports the axis offset, the tooth ratio, backlash along the tooth, and interference of the face-mill solids through one pinion tooth. A mounted pair uses that placement and clocking. Read assumptions and limits.
 - `check_bolts` takes size, grade, axial_n, shear_n, and vibration (`mild`, `moderate`, `intense`). Slip under transverse load is the loosening mechanism. The countermeasures explain what a nyloc nut, a wedge washer, threadlocker, and safety wire do and do not do.
 - `check_fatigue` is a Goodman check of a stress you supply. It is not a cycle-by-cycle solve.
 - `export_drawing` writes a third-angle sheet (front, top, right, isometric) as PDF and DXF, with overall dimensions, a title block, and a scale. The sizes are the axis-aligned box of the posed solids. It is a layout drawing. It has no GD&T, no tolerances, and no threads. Read `result_label` and `limits`.
@@ -685,7 +686,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         zero is the intersecting mount. backlash_mm is {min, max} in millimetres
         and applies to circumferential and normal backlash, or pass separate
         circumferential and normal ranges. The smaller gear is turned through one
-        full rotation. Hypoid pairs are not checked.
+        full rotation. A hypoid pair uses the face-mill solids through one
+        pinion tooth and reports backlash along the tooth. A mounted pair uses
+        that placement and clocking. That sweep is not a full turn.
         """
         return guard(lambda: run("check_gears", spec=spec))
 
