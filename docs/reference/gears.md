@@ -148,7 +148,7 @@ An open differential is `{carrier, left, right}`, not two ordinary meshes. The c
 
 (ω_left + ω_right) / 2 = ω_carrier
 
-Straight ahead, both outputs match the carrier. In a turn, one output speeds up as much as the other slows down. The two outputs share the carrier torque. Give the carrier speed and one output speed. The carrier alone leaves one degree of freedom, and the report says the train is under-constrained. Speeds that do not average are over-constrained.
+Straight ahead, both outputs match the carrier. In a turn, one output speeds up as much as the other slows down. The two outputs share the carrier torque. A mesh that drives the carrier supplies that torque. The carrier is not a second external load unless the drive lists it as an output. Give the carrier speed and one output speed. The carrier alone leaves one degree of freedom, and the report says the train is under-constrained. Speeds that do not average are over-constrained.
 
 The drive is `{inputs: [{shaft, speed_rpm, torque_nm}], speeds: [{shaft, speed_rpm}]}`. Speed is revolutions per minute. Torque is newton-metres, applied to the shaft in the positive direction. A load the shaft drives has the opposite sign. At efficiency 1 the shaft powers sum to zero, and the housing reaction cancels the shaft torques. An efficiency below 1 scales the torque delivered through that mesh. The report's `status` is `determined`, `under_constrained`, or `over_constrained`.
 
