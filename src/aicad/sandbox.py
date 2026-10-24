@@ -829,9 +829,7 @@ def _set_limits() -> None:
         raise ScriptError("Could not set the CPU or file limit, so the script was not run.") from exc
 
 
-def _landlock(
-    workspace: Path, network: bool, read_roots: list[Path], *, abi_cap: int | None = None
-) -> None:
+def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
     arch = _arch()
     if arch is None:
         raise ScriptError(sandbox_supported()[1])
@@ -842,21 +840,14 @@ def _landlock(
             raise ScriptError("Could not lock the script process, so the script was not run.")
     net = 0 if network else (_NET_BIND | _NET_CONNECT)
     global _landlock_abi_used, _landlock_signal_scope
-    # Ignore a cap that did not come from the signal-scope probe.
-    abi_cap = _harness_landlock_abi(abi_cap)
     abi = int(libc.syscall(create, None, 0, 1))
-    # A second ruleset cannot drop the signal scope chosen for this process.
-    if _landlock_abi_used is not None:
-        abi_cap = None
-    reported = abi if abi_cap is None else min(abi, abi_cap)
-    # One choice for the struct and the record, so a test cap cannot claim
-    # the signal scope is off while the ruleset still asks for it.
-    use_signal_scope = reported >= 6
+    # One choice for the struct and the record.
+    use_signal_scope = abi >= 6
     if use_signal_scope:
         attr = _RulesetAttrScoped(_HANDLED_FS, net, _LANDLOCK_SCOPE_SIGNAL)
     else:
         attr = _RulesetAttr(_HANDLED_FS, net)
-    _landlock_abi_used = reported
+    _landlock_abi_used = abi
     _landlock_signal_scope = use_signal_scope
     ruleset = libc.syscall(create, ctypes.byref(attr), ctypes.sizeof(attr), 0)
     if ruleset < 0:
@@ -1277,75 +1268,7 @@ def _refuse_foreign_kill() -> None:
     os.kill = kill  # type: ignore[method-assign]
 
 
-# The signal-scope test starts one process with this text. It is not a setting,
-# and nothing that opens a project reads it.
-_LANDLOCK_PROBE_LAUNCH = (
-    "import sys\n"
-    "sys.path.insert(0, sys.argv[2])\n"
-    "from tests.test_sandbox_findings import _run_capped_signal_probe\n"
-    "_run_capped_signal_probe(sys.argv[1])\n"
-)
-
-
-def _repo_probe_file() -> Path | None:
-    """The signal-probe test next to this checkout, when this file is the source tree."""
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        candidate = parent / "tests" / "test_sandbox_findings.py"
-        if candidate.is_file() and (parent / "pyproject.toml").is_file():
-            return candidate
-    return None
-
-
-def _probe_code(filename: str) -> object | None:
-    """The probe function as this checkout's test file compiles it."""
-    repo = _repo_probe_file()
-    if repo is None:
-        return None
-    try:
-        origin = Path(filename).resolve()
-    except OSError:
-        return None
-    if origin != repo.resolve():
-        return None
-    try:
-        source = repo.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    module = compile(source, filename, "exec")
-    for const in module.co_consts:
-        if getattr(const, "co_name", None) == "_run_capped_signal_probe":
-            return const
-    return None
-
-
-def _harness_landlock_abi(value: int | None) -> int | None:
-    """ABI cap for the signal-scope probe. Every other caller gets none.
-
-    A project file, app config, environment variable, plugin, and tool argument
-    are not read. A function that only imitates the probe is not the probe.
-    """
-    if value is None or type(value) is not int or value < 4:
-        return None
-    frame = sys._getframe(1)
-    # dont_inherit: this module's future annotations must not change the flags.
-    # python -c compiles the launch text without them.
-    launch = compile(_LANDLOCK_PROBE_LAUNCH, "<string>", "exec", dont_inherit=True)
-    while frame is not None:
-        code = frame.f_code
-        if code.co_name == "_run_capped_signal_probe":
-            caller = frame.f_back
-            if caller is None or caller.f_code != launch:
-                return None
-            expected = _probe_code(code.co_filename)
-            if expected is None or code != expected:
-                return None
-            return value
-        frame = frame.f_back
-    return None
-
-
-def apply_sandbox(workspace: Path, network: bool, *, _test_landlock_abi: int | None = None) -> list[Path]:
+def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     """Confine the current process. Called only in the script's child process."""
     from aicad.plugins import seal_sandbox_plugins
     from aicad.sandbox_state import mark_sandboxed
@@ -1404,12 +1327,7 @@ def apply_sandbox(workspace: Path, network: bool, *, _test_landlock_abi: int | N
     _adopt_orphans()
     _join_pids_cgroup()
     _set_limits()
-    _landlock(
-        workspace,
-        network=network,
-        read_roots=roots,
-        abi_cap=_test_landlock_abi,
-    )
+    _landlock(workspace, network=network, read_roots=roots)
     _block_sockets(network=network)
     return roots
 

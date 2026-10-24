@@ -223,15 +223,65 @@ def _reported_landlock_abi() -> int:
     return int(_libc().syscall(_LANDLOCK[arch][0], None, 0, 1))
 
 
-def test_only_the_signal_probe_can_request_a_lower_landlock_abi():
+def test_the_installed_package_cannot_lower_the_landlock_abi():
+    import ast
+    import inspect
+
+    import aicad
     import aicad.plugins as plugins
     import aicad.sandbox as sandbox
     from aicad.workspace import COMMANDS
 
-    assert sandbox._harness_landlock_abi(None) is None
-    assert sandbox._harness_landlock_abi(True) is None  # type: ignore[arg-type]
-    assert sandbox._harness_landlock_abi(3) is None
-    assert sandbox._harness_landlock_abi(5) is None
+    package = Path(aicad.__file__).resolve().parent
+    assert package.name == "aicad"
+    assert "tests" not in package.parts
+    banned = (
+        "abi_cap",
+        "_test_landlock_abi",
+        "landlock_abi_cap",
+        "_harness_landlock_abi",
+        "_LANDLOCK_PROBE_LAUNCH",
+    )
+    sources = list(package.rglob("*.py"))
+    assert sources
+    for path in sources:
+        text = path.read_text(encoding="utf-8")
+        for word in banned:
+            assert word not in text, f"{path.relative_to(package)} contains {word}"
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            names = [arg.arg for arg in (*node.args.args, *node.args.kwonlyargs, *node.args.posonlyargs)]
+            if node.args.vararg is not None:
+                names.append(node.args.vararg.arg)
+            if node.args.kwarg is not None:
+                names.append(node.args.kwarg.arg)
+            for name in names:
+                assert name not in banned
+                lowered = name.lower()
+                assert not ("landlock" in lowered and "abi" in lowered)
+    for fn in (
+        sandbox.apply_sandbox,
+        sandbox._landlock,
+        sandbox._spawn,
+        run_part_script,
+        run_design_script,
+    ):
+        parameters = inspect.signature(fn).parameters
+        assert "abi_cap" not in parameters
+        assert "_test_landlock_abi" not in parameters
+        assert "landlock_abi_cap" not in parameters
+    with pytest.raises(TypeError):
+        sandbox.apply_sandbox(Path("."), False, _test_landlock_abi=5)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        sandbox._landlock(Path("."), False, [], abi_cap=5)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        run_part_script("part = Box(1, 1, 1)\n", Path("."), _test_landlock_abi=5)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        run_design_script(Path("."), "print('no')\n", _test_landlock_abi=5)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        sandbox._spawn(Path("."), "part", "part = Box(1, 1, 1)\n", False, landlock_abi_cap=5)  # type: ignore[call-arg]
     problem, fields = plugins._validate_manifest(
         {
             "api": 1,
@@ -253,45 +303,6 @@ def test_only_the_signal_probe_can_request_a_lower_landlock_abi():
         properties = COMMANDS[name].parameters["properties"]
         assert "landlock_abi_cap" not in properties
         assert "_test_landlock_abi" not in properties
-    with pytest.raises(TypeError):
-        run_part_script("part = Box(1, 1, 1)\n", Path("."), _test_landlock_abi=5)  # type: ignore[call-arg]
-    with pytest.raises(TypeError):
-        run_design_script(Path("."), "print('no')\n", _test_landlock_abi=5)  # type: ignore[call-arg]
-    with pytest.raises(TypeError):
-        sandbox._spawn(Path("."), "part", "part = Box(1, 1, 1)\n", False, landlock_abi_cap=5)  # type: ignore[call-arg]
-
-    box: dict[str, int | None] = {}
-    lookalike_source = (
-        "def _run_capped_signal_probe(workspace):\n"
-        "    box['cap'] = harness(5)\n"
-    )
-    lookalike_ns = {"box": box, "harness": sandbox._harness_landlock_abi}
-    exec(compile(lookalike_source, str(Path(__file__).resolve()), "exec"), lookalike_ns)  # noqa: S102
-    lookalike = lookalike_ns["_run_capped_signal_probe"]
-
-    module = sys.modules[__name__]
-    original = module._run_capped_signal_probe
-    module._run_capped_signal_probe = lookalike
-    # The test runner does not always register this module under its import name.
-    # The launch text imports that name, so the lookalike has to be what it finds.
-    registered = "tests.test_sandbox_findings" in sys.modules
-    sys.modules["tests.test_sandbox_findings"] = module
-    saved_argv = sys.argv
-    saved_path = list(sys.path)
-    sys.argv = ["-c", str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
-    try:
-        assert module._run_capped_signal_probe is lookalike
-        exec(  # noqa: S102
-            compile(sandbox._LANDLOCK_PROBE_LAUNCH, "<string>", "exec", dont_inherit=True),
-            {"__name__": "__main__"},
-        )
-    finally:
-        module._run_capped_signal_probe = original
-        if not registered:
-            sys.modules.pop("tests.test_sandbox_findings", None)
-        sys.argv = saved_argv
-        sys.path[:] = saved_path
-    assert box["cap"] is None
 
 
 def test_the_script_is_not_run_when_the_process_filter_cannot_install(monkeypatch):
@@ -308,18 +319,55 @@ def test_the_script_is_not_run_when_the_process_filter_cannot_install(monkeypatc
         _block_sockets(network=False)
 
 
-def _run_capped_signal_probe(workspace: str) -> None:
-    """One confined process with Landlock's signal scope left off.
+def _report_landlock_abi(abi: int) -> None:
+    """Monkeypatch this process so its Landlock query reports ``abi``.
 
-    The suite starts this function by itself. A project, config, plugin, or
-    tool call does not.
+    The installed package has no argument for this. Only this test calls it,
+    and only in the process it starts for the signal probe.
+    """
+    import aicad.sandbox as sandbox
+
+    factory = sandbox._libc
+    arch = sandbox._arch()
+    if arch is None:
+        return
+    create = sandbox._LANDLOCK[arch][0]
+
+    def libc():
+        lib = factory()
+        real = lib.syscall
+
+        def syscall(number, *args):
+            version_query = (
+                number == create
+                and len(args) >= 3
+                and args[0] is None
+                and args[1] == 0
+                and args[2] == 1
+            )
+            if version_query:
+                return abi
+            return real(number, *args)
+
+        lib.syscall = syscall
+        return lib
+
+    sandbox._libc = libc
+
+
+def _run_capped_signal_probe(workspace: str) -> None:
+    """One confined process whose Landlock query reports ABI 5.
+
+    This test replaces the query in this process. The installed package does not
+    take an ABI argument.
     """
     import ctypes
 
     import aicad.sandbox as sandbox
 
+    _report_landlock_abi(5)
     root = Path(workspace).resolve()
-    sandbox.apply_sandbox(root, network=False, _test_landlock_abi=5)
+    sandbox.apply_sandbox(root, network=False)
     libc = ctypes.CDLL(None, use_errno=True)
     libc.syscall.restype = ctypes.c_long
     arch = sandbox._arch()
@@ -390,15 +438,22 @@ def _run_capped_signal_probe(workspace: str) -> None:
     (root / "signals.txt").write_text("\n".join(lines) + "\n" + child_text, encoding="utf-8")
 
 
+# This text lives in the test file. The installed package does not start it.
+_SIGNAL_PROBE_LAUNCH = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[2])\n"
+    "from tests.test_sandbox_findings import _run_capped_signal_probe\n"
+    "_run_capped_signal_probe(sys.argv[1])\n"
+)
+
+
 def test_signals_are_refused_when_landlock_cannot_scope_them(tmp_path):
     if not sys.platform.startswith("linux"):
         pytest.skip("Linux applies the signal filter in the kernel")
     _sandbox_or_skip()
-    from aicad.sandbox import _LANDLOCK_PROBE_LAUNCH
-
     checkout = Path(__file__).resolve().parents[1]
     completed = subprocess.run(
-        [sys.executable, "-c", _LANDLOCK_PROBE_LAUNCH, str(tmp_path), str(checkout)],
+        [sys.executable, "-c", _SIGNAL_PROBE_LAUNCH, str(tmp_path), str(checkout)],
         cwd=checkout,
         capture_output=True,
         text=True,
