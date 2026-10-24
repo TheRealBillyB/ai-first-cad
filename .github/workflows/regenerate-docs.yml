@@ -3,6 +3,11 @@ name: regenerate docs
 # Push to main only. The workflow checks out that commit and runs the
 # repository's generator. It does not run on pull_request_target, and it
 # does not execute code from a pull request head.
+#
+# Opening the pull request needs the repository setting
+# "Allow GitHub Actions to create and approve pull requests"
+# (Settings, Actions, General, Workflow permissions).
+# If that setting is off, the job fails and names the setting.
 on:
   push:
     branches:
@@ -31,9 +36,24 @@ jobs:
       - name: Regenerate master documents
         run: python tools/build_docs.py
 
+      # A pull request opened with the workflow token does not start
+      # pull_request workflows, so the same checks run here. A failure
+      # stops the job before a pull request is opened.
+      - name: Check documentation words
+        run: python tools/check_docs.py
+
+      - name: Check documentation entries
+        run: python tools/build_docs.py --check
+
+      - name: Check the generator tests
+        run: |
+          python -m pip install pytest
+          pytest tests/test_build_docs.py tests/test_docs_allowlist.py
+
       # The commit stays unsigned. signoff adds the Developer Certificate of
       # Origin trailer, and the author is the same identity as that trailer.
       - name: Open or update one pull request
+        id: open-pr
         uses: peter-evans/create-pull-request@v8.1.1
         with:
           sign-commits: false
@@ -53,3 +73,15 @@ jobs:
 
             `tools/build_docs.py` rewrote them after entries landed on main.
             This is the one pull request for that update.
+
+            `python tools/check_docs.py`, `python tools/build_docs.py --check`, and `pytest tests/test_build_docs.py tests/test_docs_allowlist.py` ran in this workflow run before this pull request was opened:
+
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      # The action fails the step when the API rejects pull request
+      # creation. This step keeps that failure and names the setting.
+      - name: Name the pull request permission
+        if: failure() && steps.open-pr.outcome == 'failure'
+        run: |
+          echo '::error::Could not open the pull request. When the API error is "GitHub Actions is not permitted to create or approve pull requests", turn on "Allow GitHub Actions to create and approve pull requests" under Settings, Actions, General, Workflow permissions, then re-run this workflow.'
+          exit 1
