@@ -76,7 +76,7 @@ A spiral is a logarithmic spiral of constant angle βm,
 
 θ(R) − θ(Rm) = tan βm / sin δ · ln(R / Rm)
 
-Positive βm is right-hand. It is not a circular-cutter trace. A pair needs opposite hands, and a same-hand spiral pair is refused. The transverse contact ratio is the virtual spur pair at mid-face, with addendum scaled by Rm / Re. The overlap ratio is the spiral's rotation from toe to heel divided by the angular pitch.
+Positive βm is right-hand. It is not a circular-cutter trace. A pair needs opposite hands, and a same-hand spiral pair is refused. The transverse contact ratio is the virtual spur pair at the middle of the face both gears share, with addendum scaled by that radius over Re. The overlap ratio is the spiral's rotation along that shared face divided by the angular pitch.
 
 Do not pass `profile_shift` on a bevel. The addendum split above is the shift, and the two members sum to zero.
 

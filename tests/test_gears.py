@@ -238,6 +238,30 @@ def test_straight_and_spiral_bevel_match_the_worked_20_40_pair():
         gear_data({"type": "straight_bevel", "teeth": 20, "mate_teeth": 40, "profile_shift": 0.2, **common})
 
 
+def _spiral_bevel(teeth: int, mate: int, face: float, spiral: float) -> dict:
+    return {
+        "type": "spiral_bevel",
+        "module_mm": 2,
+        "teeth": teeth,
+        "mate_teeth": mate,
+        "pressure_angle_deg": 20,
+        "face_width_mm": face,
+        "spiral_angle_deg": spiral,
+        "shaft_angle_deg": 90,
+    }
+
+
+def test_bevel_contact_uses_the_face_both_gears_share():
+    short = pair_geometry(_spiral_bevel(20, 40, 8, 25), _spiral_bevel(40, 20, 8, -25))
+    wide_pinion = pair_geometry(_spiral_bevel(20, 40, 16, 25), _spiral_bevel(40, 20, 8, -25))
+    wide_gear = pair_geometry(_spiral_bevel(20, 40, 8, 25), _spiral_bevel(40, 20, 16, -25))
+    assert short["overlap_ratio"] > 0
+    assert wide_pinion["overlap_ratio"] == pytest.approx(short["overlap_ratio"], abs=1e-6)
+    assert wide_gear["overlap_ratio"] == pytest.approx(short["overlap_ratio"], abs=1e-6)
+    assert wide_pinion["transverse_contact_ratio"] == pytest.approx(short["transverse_contact_ratio"], abs=1e-6)
+    assert wide_gear["transverse_contact_ratio"] == pytest.approx(short["transverse_contact_ratio"], abs=1e-6)
+
+
 def test_bevel_pitch_cones_at_a_60_degree_shaft_angle():
     sigma = math.radians(60)
     ratio = 40 / 20
