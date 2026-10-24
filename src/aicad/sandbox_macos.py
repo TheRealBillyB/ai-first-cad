@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import resource
 import shutil
 import subprocess
 from collections.abc import Callable, Sequence
@@ -102,9 +101,21 @@ def build_profile(read_paths: Sequence[str], write_paths: Sequence[str], *, netw
     return "\n".join(lines) + "\n"
 
 
+def _resource():
+    """The Unix ``resource`` module. Windows does not provide it.
+
+    The profile text can be built on any system. The limits are applied only
+    on macOS, where this module exists.
+    """
+    import resource
+
+    return resource
+
+
 def apply_limits(*, cpu_seconds: int, memory_bytes: int) -> None:
     """Set CPU and memory limits. On failure the process exits before the script."""
 
+    resource = _resource()
     try:
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
     except (OSError, ValueError) as exc:
@@ -138,6 +149,7 @@ def identity_failures(cpu_seconds: int, memory_bytes: int) -> list[str]:
     """CPU limit only. ``memory_bytes`` is the cap other systems apply; macOS does not set it."""
     _ = memory_bytes
     failures = []
+    resource = _resource()
     _cpu_soft, cpu_hard = resource.getrlimit(resource.RLIMIT_CPU)
     if cpu_hard == resource.RLIM_INFINITY or cpu_hard > cpu_seconds:
         failures.append("the CPU time limit is not in effect")
