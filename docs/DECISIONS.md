@@ -11,6 +11,9 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | Decision | Rationale |
 | --- | --- |
 | A design script cannot record a check it did not run | The check report lists only public document calls the script made. |
+| A hypoid mesh check uses the face-mill solids | The ring tooth and the rolled pinion are the surfaces that meet, so the backlash and the interference come from those solids. |
+| A hypoid mesh sweep follows the placed gears | One pinion tooth is the engagement that can interfere, and a mounted pair sits where the assembly puts it. |
+| A script cannot signal another process | Landlock can scope signals only on a newer kernel. The process filter blocks a signal call unless it names the script process that installed it, including from a child of that script, and the Landlock scope is used as well when the kernel has it. A project file, configuration, environment variable, plugin, or tool argument cannot turn that scope off. |
 | An entry line cannot break the generated master | A title and a rationale stay one line, so they cannot end the generated section or start another line. |
 | The doc generator does not follow links | A symlink, junction, or second file name would read or write a different file when the masters are generated. |
 
