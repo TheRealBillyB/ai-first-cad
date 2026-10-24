@@ -370,6 +370,73 @@ def pe_imported_dlls(path: Path) -> list[str]:
     return names
 
 
+def _image_base(data: bytes, directory: int) -> int | None:
+    """Image base from the optional header that owns this data-directory array."""
+
+    if directory >= 112 and struct.unpack_from("<H", data, directory - 112)[0] == 0x20B:
+        return struct.unpack_from("<Q", data, directory - 88)[0]
+    if directory >= 96 and struct.unpack_from("<H", data, directory - 96)[0] == 0x10B:
+        return struct.unpack_from("<I", data, directory - 68)[0]
+    return None
+
+
+def pe_delay_loaded_dlls(path: Path) -> list[str]:
+    """DLL names in the delay-load import directory.
+
+    The loader opens these when the program first calls them, so a solver
+    directory that only copies the normal import table still fails later.
+    An entry with the RVA attribute stores a relative name. An older entry
+    stores a virtual address, which is turned into a relative one with the
+    image base. Empty when the file is not a PE or has no delay-load directory.
+    """
+
+    view = _pe_view(path)
+    if view is None:
+        return []
+    data, rva_to_offset, directory = view
+    entry = directory + 13 * 8
+    if entry + 8 > len(data):
+        return []
+    delay_rva, delay_size = struct.unpack_from("<II", data, entry)
+    if delay_rva == 0 or delay_size == 0:
+        return []
+    image_base = _image_base(data, directory)
+    start = rva_to_offset(delay_rva)
+    limit = start + delay_size if delay_size else len(data)
+    names: list[str] = []
+    seen: set[str] = set()
+    cursor = start
+    count = 0
+    while cursor + 32 <= min(len(data), limit) and count < 1024:
+        count += 1
+        attrs, name_rva, _hmod, _iat, _int, _bound, _unload, _stamp = struct.unpack_from(
+            "<IIIIIIII", data, cursor
+        )
+        if attrs == 0 and name_rva == 0:
+            break
+        if attrs & 1:
+            name_rva_value = name_rva
+        elif image_base is not None and name_rva >= image_base:
+            name_rva_value = name_rva - image_base
+        else:
+            cursor += 32
+            continue
+        name_off = rva_to_offset(name_rva_value)
+        if name_off < 0 or name_off >= len(data):
+            break
+        end = data.find(b"\0", name_off)
+        if end < 0:
+            break
+        name = data[name_off:end].decode("ascii", "replace")
+        if name:
+            key = name.lower()
+            if key not in seen:
+                seen.add(key)
+                names.append(name)
+        cursor += 32
+    return names
+
+
 def pe_forwarded_dlls(path: Path) -> list[str]:
     """DLLs named by export forwarders, such as libblas forwarding to OpenBLAS.
 
@@ -432,7 +499,7 @@ def stage_solver_bin(binary: Path, search_dirs: list[Path], destination: Path) -
     def referenced(path: Path) -> list[str]:
         return [
             name
-            for name in pe_imported_dlls(path) + pe_forwarded_dlls(path)
+            for name in pe_imported_dlls(path) + pe_delay_loaded_dlls(path) + pe_forwarded_dlls(path)
             if not is_windows_system_dll(name)
         ]
 
