@@ -9,6 +9,7 @@ the master.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -445,3 +446,162 @@ def test_repository_entries_round_trip_and_keep_migrated_rows():
     assert build.check(ROOT) == []
     assert b"\r" not in (ROOT / "docs" / "DECISIONS.md").read_bytes()
     assert "\\" not in (ROOT / "docs" / "DECISIONS.md").read_text(encoding="utf-8").split("docs/decisions", 1)[0]
+
+
+def _ready(root: Path) -> None:
+    _write(root, "docs/decisions/2026-10-24-alpha.md", _decision())
+    _write(root, "docs/tools/inspect-part.md", _tool())
+
+
+def _symlink(path: Path, target: Path, *, directory: bool = False) -> None:
+    try:
+        path.symlink_to(target, target_is_directory=directory)
+    except OSError:
+        pytest.skip("this machine cannot create a symlink")
+
+
+def test_a_symlink_master_is_not_written(tmp_path):
+    build = _build()
+    root = _tree(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = outside / "DECISIONS.md"
+    canary.write_text("KEEP\n", encoding="utf-8")
+    _symlink(root / "docs" / "DECISIONS.md", canary)
+    _ready(root)
+    errors = build.build(root)
+    assert errors
+    assert any("link is not followed" in error for error in errors)
+    assert canary.read_text(encoding="utf-8") == "KEEP\n"
+    readme = outside / "README.md"
+    readme.write_text((root / "README.md").read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "docs" / "DECISIONS.md").unlink()
+    (root / "README.md").unlink()
+    _symlink(root / "README.md", readme)
+    before = readme.read_text(encoding="utf-8")
+    errors = build.build(root)
+    assert errors
+    assert readme.read_text(encoding="utf-8") == before
+
+
+def test_a_symlink_entry_is_not_read_into_the_master(tmp_path):
+    build = _build()
+    root = _tree(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = outside / "2026-10-24-alpha.md"
+    source.write_text(_decision(title="Outside title", rationale="Outside rationale."), encoding="utf-8", newline="\n")
+    _symlink(root / "docs" / "decisions" / "2026-10-24-alpha.md", source)
+    _write(root, "docs/tools/inspect-part.md", _tool())
+    (root / "docs" / "DECISIONS.md").write_text("OLD\n", encoding="utf-8")
+    errors = build.build(root)
+    assert errors
+    assert any("link is not followed" in error for error in errors)
+    assert (root / "docs" / "DECISIONS.md").read_text(encoding="utf-8") == "OLD\n"
+    assert "Outside title" not in (root / "docs" / "DECISIONS.md").read_text(encoding="utf-8")
+
+
+def test_a_symlinked_entry_directory_is_not_used(tmp_path):
+    build = _build()
+    root = _tree(tmp_path)
+    outside = tmp_path / "outside"
+    (outside / "decisions").mkdir(parents=True)
+    (outside / "decisions" / "2026-10-24-alpha.md").write_text(
+        _decision(title="Outside title", rationale="Outside rationale."),
+        encoding="utf-8",
+        newline="\n",
+    )
+    (outside / "keep.txt").write_text("KEEP\n", encoding="utf-8")
+    (root / "docs" / "decisions").rmdir()
+    _symlink(root / "docs" / "decisions", outside / "decisions", directory=True)
+    _write(root, "docs/tools/inspect-part.md", _tool())
+    errors = build.build(root)
+    assert errors
+    assert not (outside / "DECISIONS.md").exists()
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "KEEP\n"
+    master = root / "docs" / "DECISIONS.md"
+    assert not master.exists() or "Outside title" not in master.read_text(encoding="utf-8")
+
+
+def test_a_hard_linked_master_is_not_written(tmp_path):
+    build = _build()
+    root = _tree(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = outside / "DECISIONS.md"
+    canary.write_text("KEEP\n", encoding="utf-8")
+    try:
+        os.link(canary, root / "docs" / "DECISIONS.md")
+    except OSError:
+        pytest.skip("this machine cannot create a hard link")
+    _ready(root)
+    errors = build.build(root)
+    assert errors
+    assert any("link is not followed" in error for error in errors)
+    assert canary.read_text(encoding="utf-8") == "KEEP\n"
+
+
+def test_a_hard_linked_entry_is_not_read(tmp_path):
+    build = _build()
+    root = _tree(tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text(_decision(title="Outside title", rationale="Outside rationale."), encoding="utf-8", newline="\n")
+    try:
+        os.link(outside, root / "docs" / "decisions" / "2026-10-24-alpha.md")
+    except OSError:
+        pytest.skip("this machine cannot create a hard link")
+    _write(root, "docs/tools/inspect-part.md", _tool())
+    errors = build.build(root)
+    assert errors
+    assert any("link is not followed" in error for error in errors)
+    master = root / "docs" / "DECISIONS.md"
+    assert not master.exists() or "Outside title" not in master.read_text(encoding="utf-8")
+
+
+def test_a_symlinked_parent_of_the_repo_still_builds(tmp_path):
+    build = _build()
+    real = tmp_path / "real"
+    real.mkdir()
+    via = tmp_path / "via"
+    _symlink(via, real, directory=True)
+    root = _tree(via)
+    _ready(root)
+    assert build.build(root) == []
+    assert "Alpha" in (real / "repo" / "docs" / "DECISIONS.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a junction is a Windows directory link")
+def test_a_junction_is_not_followed(tmp_path):
+    build = _build()
+    outside = tmp_path / "outside"
+    (outside / "decisions").mkdir(parents=True)
+    (outside / "decisions" / "2026-10-24-alpha.md").write_text(
+        _decision(title="Outside title", rationale="Outside rationale."),
+        encoding="utf-8",
+        newline="\n",
+    )
+    (outside / "keep.txt").write_text("KEEP\n", encoding="utf-8")
+    root = tmp_path / "repo"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "tools").mkdir()
+    (root / "README.md").write_text(
+        "# Guide\n\n| Tool | What it does |\n| --- | --- |\n| `inspect_part` | Measure it. |\n",
+        encoding="utf-8",
+    )
+    link = root / "docs" / "decisions"
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(outside / "decisions")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        pytest.skip("this machine cannot create a junction")
+    _write(root, "docs/tools/inspect-part.md", _tool())
+    errors = build.build(root)
+    assert errors
+    assert any("link is not followed" in error for error in errors)
+    assert not (outside / "DECISIONS.md").exists()
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "KEEP\n"
+    master = root / "docs" / "DECISIONS.md"
+    assert not master.exists() or "Outside title" not in master.read_text(encoding="utf-8")
