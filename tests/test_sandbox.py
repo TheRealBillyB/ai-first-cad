@@ -1459,6 +1459,34 @@ def test_wall_clock_limit_stops_the_script(tmp_path, config_home, monkeypatch):
         run_part_script("while True:\n    pass\n", tmp_path)
 
 
+def test_a_child_that_survives_the_kill_does_not_hold_the_parent(monkeypatch):
+    import subprocess
+    import threading
+    import time
+
+    from aicad import sandbox
+
+    class Stuck:
+        def __init__(self):
+            self.pid = 424242
+            self.stdout = None
+            self.stderr = None
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="child", timeout=timeout or 0)
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="child", timeout=timeout or 0)
+
+    killed = []
+    monkeypatch.setattr(sandbox, "_kill_process_tree", lambda leader, seen, lock: killed.append(leader))
+    started = time.monotonic()
+    sandbox._stop_child(Stuck(), set(), threading.Lock(), reap_seconds=0.05)
+    assert killed == [424242, 424242]
+    assert time.monotonic() - started < 2
+
+
 def test_cpu_or_memory_limit_stops_the_script(tmp_path, config_home, monkeypatch):
     monkeypatch.setenv("AICAD_SCRIPT_CPU_SECONDS", "1")
     monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "30")

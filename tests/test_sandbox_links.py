@@ -329,6 +329,39 @@ def test_a_zip_in_the_project_is_not_extracted(tmp_path):
     _assert_absent(project / _CANARY_NAME)
 
 
+def test_a_child_of_a_linked_project_is_not_opened(tmp_path):
+    outside = tmp_path / "outside"
+    nested = outside / "nested"
+    nested.mkdir(parents=True)
+    (outside / "session.json").write_text(_empty_session(), encoding="utf-8")
+    (nested / "keep.txt").write_text("keep\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "session.json").write_text(_empty_session(), encoding="utf-8")
+    _link_dir(project / "linked", outside)
+    for root in (project, tmp_path / "home"):
+        workspace = Workspace(root)
+        with pytest.raises(AICADError, match="link outside"):
+            workspace.execute("open_project", {"path": str(project / "linked" / "nested")})
+        assert workspace.root == root.resolve()
+    assert (nested / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+    assert not (nested / "session.json").exists()
+    assert not (nested / "requirements.json").exists()
+    assert not (outside / "requirements.json").exists()
+
+
+def test_a_link_that_stays_inside_the_project_can_be_opened(tmp_path):
+    project = tmp_path / "project"
+    inner = project / "inner"
+    inner.mkdir(parents=True)
+    (project / "session.json").write_text(_empty_session(), encoding="utf-8")
+    (inner / "session.json").write_text(_empty_session(), encoding="utf-8")
+    _link_dir(project / "alias", inner)
+    workspace = Workspace(tmp_path / "home")
+    workspace.execute("open_project", {"path": str(project / "alias")})
+    assert workspace.root == inner.resolve()
+
+
 def test_a_linked_subfolder_is_not_opened(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -458,6 +491,9 @@ def test_a_private_file_is_copied_into_the_project(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "inside\n"
     assert target.is_file() and not target.is_symlink()
     assert target.stat().st_mode & 0o400
+    exports = project / "exports"
+    assert exports.is_dir() and not exports.is_symlink()
+    assert exports.stat().st_mode & 0o700 == 0o700
     step = project / "exports" / "box.step"
     export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [4, 4, 4]}]), step)
     assert step.is_file() and step.stat().st_size > 0 and not step.is_symlink()

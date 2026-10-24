@@ -62,16 +62,94 @@ def _circle_angles(points, radius: float) -> list[float]:
     return hits
 
 
-def test_families_leave_hypoid_unregistered():
-    layouts = {item["axis_layout"] for item in families().values()}
-    assert layouts == {"parallel", "intersecting"}
-    assert set(families()) == {"spur", "helical", "straight_bevel", "spiral_bevel"}
-    spec = {"type": "hypoid", "module_mm": 2, "teeth": 20, "face_width_mm": 8, "offset_mm": 10}
-    with pytest.raises(GeometryError, match="Hypoid"):
-        gear_data(spec)
+def _hypoid_member(role: str) -> dict:
+    teeth, mate = (8, 16) if role == "pinion" else (16, 8)
+    return {
+        "type": "hypoid",
+        "role": role,
+        "teeth": teeth,
+        "mate_teeth": mate,
+        "offset_mm": 12,
+        "shaft_angle_deg": 90,
+        "ring_diameter_mm": 80,
+        "face_width_mm": 10,
+        "spiral_angle_deg": 35,
+        "pressure_angle_deg": 20,
+    }
+
+
+def test_hypoid_is_registered_and_other_families_keep_zero_offset():
+    assert families()["hypoid"]["axis_layout"] == "offset"
+    assert "hypoid" in families()
     spur = {"type": "spur", "module_mm": 2, "teeth": 20, "face_width_mm": 8, "offset_mm": 1}
-    with pytest.raises(GeometryError, match="Hypoid"):
+    with pytest.raises(GeometryError, match="offset_mm"):
         gear_data(spur)
+    hob = _hypoid_member("pinion")
+    hob["cutter"] = {"process": "face_hob"}
+    with pytest.raises(GeometryError, match="face_mill"):
+        gear_data(hob)
+
+
+def test_hypoid_ratio_and_offset_are_not_a_slid_bevel():
+    from aicad.gears.hypoid import line_distance
+
+    pinion = gear_data(_hypoid_member("pinion"))
+    ring = gear_data(_hypoid_member("ring"))
+    assert pinion["ratio"] == 2
+    assert ring["ratio"] == 2
+    assert pinion["offset_mm"] == 12
+    # A bevel with this ratio at 90 degrees would split the shaft angle between the cones.
+    assert abs(pinion["pinion_pitch_angle_deg"] + pinion["ring_pitch_angle_deg"] - 90) > 0.2
+    assert abs(abs(pinion["pinion_spiral_angle_deg"]) - abs(pinion["ring_spiral_angle_deg"])) > 1
+    assembly = pinion["assembly"]
+    distance = line_distance(
+        assembly["pinion_axis_point_mm"],
+        assembly["pinion_axis_direction"],
+        assembly["gear_axis_point_mm"],
+        assembly["gear_axis_direction"],
+    )
+    assert abs(distance - 12) < 1e-6
+    report = pair_geometry(_hypoid_member("pinion"), _hypoid_member("ring"))
+    assert report["ratio"] == 2
+    assert report["offset_mm"] == 12
+    assert report["axis_layout"] == "offset"
+
+
+def test_hypoid_pair_is_a_closed_solid_and_meshes():
+    pinion = kernel.adopt(build_gear(_hypoid_member("pinion")))
+    ring = kernel.adopt(build_gear(_hypoid_member("ring")))
+    for shape in (pinion, ring):
+        measured = kernel.measure(shape)
+        assert measured.watertight and measured.valid
+        assert measured.volume_mm3 > 1000
+    for angle in (0.0, 8.0, 16.0):
+        placement = mesh_placement(_hypoid_member("pinion"), _hypoid_member("ring"), angle)
+        assert placement["offset_mm"] == 12
+        first = kernel.place(
+            pinion,
+            tuple(placement["pinion"]["position_mm"]),
+            tuple(placement["pinion"]["rotation_deg"]),
+        )
+        second = kernel.place(
+            ring,
+            tuple(placement["gear"]["position_mm"]),
+            tuple(placement["gear"]["rotation_deg"]),
+        )
+        overlap, gap, *_ = kernel.clearance_between(first, second)
+        assert overlap < 1e-4
+        assert gap < 0.05
+    # A move along the offset, with the rotation left at the mesh pose, has to hit.
+    placement = mesh_placement(_hypoid_member("pinion"), _hypoid_member("ring"), 0.0)
+    position = list(placement["pinion"]["position_mm"])
+    position[1] += 0.5
+    plunged = kernel.place(pinion, tuple(position), tuple(placement["pinion"]["rotation_deg"]))
+    seated = kernel.place(
+        ring,
+        tuple(placement["gear"]["position_mm"]),
+        tuple(placement["gear"]["rotation_deg"]),
+    )
+    overlap_plunge, *_ = kernel.clearance_between(plunged, seated)
+    assert overlap_plunge > 0.3
 
 
 def test_spur_and_helical_match_iso_21771():
@@ -124,6 +202,40 @@ def test_spur_and_helical_match_iso_21771():
 
     low = gear_data({"type": "spur", "module_mm": 2, "teeth": 12, "pressure_angle_deg": 20, "face_width_mm": 6})
     assert low["undercut"] is True
+
+
+def test_same_hand_gears_are_not_placed_as_a_mesh():
+    helical = {
+        "type": "helical",
+        "module_mm": 2,
+        "teeth": 20,
+        "pressure_angle_deg": 20,
+        "helix_angle_deg": 15,
+        "face_width_mm": 10,
+    }
+    with pytest.raises(GeometryError, match="opposite hands"):
+        pair_geometry(helical, helical)
+    opposite = pair_geometry(helical, {**helical, "helix_angle_deg": -15})
+    assert opposite["axis_layout"] == "parallel"
+    assert opposite["backlash_mm"] == 0.0
+    assert opposite["centre_distance_mm"] == pytest.approx(40 / math.cos(math.radians(15)), abs=1e-4)
+
+    spiral = {
+        "type": "spiral_bevel",
+        "module_mm": 2,
+        "teeth": 20,
+        "mate_teeth": 40,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 8,
+        "spiral_angle_deg": 25,
+        "shaft_angle_deg": 90,
+    }
+    mate = {**spiral, "teeth": 40, "mate_teeth": 20, "spiral_angle_deg": 25}
+    with pytest.raises(GeometryError, match="opposite hands"):
+        pair_geometry(spiral, mate)
+    meshed = pair_geometry(spiral, {**mate, "spiral_angle_deg": -25})
+    assert meshed["axis_layout"] == "intersecting"
+    assert meshed["backlash_mm"] == 0.0
 
 
 def test_spur_pair_contact_ratio_is_the_path_of_contact():
@@ -202,6 +314,30 @@ def test_straight_and_spiral_bevel_match_the_worked_20_40_pair():
     assert mate["tip_diameter_mm"] == pytest.approx(121.4959, abs=1e-3)
     with pytest.raises(GeometryError, match="profile_shift"):
         gear_data({"type": "straight_bevel", "teeth": 20, "mate_teeth": 40, "profile_shift": 0.2, **common})
+
+
+def _spiral_bevel(teeth: int, mate: int, face: float, spiral: float) -> dict:
+    return {
+        "type": "spiral_bevel",
+        "module_mm": 2,
+        "teeth": teeth,
+        "mate_teeth": mate,
+        "pressure_angle_deg": 20,
+        "face_width_mm": face,
+        "spiral_angle_deg": spiral,
+        "shaft_angle_deg": 90,
+    }
+
+
+def test_bevel_contact_uses_the_face_both_gears_share():
+    short = pair_geometry(_spiral_bevel(20, 40, 8, 25), _spiral_bevel(40, 20, 8, -25))
+    wide_pinion = pair_geometry(_spiral_bevel(20, 40, 16, 25), _spiral_bevel(40, 20, 8, -25))
+    wide_gear = pair_geometry(_spiral_bevel(20, 40, 8, 25), _spiral_bevel(40, 20, 16, -25))
+    assert short["overlap_ratio"] > 0
+    assert wide_pinion["overlap_ratio"] == pytest.approx(short["overlap_ratio"], abs=1e-6)
+    assert wide_gear["overlap_ratio"] == pytest.approx(short["overlap_ratio"], abs=1e-6)
+    assert wide_pinion["transverse_contact_ratio"] == pytest.approx(short["transverse_contact_ratio"], abs=1e-6)
+    assert wide_gear["transverse_contact_ratio"] == pytest.approx(short["transverse_contact_ratio"], abs=1e-6)
 
 
 def test_bevel_pitch_cones_at_a_60_degree_shaft_angle():
@@ -446,6 +582,21 @@ def test_document_reloads_a_gear_and_the_command_layer_matches(tmp_path: Path):
     replaced = document.update_gear("pinion", {**spec, "teeth": 16})
     assert replaced["gear"]["teeth"] == 16
     assert abs(replaced["volume_mm3"] - volume) / volume > 0.05
+
+    document.place_part("pinion", [10, 20, 30], [0, 0, 15])
+    kept = document.update_gear("pinion", {**spec, "teeth": 18})
+    assert kept["gear"]["teeth"] == 18
+    assert document.get_source("pinion")["placement"] == {
+        "position": [10.0, 20.0, 30.0],
+        "rotation_deg": [0.0, 0.0, 15.0],
+    }
+    kept_box = document.measure("pinion").bounding_box
+    kept_center_x = (kept_box.min.x + kept_box.max.x) / 2
+    assert kept_center_x == pytest.approx(10, abs=0.5)
+    moved = document.update_gear("pinion", {**spec, "teeth": 18}, position=[1, 2, 3])
+    assert document.get_source("pinion")["placement"]["position"] == [1.0, 2.0, 3.0]
+    assert document.get_source("pinion")["placement"]["rotation_deg"] == [0.0, 0.0, 15.0]
+    _ = moved
 
     workspace = Workspace(tmp_path / "app")
     report = workspace.execute("create_gear", {"name": "pinion", "spec": spec, "position": [0, 0, 0]})

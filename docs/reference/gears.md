@@ -1,6 +1,6 @@
 # Gears
 
-`aicad.gears` builds external spur, helical, straight bevel, and spiral bevel solids, and the same numbers the solid is drawn from. Units are millimetres. A hypoid gear (a shaft angle plus a nonzero offset) is not built. The module keeps an `offset` axis layout free so that family can be added without a new bore, hub, or report shape.
+`aicad.gears` builds external spur, helical, straight bevel, spiral bevel, and hypoid solids, and the same numbers the solid is drawn from. Units are millimetres. A hypoid uses the offset axis layout: a shaft angle plus a pinion offset. Bores, hubs, keyways, and splines are the same for every family.
 
 The Python calls are `gear_data`, `build_gear`, `pair_geometry`, and `mesh_placement`. The command line is `aicad gear`. The assistant tool is `create_gear`. A part stored this way has source `gear` and is rebuilt from the spec.
 
@@ -43,7 +43,7 @@ a = (d1 + d2) / 2 · cos αt / cos αwt
 
 If inv αwt is negative, backlash remains when the base circles touch. There is no zero-backlash centre distance, and the pair is refused.
 
-The transverse contact ratio is the length of the path of contact divided by the transverse base pitch. The overlap ratio is b sin|β| / (π mn), using the shorter face. External helical gears need opposite hands.
+The transverse contact ratio is the length of the path of contact divided by the transverse base pitch. The overlap ratio is b sin|β| / (π mn), using the shorter face. External helical gears need opposite hands. A same-hand pair is refused instead of being placed on parallel shafts.
 
 ## Straight and spiral bevel
 
@@ -76,9 +76,21 @@ A spiral is a logarithmic spiral of constant angle βm,
 
 θ(R) − θ(Rm) = tan βm / sin δ · ln(R / Rm)
 
-Positive βm is right-hand. It is not a circular-cutter trace. A pair needs opposite hands. The transverse contact ratio is the virtual spur pair at mid-face, with addendum scaled by Rm / Re. The overlap ratio is the spiral's rotation from toe to heel divided by the angular pitch.
+Positive βm is right-hand. It is not a circular-cutter trace. A pair needs opposite hands, and a same-hand spiral pair is refused. The transverse contact ratio is the virtual spur pair at the middle of the face both gears share, with addendum scaled by that radius over Re. The overlap ratio is the spiral's rotation along that shared face divided by the angular pitch.
 
 Do not pass `profile_shift` on a bevel. The addendum split above is the shift, and the two members sum to zero.
+
+## Hypoid
+
+A hypoid is a ring and a pinion whose shafts do not intersect. `offset_mm` is the shortest distance between the two axes. Positive puts the pinion axis on +Y. `ratio` is ring teeth divided by pinion teeth. `ring_diameter_mm` is the ring mean pitch diameter. `spiral_angle_deg` is the ring mean spiral; positive is right-hand, and the pinion hand is the opposite. `shaft_angle_deg` defaults to 90. `role` is `pinion` or `ring`.
+
+The pitch point is not a spiral bevel slid sideways. It is the point at the ring pitch radius where three things are true together: the pitch cones share a tangent plane, the tooth counts share one normal module, and the sliding runs along the ring tooth. Among those cones the one with the least sliding is kept. The cone angles do not add up to the shaft angle, and the two spiral angles are not equal.
+
+The ring tooth is the cone of one circular face-mill blade. `pressure_angle_deg` sets both blade angles unless `drive_pressure_angle_deg` and `coast_pressure_angle_deg` are given. `cutter.radius_mm` defaults to a circle a little larger than the ring pitch radius. `cutter.point_width_mm` defaults to half the normal circular pitch. `cutter.edge_radius_mm` defaults to a small fraction of the module and is recorded only; it is not cut as a fillet. `cutter.process` must be `face_mill`. Face-hobbing, a timed group of blades, is refused.
+
+The pinion is the blank left after that same tooth is rolled. Both shafts turn at the tooth ratio about the offset axes, and each pose of the tooth is cut out of a tip-cone blank. The groove is then copied around the pinion. The ring flank is shifted a little into the metal, and the cutting tooth is shifted a little into the space, so a flat facet of the blade cannot cross the mate. The reported backlash is those two shifts. Between the sampled turns the pinion can sit slightly closer. Root clearance is deeper than the mate tip. The proportions are a simple addendum split, not a cited hypoid standard.
+
+A zero offset is a spiral bevel, not a hypoid. A very large offset, or a pinion with too few teeth for the blade, is refused when the tooth is cut away. This is not a tolerance grade and not a load rating.
 
 ## Bore, hub, keyway, spline
 
@@ -98,6 +110,48 @@ A keyway and a spline are not combined. A spline sets its own hole; `bore_mm` ha
 
 A bevel pair keeps both pitch apexes at the origin. The mate is rotated about Y by the shaft angle, after a spin about its own axis that puts a tooth space on the common pitch generator. In the placement record that is `[0, shaft_angle, spin]`, applied as X, then Y, then Z.
 
+A hypoid ring stays on +Z through the origin. The pinion axis is the reported direction through `pinion_axis_point_mm`, and the shortest distance between the axes is `offset_mm`. `mesh_placement(..., gear_angle_deg)` turns the ring and the pinion together at the tooth ratio. Rotation is degrees about X, then Y, then Z.
+
+## Mesh check
+
+`check_pair` and `check_gears` take one pair, or every gear relation in an assembly. The report compares the centre distance with the zero-backlash centre, gives circumferential and normal backlash against a range, the transverse and total contact ratio, undercut, and tooth interference.
+
+For a spur or helical pair the centre distance is the distance between the axes. Omit it to use the zero-backlash centre from the pair geometry above. Circumferential backlash is `2 a (inv α' − inv α)` on the operating pitch circle. Normal backlash is that arc times `cos α' cos βw`.
+
+For a bevel pair the centre distance is a signed axis offset. Zero keeps the pitch apexes together. Backlash is the mid-face virtual spur with that offset added to its centre. The sweep uses the virtual spur at the toe, the mid-face, and the heel, including the constant spiral angle unwrapped onto the back cone. It starts from the generated mesh phase and does not read a clocking of the two gears about the pitch generator.
+
+The smaller gear is turned through one full rotation in steps no coarser than 2 degrees, and the mate turns by the tooth ratio. At each step the tooth outlines on the line of centres are tested for overlap. A helical pair is also checked at both ends of the shorter face.
+
+The range is `{min, max}` in millimetres and applies to both backlash numbers, or separate `circumferential` and `normal` ranges. A pair fails when backlash is outside the range, the total contact ratio is below 1, a member is undercut, or the outlines interfere.
+
+An offset layout has no checker yet. `register_mesh_check("offset", checker)` is the plug-in for a hypoid pair, and it returns the same report.
+
+The command line is `aicad check-gears`. The assistant tool is `check_gears`.
+
+## Gear train
+
+`aicad.gears.train` solves shaft speed and torque for a train stored on the assembly. The command is `aicad gear-train`. The assistant tool is `solve_gear_train`. Tooth counts come from gears this module built. An internal ring is a stated tooth count, because that solid is not built.
+
+A shaft lists the gears fixed to it, and may name the revolute or cylindrical joint that turns it. A mesh names two gears. `kind` is `external` (opposite directions) or `internal` (the same direction). `carrier` is the shaft the mesh orbits with. Omit it and the carrier is the housing, which is a fixed-axis mesh. `efficiency` defaults to 1. `fixed` names shafts held at zero speed.
+
+Relative to the carrier, an external mesh of tooth counts z_a and z_b gives
+
+(ω_b − ω_c) / (ω_a − ω_c) = −z_a / z_b
+
+An internal mesh gives +z_a / z_b. Gears on one shaft share one speed, so a compound train multiplies the stage ratios. An idler is one gear between two meshes, and its tooth count cancels.
+
+A planetary mesh names the carrier. With the ring fixed,
+
+ω_carrier / ω_sun = z_sun / (z_sun + z_ring)
+
+An open differential is `{carrier, left, right}`, not two ordinary meshes. The constraint is
+
+(ω_left + ω_right) / 2 = ω_carrier
+
+Straight ahead, both outputs match the carrier. In a turn, one output speeds up as much as the other slows down. The two outputs share the carrier torque. Give the carrier speed and one output speed. The carrier alone leaves one degree of freedom, and the report says the train is under-constrained. Speeds that do not average are over-constrained.
+
+The drive is `{inputs: [{shaft, speed_rpm, torque_nm}], speeds: [{shaft, speed_rpm}]}`. Speed is revolutions per minute. Torque is newton-metres, applied to the shaft in the positive direction. A load the shaft drives has the opposite sign. At efficiency 1 the shaft powers sum to zero, and the housing reaction cancels the shaft torques. An efficiency below 1 scales the torque delivered through that mesh. The report's `status` is `determined`, `under_constrained`, or `over_constrained`.
+
 ## Not in this module
 
-Tolerance grades, backlash other than the zero-backlash nominal, a hypoid offset, a circular face-mill or face-hob path, and a gear-train load are not generated here.
+Tolerance grades and face-hobbing are not generated here. The small hypoid flank shift is not a backlash you specify, and other backlash is reported by the mesh check rather than cut into the solid. An offset pair has no mesh checker yet. The train solver does not check that the solids touch.

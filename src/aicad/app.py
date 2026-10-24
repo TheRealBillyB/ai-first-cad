@@ -290,6 +290,7 @@ def _handler(session: Workspace):
                 else:
                     self._error(404, "Not found.")
             except RequestRejected as exc:
+                self._discard_unread_body()
                 self._error(403, exc.message)
             except AICADError as exc:
                 self._error(400, str(exc))
@@ -483,10 +484,32 @@ def _handler(session: Workspace):
             self.end_headers()
             self.wfile.write(data)
 
+        def _discard_unread_body(self) -> None:
+            """Read a POST body that a refusal did not use.
+
+            A refusal runs before the body is read. Leaving those bytes unread
+            makes Windows reset the socket, so the client never sees the status.
+            """
+            if getattr(self, "_body_taken", False):
+                return
+            self._body_taken = True
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                return
+            remaining = min(max(length, 0), 2_000_000)
+            while remaining:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+
         def _read_json(self) -> dict:
             length = int(self.headers.get("Content-Length") or 0)
             if length > 2_000_000:
+                self._body_taken = True
                 raise GeometryError("Request is too large.")
+            self._body_taken = True
             raw = self.rfile.read(length) if length else b"{}"
             try:
                 payload = json.loads(raw.decode("utf-8"))

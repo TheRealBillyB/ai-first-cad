@@ -29,6 +29,7 @@ from aicad.printprep import analyze_print
 from aicad.printprep import list_printers as printer_catalog
 from aicad.robot import export_robot
 from aicad.errors import DocumentError, GeometryError, PartNotFound
+from aicad.chain import solve_kinematics as solve_chain
 from aicad.kinematics import normalize as normalize_assembly
 from aicad.kinematics import solve as solve_assembly
 from aicad.motion_study import run_study, study_by_name
@@ -826,6 +827,11 @@ class Document:
 
         clean = gears_mod.normalize_spec(spec)
         base = kernel.adopt(gears_mod.build_gear(clean))
+        previous = self._parts.get(name)
+        if position is None and previous is not None:
+            position = previous.placement["position"]
+        if rotation_deg is None and previous is not None:
+            rotation_deg = previous.placement["rotation_deg"]
         placed_at = _vec3(position or [0, 0, 0], "position")
         rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
         shape = kernel.place(base, placed_at, rotation)
@@ -840,21 +846,34 @@ class Document:
         self._save()
         payload = self._info(self._parts[name]).to_dict()
         payload["gear"] = gears_mod.gear_data(clean)
-        return finish(
-            payload,
-            kind=VERIFIED_CHECK,
-            name=name,
-            what=(
+        if clean["type"] == "hypoid":
+            what = (
+                "Hypoid ring or pinion. The ring tooth is a face-mill blade cone. "
+                "The pinion is the blank left after that tooth is rolled at the tooth ratio."
+            )
+            limits = [
+                "This is not a tolerance grade or a load rating.",
+                "The cutter is one face-mill blade cone. Face-hobbing is not generated.",
+                "The edge radius is recorded and is not cut as a fillet.",
+                "The flanks are shifted slightly apart so a flat facet cannot cross the mate.",
+            ]
+        else:
+            what = (
                 "Nominal involute gear from the cited tooth standard. "
                 "The solid and the pitch, base, and cone figures describe that model."
-            ),
-            limits=[
+            )
+            limits = [
                 "Tooth thickness is the nominal zero-backlash size, not a tolerance grade.",
                 "A helical fillet uses the ISO 53 normal tip radius as a circle in the transverse plane.",
                 "A bevel solid rules the back-cone involute between the inner and outer cone distances. Reported face and root angles are the Gleason parallel-clearance angles.",
                 "A spiral trace is a constant-angle spiral, not a circular cutter path.",
-                "Hypoid gears, with a shaft offset, are not generated.",
-            ],
+            ]
+        return finish(
+            payload,
+            kind=VERIFIED_CHECK,
+            name=name,
+            what=what,
+            limits=limits,
         )
 
     def place_part(
@@ -1129,11 +1148,81 @@ class Document:
                 clearance_mm=clearance_mm,
             )
 
-    def check_cables(self, name: str, sequence: str | None = None, motion: dict | None = None) -> dict:
+    def solve_kinematics(
+        self,
+        name: str,
+        tool: str,
+        at: list | None = None,
+        rotation_deg: list | None = None,
+        joints: dict | None = None,
+        slides: dict | None = None,
+        target: dict | None = None,
+        path: dict | None = None,
+    ) -> dict:
+        """Forward or inverse kinematics for the chain that ends at ``tool``.
+
+        ``target`` is a position, an orientation, or a rigid matrix. ``path``
+        steps the tool along a line or through waypoints and checks those
+        poses with the motion study.
+        """
+        request: dict = {"tool": tool}
+        for key, value in (
+            ("at", at),
+            ("rotation_deg", rotation_deg),
+            ("joints", joints),
+            ("slides", slides),
+            ("target", target),
+            ("path", path),
+        ):
+            if value is not None:
+                request[key] = value
         with self._lock:
             spec = self._get_assembly(name)
-            chosen = assembly.motion_by_name(spec, sequence, motion) if (sequence or motion) else None
-            return assembly.check_cables(spec, self._assembly_shapes(spec), chosen)
+            return solve_chain(spec, self._assembly_shapes(spec), request)
+
+    def check_cables(
+        self,
+        name: str,
+        sequence: str | None = None,
+        motion: dict | None = None,
+        study: dict | str | None = None,
+        steps: int | None = None,
+    ) -> dict:
+        """Length, bend, and pinch for clip routes and tendon routes.
+
+        ``sequence`` is a motion, or a motion study when no motion has that name.
+        ``study`` is a study name or an inline study. ``steps`` overrides the
+        study's pose count. A tendon is anchors, pulleys, guides, and an end
+        anchor. Its length includes the wrap arcs.
+        """
+        with self._lock:
+            spec = self._get_assembly(name)
+            chosen_motion, chosen_study = _cable_timeline(spec, sequence, motion, study)
+            return assembly.check_cables(
+                spec,
+                self._assembly_shapes(spec),
+                chosen_motion,
+                study=chosen_study,
+                steps=steps,
+            )
+
+    def solve_gear_train(self, name: str, drive: dict) -> dict:
+        """Speed and torque of every shaft in the assembly gear train.
+
+        Tooth counts come from the generated gears on the train. ``drive`` gives
+        the input shaft, speed in rpm, and torque in N·m. A differential in a
+        turn also needs one output speed.
+        """
+        with self._lock:
+            spec = self._get_assembly(name)
+            gear_specs = {}
+            for instance in spec["instances"]:
+                part = self._get(instance["part"])
+                if part.gear_spec is not None:
+                    gear_specs[instance["name"]] = part.gear_spec
+            from aicad.gears.train import solve_gear_train as solve_train
+
+            return solve_train(spec, drive, gear_specs)
 
     def estimate_power(
         self,
@@ -1162,6 +1251,193 @@ class Document:
                 self.workspace, self.workspace / "renders" / "assemblies" / spec["name"], "Render"
             )
             return solve_modal_assembly(spec, self._assembly_shapes(spec), setup or {}, out_dir)
+
+    def check_gears(self, spec: dict) -> dict:
+        """Centre distance, backlash, contact ratio, undercut, and interference of a gear pair.
+
+        ``spec`` names two gear specs or two gear parts, or an assembly. An
+        assembly is every gear relation, or every pair of gear instances when
+        the assembly has no gear relation. The smaller gear is turned through
+        one full rotation.
+        """
+        if not isinstance(spec, dict):
+            raise GeometryError("A gear mesh check is an object.")
+        with self._lock:
+            if spec.get("assembly"):
+                return self._check_assembly_gears(spec)
+            return self._check_named_gear_pair(spec)
+
+    def _check_named_gear_pair(self, spec: dict) -> dict:
+        pinion_spec, pinion_part = self._gear_member(spec.get("pinion"), "pinion")
+        gear_spec, gear_part = self._gear_member(spec.get("gear"), "gear")
+        return gears_mod.check_pair(
+            pinion_spec,
+            gear_spec,
+            self._gear_mounting(spec, pinion_part, gear_part),
+            spec.get("backlash_mm"),
+            spec.get("steps"),
+        )
+
+    def _check_assembly_gears(self, spec: dict) -> dict:
+        from aicad.gears.meshcheck import _LIMITS, mounting_from_frames
+        from aicad.honesty import VERIFIED_CHECK, finish
+
+        name = str(spec["assembly"])
+        assembly = self._get_assembly(name)
+        solved = solve_assembly(assembly)
+        frames = {item["name"]: item["matrix"] for item in solved["instances"]}
+        selected = self._assembly_gear_pairs(assembly, spec.get("pinion"), spec.get("gear"))
+        reports = []
+        for left_name, right_name, label in selected:
+            left_part = self._instance_gear(assembly, left_name)
+            right_part = self._instance_gear(assembly, right_name)
+            measured = mounting_from_frames(frames[left_name], frames[right_name])
+            mounting = {}
+            if measured["parallel"]:
+                mounting["centre_distance_mm"] = measured["centre_distance_mm"]
+                mounting["shaft_angle_deg"] = measured["shaft_angle_deg"]
+                if "pinion_phase_deg" in measured:
+                    mounting["pinion_phase_deg"] = measured["pinion_phase_deg"]
+                    mounting["gear_phase_deg"] = measured["gear_phase_deg"]
+            else:
+                mounting["centre_distance_mm"] = measured["centre_distance_mm"]
+                mounting["shaft_angle_deg"] = measured["shaft_angle_deg"]
+            for key in ("centre_distance_mm", "shaft_angle_deg", "offset_mm", "pinion_phase_deg", "gear_phase_deg"):
+                if spec.get(key) is not None:
+                    mounting[key] = spec[key]
+            report = gears_mod.check_pair(
+                copy.deepcopy(left_part.gear_spec),
+                copy.deepcopy(right_part.gear_spec),
+                mounting,
+                spec.get("backlash_mm"),
+                spec.get("steps"),
+            )
+            report["instances"] = [left_name, right_name]
+            report["relation"] = label
+            reports.append(report)
+        failed = [item for item in reports if item.get("status") != "pass"]
+        return finish(
+            {
+                "status": "fail" if failed else "pass",
+                "assembly": name,
+                "pairs": reports,
+                "passed": len(reports) - len(failed),
+                "failed": len(failed),
+                "assumptions": list(reports[0].get("assumptions") or []),
+            },
+            kind=VERIFIED_CHECK,
+            name=name,
+            what=(
+                "Mesh and backlash of every gear pair in the assembly. "
+                "A pair fails when its backlash, contact ratio, undercut, or interference fails."
+            ),
+            limits=list(_LIMITS),
+        )
+
+    def _assembly_gear_pairs(self, assembly: dict, pinion, gear) -> list[tuple[str, str, str]]:
+        joints = {joint["name"]: joint for joint in assembly["joints"]}
+        relations = [item for item in assembly["relations"] if item["type"] == "gear"]
+        if relations:
+            pairs = []
+            for relation in relations:
+                driver = joints[relation["driver"]]["child"]
+                driven = joints[relation["driven"]]["child"]
+                if pinion is None and gear is None:
+                    pairs.append((driver, driven, relation["name"]))
+                    continue
+                forward = self._instance_named(assembly, driver, pinion) and self._instance_named(
+                    assembly, driven, gear
+                )
+                backward = self._instance_named(assembly, driver, gear) and self._instance_named(
+                    assembly, driven, pinion
+                )
+                if forward:
+                    pairs.append((driver, driven, relation["name"]))
+                elif backward:
+                    pairs.append((driven, driver, relation["name"]))
+            if not pairs:
+                raise GeometryError(f"Assembly {assembly['name']!r} has no gear relation for that pair.")
+            return pairs
+        names = [
+            instance["name"]
+            for instance in assembly["instances"]
+            if self._parts.get(instance["part"]) and self._parts[instance["part"]].gear_spec
+        ]
+        if pinion is not None or gear is not None:
+            left = self._find_instance(assembly, pinion, "pinion")
+            right = self._find_instance(assembly, gear, "gear")
+            return [(left, right, f"{left}/{right}")]
+        if len(names) < 2:
+            raise GeometryError(f"Assembly {assembly['name']!r} has no gear pair to check.")
+        pairs = []
+        for index, left in enumerate(names):
+            for right in names[index + 1 :]:
+                pairs.append((left, right, f"{left}/{right}"))
+        return pairs
+
+    def _instance_named(self, assembly: dict, instance_name: str, wanted) -> bool:
+        if wanted is None:
+            return True
+        if instance_name == wanted:
+            return True
+        instance = next(item for item in assembly["instances"] if item["name"] == instance_name)
+        return instance["part"] == wanted
+
+    def _find_instance(self, assembly: dict, wanted, label: str) -> str:
+        if not isinstance(wanted, str):
+            raise GeometryError(f"In an assembly, {label} is an instance name or a part name.")
+        matches = [
+            instance["name"]
+            for instance in assembly["instances"]
+            if instance["name"] == wanted or instance["part"] == wanted
+        ]
+        if len(matches) != 1:
+            raise GeometryError(f"Assembly {assembly['name']!r} needs one instance for {label} {wanted!r}.")
+        return matches[0]
+
+    def _instance_gear(self, assembly: dict, instance_name: str):
+        instance = next(item for item in assembly["instances"] if item["name"] == instance_name)
+        part = self._get(instance["part"])
+        if not part.gear_spec:
+            raise GeometryError(
+                f"Instance {instance_name!r} uses part {part.name!r}, which is not a generated gear."
+            )
+        return part
+
+    def _gear_member(self, value, label: str):
+        if isinstance(value, str):
+            part = self._get(value)
+            if not part.gear_spec:
+                raise GeometryError(f"{label} {value!r} is not a generated gear.")
+            return copy.deepcopy(part.gear_spec), part
+        if isinstance(value, dict):
+            return value, None
+        raise GeometryError(f"{label} must be a gear spec or the name of a gear part.")
+
+    def _gear_mounting(self, spec: dict, pinion_part, gear_part) -> dict:
+        mounting = {}
+        for key in ("centre_distance_mm", "shaft_angle_deg", "offset_mm", "pinion_phase_deg", "gear_phase_deg"):
+            if spec.get(key) is not None:
+                mounting[key] = spec[key]
+        if (
+            pinion_part is not None
+            and gear_part is not None
+            and "centre_distance_mm" not in mounting
+            and "offset_mm" not in mounting
+        ):
+            from aicad.gears.meshcheck import mounting_from_frames
+            from aicad.kinematics import matrix_from_placement
+
+            measured = mounting_from_frames(
+                matrix_from_placement(pinion_part.placement),
+                matrix_from_placement(gear_part.placement),
+            )
+            mounting.setdefault("centre_distance_mm", measured["centre_distance_mm"])
+            mounting.setdefault("shaft_angle_deg", measured["shaft_angle_deg"])
+            if "pinion_phase_deg" in measured:
+                mounting.setdefault("pinion_phase_deg", measured["pinion_phase_deg"])
+                mounting.setdefault("gear_phase_deg", measured["gear_phase_deg"])
+        return mounting
 
     def check_bolts(self, spec: dict) -> dict:
         """Preload, torque, slip, and loosening for a fastener. A library part can supply the size."""
@@ -1405,6 +1681,83 @@ class Document:
                 limits=list(report.get("omits") or explode_mod.OMITS),
             )
             return finished
+
+    def render_animation(
+        self,
+        name: str,
+        kind: str | None = None,
+        sequence: str | None = None,
+        study: dict | None = None,
+        frames: int | None = None,
+        fps: float | None = None,
+        duration_s: float | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        camera: str | dict | None = None,
+        camera_path: list | None = None,
+        turns: float | None = None,
+        elevation_deg: float | None = None,
+        background: str | None = None,
+        colors: dict | None = None,
+        materials: dict | None = None,
+        overlay: str | None = None,
+        joint: str | None = None,
+        gap_mm: float | None = None,
+        video: str | None = None,
+        path: str | Path | None = None,
+    ) -> dict:
+        """Write a GIF of this assembly, and a video when ffmpeg is on PATH.
+
+        ``kind`` is ``motion``, ``orbit``, or ``exploded``. ``frames`` counts
+        both ends. ``fps`` is the playback rate. ``width`` and ``height`` are
+        even pixel sizes. ``camera`` is a view name or ``orbit``.
+        ``camera_path`` is a list of ``{azimuth_deg, elevation_deg}``.
+        ``background`` is ``paper``, ``white``, ``black``, or ``#rrggbb``.
+        ``colors`` and ``materials`` recolor the pictures only. ``overlay`` is
+        ``none``, ``step``, ``time``, or ``value``. ``video`` is ``gif``,
+        ``mp4``, ``webm``, or ``both``. ``path`` is a file or a directory
+        inside the project. A missing ffmpeg still leaves the GIF, and
+        ``video_message`` says why the video was not written.
+        """
+        with self._lock:
+            if path is not None:
+                from aicad.animation import refuse_output
+
+                refuse_output(self.workspace, path)
+            spec = self._get_assembly(name)
+            from aicad.animation import render_clip
+
+            try:
+                return render_clip(
+                    root=self.workspace,
+                    spec=spec,
+                    shapes=self._assembly_shapes(spec),
+                    libraries=self._library_specs(spec),
+                    kind=kind,
+                    sequence=sequence,
+                    study=study,
+                    frames=frames,
+                    fps=fps,
+                    duration_s=duration_s,
+                    width=width,
+                    height=height,
+                    camera=camera,
+                    camera_path=camera_path,
+                    turns=turns,
+                    elevation_deg=elevation_deg,
+                    background=background,
+                    colors=colors,
+                    materials=materials,
+                    overlay=overlay,
+                    joint=joint,
+                    gap_mm=gap_mm,
+                    video=video,
+                    path=path,
+                )
+            except OSError as exc:
+                raise GeometryError(
+                    f"Could not write the animation for {spec['name']}. {exc.strerror or exc}."
+                ) from exc
 
     def assembly_mesh(self, name: str) -> dict:
         with self._lock:
@@ -1792,6 +2145,35 @@ class Document:
             )
         specs = {name: copy.deepcopy(self._parts[name].library_spec) for name in needed}
         return library.resolve_assembly_mates(spec, specs)
+
+
+def _cable_timeline(spec: dict, sequence, motion, study):
+    """A stored motion, or a motion study when that is what the name refers to."""
+    if study is not None and motion is not None:
+        raise GeometryError("Pass a motion or a motion study, not both.")
+    if isinstance(study, str):
+        return None, study_by_name(spec, study, None)
+    if isinstance(study, dict):
+        return None, study_by_name(spec, sequence, study)
+    if motion is not None:
+        return assembly.motion_by_name(spec, sequence, motion), None
+    if not sequence:
+        return None, None
+    motions = spec.get("motions") or {}
+    studies = spec.get("studies") or {}
+    if sequence in motions and sequence in studies:
+        raise GeometryError(
+            f"{sequence!r} is both a motion and a motion study. Pass the motion or the study on its own."
+        )
+    if sequence in studies:
+        return None, study_by_name(spec, sequence, None)
+    if sequence in motions:
+        return assembly.motion_by_name(spec, sequence, None), None
+    known_motions = ", ".join(motions) or "(none)"
+    known_studies = ", ".join(studies) or "(none)"
+    raise GeometryError(
+        f"No motion or motion study {sequence!r}. Motions: {known_motions}. Studies: {known_studies}."
+    )
 
 
 def _unbuilt_message(name: str) -> str:

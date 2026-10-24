@@ -1,4 +1,4 @@
-"""Solids for spur, helical, straight bevel, and spiral bevel gears.
+"""Solids for spur, helical, straight bevel, spiral bevel, and hypoid gears.
 
 A spur tooth is the transverse involute extruded along the axis. A helical
 tooth carries that profile on a constant-lead helicoid: positive helix is
@@ -6,7 +6,9 @@ right-hand, so the profile turns counter-clockwise about +Z as z increases.
 A bevel tooth is the back-cone involute wrapped on the cone and ruled between
 the inner and outer cone distances. A spiral rotates each station by the
 constant spiral angle. End faces close the back-cone profile; the outer face
-is the back cone itself.
+is the back cone itself. A hypoid ring tooth is the face-mill blade, lofted between stations along
+the face. The pinion is the tip-cone blank left after that tooth is rolled
+about the offset shafts at the tooth ratio and cut out.
 
 Bores, hubs, DIN 6885 keyways, ISO 14 splines, and DIN 5480 hub splines are
 applied the same way for every family, including a later offset-axis family.
@@ -60,6 +62,62 @@ def build_cylindrical(spec: dict):
         raise GeometryError(f"The helical tooth could not be built: {exc}") from exc
 
 
+def build_hypoid(spec: dict):
+    """Ring from the face-mill tooth, or the pinion left after that tooth is rolled."""
+    if spec["role"] == "pinion":
+        return _generated_pinion(spec)
+    return _generated_ring(spec)
+
+
+def _generated_ring(spec: dict):
+    """Root cone plus one lofted tooth copied around the ring."""
+    from aicad.gears.hypoid import pitch_design, ring_core_rings, ring_tooth_rings
+
+    design = pitch_design(spec)
+    tooth = _lofted_tooth(ring_tooth_rings(design))
+    box = tooth.bounding_box()
+    core = _lofted_shell(ring_core_rings(design, float(box.min.Z) - 0.4, float(box.max.Z) + 0.4))
+    step = 2.0 * math.pi / design["z2"]
+    solid = core
+    for index in range(design["z2"]):
+        piece = tooth if index == 0 else _moved(tooth, _z_rotation(index * step))
+        solid = _fuse(solid, piece)
+    return _one(solid)
+
+
+def _generated_pinion(spec: dict):
+    """Pinion blank with the face-mill tooth rolled out, then copied around.
+
+    One ring tooth is swept through the angles where it meets the pinion.
+    That cuts every space that tooth forms. Rotating the removed metal by
+    one pinion pitch repeats the space for the other teeth. Cutting the
+    poses one at a time stays cheap because each tool is small.
+    """
+    from aicad.gears.hypoid import pinion_blank_rings, pinion_trsf, pitch_design, roll_angles, tool_tooth_rings
+
+    design = pitch_design(spec)
+    blank = _lofted_shell(pinion_blank_rings(design))
+    tooth = _lofted_tooth(tool_tooth_rings(design))
+    solid = blank
+    for phi in roll_angles(design):
+        solid = _cut(solid, _moved(tooth, pinion_trsf(phi, design)))
+    chip = _cut(blank, solid)
+    if chip.volume < 1.0:
+        raise GeometryError(
+            "The face-mill tooth missed the pinion. Increase cutter.radius_mm or shorten the face."
+        )
+    step = 2.0 * math.pi / design["z1"]
+    chips = chip
+    for index in range(1, design["z1"]):
+        chips = _fuse(chips, _moved(chip, _z_rotation(index * step)))
+    solid = _cut(blank, chips)
+    if solid.volume < blank.volume * 0.2 or solid.volume > blank.volume * 0.98:
+        raise GeometryError(
+            "The face-mill roll did not leave a toothed pinion. Use more pinion teeth or a shorter face."
+        )
+    return _one(solid)
+
+
 def build_bevel(spec: dict):
     """Back-cone tooth ruled along the face. A spiral uses several stations."""
     cone = geom.bevel_cones(spec)
@@ -98,6 +156,153 @@ def _dedupe_2d(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     if math.hypot(cleaned[0][0] - cleaned[-1][0], cleaned[0][1] - cleaned[-1][1]) < 1e-6:
         cleaned.pop()
     return cleaned
+
+
+def _lofted_shell(rings: list[list[tuple[float, float, float]]]):
+    """Closed solid from coaxial outlines. The first station is one end of the face."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    count = len(rings[0])
+    if count < 3 or any(len(ring) != count for ring in rings):
+        raise GeometryError("The hypoid stations do not share an outline.")
+
+    def mean_z(ring) -> float:
+        return sum(point[2] for point in ring) / len(ring)
+
+    z0, z1 = mean_z(rings[0]), mean_z(rings[-1])
+    span = max(abs(z1 - z0), 0.5)
+    # Outward along Z is away from the other end.
+    sign0 = -1.0 if z1 >= z0 else 1.0
+    cap0 = (0.0, 0.0, z0 + sign0 * 0.04 * span)
+    cap1 = (0.0, 0.0, z1 - sign0 * 0.04 * span)
+    faces = []
+
+    def add(a, b, c) -> None:
+        if _triangle_area(a, b, c) < 1e-12:
+            return
+        polygon = BRepBuilderAPI_MakePolygon(gp_Pnt(*a), gp_Pnt(*b), gp_Pnt(*c), True)
+        made = BRepBuilderAPI_MakeFace(polygon.Wire())
+        if made.IsDone():
+            faces.append(made.Face())
+
+    for index in range(count):
+        nxt = (index + 1) % count
+        add(*_wind(cap0, rings[0][index], rings[0][nxt], sign_z=sign0))
+        add(*_wind(cap1, rings[-1][index], rings[-1][nxt], sign_z=-sign0))
+    for band in range(len(rings) - 1):
+        inner = rings[band]
+        outer = rings[band + 1]
+        for index in range(count):
+            nxt = (index + 1) % count
+            edge = outer[index]
+            nxt_edge = outer[nxt]
+            outward = (nxt_edge[1] - edge[1], -(nxt_edge[0] - edge[0]))
+            add(*_wind_xy(edge, nxt_edge, inner[nxt], outward))
+            add(*_wind_xy(edge, inner[nxt], inner[index], outward))
+    return _sew_faces(faces, "hypoid tooth")
+
+
+def _lofted_tooth(rings: list[list[tuple[float, float, float]]]):
+    """One closed tooth. The ends are the outlines themselves, not a cap on the axis."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    count = len(rings[0])
+    if count < 3 or any(len(ring) != count for ring in rings):
+        raise GeometryError("The hypoid tooth stations do not share an outline.")
+
+    def centroid(ring):
+        scale = 1.0 / len(ring)
+        return (
+            sum(point[0] for point in ring) * scale,
+            sum(point[1] for point in ring) * scale,
+            sum(point[2] for point in ring) * scale,
+        )
+
+    start, end = centroid(rings[0]), centroid(rings[-1])
+    body = ((start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5, (start[2] + end[2]) * 0.5)
+    faces = []
+
+    def add(a, b, c) -> None:
+        if _triangle_area(a, b, c) < 1e-12:
+            return
+        polygon = BRepBuilderAPI_MakePolygon(gp_Pnt(*a), gp_Pnt(*b), gp_Pnt(*c), True)
+        made = BRepBuilderAPI_MakeFace(polygon.Wire())
+        if made.IsDone():
+            faces.append(made.Face())
+
+    def add_out(a, b, c, inside) -> None:
+        normal = _normal(a, b, c)
+        middle = ((a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0)
+        outward = normal[0] * (middle[0] - inside[0]) + normal[1] * (middle[1] - inside[1]) + normal[2] * (middle[2] - inside[2])
+        if outward < 0.0:
+            add(a, c, b)
+        else:
+            add(a, b, c)
+
+    for index in range(count):
+        nxt = (index + 1) % count
+        add_out(start, rings[0][index], rings[0][nxt], end)
+        add_out(end, rings[-1][index], rings[-1][nxt], start)
+    for band in range(len(rings) - 1):
+        inner = rings[band]
+        outer = rings[band + 1]
+        for index in range(count):
+            nxt = (index + 1) % count
+            add_out(outer[index], outer[nxt], inner[nxt], body)
+            add_out(outer[index], inner[nxt], inner[index], body)
+    return _sew_faces(faces, "hypoid cutting tooth")
+
+
+def _moved(solid, transform):
+    from build123d import Location
+
+    return solid.moved(Location(transform))
+
+
+def _z_rotation(angle: float):
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    transform = gp_Trsf()
+    transform.SetRotation(gp_Ax1(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 0.0, 1.0)), angle)
+    return transform
+
+
+def _sew_faces(faces, label: str):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.ShapeFix import ShapeFix_Solid
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    if len(faces) < 4:
+        raise GeometryError(f"The {label} did not produce a closed surface.")
+    sewing = BRepBuilderAPI_Sewing(1e-4)
+    for face in faces:
+        sewing.Add(face)
+    sewing.Perform()
+    free = sewing.NbFreeEdges()
+    if free:
+        raise GeometryError(f"The {label} shell has {free} open edges, so it is not a closed solid.")
+    sewed = sewing.SewedShape()
+    explorer = TopExp_Explorer(sewed, TopAbs_SHELL)
+    if not explorer.More():
+        raise GeometryError(f"The {label} shell did not sew into a shell.")
+    shell = TopoDS.Shell(explorer.Current())
+    fixer = ShapeFix_Solid()
+    solid_shape = fixer.SolidFromShell(shell)
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(solid_shape, props)
+    if props.Mass() < 0:
+        solid_shape.Reverse()
+    wrapped = Solid(solid_shape)
+    if wrapped.volume <= 0 or not BRepCheck_Analyzer(wrapped.wrapped).IsValid():
+        raise GeometryError(f"The {label} solid is not a valid closed body.")
+    return wrapped
 
 
 def _bevel_shell(cone: dict, rings: list[list[tuple[float, float, float]]]):
@@ -235,6 +440,10 @@ def _with_hub_and_hole(blank, spec: dict):
 
 
 def _root_radius(spec: dict) -> float:
+    if spec["type"] == "hypoid":
+        from aicad.gears.hypoid import root_radius
+
+        return root_radius(spec)
     if spec["type"] in geom.CYLINDRICAL:
         return geom.cylindrical_scalars(spec)["rf"]
     cone = geom.bevel_cones(spec)

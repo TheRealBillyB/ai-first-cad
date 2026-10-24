@@ -68,6 +68,16 @@ def test_bolt_slip_is_high_while_the_bolt_stays_below_yield():
     assert len(report["assumptions"]) >= 8
 
 
+def test_class_8_8_above_16_mm_uses_the_larger_proof_stress():
+    small = check_joint({"size": "M16", "grade": "8.8", "grip_mm": 30, "axial_n": 0})
+    large = check_joint({"size": "M20", "grade": "8.8", "grip_mm": 40, "axial_n": 0})
+    assert small["proof_load_n"] / small["tensile_stress_area_mm2"] == pytest.approx(580, abs=0.05)
+    assert large["proof_load_n"] / large["tensile_stress_area_mm2"] == pytest.approx(600, abs=0.05)
+    # No external load, so bolt force is the preload and yield margin is yield / (fraction * proof).
+    assert large["yield_margin"] == pytest.approx(660 / (0.70 * 600), abs=0.01)
+    assert small["yield_margin"] == pytest.approx(640 / (0.70 * 580), abs=0.01)
+
+
 def test_larger_bolt_with_reserve_stays_low_and_the_worst_joint_leads():
     report = check_joint(
         {

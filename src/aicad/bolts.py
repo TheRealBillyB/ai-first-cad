@@ -91,7 +91,8 @@ def check_joint(spec: dict) -> dict:
 
 def _one(spec: dict) -> dict:
     size, pitch = _size_and_pitch(spec.get("size"))
-    grade = _grade(spec.get("grade") or "8.8")
+    diameter = _diameter(size)
+    grade = _stresses(spec.get("grade") or "8.8", diameter)
     condition = str(spec.get("condition") or "dry").lower()
     if condition not in _CONDITIONS:
         known = ", ".join(_CONDITIONS)
@@ -111,7 +112,6 @@ def _one(spec: dict) -> dict:
         raise GeometryError("interfaces is how many slip planes the clamp squeezes, from 1 to 6.")
     axial = _number(spec.get("axial_n"), 0.0, "axial_n")
     shear = abs(_number(spec.get("shear_n"), 0.0, "shear_n"))
-    diameter = _diameter(size)
     area = _tensile_area(diameter, pitch)
     grip = _number(spec.get("grip_mm"), None, "grip_mm")
     if grip is None:
@@ -352,7 +352,7 @@ def _assumptions(condition: str, fraction: float, nut_factor: float, friction: f
     return [
         "Sizes use the ISO coarse pitch unless the size string gives a pitch, as in M8-1.25.",
         "Tensile stress area is π/4 * (d - 0.9382*p)^2, the usual ISO approximation.",
-        f"Recommended preload is {fraction:.0%} of proof load. Proof stress is the ISO 898-1 value for the grade. A2-70 uses 450 MPa as a conservative stand-in for proof.",
+        f"Recommended preload is {fraction:.0%} of proof load. Proof stress is the ISO 898-1 value for the grade and the diameter. Class 8.8 above 16 mm uses 600 MPa proof and 660 MPa yield. A2-70 uses 450 MPa as a conservative stand-in for proof.",
         f"Tightening torque is K*F*d with K = {nut_factor:.2f} for the {condition} condition. K is a friction lump, not a measured torque-tension test. Lubricant, plating, and reuse move it.",
         "Bolt stiffness is At*E/grip. Member stiffness is a steel cylinder of diameter 1.5*d over the same grip. The load factor is bolt stiffness over the sum. It is not a finite-element joint.",
         f"Friction capacity is μ*residual clamp*interfaces with μ = {friction:.2f}. Residual clamp is preload minus the share of a separating axial load carried by the members.",
@@ -397,6 +397,19 @@ def _grade(name: str) -> dict:
         known = ", ".join(_GRADES)
         raise GeometryError(f"No bolt grade {name!r}. Known grades: {known}.")
     return _GRADES[key]
+
+
+def _stresses(name: str, diameter: float) -> dict:
+    """ISO 898-1 stresses for this grade and diameter.
+
+    Class 8.8 has two rows. Up to 16 mm the proof stress is 580 MPa. Above
+    16 mm it is 600 MPa, with yield 660 MPa and tensile 830 MPa.
+    """
+    grade = _grade(name)
+    key = str(name).strip().lower().replace(" ", "")
+    if key == "8.8" and diameter > 16.0:
+        return {**grade, "proof_mpa": 600.0, "yield_mpa": 660.0, "ultimate_mpa": 830.0}
+    return grade
 
 
 def _tensile_area(diameter: float, pitch: float) -> float:

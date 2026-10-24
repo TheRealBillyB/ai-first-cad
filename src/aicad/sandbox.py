@@ -17,12 +17,18 @@ set on that process. If those limits cannot be applied, the script is not run.
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
 ``part``, use the same confined process so an assistant cannot skip it.
+A link that points outside the project is not written. A file with more
+than one name is not used for the run, because writing it would change
+every name. A script result that is a link is not read. Geometry and
+pictures named by that result are opened only when they stay inside the
+project. The script log is not read when it has another name.
 """
 
 from __future__ import annotations
 
 import builtins
 import ctypes
+import errno
 import json
 import os
 import platform
@@ -478,11 +484,30 @@ def script_log_path(workspace: Path) -> Path:
 
 
 def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> None:
-    path = script_log_path(workspace)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Append one design-script row. A log path that leaves the project is skipped.
+
+    A symlink, junction, or file with another name is left as it is. Reading
+    it would copy that other file into the project.
+    """
+    from aicad.paths import is_reparse, output_path, publish_text, shared_file
+
+    root = Path(workspace).resolve()
+    try:
+        path = output_path(root, script_log_path(root), "Script log", ScriptError)
+    except ScriptError:
+        return
+    if is_reparse(path) or shared_file(path):
+        return
     row = {"time": _now(), "kind": "design", "ok": ok, "error": error, "script": script}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row) + "\n")
+    line = json.dumps(row) + "\n"
+    try:
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    except OSError:
+        return
+    try:
+        publish_text(path, existing + line, root=root)
+    except OSError:
+        return
 
 
 def _check_script(code: str) -> None:
@@ -531,11 +556,9 @@ def _refuse_project_link(path: Path, root: Path, read_roots: list[Path], writing
 
 
 def _shared_file(path: Path) -> bool:
-    try:
-        info = path.stat()
-    except OSError:
-        return False
-    return stat.S_ISREG(info.st_mode) and info.st_nlink > 1
+    from aicad.paths import shared_file
+
+    return shared_file(path)
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -544,6 +567,29 @@ def _inside(path: Path, root: Path) -> bool:
     except (OSError, ValueError):
         return False
     return True
+
+
+def _refuse_multilink(workspace: Path) -> None:
+    """Refuse a run when a file in the project has another name.
+
+    Writing that file would change every name, including one outside the
+    project. Directory link counts are not file names, and directory links
+    are not followed.
+    """
+    from aicad.paths import is_reparse, shared_file
+
+    root = workspace.resolve()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        dirnames[:] = [name for name in dirnames if not is_reparse(current / name)]
+        for name in filenames:
+            path = current / name
+            if is_reparse(path) or not shared_file(path):
+                continue
+            relative = path.relative_to(root).as_posix()
+            raise ScriptError(
+                f"{relative} is linked from more than one name, so the script was not run."
+            )
 
 
 def _under(path: Path, roots: list[Path]) -> bool:
@@ -1199,8 +1245,7 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
     from aicad.paths import output_dir
 
     private = output_dir(workspace, workspace / ".aicad", "Project data", ScriptError)
-    temporary = private / "tmp"
-    temporary.mkdir(parents=True, exist_ok=True)
+    temporary = output_dir(workspace, private / "tmp", "Temporary files", ScriptError)
     os.environ["TMPDIR"] = str(temporary)
     os.environ["TMP"] = str(temporary)
     os.environ["TEMP"] = str(temporary)
@@ -1311,7 +1356,13 @@ def _pythonpath_for_child(workspace: Path, raw: str | None) -> str | None:
     return os.pathsep.join(kept)
 
 
-def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
+def _child_env(
+    workspace: Path,
+    job: Path,
+    network: bool,
+    tmp: Path | None = None,
+    cache: Path | None = None,
+) -> dict[str, str]:
     env: dict[str, str] = {}
     for key, value in os.environ.items():
         upper = key.upper()
@@ -1333,26 +1384,28 @@ def _child_env(workspace: Path, job: Path, network: bool) -> dict[str, str]:
     env["AICAD_JOB"] = str(job)
     env["AICAD_NETWORK"] = "1" if network else "0"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    tmp = str(workspace / ".aicad" / "tmp")
-    env["TMPDIR"] = tmp
-    env["TMP"] = tmp
-    env["TEMP"] = tmp
+    tmp_path = tmp if tmp is not None else workspace / ".aicad" / "tmp"
+    tmp_text = str(tmp_path)
+    env["TMPDIR"] = tmp_text
+    env["TMP"] = tmp_text
+    env["TEMP"] = tmp_text
     if sys.platform == "win32":
         # ezdxf and matplotlib otherwise stat the real user profile. An
         # AppContainer is denied that path. Do not redirect USERPROFILE:
         # that made every script fail with STATUS_INVALID_HANDLE.
         # The font list is built once in the Python install. The other
         # caches stay in the project, which the container can write.
-        cache = str(workspace / ".aicad" / "cache")
+        cache_path = cache if cache is not None else workspace / ".aicad" / "cache"
+        cache_text = str(cache_path)
         font_home = _windows_font_cache_home()
         font_file = font_home / "ezdxf" / "font_manager_cache.json"
         if font_file.is_file() and font_file.stat().st_size > 0:
             env["XDG_CACHE_HOME"] = str(font_home)
         else:
-            env["XDG_CACHE_HOME"] = cache
-        env["XDG_CONFIG_HOME"] = cache
-        env["XDG_DATA_HOME"] = cache
-        env["MPLCONFIGDIR"] = cache
+            env["XDG_CACHE_HOME"] = cache_text
+        env["XDG_CONFIG_HOME"] = cache_text
+        env["XDG_DATA_HOME"] = cache_text
+        env["MPLCONFIGDIR"] = cache_text
     return env
 
 
@@ -1437,8 +1490,9 @@ def _descendants(leader: int) -> set[int]:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=2,
             )
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
             return set()
         for line in completed.stdout.splitlines():
             parts = line.split()
@@ -1540,6 +1594,37 @@ def _kill_process_tree(leader: int, seen: set[int], lock: threading.Lock) -> Non
         _kill_pid(pid)
 
 
+def _close_child_pipes(proc: subprocess.Popen) -> None:
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is None:
+            continue
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def _stop_child(proc: subprocess.Popen, seen: set[int], seen_lock: threading.Lock, *, reap_seconds: float = 5) -> None:
+    """Kill a sandbox child and do not wait forever for it to disappear.
+
+    The first signal is the process group. If the process is still alive, it
+    is signalled again and the pipes are closed. The waits are bounded, so a
+    child that does not die cannot hold the test until the job is cancelled.
+    """
+    _kill_process_tree(proc.pid, seen, seen_lock)
+    try:
+        proc.communicate(timeout=reap_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _kill_process_tree(proc.pid, seen, seen_lock)
+    _close_child_pipes(proc)
+    try:
+        proc.wait(timeout=reap_seconds)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def _sandbox_runner() -> Path:
     """This install's sandbox_run.py. The child loads that file, not a name from the project."""
 
@@ -1571,15 +1656,23 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         raise ScriptError(reason)
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
-    from aicad.paths import output_dir
+    _refuse_multilink(workspace)
+    from aicad.paths import is_reparse, output_dir
 
     private = output_dir(workspace, workspace / ".aicad", "Project data", ScriptError)
-    job = private / "jobs" / uuid.uuid4().hex
-    job.mkdir(parents=True, exist_ok=True)
-    (private / "tmp").mkdir(parents=True, exist_ok=True)
-    if sys.platform == "win32":
-        # Created before the AppContainer grant so the container can write it.
-        (private / "cache").mkdir(parents=True, exist_ok=True)
+    tmp_dir = output_dir(workspace, private / "tmp", "Temporary files", ScriptError)
+    jobs_dir = output_dir(workspace, private / "jobs", "Script jobs", ScriptError)
+    cache_dir = None
+    cache_path = private / "cache"
+    if sys.platform == "win32" or is_reparse(cache_path):
+        # On Windows this directory is created before the AppContainer grant
+        # so the container can write it. A link that leaves the project is refused.
+        cache_dir = output_dir(workspace, cache_path, "Library cache", ScriptError)
+    job = jobs_dir / uuid.uuid4().hex
+    try:
+        job.mkdir(mode=0o700)
+    except OSError as exc:
+        raise ScriptError("Could not create a project folder, so the script was not run.") from exc
     spec: dict = {"kind": kind, "network": network}
     probe_root = None
     if kind == "probe":
@@ -1623,7 +1716,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
                 command,
                 cwd=str(workspace),
-                env=_child_env(workspace, job, network),
+                env=_child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir),
                 read_paths=_read_roots(),
                 workspace=workspace,
                 cpu_seconds=cpu_seconds(),
@@ -1639,7 +1732,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             return _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
         if sys.platform.startswith("linux"):
             pids_cgroup = _prepare_pids_cgroup()
-        env = _child_env(workspace, job, network)
+        env = _child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir)
         env.pop("AICAD_PIDS_CGROUP", None)
         if pids_cgroup is not None:
             env["AICAD_PIDS_CGROUP"] = str(pids_cgroup)
@@ -1673,8 +1766,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         try:
             stdout_b, stderr_b = proc.communicate(timeout=wall)
         except subprocess.TimeoutExpired:
-            _kill_process_tree(proc.pid, seen, seen_lock)
-            proc.communicate()
+            _stop_child(proc, seen, seen_lock)
             shutil.rmtree(job, ignore_errors=True)
             raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.") from None
         _kill_process_tree(proc.pid, seen, seen_lock)
@@ -1712,6 +1804,99 @@ def _died_from_limit_signal(code: int) -> bool:
     return -code in signals
 
 
+def _result_text(path: Path) -> str | None:
+    """UTF-8 text of a regular result file. A link is not read.
+
+    ``None`` means the file is not there. A symlink, junction, or file with
+    another name raises ``ScriptError`` before a byte of that file is read.
+    """
+    from aicad.paths import is_reparse
+
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return None
+        raise ScriptError("The script result is a link and was not read.") from exc
+    if stat.S_ISLNK(info.st_mode) or is_reparse(path):
+        raise ScriptError("The script result is a link and was not read.")
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        descriptor = os.open(os.fspath(path), flags)
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.EMLINK}:
+            raise ScriptError("The script result is a link and was not read.") from exc
+        if exc.errno == errno.ENOENT:
+            return None
+        raise ScriptError("The script result could not be read.") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink > 1
+            or opened.st_ino != info.st_ino
+            or opened.st_dev != info.st_dev
+        ):
+            raise ScriptError("The script result is a link and was not read.")
+        chunks: list[bytes] = []
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            chunks.append(block)
+        try:
+            return b"".join(chunks).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ScriptError("The script result could not be read.") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _project_regular_file(root: Path, raw: str | Path, label: str) -> Path:
+    """A regular file inside ``root``. A link is not opened."""
+    from aicad.paths import is_reparse, shared_file
+
+    root_resolved = Path(root).resolve()
+    text = os.fspath(raw)
+    if not text or "\x00" in text:
+        raise ScriptError(f"{label} is outside the project folder {root_resolved}.")
+    path = Path(text)
+    if not path.is_absolute():
+        path = root_resolved / path
+    if is_reparse(path):
+        raise ScriptError(f"{label} is a link and was not opened.")
+    try:
+        resolved = path.resolve()
+    except OSError as exc:
+        raise ScriptError(f"{label} is outside the project folder {root_resolved}.") from exc
+    if not _inside(resolved, root_resolved):
+        raise ScriptError(f"{label} is outside the project folder {root_resolved}.")
+    if is_reparse(resolved) or shared_file(resolved):
+        raise ScriptError(f"{label} is a link and was not opened.")
+    return resolved
+
+
+def _refuse_result_paths(root: Path, payload: dict) -> None:
+    """Refuse a picture path that leaves the project or is a link."""
+    views: list[dict] = []
+    listed = payload.get("views")
+    if isinstance(listed, list):
+        views.extend(item for item in listed if isinstance(item, dict))
+    single = payload.get("view")
+    if isinstance(single, dict):
+        views.append(single)
+    for view in views:
+        raw = view.get("path")
+        if isinstance(raw, str) and raw.strip():
+            _project_regular_file(root, raw, "The script picture")
+
+
 def _payload_from_result(
     job: Path,
     code: int,
@@ -1728,7 +1913,12 @@ def _payload_from_result(
         shutil.rmtree(job, ignore_errors=True)
         raise ScriptError("The script was stopped because it hit the memory or CPU limit.")
     result_path = job / "result.json"
-    if not result_path.is_file():
+    try:
+        result_text = _result_text(result_path)
+    except ScriptError:
+        shutil.rmtree(job, ignore_errors=True)
+        raise
+    if result_text is None:
         tail = stderr[-2000:]
         shutil.rmtree(job, ignore_errors=True)
         # SIGKILL is the memory cap and the parent's kill. SIGXCPU is the CPU
@@ -1760,7 +1950,7 @@ def _payload_from_result(
             + (f"\n{detail}" if detail else f"\nexit {code}")
         )
     try:
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload = json.loads(result_text)
     except json.JSONDecodeError as exc:
         raise ScriptError(f"The script's result could not be read: {exc}") from exc
     if not isinstance(payload, dict):
@@ -1789,7 +1979,7 @@ def run_part_script(code: str, workspace: str | Path | None = None):
         from aicad.kernel import import_step_file
         from aicad.models import feature_report_from_dict
 
-        step = Path(str(payload["step"]))
+        step = _project_regular_file(Path(workspace), str(payload["step"]), "The script geometry")
         shape = import_step_file(step)
         shape.features = feature_report_from_dict(payload.get("features"))
         return shape
@@ -1810,6 +2000,12 @@ def run_design_script(workspace: str | Path, code: str, network: bool = False) -
     try:
         payload = _spawn(root, "design", code, network=network)
     except ScriptError as exc:
+        _append_log(root, code, False, str(exc))
+        raise
+    try:
+        _refuse_result_paths(root, payload)
+    except ScriptError as exc:
+        _drop_job(payload)
         _append_log(root, code, False, str(exc))
         raise
     _drop_job(payload)

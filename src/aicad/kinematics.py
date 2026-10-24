@@ -6,6 +6,8 @@ cylinder relation writes two: the barrel angle and the rod extension, from
 the pin-to-pin distance of a driver revolute. That keeps a hydraulic cylinder
 on its clevises without a spatial loop. A linkage here is a planar four-bar
 map, and a gear is a linear map between joint values.
+
+Serial-chain inverse kinematics and a tool path are solved in ``aicad.chain``.
 """
 
 from __future__ import annotations
@@ -122,7 +124,7 @@ def normalize(spec: dict) -> dict:
             raise GeometryError("ignore_collisions entries are [instance, instance].")
         ignore.append([str(pair[0]), str(pair[1])])
     studies = _studies(spec.get("studies"), joints, relations)
-    return {
+    cleaned = {
         "name": str(name),
         "instances": cleaned_instances,
         "joints": joints,
@@ -134,6 +136,19 @@ def normalize(spec: dict) -> dict:
         "actuators": copy.deepcopy(spec.get("actuators") or []),
         "ignore_collisions": ignore,
     }
+    gear_train = _gear_train(spec, cleaned_instances, joints)
+    if gear_train is not None:
+        cleaned["gear_train"] = gear_train
+    return cleaned
+
+
+def _gear_train(spec: dict, instances: list[dict], joints: list[dict]):
+    """Shafts and meshes, stored only when the assembly has a train."""
+    if spec.get("gear_train") is None:
+        return None
+    from aicad.gears.train import normalize_gear_train
+
+    return normalize_gear_train(spec["gear_train"], joints, [item["name"] for item in instances])
 
 
 def _studies(raw, joints: list[dict], relations: list[dict]) -> dict:

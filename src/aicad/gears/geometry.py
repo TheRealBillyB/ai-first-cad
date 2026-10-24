@@ -10,10 +10,10 @@ for spiral bevels. The flank is the involute of that virtual gear, wrapped
 onto the back cone and ruled to the pitch apex (an octoid). A spiral tooth
 trace is a constant-angle spiral on the pitch cone at the mean spiral angle.
 
-Hypoid gears are not built. They need a nonzero axis offset and a tooth
-surface from a generating process. :func:`register_family` accepts an
-``offset`` layout so that generator can be added without changing bores, hubs,
-or the metadata shared by every family.
+A hypoid pair uses the offset layout: a shaft angle plus a pinion offset.
+The ring tooth is a face-mill blade cone and the pinion tooth is the
+envelope of that blade. Bores, hubs, and the shared metadata are the same
+as the other families.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def register_family(
 
     ``axis_layout`` is ``parallel`` (spur, helical), ``intersecting``
     (straight and spiral bevel), or ``offset`` (hypoid: a shaft angle plus
-    a hypoid offset). No offset family is registered.
+    a pinion offset).
     """
     if axis_layout not in {PARALLEL, INTERSECTING, OFFSET}:
         raise GeometryError(
@@ -98,8 +98,12 @@ def require_builder(spec: dict) -> tuple[dict, Callable]:
     return clean, family["build"]
 
 
-def pair_geometry(pinion: dict, gear: dict) -> dict:
-    """Centre distance or shaft angle, contact ratio, and a zero-backlash pose."""
+def pair_geometry(pinion: dict, gear: dict, gear_angle_deg: float = 0.0) -> dict:
+    """Centre distance, shaft angle, or hypoid offset, and a meshing pose.
+
+    ``gear_angle_deg`` advances a hypoid ring and its pinion together at the
+    tooth ratio. Other families ignore it.
+    """
     left = gear_data(pinion)
     right = gear_data(gear)
     if left["axis_layout"] != right["axis_layout"]:
@@ -112,19 +116,37 @@ def pair_geometry(pinion: dict, gear: dict) -> dict:
     elif left["axis_layout"] == INTERSECTING:
         report = _bevel_pair(left, right)
     else:
-        raise GeometryError("An offset (hypoid) pair is not generated.")
-    report["pinion"] = {"type": left["type"], "teeth": left["teeth"], "hand": left["hand"]}
-    report["gear"] = {"type": right["type"], "teeth": right["teeth"], "hand": right["hand"]}
+        from aicad.gears.hypoid import pair_hypoid
+
+        report = pair_hypoid(left, right, gear_angle_deg)
+    # A hypoid report already names the pinion and the ring, in that order.
+    if left["axis_layout"] != OFFSET:
+        report["pinion"] = {"type": left["type"], "teeth": left["teeth"], "hand": left["hand"]}
+        report["gear"] = {"type": right["type"], "teeth": right["teeth"], "hand": right["hand"]}
+    else:
+        report["pinion"] = {
+            "type": "hypoid",
+            "role": "pinion",
+            "teeth": left["pinion_teeth"],
+            "hand": left["pinion_hand"],
+        }
+        report["gear"] = {
+            "type": "hypoid",
+            "role": "ring",
+            "teeth": left["ring_teeth"],
+            "hand": left["ring_hand"],
+        }
     return _round_tree(report)
 
 
-def mesh_placement(pinion: dict, gear: dict) -> dict:
-    """Rigid placement of a zero-backlash pair. Rotations are degrees about X, then Y, then Z."""
-    report = pair_geometry(pinion, gear)
+def mesh_placement(pinion: dict, gear: dict, gear_angle_deg: float = 0.0) -> dict:
+    """Rigid placement of a meshing pair. Rotations are degrees about X, then Y, then Z."""
+    report = pair_geometry(pinion, gear, gear_angle_deg)
     return {
         "axis_layout": report["axis_layout"],
         "centre_distance_mm": report.get("centre_distance_mm"),
         "shaft_angle_deg": report.get("shaft_angle_deg"),
+        "offset_mm": report.get("offset_mm"),
         "pinion": report["placement"]["pinion"],
         "gear": report["placement"]["gear"],
         "note": report["placement"]["note"],
@@ -134,9 +156,25 @@ def mesh_placement(pinion: dict, gear: dict) -> dict:
 def profile_points(spec: dict) -> list[tuple[float, float]]:
     """Closed transverse outline of a cylindrical gear. Tooth 0 is on +X."""
     clean = normalize_spec(spec)
-    if clean["type"] in BEVEL:
+    if clean["type"] not in CYLINDRICAL:
         raise GeometryError("profile_points is the transverse outline of a spur or helical gear.")
     return transverse_outline(clean)
+
+
+def tooth_profile(
+    spec: dict, involute_count: int = 16, fillet_count: int = 8
+) -> list[tuple[float, float]]:
+    """One transverse tooth, from the left space centre to the right.
+
+    The tooth centre is on +X. A virtual spur spec (the Tredgold section of a
+    bevel) is accepted when ``virtual`` is set, so the mesh check can sweep
+    the same outline the solid is drawn from.
+    """
+    if spec.get("virtual"):
+        scalars = cylindrical_scalars(spec)
+    else:
+        scalars = cylindrical_scalars(normalize_spec(spec))
+    return _tooth_sector(scalars, involute_count, fillet_count)
 
 
 def transverse_outline(
@@ -185,7 +223,7 @@ def _require_consistent_bevel(
 
 
 def normalize_spec(spec: dict) -> dict:
-    """Fill defaults and reject a hypoid or an unknown family."""
+    """Fill defaults and reject an unknown family."""
     if not isinstance(spec, dict):
         raise GeometryError("A gear spec must be an object.")
     raw_type = str(spec.get("type") or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -195,15 +233,18 @@ def normalize_spec(spec: dict) -> dict:
         "spiral": "spiral_bevel",
         "spiralbevel": "spiral_bevel",
         "bevel": "straight_bevel",
+        "hypoid_bevel": "hypoid",
     }
     gear_type = aliases.get(raw_type, raw_type)
+    if gear_type == "hypoid":
+        from aicad.gears.hypoid import normalize_hypoid
+
+        return normalize_hypoid(spec)
     offset = _number(spec.get("offset_mm"), "offset_mm", default=0.0)
-    if gear_type in {"hypoid", "hypoid_bevel"} or abs(offset) > 1e-12:
+    if abs(offset) > 1e-12:
         raise GeometryError(
-            "Hypoid gears are not generated. They need a shaft angle and a nonzero "
-            "offset, and the tooth surface comes from simulating the generating cut. "
-            "The gear module reserves axis layout 'offset' for that family. "
-            "Spur, helical, straight bevel, and spiral bevel are available."
+            "offset_mm is the hypoid pinion offset. Use type 'hypoid' for that pair. "
+            "Spur, helical, straight bevel, and spiral bevel keep the offset at zero."
         )
     if gear_type not in CYLINDRICAL | BEVEL:
         _reject_unknown(gear_type or "(missing)")
@@ -1042,7 +1083,13 @@ def _wrap(rho: float, theta: float, cone_distance: float, delta: float) -> tuple
 # --- pairs -----------------------------------------------------------------
 
 
-def _cylindrical_pair(left: dict, right: dict) -> dict:
+def cylindrical_mount(left: dict, right: dict, centre_mm: float | None = None) -> dict:
+    """Operating centre, backlash, and contact ratio for a spur or helical pair.
+
+    The zero-backlash centre is the ISO 21771 relation :func:`pair_geometry`
+    already uses. ``centre_mm`` is the actual distance between the axes. Omit
+    it to sit on that centre, where both backlash numbers are zero.
+    """
     if abs(left["normal_module_mm"] - right["normal_module_mm"]) > 1e-6:
         raise GeometryError("A cylindrical pair needs the same normal module.")
     if abs(left["normal_pressure_angle_deg"] - right["normal_pressure_angle_deg"]) > 1e-6:
@@ -1051,13 +1098,15 @@ def _cylindrical_pair(left: dict, right: dict) -> dict:
         raise GeometryError("A cylindrical pair needs helix angles of equal magnitude.")
     warnings = []
     if left["helix_angle_deg"] * right["helix_angle_deg"] > 1e-9:
-        warnings.append("External helical gears need opposite hands. These two have the same hand.")
+        raise GeometryError(
+            "External helical gears need opposite hands, so these two do not mesh on parallel shafts."
+        )
     if abs(left["helix_angle_deg"]) > 1e-9 and abs(left["helix_angle_deg"] + right["helix_angle_deg"]) > 1e-6:
         warnings.append("The helix angles are not equal and opposite, so the shafts are not parallel.")
     alpha_t = math.radians(left["transverse_pressure_angle_deg"])
     alpha_n = math.radians(left["normal_pressure_angle_deg"])
     x_sum = left["profile_shift"] + right["profile_shift"]
-    z_sum = left["teeth"] + right["teeth"]
+    z_sum = float(left["teeth"]) + float(right["teeth"])
     inv_w = _inv(alpha_t) + 2.0 * math.tan(alpha_n) * x_sum / z_sum
     # A negative involute has no working pressure angle. Reporting angle 0
     # would place the gears on the base circles and claim backlash is zero.
@@ -1066,37 +1115,88 @@ def _cylindrical_pair(left: dict, right: dict) -> dict:
             "These profile shifts leave backlash even when the base circles touch, "
             "so there is no zero-backlash centre distance."
         )
-    alpha_w = _inv_inverse(inv_w)
+    alpha_w0 = _inv_inverse(inv_w)
     d_sum = left["reference_diameter_mm"] + right["reference_diameter_mm"]
-    centre = 0.5 * d_sum * math.cos(alpha_t) / math.cos(alpha_w)
-    eps_a = _contact_ratio(
-        left["tip_diameter_mm"] / 2.0,
-        left["base_diameter_mm"] / 2.0,
-        right["tip_diameter_mm"] / 2.0,
-        right["base_diameter_mm"] / 2.0,
-        centre,
-        alpha_w,
-        left["transverse_module_mm"],
-        alpha_t,
-    )
+    ideal = 0.5 * d_sum * math.cos(alpha_t) / math.cos(alpha_w0)
+    rb_sum = 0.5 * (left["base_diameter_mm"] + right["base_diameter_mm"])
     face = min(left["face_width_mm"], right["face_width_mm"])
     beta = math.radians(left["helix_angle_deg"])
     eps_b = face * abs(math.sin(beta)) / (math.pi * left["normal_module_mm"]) if abs(beta) > 1e-12 else 0.0
+    # A centre that matches the zero-backlash figure is that mount. Rounding
+    # the reported centre and passing it back must not invent backlash.
+    if centre_mm is not None and abs(float(centre_mm) - ideal) <= 1e-4:
+        centre_mm = None
+    if centre_mm is None:
+        centre = ideal
+        alpha_w = alpha_w0
+        backlash_t = 0.0
+        backlash_n = 0.0
+        defined = True
+    else:
+        centre = float(centre_mm)
+        if not math.isfinite(centre) or centre <= 0:
+            raise GeometryError("centre_distance_mm must be a positive finite number.")
+        # cos α' = (rb1 + rb2) / a'. Inside the base circles there is no working angle.
+        cosine = rb_sum / centre
+        if cosine >= 1.0 - 1e-12:
+            alpha_w = 0.0
+            backlash_t = None
+            backlash_n = None
+            defined = False
+        else:
+            alpha_w = math.acos(min(1.0, cosine))
+            backlash_t = 2.0 * centre * (_inv(alpha_w) - inv_w)
+            ratio = (2.0 * centre * float(left["teeth"]) / z_sum) / left["reference_diameter_mm"]
+            beta_w = math.atan(math.tan(beta) * ratio) if abs(beta) > 1e-12 else 0.0
+            backlash_n = backlash_t * math.cos(alpha_w) * math.cos(beta_w)
+            defined = True
+    if defined:
+        eps_a = _contact_ratio(
+            left["tip_diameter_mm"] / 2.0,
+            left["base_diameter_mm"] / 2.0,
+            right["tip_diameter_mm"] / 2.0,
+            right["base_diameter_mm"] / 2.0,
+            centre,
+            alpha_w,
+            left["transverse_module_mm"],
+            alpha_t,
+        )
+    else:
+        eps_a = None
+    return {
+        "ideal_centre_distance_mm": ideal,
+        "centre_distance_mm": centre,
+        "reference_centre_distance_mm": d_sum / 2.0,
+        "working_transverse_pressure_angle_deg": math.degrees(alpha_w),
+        "zero_backlash_transverse_pressure_angle_deg": math.degrees(alpha_w0),
+        "circumferential_backlash_mm": backlash_t,
+        "normal_backlash_mm": backlash_n,
+        "backlash_defined": defined,
+        "base_circles_overlap": not defined,
+        "transverse_contact_ratio": eps_a,
+        "overlap_ratio": eps_b,
+        "total_contact_ratio": None if eps_a is None else eps_a + eps_b,
+        "warnings": warnings,
+    }
+
+
+def _cylindrical_pair(left: dict, right: dict) -> dict:
+    mount = cylindrical_mount(left, right, None)
     spin = 180.0 * (1.0 + 1.0 / right["teeth"])
     return {
         "axis_layout": PARALLEL,
         "standards": ["ISO 21771:2007"],
-        "centre_distance_mm": centre,
-        "reference_centre_distance_mm": d_sum / 2.0,
-        "working_transverse_pressure_angle_deg": math.degrees(alpha_w),
-        "transverse_contact_ratio": eps_a,
-        "overlap_ratio": eps_b,
-        "total_contact_ratio": eps_a + eps_b,
+        "centre_distance_mm": mount["centre_distance_mm"],
+        "reference_centre_distance_mm": mount["reference_centre_distance_mm"],
+        "working_transverse_pressure_angle_deg": mount["working_transverse_pressure_angle_deg"],
+        "transverse_contact_ratio": mount["transverse_contact_ratio"],
+        "overlap_ratio": mount["overlap_ratio"],
+        "total_contact_ratio": mount["total_contact_ratio"],
         "backlash_mm": 0.0,
-        "warnings": warnings,
+        "warnings": mount["warnings"],
         "placement": {
             "pinion": {"position_mm": [0.0, 0.0, 0.0], "rotation_deg": [0.0, 0.0, 0.0]},
-            "gear": {"position_mm": [centre, 0.0, 0.0], "rotation_deg": [0.0, 0.0, spin]},
+            "gear": {"position_mm": [mount["centre_distance_mm"], 0.0, 0.0], "rotation_deg": [0.0, 0.0, spin]},
             "note": (
                 "Pinion axis +Z, tooth 0 on +X, mid-face on z=0. "
                 "The gear sits on +X at the zero-backlash centre distance and is turned "
@@ -1128,7 +1228,7 @@ def _bevel_pair(left: dict, right: dict) -> dict:
         if abs(abs(left["spiral_angle_deg"]) - abs(right["spiral_angle_deg"])) > 1e-6:
             raise GeometryError("A spiral bevel pair needs equal mean spiral angles.")
         if left["spiral_angle_deg"] * right["spiral_angle_deg"] > 1e-9:
-            warnings.append("A spiral bevel pair needs opposite hands.")
+            raise GeometryError("A spiral bevel pair needs opposite hands, so these two do not mesh.")
     eps_a, eps_b = _bevel_contact(left, right)
     shaft = left["shaft_angle_deg"]
     spin = 180.0 * (1.0 + 1.0 / right["teeth"])
@@ -1154,34 +1254,83 @@ def _bevel_pair(left: dict, right: dict) -> dict:
         },
         "assumptions": [
             "Zero backlash. Pitch apexes coincide.",
-            "Transverse contact ratio is the Tredgold virtual spur pair at mid-face.",
-            "Overlap ratio is the rotation of a constant spiral angle along the face, divided by the angular pitch.",
+            "Transverse contact ratio is the Tredgold virtual spur pair at the middle of the face both gears share.",
+            "Overlap ratio is the rotation of a constant spiral angle along that shared face, divided by the angular pitch.",
         ],
     }
 
 
-def _bevel_contact(left: dict, right: dict) -> tuple[float, float]:
-    """Virtual spur contact ratio at mid-face, plus spiral overlap."""
-    # Rebuild enough of the virtual pair from the reported outer data.
-    def mid(data: dict) -> dict:
-        outer = data["outer_cone_distance_mm"]
-        mean = data["mean_cone_distance_mm"]
-        scale = mean / outer
-        delta = math.radians(data["pitch_angle_deg"])
-        m = data["outer_transverse_module_mm"] * scale
-        ha = data["addendum_mm"] * scale
-        hf = data["dedendum_mm"] * scale
-        z_v = data["virtual_teeth"]
-        alpha = math.radians(data["transverse_pressure_angle_deg"])
-        x = data["profile_shift"]
-        rp = z_v * m / 2.0
-        ra = rp + ha
-        rf = rp - hf
-        rb = rp * math.cos(alpha)
-        return {"ra": ra, "rb": rb, "rp": rp, "m": m, "alpha": alpha, "x": x, "z": z_v, "rf": rf}
+def virtual_spur_at(data: dict, cone_distance_mm: float) -> dict:
+    """Tredgold virtual spur at one cone distance.
 
-    a = mid(left)
-    b = mid(right)
+    Module and addendum scale by cone distance over the outer cone distance,
+    the same scale the mid-face contact ratio uses. The returned spec is the
+    transverse outline of that section.
+    """
+    outer = float(data["outer_cone_distance_mm"])
+    if cone_distance_mm <= 0 or outer <= 0:
+        raise GeometryError("Cone distance must be positive.")
+    scale = float(cone_distance_mm) / outer
+    module = float(data["outer_transverse_module_mm"]) * scale
+    addendum = float(data["addendum_mm"]) * scale
+    dedendum = float(data["dedendum_mm"]) * scale
+    teeth = float(data["virtual_teeth"])
+    alpha_deg = float(data["transverse_pressure_angle_deg"])
+    alpha = math.radians(alpha_deg)
+    shift = float(data["profile_shift"])
+    if module <= 0:
+        raise GeometryError("The virtual module is not positive.")
+    pitch = teeth * module / 2.0
+    spec = {
+        "virtual": True,
+        "module_mm": module,
+        "teeth": teeth,
+        "pressure_angle_deg": alpha_deg,
+        "helix_angle_deg": 0.0,
+        "profile_shift": shift,
+        "face_width_mm": max(float(data["face_width_mm"]) * scale, module),
+        "rack": "A",
+        "addendum_coefficient": addendum / module - shift,
+        "dedendum_coefficient": dedendum / module + shift,
+        "fillet_radius_coefficient": 0.30,
+    }
+    scalars = cylindrical_scalars(spec)
+    return {
+        "spec": spec,
+        "scalars": scalars,
+        "ra": pitch + addendum,
+        "rb": pitch * math.cos(alpha),
+        "rf": pitch - dedendum,
+        "rp": pitch,
+        "m": module,
+        "mt": module,
+        "alpha": alpha,
+        "alpha_t": alpha,
+        "alpha_t_deg": alpha_deg,
+        "x": shift,
+        "z": teeth,
+        "d": 2.0 * pitch,
+        "db": 2.0 * pitch * math.cos(alpha),
+        "da": 2.0 * (pitch + addendum),
+        "form_radius": scalars["form_radius"],
+        "undercut": scalars["undercut"],
+    }
+
+
+def _bevel_contact(left: dict, right: dict) -> tuple[float, float]:
+    """Virtual spur contact ratio on the shared face, plus spiral overlap.
+
+    Each gear's own mid-face is the middle of that gear's tooth. The mesh
+    only exists where both faces overlap, so both the virtual spur and the
+    spiral travel use that shared length.
+    """
+    outer = min(left["outer_cone_distance_mm"], right["outer_cone_distance_mm"])
+    inner = max(left["inner_cone_distance_mm"], right["inner_cone_distance_mm"])
+    if not inner < outer:
+        raise GeometryError("These bevel faces do not overlap, so there is no contact ratio.")
+    mean = (outer + inner) / 2.0
+    a = virtual_spur_at(left, mean)
+    b = virtual_spur_at(right, mean)
     centre = a["rp"] + b["rp"]
     alpha_w = a["alpha"]
     # Shifts sum to zero in the Gleason split, so the working angle stays the transverse angle.
@@ -1189,9 +1338,7 @@ def _bevel_contact(left: dict, right: dict) -> tuple[float, float]:
     beta = math.radians(left["spiral_angle_deg"])
     if abs(beta) < 1e-12:
         return eps_a, 0.0
-    # Angular travel of the constant spiral from toe to heel, divided by the angular pitch.
-    outer = left["outer_cone_distance_mm"]
-    inner = left["inner_cone_distance_mm"]
+    # Angular travel of the constant spiral along the shared face, divided by the angular pitch.
     delta = math.radians(left["pitch_angle_deg"])
     travel = abs((math.tan(beta) / math.sin(delta)) * math.log(outer / inner))
     eps_b = travel / (2.0 * math.pi / left["teeth"])
@@ -1213,11 +1360,8 @@ def _contact_ratio(
 
 
 def _reject_unknown(name: str) -> None:
-    known = ", ".join(sorted(set(CYLINDRICAL | BEVEL)))
-    raise GeometryError(
-        f"Unknown gear type {name!r}. Use one of: {known}. "
-        "Hypoid is an offset-axis family and is not registered."
-    )
+    known = ", ".join(sorted(set(CYLINDRICAL | BEVEL | {"hypoid"})))
+    raise GeometryError(f"Unknown gear type {name!r}. Use one of: {known}.")
 
 
 def _required_positive(spec: dict, key: str) -> float:

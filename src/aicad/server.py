@@ -41,7 +41,8 @@ is more than the part needs. Each operation can include a `name`.
 Wall thickness is the smaller of a ray estimate and a section estimate, and
 the result says which one was used. `section_part` shows a cross-section.
 `search_parts` and `insert_standard_part` bring in bearings, seals, fasteners, motors, and gearboxes.
-`create_gear` builds a spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width.
+`create_gear` builds a spur, helical, straight bevel, spiral bevel, or hypoid gear.
+`check_gears` reports centre distance, backlash, contact ratio, undercut, and interference through one turn of the smaller gear.
 Clearance between two parts reports interference volume or the gap.
 
 For a shape that should stay consistent when a size changes, use a sketch:
@@ -62,10 +63,16 @@ A cylinder relation sets a barrel angle and a rod extension from a revolute.
 `run_motion` sweeps those joints and reports collisions, with a picture per
 frame. `run_motion_study` drives joints from expressions or keyframes, applies
 gear couplings, and reports collisions and joint-limit violations.
-`check_cables` measures length, strain, bend radius, and pinching.
+`solve_kinematics` solves one serial chain to a tool: the forward pose,
+the joint values for a target position and orientation, or a straight-line
+or waypoint path. The path is checked by the motion study. The record is
+`kinematics.v1`.
+`check_cables` measures length, strain, bend radius, and pinching. A tendon
+adds pulley wrap, slack or stretch, capstan tension, and collisions.
 `estimate_power` turns gravity and payloads into joint torque and then into
 hydraulic pressure and flow, or motor current and a rough battery figure.
-Read the assumptions on those reports. Cables are kinematic polylines.
+Read the assumptions on those reports. A clip route is a kinematic polyline.
+A tendon is anchors, pulleys, and an end anchor.
 
 `check_print` turns a part, colors the faces that need support, and checks the
 oriented size against a Bambu, Prusa, or Ender bed. `fits_printer` is the
@@ -108,6 +115,10 @@ fasteners, and hoses, and writes a CSV. It has no prices. A mass on that
 list is a handbook estimate. `exploded_view` pulls the parts apart along
 the joints for a picture. The gap is not a dimension. Read `result_kind`,
 `result_label`, and `limits` on each of those reports.
+`render_animation` writes a GIF of a motion study, a camera orbit, or an
+exploded opening. MP4 and WebM are added when ffmpeg is on PATH. If it is
+not, the GIF is still written and `video_message` says so. The files stay
+in the project.
 A design that should be planned first starts with `start_plan`. Record research
 with `add_plan_research` (every note needs a source), draw rough blueprint
 sheets with `put_plan_sheet` (blocks, dimensions, and labels), and list
@@ -179,12 +190,22 @@ in an arbitrary STEP file, such as a McMaster-Carr download. Then
 
 ## Gears
 
-`create_gear` builds an external spur, helical, straight bevel, or spiral
-bevel. The spec uses millimeters: `module_mm`, `teeth`, `pressure_angle_deg`,
-and `face_width_mm`. A bevel also needs `mate_teeth` or `ratio`, and
-`shaft_angle_deg` when the shafts are not at 90 degrees. A positive helix or
-spiral angle is right-hand. Optional `bore_mm`, `hub`, `keyway` (DIN 6885-1),
-and `spline` (ISO 14 or DIN 5480) cut the blank. Hypoid gears are not built.
+`create_gear` builds an external spur, helical, straight bevel, spiral bevel,
+or hypoid. The spec uses millimeters: `teeth` and `face_width_mm`, plus
+`module_mm` and `pressure_angle_deg` for a spur, helical, or bevel. A bevel
+also needs `mate_teeth` or `ratio`, and `shaft_angle_deg` when the shafts are
+not at 90 degrees. A positive helix or spiral angle is right-hand. Optional
+`bore_mm`, `hub`, `keyway` (DIN 6885-1), and `spline` (ISO 14 or DIN 5480)
+cut the blank. A hypoid needs `offset_mm`, `ring_diameter_mm`,
+`spiral_angle_deg`, and `role` (`pinion` or `ring`). `ratio` is ring teeth
+divided by pinion teeth. The ring tooth is a face-mill blade. The pinion is
+the blank left after that tooth is rolled.
+`check_gears` takes two gear specs or part names, or an assembly, and a backlash range
+`{min, max}` in millimetres. It compares the centre distance with the zero-backlash
+centre, reports circumferential and normal backlash, the contact ratio, undercut,
+and interference while the smaller gear turns through one full rotation. A bevel
+centre distance is a signed axis offset from the intersecting mount. An offset
+(hypoid) pair is refused until a checker for that layout is registered.
 
 ## Sketches
 
@@ -307,15 +328,19 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
 - `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
 - `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
-- `check_cables` routes polylines through waypoints fixed on parts. It reports length change, strain, bend-radius violations, and pinching. It does not simulate a flexible body.
+- `solve_kinematics` solves the chain from the grounded part to `tool`. Pass `joints` for a forward pose. Pass `target` (`position`, `rotation_deg`, or `matrix`) for inverse kinematics. A planar elbow returns both bends. A spherical wrist returns each shoulder, elbow, and wrist branch that reaches. An unreachable, singular, or out-of-limit target is reported, and a value past a stop is not a solution. Pass `path` (`kind` `line` or `waypoints`) to step the tool and reuse the motion study for collisions and joint limits. The record is `kinematics.v1`.
+- `check_cables` routes polylines through waypoints fixed on parts, and tendons through anchors, pulleys, guides, and an end anchor. It reports length change, slack or stretch, strain, bend-radius violations, wrap angle, capstan tension from `actuator_force_n`, and pinching or collision. A tendon length includes the wrap arc. `sequence` may name a motion study. It does not simulate a flexible body.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
+- `solve_gear_train` reads the assembly gear train and the tooth counts of the generated gears. It returns the speed and torque of every shaft for an input speed and torque. An external mesh reverses direction. An idler cancels. A compound train multiplies the stage ratios. A planetary set with the ring fixed turns the carrier at z_sun / (z_sun + z_ring) of the sun. An open differential keeps the average of the two outputs equal to the carrier. In a turn, one output speeds up as much as the other slows down, and the two torques stay equal. status is under_constrained or over_constrained when those speeds do not determine the train. Efficiency on a mesh defaults to 1.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
+- `check_gears` checks a spur, helical, or bevel pair, or every such pair in an assembly. Pass backlash_mm as `{min, max}`. The report has centre distance against the ideal, circumferential and normal backlash, contact ratio, undercut, and interference over one turn of the smaller gear. An offset pair is refused until a checker for that layout is registered. Read assumptions and limits.
 - `check_bolts` takes size, grade, axial_n, shear_n, and vibration (`mild`, `moderate`, `intense`). Slip under transverse load is the loosening mechanism. The countermeasures explain what a nyloc nut, a wedge washer, threadlocker, and safety wire do and do not do.
 - `check_fatigue` is a Goodman check of a stress you supply. It is not a cycle-by-cycle solve.
 - `export_drawing` writes a third-angle sheet (front, top, right, isometric) as PDF and DXF, with overall dimensions, a title block, and a scale. The sizes are the axis-aligned box of the posed solids. It is a layout drawing. It has no GD&T, no tolerances, and no threads. Read `result_label` and `limits`.
 - `bill_of_materials` counts parts, catalog fasteners, bearings, hoses, and cables, and writes a CSV. The quantities are a count. A mass is an estimate from volume and handbook density. It has no prices. Read `result_label` and `limits`.
 - `exploded_view` pulls parts apart along their joints and returns a picture. The grounded part stays. Pass `on_drawing` to put that view on the sheet. The gap is not a dimension. Read `result_label` and `limits`.
+- `render_animation` writes a GIF of a motion study, a camera orbit, or an exploded opening. `frames` counts both ends. `fps` is the playback rate. `width` and `height` are even pixel sizes. `camera` is iso, front, back, left, right, top, bottom, or orbit. `camera_path` is a list of `{azimuth_deg, elevation_deg}`. `background` is `paper`, `white`, `black`, or `#rrggbb`. `colors` and `materials` recolor parts in the pictures only. `overlay` is `none`, `step`, `time`, or `value`. `video` is `gif`, `mp4`, `webm`, or `both`. MP4 and WebM need `ffmpeg` on PATH. If it is missing, the GIF is still written and `video_message` says so. `path` stays inside the project.
 - `check_print` reports overhang area, a best orientation among the six axis poses, and printer fit. `list_printers` names the beds. A requirement of kind `fits_printer` uses `printer` and optional `orientation`.
 - `export_robot` writes URDF and MJCF next to STL meshes. Joint origins are the zero pose. A cylindrical joint becomes a revolute plus a prismatic.
 """.strip()
@@ -627,14 +652,17 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         position: list[float] | None = None,
         rotation_deg: list[float] | None = None,
     ) -> dict:
-        """Create or replace a spur, helical, straight bevel, or spiral bevel gear.
+        """Create or replace a spur, helical, bevel, or hypoid gear.
 
-        spec needs type, module_mm, teeth, and face_width_mm. pressure_angle_deg
-        defaults to 20. module_mm is the normal module, or the outer transverse
-        module for a bevel. A bevel needs mate_teeth or ratio. helix_angle_deg
-        and spiral_angle_deg are positive for a right-hand tooth. bore_mm, hub,
-        keyway (DIN 6885-1), and spline (ISO 14 or DIN 5480) are optional.
-        position and rotation_deg are [x, y, z]. Hypoid gears are not built.
+        spec needs type, teeth, and face_width_mm. A spur, helical, or bevel
+        also needs module_mm. pressure_angle_deg defaults to 20. module_mm is
+        the normal module, or the outer transverse module for a bevel. A bevel
+        needs mate_teeth or ratio. A hypoid needs offset_mm, ring_diameter_mm,
+        spiral_angle_deg, and role (pinion or ring). ratio is ring teeth
+        divided by pinion teeth. helix_angle_deg and spiral_angle_deg are
+        positive for a right-hand tooth. bore_mm, hub, keyway (DIN 6885-1),
+        and spline (ISO 14 or DIN 5480) are optional. position and
+        rotation_deg are [x, y, z].
         """
         return guard(
             lambda: run(
@@ -645,6 +673,21 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 rotation_deg=rotation_deg,
             )
         )
+
+    @mcp.tool()
+    def check_gears(spec: dict[str, Any]) -> dict:
+        """Mesh, backlash, contact ratio, and interference for a gear pair or an assembly.
+
+        spec.pinion and spec.gear are gear specs or the names of gear parts.
+        spec.assembly checks every gear relation, or every pair of gear instances
+        when the assembly has none. centre_distance_mm is the actual distance
+        between spur or helical axes. For a bevel it is a signed axis offset, and
+        zero is the intersecting mount. backlash_mm is {min, max} in millimetres
+        and applies to circumferential and normal backlash, or pass separate
+        circumferential and normal ranges. The smaller gear is turned through one
+        full rotation. Hypoid pairs are not checked.
+        """
+        return guard(lambda: run("check_gears", spec=spec))
 
     @mcp.tool()
     def place_part(
@@ -779,6 +822,14 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         A linkage is a planar four-bar map, not a closed spatial loop. A cylinder
         keeps the rod eye on the moving clevis without adding a joint cycle.
         poses, motions, studies, cables, and actuators live on the same spec.
+        gear_train, when present, is {shafts, meshes, fixed, differentials}.
+        A shaft is {name, gears, joint}. A gear is an instance name, or
+        {name, instance, teeth}. Teeth come from the generated gear unless teeth
+        is set, which is how an internal ring is named. A mesh is
+        {a, b, kind, carrier, efficiency}. kind is external or internal.
+        carrier is the shaft that mesh orbits with. Omit it for a fixed axis.
+        An open differential is {carrier, left, right}. The two output speeds
+        average to the carrier. fixed lists shafts held at zero speed.
         """
         return guard(lambda: run("create_assembly", spec=spec))
 
@@ -858,15 +909,97 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         )
 
     @mcp.tool()
-    def check_cables(name: str, sequence: str | None = None, motion: dict[str, Any] | None = None) -> dict:
-        """Check cables and hoses through the current pose or a motion.
+    def solve_kinematics(
+        name: str,
+        tool: str,
+        at: list[float] | None = None,
+        rotation_deg: list[float] | None = None,
+        joints: dict[str, float] | None = None,
+        slides: dict[str, float] | None = None,
+        target: dict[str, Any] | None = None,
+        path: dict[str, Any] | None = None,
+    ) -> dict:
+        """Solve forward or inverse kinematics for the chain that ends at a tool.
 
-        Each route has waypoints {instance, at, clip}, diameter_mm, min_bend_radius_mm,
-        and stiffness (low, medium, high, or newtons per unit strain). The report
-        has length change, strain, bend-radius violations, and pinches. The route
-        is a polyline. It does not sag.
+        joints sets the free joint values for the forward pose. Revolute values
+        are degrees. Prismatic values are millimeters. A cylindrical joint's
+        slide is in slides, in millimeters. at is the tool point in the tool
+        instance, and rotation_deg is that frame's X, then Y, then Z rotation.
+        target is {position} or {position, rotation_deg} or {matrix}. Two
+        parallel revolute joints return elbow up and elbow down. Six revolute
+        joints whose last three axes meet return each shoulder, elbow, and
+        wrist branch that reaches the pose. Any other chain starts from joints.
+        A solution is kept only when the forward pose matches. Unreachable,
+        singular, and limit are reported, and a joint value past its stop is
+        not used.
+        path is {kind: line, target, steps} from the current pose, or
+        {kind: waypoints, waypoints, steps}. steps counts both ends of a line
+        or of each waypoint segment. The joint values are then a motion study,
+        with the same collision and joint-limit checks. The record is
+        kinematics.v1. path.motion_study is motion_study.v1.
         """
-        return guard(lambda: run("check_cables", name=name, sequence=sequence, motion=motion))
+        return guard(
+            lambda: run(
+                "solve_kinematics",
+                name=name,
+                tool=tool,
+                at=at,
+                rotation_deg=rotation_deg,
+                joints=joints,
+                slides=slides,
+                target=target,
+                path=path,
+            )
+        )
+
+    @mcp.tool()
+    def check_cables(
+        name: str,
+        sequence: str | None = None,
+        motion: dict[str, Any] | None = None,
+        study: dict[str, Any] | None = None,
+        steps: int | None = None,
+    ) -> dict:
+        """Check cables, hoses, and tendons through a pose, a motion, or a motion study.
+
+        A clip route has waypoints {instance, at, clip}, diameter_mm,
+        min_bend_radius_mm, and stiffness (low, medium, high, or newtons per
+        unit strain). A tendon has points: an anchor, then pulleys, guides, or
+        wraps fixed on parts, then an end anchor, plus diameter_mm and material.
+        A pulley has at (the center), axis, radius_mm for the cable centerline,
+        optional wrap of cw or ccw, and optional friction. Length includes the
+        wrap arc. The report has length change, slack or stretch, wrap angle,
+        bend-radius violations, and tension from actuator_force_n. Friction
+        multiplies tension by exp(-friction * wrap radians) on the far side of
+        each pulley. A centerline sample inside a solid, or closer than the
+        cable radius plus pinch_mm, is a collision. The line does not sag.
+        sequence names a motion, or a study when no motion uses that name.
+        study is an inline motion study. steps overrides how many poses are solved.
+        """
+        return guard(
+            lambda: run(
+                "check_cables",
+                name=name,
+                sequence=sequence,
+                motion=motion,
+                study=study,
+                steps=steps,
+            )
+        )
+
+    @mcp.tool()
+    def solve_gear_train(name: str, drive: dict[str, Any]) -> dict:
+        """Speed and torque of every shaft in an assembly gear train.
+
+        The assembly gear_train lists shafts, meshes, fixed members, and any
+        open differential. Tooth counts come from the generated gears. drive
+        inputs are {shaft, speed_rpm, torque_nm}. For a differential in a turn,
+        speeds is {shaft, speed_rpm} for one output: that output speeds up as
+        much as the other slows down, and both still average to the carrier.
+        status is determined, under_constrained, or over_constrained.
+        Efficiency on a mesh defaults to 1. Read assumptions and limits.
+        """
+        return guard(lambda: run("solve_gear_train", name=name, drive=drive))
 
     @mcp.tool()
     def estimate_power(
@@ -1036,6 +1169,72 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 )
             )
         )
+
+    @mcp.tool()
+    def render_animation(
+        name: str,
+        kind: str | None = None,
+        sequence: str | None = None,
+        study: dict[str, Any] | None = None,
+        frames: int | None = None,
+        fps: float | None = None,
+        duration_s: float | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        camera: str | None = None,
+        camera_path: list[dict[str, Any]] | None = None,
+        turns: float | None = None,
+        elevation_deg: float | None = None,
+        background: str | None = None,
+        colors: dict[str, Any] | None = None,
+        materials: dict[str, Any] | None = None,
+        overlay: str | None = None,
+        joint: str | None = None,
+        gap_mm: float | None = None,
+        video: str | None = None,
+        path: str | None = None,
+    ) -> list[str | Image]:
+        """Write a GIF of a motion study, a camera orbit, or an exploded opening.
+
+        frames counts both ends. fps is the playback rate. width and height are
+        even pixel sizes. camera is iso, front, back, left, right, top, bottom,
+        or orbit. camera_path is a list of {azimuth_deg, elevation_deg}.
+        background is paper, white, black, or #rrggbb. colors and materials
+        recolor the pictures only and do not change the assembly. overlay is
+        none, step, time, or value. value draws a joint angle, the explode
+        gap, or the orbit angle. video is gif, mp4, webm, or both. MP4 and
+        WebM need ffmpeg on PATH. If it is missing, the GIF is still written
+        and video_message says so. path stays inside the project.
+        """
+        return guard(
+            lambda: _images(
+                run(
+                    "render_animation",
+                    name=name,
+                    kind=kind,
+                    sequence=sequence,
+                    study=study,
+                    frames=frames,
+                    fps=fps,
+                    duration_s=duration_s,
+                    width=width,
+                    height=height,
+                    camera=camera,
+                    camera_path=camera_path,
+                    turns=turns,
+                    elevation_deg=elevation_deg,
+                    background=background,
+                    colors=colors,
+                    materials=materials,
+                    overlay=overlay,
+                    joint=joint,
+                    gap_mm=gap_mm,
+                    video=video,
+                    path=path,
+                )
+            )
+        )
+
     @mcp.tool()
     def start_plan(
         name: str,

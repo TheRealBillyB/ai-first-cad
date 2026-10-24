@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from aicad.errors import AICADError
+from aicad.errors import AICADError, GeometryError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,9 +262,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum allowed gap in millimeters. A smaller gap is interference.",
     )
 
-    cables = commands.add_parser("cables", parents=[common], help="Check cables and hoses.")
+    kinematics = commands.add_parser(
+        "kinematics",
+        parents=[common],
+        help="Solve forward or inverse kinematics, or step a tool path.",
+    )
+    kinematics.add_argument("name")
+    kinematics.add_argument(
+        "--file",
+        type=Path,
+        required=True,
+        help="JSON request: tool, optional at, joints, target, or path.",
+    )
+
+    cables = commands.add_parser("cables", parents=[common], help="Check cables, hoses, and tendon routes.")
     cables.add_argument("name")
-    cables.add_argument("--sequence", default=None)
+    cables.add_argument(
+        "--sequence",
+        default=None,
+        help="Motion, or a motion study when no motion has this name.",
+    )
+    cables.add_argument("--study", default=None, help="Motion study stored on the assembly.")
+    cables.add_argument("--file", type=Path, default=None, help="JSON motion study.")
+    cables.add_argument("--steps", type=int, default=None, help="Poses to solve, including both ends.")
 
     power = commands.add_parser(
         "power", parents=[common], help="Estimate joint loads and actuator power."
@@ -353,6 +373,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also put that exploded isometric on the dimensioned sheet.",
     )
     exploded.add_argument("--out", type=Path, default=None, help="Directory for the sheet, used with --on-drawing.")
+
+    animate = commands.add_parser(
+        "animate",
+        parents=[common],
+        help="Write a GIF of a motion study, a camera orbit, or an exploded opening.",
+    )
+    animate.add_argument("name")
+    animate.add_argument("--kind", choices=["motion", "orbit", "exploded"], default=None)
+    animate.add_argument("--sequence", default=None, help="Study stored on the assembly.")
+    animate.add_argument("--file", type=Path, default=None, help="JSON motion study.")
+    animate.add_argument("--frames", type=int, default=None, help="Pictures, including both ends.")
+    animate.add_argument("--fps", type=int, default=None, help="Playback frames per second.")
+    animate.add_argument("--duration", dest="duration_s", type=float, default=None, help="Playback length in seconds when --frames is omitted.")
+    animate.add_argument("--width", type=int, default=None, help="Picture width in pixels. Even, from 16 to 1280.")
+    animate.add_argument("--height", type=int, default=None, help="Picture height in pixels. Even, from 16 to 1280.")
+    animate.add_argument(
+        "--camera",
+        default=None,
+        help="iso, front, back, left, right, top, bottom, or orbit.",
+    )
+    animate.add_argument(
+        "--camera-file",
+        type=Path,
+        default=None,
+        help="JSON list of {azimuth_deg, elevation_deg} points.",
+    )
+    animate.add_argument("--turns", type=float, default=None, help="How many times an orbit goes around.")
+    animate.add_argument("--elevation", dest="elevation_deg", type=float, default=None, help="Orbit elevation in degrees.")
+    animate.add_argument("--background", default=None, help="paper, white, black, or #rrggbb.")
+    animate.add_argument("--colors", type=Path, default=None, help="JSON map of instance name to a color.")
+    animate.add_argument("--materials", type=Path, default=None, help="JSON map of instance name to a material.")
+    animate.add_argument("--overlay", choices=["none", "step", "time", "value"], default=None)
+    animate.add_argument("--joint", default=None, help="Joint drawn when the overlay is value.")
+    animate.add_argument("--gap", type=float, default=None, help="Millimeters each joint opens in an exploded animation.")
+    animate.add_argument(
+        "--video",
+        choices=["gif", "mp4", "webm", "both"],
+        default=None,
+        help="gif writes only the GIF. mp4 and webm need ffmpeg.",
+    )
+    animate.add_argument("--out", type=Path, default=None, help="A .gif, .mp4, or .webm file, or a directory, inside the project.")
 
     start_plan = commands.add_parser(
         "start-plan", parents=[common], help="Start a plan. Optional JSON bundle of research, sheets, and questions."
@@ -448,11 +509,11 @@ def build_parser() -> argparse.ArgumentParser:
     gear = commands.add_parser(
         "gear",
         parents=[common],
-        help="Create or replace a spur, helical, straight bevel, or spiral bevel gear.",
+        help="Create or replace a spur, helical, bevel, or hypoid gear.",
     )
     gear.add_argument("name")
     gear.add_argument("--file", type=Path, default=None, help="JSON gear spec. Flags override it.")
-    gear.add_argument("--type", default=None, help="spur, helical, straight_bevel, or spiral_bevel.")
+    gear.add_argument("--type", default=None, help="spur, helical, straight_bevel, spiral_bevel, or hypoid.")
     gear.add_argument("--module", type=float, default=None, help="Normal module, or outer transverse module for a bevel.")
     gear.add_argument("--teeth", type=int, default=None)
     gear.add_argument("--pressure-angle", type=float, default=None)
@@ -465,8 +526,39 @@ def build_parser() -> argparse.ArgumentParser:
     gear.add_argument("--bore", type=float, default=None)
     gear.add_argument("--rack", default=None, help="ISO 53 basic rack A, B, C, or D.")
     gear.add_argument("--hand", default=None, choices=["right", "left"])
+    gear.add_argument("--offset", type=float, default=None, help="Hypoid pinion offset in mm. Positive puts the pinion axis on +Y.")
+    gear.add_argument("--ratio", type=float, default=None, help="Ring teeth divided by pinion teeth.")
+    gear.add_argument("--ring-diameter", type=float, default=None, help="Hypoid ring mean pitch diameter in mm.")
+    gear.add_argument("--role", default=None, choices=["pinion", "ring"], help="Which member of a hypoid pair this gear is.")
     gear.add_argument("--at", default=None, help="Position x,y,z in mm.")
     gear.add_argument("--rot", default=None, help="Rotation about X, Y, Z in degrees.")
+
+    mesh = commands.add_parser(
+        "check-gears",
+        parents=[common],
+        help="Centre distance, backlash, contact ratio, and interference for a gear pair.",
+    )
+    mesh.add_argument("pinion", nargs="?", default=None, help="Gear spec name, or omit when --file or --assembly is set.")
+    mesh.add_argument("gear", nargs="?", default=None, help="Mate gear.")
+    mesh.add_argument("--file", type=Path, default=None, help="JSON spec. Flags override it.")
+    mesh.add_argument("--assembly", default=None, help="Check every gear pair in this assembly.")
+    mesh.add_argument("--centre", type=float, default=None, help="Actual centre distance, or a signed bevel axis offset.")
+    mesh.add_argument("--shaft-angle", type=float, default=None, help="Actual shaft angle in degrees.")
+    mesh.add_argument("--offset", type=float, default=None, help="Axis offset in millimetres. Reserved for a hypoid pair.")
+    mesh.add_argument("--backlash-min", type=float, default=None, help="Minimum circumferential and normal backlash, mm.")
+    mesh.add_argument("--backlash-max", type=float, default=None, help="Maximum circumferential and normal backlash, mm.")
+    mesh.add_argument("--steps", type=int, default=None, help="Samples over one turn of the smaller gear.")
+
+    train = commands.add_parser(
+        "gear-train",
+        parents=[common],
+        help="Speed and torque of every shaft in an assembly gear train.",
+    )
+    train.add_argument("name")
+    train.add_argument("--file", type=Path, default=None, help="JSON drive: inputs and any extra speeds.")
+    train.add_argument("--shaft", default=None, help="Input shaft, used when --file is omitted.")
+    train.add_argument("--speed", type=float, default=None, help="Input speed in revolutions per minute.")
+    train.add_argument("--torque", type=float, default=None, help="Input torque in newton-metres.")
 
     from aicad.plugins import add_cli
 
@@ -591,6 +683,10 @@ def _dispatch(args: argparse.Namespace) -> int:
             "bore_mm": args.bore,
             "rack": args.rack,
             "hand": args.hand,
+            "offset_mm": args.offset,
+            "ratio": args.ratio,
+            "ring_diameter_mm": args.ring_diameter,
+            "role": args.role,
         }
         for key, value in overrides.items():
             if value is not None:
@@ -603,6 +699,35 @@ def _dispatch(args: argparse.Namespace) -> int:
         else:
             report = document.create_gear(args.name, spec, position, rotation)
         return emit(report)
+    if args.command == "check-gears":
+        spec = _json_object(args.file) if args.file is not None else {}
+        if args.pinion is not None:
+            spec["pinion"] = args.pinion
+        if args.gear is not None:
+            spec["gear"] = args.gear
+        if args.assembly is not None:
+            spec["assembly"] = args.assembly
+        if args.centre is not None:
+            spec["centre_distance_mm"] = args.centre
+        if args.shaft_angle is not None:
+            spec["shaft_angle_deg"] = args.shaft_angle
+        if args.offset is not None:
+            spec["offset_mm"] = args.offset
+        if args.steps is not None:
+            spec["steps"] = args.steps
+        if args.backlash_min is not None or args.backlash_max is not None:
+            if args.backlash_min is None or args.backlash_max is None:
+                raise AICADError("Pass both --backlash-min and --backlash-max.")
+            spec["backlash_mm"] = {"min": args.backlash_min, "max": args.backlash_max}
+        return emit(document.check_gears(spec))
+    if args.command == "gear-train":
+        if args.file is not None:
+            drive = json.loads(args.file.read_text(encoding="utf-8"))
+        else:
+            if args.shaft is None or args.speed is None or args.torque is None:
+                raise AICADError("Pass --file, or --shaft, --speed, and --torque.")
+            drive = {"inputs": [{"shaft": args.shaft, "speed_rpm": args.speed, "torque_nm": args.torque}]}
+        return emit(document.solve_gear_train(args.name, drive))
     if args.command == "place":
         info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
         return emit(info.to_dict())
@@ -658,8 +783,37 @@ def _dispatch(args: argparse.Namespace) -> int:
                 clearance_mm=args.clearance,
             )
         )
+    if args.command == "kinematics":
+        request = json.loads(args.file.read_text(encoding="utf-8"))
+        if not isinstance(request, dict):
+            raise GeometryError("Kinematics request must be an object.")
+        unknown = set(request) - {"tool", "at", "rotation_deg", "joints", "slides", "target", "path"}
+        if unknown:
+            raise GeometryError(f"Kinematics request has unknown fields: {', '.join(sorted(unknown))}.")
+        return emit(
+            document.solve_kinematics(
+                args.name,
+                request.get("tool"),
+                at=request.get("at"),
+                rotation_deg=request.get("rotation_deg"),
+                joints=request.get("joints"),
+                slides=request.get("slides"),
+                target=request.get("target"),
+                path=request.get("path"),
+            )
+        )
     if args.command == "cables":
-        return emit(document.check_cables(args.name, sequence=args.sequence))
+        if args.file and args.study:
+            raise GeometryError("Pass --study or --file, not both.")
+        inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
+        return emit(
+            document.check_cables(
+                args.name,
+                sequence=args.sequence,
+                study=inline if inline is not None else args.study,
+                steps=args.steps,
+            )
+        )
     if args.command == "power":
         return emit(document.estimate_power(args.name, sequence=args.sequence))
     if args.command == "fea":
@@ -710,6 +864,34 @@ def _dispatch(args: argparse.Namespace) -> int:
                 gap_mm=args.gap,
                 on_drawing=bool(args.on_drawing),
                 out_dir=args.out,
+            )
+        )
+    if args.command == "animate":
+        if args.camera and args.camera_file:
+            raise AICADError("Pass --camera or --camera-file, not both.")
+        return emit(
+            document.render_animation(
+                args.name,
+                kind=args.kind,
+                sequence=args.sequence,
+                study=_json_object(args.file) if args.file else None,
+                frames=args.frames,
+                fps=args.fps,
+                duration_s=args.duration_s,
+                width=args.width,
+                height=args.height,
+                camera=args.camera,
+                camera_path=_camera_path_file(args.camera_file) if args.camera_file else None,
+                turns=args.turns,
+                elevation_deg=args.elevation_deg,
+                background=args.background,
+                colors=_json_object(args.colors) if args.colors else None,
+                materials=_json_object(args.materials) if args.materials else None,
+                overlay=args.overlay,
+                joint=args.joint,
+                gap_mm=args.gap,
+                video=args.video,
+                path=args.out,
             )
         )
     if args.command == "start-plan":
@@ -826,6 +1008,22 @@ def _plane_from_args(args) -> dict:
     if not args.axis:
         raise AICADError("A section needs --axis (and optional --offset), or --origin and --normal.")
     return {"axis": args.axis, "offset": args.offset}
+
+
+def _camera_path_file(path: Path) -> list:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise AICADError(f"Could not read {path}: {exc}") from exc
+    except OSError as exc:
+        raise AICADError(f"Could not read {path}: {exc}") from exc
+    if isinstance(payload, dict):
+        if set(payload) - {"path"}:
+            raise AICADError(f'{path} must be a list of points, or {{"path": [...]}}.')
+        payload = payload.get("path")
+    if not isinstance(payload, list):
+        raise AICADError(f"{path} must be a list of camera points.")
+    return payload
 
 
 def _json_object(path: Path) -> dict:
