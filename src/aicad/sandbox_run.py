@@ -280,9 +280,12 @@ def _design(workspace: Path, job: Path) -> int:
 
 
 def _leave(code: int) -> int:
-    """On Windows, skip interpreter shutdown. A confined process that has loaded
-    the geometry libraries can take more than a minute to exit, and the parent
-    waits for that. The result file is already written.
+    """On Windows, skip interpreter shutdown.
+
+    A confined process that has loaded the geometry libraries can take more
+    than a minute to exit, and the parent waits for that. The result file is
+    already written. macOS keeps the normal exit so the seatbelt wrapper is
+    reaped with the child; a direct exit can leave that wrapper running.
     """
 
     if sys.platform == "win32":
