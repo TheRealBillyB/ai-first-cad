@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-24
+
+| Decision | Rationale |
+| --- | --- |
+| The doc generator does not follow links | A symlink, junction, or second file name would read or write a different file when the masters are generated. |
+
 ## 2026-10-23
 
 | Decision | Rationale |
