@@ -28,6 +28,9 @@ as plane/z+/0,0,4 and cylinder/r1.7/z+/30,-20,2. Use those refs in
 set_selection and in solve_mechanics or solve_modal selectors: {"ref": "..."}.
 
 solve_modal reports natural frequencies. Declare excitations with rpm or hz.
+solve_gear_train reports shaft speed and torque for the assembly gear_train.
+Read status when it is under_constrained or over_constrained. An open
+differential needs one more speed besides the carrier.
 check_bolts rates self-loosening from the slip margin. Read assumptions on both.
 check_print reports overhangs and whether a part fits a named printer.
 fits_printer is a requirement with a printer id and an optional orientation.
