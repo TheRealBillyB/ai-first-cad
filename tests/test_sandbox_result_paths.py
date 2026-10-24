@@ -204,6 +204,8 @@ def test_picture_outside_the_project_is_not_returned(tmp_path, config_home):
         "pathlib.Path.write_text = fake\n"
         "print('hello')\n"
     )
-    with pytest.raises(ScriptError, match="outside the project"):
-        run_design_script(project, script)
+    payload = run_design_script(project, script)
     assert canary.read_text(encoding="utf-8") == CANARY_TEXT
+    assert str(canary) not in json.dumps(payload)
+    assert CANARY_NAME not in json.dumps(payload)
+    assert "hello" in str(payload.get("stdout"))

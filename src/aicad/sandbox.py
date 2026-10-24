@@ -24,7 +24,9 @@ A link that points outside the project is not written. A file with more
 than one name is not used for the run, because writing it would change
 every name. A script result that is a link is not read. Geometry and
 pictures named by that result are opened only when they stay inside the
-project. The script log is not read when it has another name.
+project. The check report is written by the process that ran the calls,
+so the script does not supply it. The script log is not read when it has
+another name.
 """
 
 from __future__ import annotations
@@ -2195,6 +2197,180 @@ def _child_command(job: Path) -> list[str]:
     return [sys.executable, "-P", "-B", "-u", runner, str(job)]
 
 
+class _DesignRecord:
+    """The process that runs a design script's document calls and records them."""
+
+    def __init__(self, workspace: Path, job: Path):
+        self.workspace = workspace
+        self.job = job
+        self.proc: subprocess.Popen | None = None
+        self.record: Path | None = None
+        self._log: Path | None = None
+        self._device = None
+        self._inode = None
+
+    def start(self) -> None:
+        calls = self.job / "calls"
+        calls.mkdir(mode=0o700)
+        descriptor, name = tempfile.mkstemp(prefix="aicad-design-checks-", suffix=".json")
+        os.close(descriptor)
+        self.record = Path(name)
+        info = os.lstat(self.record)
+        self._device = info.st_dev
+        self._inode = info.st_ino
+        log_fd = os.open(name + ".log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        self._log = Path(name + ".log")
+        env = _child_env(self.workspace, self.job, network=False)
+        # This process runs the calls. It is not the confined script.
+        env.pop("AICAD_SANDBOX_CHILD", None)
+        # Use the libraries this process already loaded. A redirected home
+        # must not hide that install, and the project is not an import root.
+        roots: list[str] = []
+        for entry in sys.path:
+            if not entry:
+                continue
+            try:
+                resolved = Path(entry).resolve()
+            except OSError:
+                continue
+            if _inside(resolved, self.workspace):
+                continue
+            text = str(resolved)
+            if text not in roots:
+                roots.append(text)
+        current = env.get("PYTHONPATH")
+        if current:
+            for entry in current.split(os.pathsep):
+                if entry and entry not in roots:
+                    roots.append(entry)
+        if roots:
+            env["PYTHONPATH"] = os.pathsep.join(roots)
+        try:
+            self.proc = subprocess.Popen(
+                [sys.executable, "-P", "-B", "-u", str(_sandbox_runner()), "--model", str(self.job), str(self.record)],
+                cwd=str(self.workspace),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log_fd,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        finally:
+            os.close(log_fd)
+
+    def failure_detail(self) -> str:
+        proc = self.proc
+        if proc is None or proc.poll() in (0, None) or self._log is None:
+            return ""
+        try:
+            text = self._log.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+        if len(text) > 500:
+            text = text[-500:]
+        return text
+
+    def _refuse(self) -> None:
+        detail = self.failure_detail()
+        message = "The design script could not record its checks."
+        if detail:
+            message = f"{message}\n{detail}"
+        raise ScriptError(message)
+
+    def merge(self, payload: dict) -> dict:
+        if self.proc is None or self.record is None:
+            raise ScriptError("The design script could not record its checks.")
+        if self.proc.poll() not in (0, None):
+            self._refuse()
+        stop = self.job / "calls" / "STOP"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            descriptor = os.open(stop, flags, 0o600)
+        except FileExistsError:
+            descriptor = None
+        except OSError as exc:
+            try:
+                os.lstat(stop)
+            except OSError:
+                raise ScriptError("The design script could not record its checks.") from exc
+            descriptor = None
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            self.proc.communicate(timeout=wall_seconds())
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.communicate(timeout=5)
+            self._refuse()
+        if self.proc.returncode != 0:
+            self._refuse()
+        read_flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            read_flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            read_flags |= os.O_CLOEXEC
+        try:
+            descriptor = os.open(self.record, read_flags)
+        except OSError as exc:
+            raise ScriptError("The design script could not record its checks.") from exc
+        try:
+            info = os.fstat(descriptor)
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISREG(info.st_mode)
+                or info.st_dev != self._device
+                or info.st_ino != self._inode
+                or info.st_nlink != 1
+                or info.st_size > 32_000_000
+            ):
+                raise ScriptError("The design script could not record its checks.")
+            chunks: list[bytes] = []
+            while True:
+                block = os.read(descriptor, 1024 * 1024)
+                if not block:
+                    break
+                chunks.append(block)
+                if sum(len(part) for part in chunks) > 32_000_000:
+                    raise ScriptError("The design script could not record its checks.")
+        finally:
+            os.close(descriptor)
+        try:
+            report = json.loads(b"".join(chunks).decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ScriptError("The design script could not record its checks.") from exc
+        if not isinstance(report, dict):
+            raise ScriptError("The design script could not record its checks.")
+        payload["checks"] = report.get("checks") if isinstance(report.get("checks"), list) else []
+        payload["changed_parts"] = report.get("changed_parts") if isinstance(report.get("changed_parts"), list) else []
+        payload["deleted_parts"] = report.get("deleted_parts") if isinstance(report.get("deleted_parts"), list) else []
+        payload["views"] = report.get("views") if isinstance(report.get("views"), list) else []
+        notes = report.get("notes") if isinstance(report.get("notes"), list) else []
+        errors = payload.get("errors") if isinstance(payload.get("errors"), list) else []
+        payload["errors"] = [item for item in errors if isinstance(item, str)] + [
+            item for item in notes if isinstance(item, str)
+        ]
+        return payload
+
+    def close(self) -> None:
+        proc = self.proc
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        if self.record is not None:
+            self.record.unlink(missing_ok=True)
+            self.record = None
+        if self._log is not None:
+            self._log.unlink(missing_ok=True)
+            self._log = None
+
+
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
@@ -2254,10 +2430,14 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     process_hit = threading.Event()
     process_cap = _PROCESS_CAP if sys.platform.startswith("linux") else None
     pids_cgroup: Path | None = None
+    design_record: _DesignRecord | None = None
     account: _Account | None = None
     sentinel_fd: int | None = None
     sentinel_path: str | None = None
     try:
+        if kind == "design":
+            design_record = _DesignRecord(workspace, job)
+            design_record.start()
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
 
@@ -2275,9 +2455,18 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 stderr_path=job / "stderr.txt",
             )
             if timed_out:
+                detail = design_record.failure_detail() if design_record is not None else ""
                 shutil.rmtree(job, ignore_errors=True)
-                raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.")
-            return _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
+                message = f"The script ran longer than {wall} seconds, so it was stopped."
+                if detail:
+                    message = f"{message}\n{detail}"
+                raise ScriptError(message)
+            if design_record is not None and design_record.proc is not None and design_record.proc.poll() not in (0, None):
+                design_record._refuse()
+            payload = _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
+            if design_record is not None:
+                payload = design_record.merge(payload)
+            return payload
         if sys.platform.startswith("linux"):
             pids_cgroup = _prepare_pids_cgroup()
         env = _child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir)
@@ -2343,12 +2532,18 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                     _reap_macos(proc.pid, sentinel_path, account, seen, seen_lock)
                 except ScriptError:
                     pass
+            detail = design_record.failure_detail() if design_record is not None else ""
             shutil.rmtree(job, ignore_errors=True)
-            raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.") from None
+            message = f"The script ran longer than {wall} seconds, so it was stopped."
+            if detail:
+                message = f"{message}\n{detail}"
+            raise ScriptError(message) from None
         _kill_process_tree(proc.pid, seen, seen_lock)
         if account is not None and sentinel_path is not None:
             _reap_macos(proc.pid, sentinel_path, account, seen, seen_lock)
-        return _payload_from_result(
+        if design_record is not None and design_record.proc is not None and design_record.proc.poll() not in (0, None):
+            design_record._refuse()
+        payload = _payload_from_result(
             job,
             proc.returncode if proc.returncode is not None else -1,
             stdout_b.decode("utf-8", "replace"),
@@ -2356,6 +2551,9 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             memory_killed=memory_hit.is_set(),
             process_killed=process_hit.is_set(),
         )
+        if design_record is not None:
+            payload = design_record.merge(payload)
+        return payload
     finally:
         if stop_watch is not None:
             stop_watch.set()
@@ -2370,6 +2568,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             close_sentinel(sentinel_fd, sentinel_path)
         if probe_root is not None:
             shutil.rmtree(probe_root, ignore_errors=True)
+        if design_record is not None:
+            design_record.close()
 
 
 def _died_from_limit_signal(code: int) -> bool:
