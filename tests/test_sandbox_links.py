@@ -458,6 +458,9 @@ def test_a_private_file_is_copied_into_the_project(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "inside\n"
     assert target.is_file() and not target.is_symlink()
     assert target.stat().st_mode & 0o400
+    exports = project / "exports"
+    assert exports.is_dir() and not exports.is_symlink()
+    assert exports.stat().st_mode & 0o700 == 0o700
     step = project / "exports" / "box.step"
     export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [4, 4, 4]}]), step)
     assert step.is_file() and step.stat().st_size > 0 and not step.is_symlink()
