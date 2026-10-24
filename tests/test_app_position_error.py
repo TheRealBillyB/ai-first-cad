@@ -322,11 +322,14 @@ def test_the_position_error_form_enters_a_sliding_joint_in_millimetres(server, t
     assert node
     probe = tmp_path / "probe.js"
     probe.write_text(_FORM_PROBE, encoding="utf-8")
+    # Node writes UTF-8 to a pipe. On Windows text mode would use the console
+    # code page and turn the middle dot in "N·mm" into a different character.
     completed = subprocess.run(
         [node, str(probe), str(tools)],
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert completed.returncode == 0, completed.stderr
     report = json.loads(completed.stdout)
