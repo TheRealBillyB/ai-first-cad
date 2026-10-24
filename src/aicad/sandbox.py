@@ -2041,7 +2041,6 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     account: _Account | None = None
     sentinel_fd: int | None = None
     sentinel_path: str | None = None
-    sentinel_guard = 0
     try:
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
@@ -2084,7 +2083,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 raise ScriptError(
                     "The sandbox could not keep track of processes for this script, so it was not run."
                 )
-            sentinel_fd, sentinel_path, sentinel_guard = opened
+            sentinel_fd, sentinel_path = opened
             popen_kwargs["close_fds"] = True
             popen_kwargs["pass_fds"] = (sentinel_fd,)
             account = _Account()
@@ -2152,7 +2151,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         if sentinel_fd is not None and sentinel_path is not None:
             from aicad.sandbox_macos import close_sentinel
 
-            close_sentinel(sentinel_fd, sentinel_path, sentinel_guard)
+            close_sentinel(sentinel_fd, sentinel_path)
         if probe_root is not None:
             shutil.rmtree(probe_root, ignore_errors=True)
 

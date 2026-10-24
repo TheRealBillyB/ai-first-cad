@@ -259,7 +259,6 @@ def resident_bytes(pid: int) -> int | None:
 
 # proc_uniqidentifierinfo. The two ids sit at the same offset in the public layouts.
 _PROC_PIDUNIQIDENTIFIERINFO = 17
-_GUARD_CLOSE = 1
 
 
 class _ProcUniqueId(ctypes.Structure):
@@ -381,35 +380,12 @@ def process_identity(pid: int) -> tuple[int, int] | None:
     return int(info.p_uniqueid), int(info.p_puniqueid)
 
 
-def _guard_close(fd: int, guard: int, *, install: bool) -> bool:
-    try:
-        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-        fn = libc.change_fdguard_np
-    except (OSError, AttributeError):
-        return False
-    fn.argtypes = [
-        ctypes.c_int,
-        ctypes.POINTER(ctypes.c_uint64),
-        ctypes.c_uint,
-        ctypes.POINTER(ctypes.c_uint64),
-        ctypes.c_uint,
-        ctypes.POINTER(ctypes.c_int),
-    ]
-    fn.restype = ctypes.c_int
-    token = ctypes.c_uint64(guard)
-    ctypes.set_errno(0)
-    if install:
-        result = fn(fd, None, 0, ctypes.byref(token), _GUARD_CLOSE, None)
-    else:
-        result = fn(fd, ctypes.byref(token), _GUARD_CLOSE, None, 0, None)
-    return int(result) == 0
+def open_sentinel() -> tuple[int, str] | None:
+    """An inheritable file descendants keep open, or None if it cannot be created.
 
-
-def open_sentinel() -> tuple[int, str, int] | None:
-    """An inheritable file descendants keep open, or None if it cannot be guarded.
-
-    ``close`` on the inherited descriptor fails, so a child that leaves the
-    group still holds the file. The caller lists holders with libproc.
+    Fork keeps this descriptor open, including after the child leaves the
+    process group. The caller lists holders with libproc. A close-guard is not
+    used: that guard also forces the descriptor closed in a forked child.
     """
     try:
         fd, name = tempfile.mkstemp(prefix="aicad-reap-", suffix=".hold")
@@ -418,11 +394,6 @@ def open_sentinel() -> tuple[int, str, int] | None:
     try:
         os.write(fd, b"\n")
         os.set_inheritable(fd, True)
-        guard = int.from_bytes(os.urandom(8), "little") or 1
-        if not _guard_close(fd, guard, install=True):
-            os.close(fd)
-            os.unlink(name)
-            return None
     except OSError:
         try:
             os.close(fd)
@@ -433,12 +404,11 @@ def open_sentinel() -> tuple[int, str, int] | None:
         except OSError:
             pass
         return None
-    return fd, name, guard
+    return fd, name
 
 
-def close_sentinel(fd: int, path: str, guard: int) -> None:
+def close_sentinel(fd: int, path: str) -> None:
     """Drop the parent's copy of the sentinel. Ignore a descriptor that is already closed."""
-    _guard_close(fd, guard, install=False)
     try:
         os.close(fd)
     except OSError:
