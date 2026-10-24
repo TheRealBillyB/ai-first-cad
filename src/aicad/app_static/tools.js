@@ -130,13 +130,7 @@ function assemblyFormHtml(tool, current) {
   }
   if (tool === "error") {
     const joints = current.joints || [];
-    const jointRows = joints.map((joint) => `<div class="field-grid" data-error-joint="${escapeAttr(joint.name)}">
-        <p><strong>${escapeHtml(joint.name)}</strong> <span class="meta">${escapeHtml(joint.type || "")}</span></p>
-        <label>Encoder step deg <input data-error-encoder type="number" step="any" /></label>
-        <label>Backlash deg <input data-error-backlash type="number" step="any" /></label>
-        <label>Torque N·mm <input data-error-torque type="number" step="any" /></label>
-        <label>Stiffness N·mm/rad <input data-error-rate type="number" step="any" /></label>
-      </div>`).join("");
+    const jointRows = joints.map((joint) => errorJointRow(joint)).join("");
     const poseBoxes = (current.poses || []).map((name) =>
       `<label class="inline"><input type="checkbox" data-error-pose value="${escapeAttr(name)}" /> ${escapeHtml(name)}</label>`
     ).join("");
@@ -152,7 +146,7 @@ function assemblyFormHtml(tool, current) {
       ${poseBoxes ? `<div class="field-grid"><span class="meta">Stored poses</span>${poseBoxes}</div>
         <p class="muted">Leave every pose unchecked to use the joint values already set.</p>` : ""}
       ${jointRows || `<p class="muted">This assembly has no joints.</p>`}
-      <p class="muted">Enter an encoder step, a backlash, or both a torque and a stiffness. Leave a joint blank to omit it.</p>
+      <p class="muted">Enter an encoder step, a backlash, or both a load and a stiffness. A revolute joint uses degrees and newton-millimetres. A prismatic joint uses millimetres and newtons. A cylindrical joint has both. Leave a joint blank to omit it.</p>
       <p data-tool-progress class="muted" role="status"></p>
       <p data-tool-error class="warn" hidden></p>
       <button type="submit" class="primary">Check position error</button>`;
@@ -736,18 +730,8 @@ async function runPositionError(button) {
   if (poses.length) args.poses = poses;
   const sources = {};
   form.querySelectorAll("[data-error-joint]").forEach((row) => {
-    const encoder = optionalNumber(row.querySelector("[data-error-encoder]").value, "Encoder step must be a number.");
-    const backlash = optionalNumber(row.querySelector("[data-error-backlash]").value, "Backlash must be a number.");
-    const torque = optionalNumber(row.querySelector("[data-error-torque]").value, "Torque must be a number.");
-    const rate = optionalNumber(row.querySelector("[data-error-rate]").value, "Stiffness must be a number.");
-    const entry = {};
-    if (encoder != null) entry.encoder = { resolution_deg: encoder };
-    if (backlash != null) entry.backlash = { deg: backlash };
-    if (torque != null || rate != null) {
-      if (torque == null || rate == null) throw new Error("Enter both the torque and the stiffness, or leave both blank.");
-      entry.stiffness = { torque_nmm: torque, nmm_per_rad: rate };
-    }
-    if (Object.keys(entry).length) sources[row.dataset.errorJoint] = entry;
+    const entry = positionErrorJointSource(row);
+    if (entry) sources[row.dataset.errorJoint] = entry;
   });
   if (Object.keys(sources).length) args.sources = sources;
   const report = await runTool(button, "Checking position error…", () => command("check_position_error", args));
@@ -877,6 +861,66 @@ async function runTool(button, label, work) {
     }
     if (progress && progress.isConnected && progress.textContent === label) progress.textContent = "";
   }
+}
+
+function errorJointRow(joint) {
+  const type = joint.type || "";
+  const unit = type === "prismatic" ? "mm" : type === "cylindrical" ? "cylindrical" : "deg";
+  const fields = unit === "cylindrical"
+    ? `<p class="meta">Angle</p><div data-error-angle>${errorChannelFields("deg")}</div>
+       <p class="meta">Slide</p><div data-error-slide>${errorChannelFields("mm")}</div>`
+    : errorChannelFields(unit);
+  return `<div class="field-grid" data-error-joint="${escapeAttr(joint.name)}" data-error-unit="${unit}">
+      <p><strong>${escapeHtml(joint.name)}</strong> <span class="meta">${escapeHtml(type)}</span></p>
+      ${fields}
+    </div>`;
+}
+
+function errorChannelFields(unit) {
+  const slide = unit === "mm";
+  return `<label>${slide ? "Encoder step mm" : "Encoder step deg"} <input data-error-encoder type="number" step="any" /></label>
+      <label>${slide ? "Backlash mm" : "Backlash deg"} <input data-error-backlash type="number" step="any" /></label>
+      <label>${slide ? "Force N" : "Torque N·mm"} <input data-error-load type="number" step="any" /></label>
+      <label>${slide ? "Stiffness N/mm" : "Stiffness N·mm/rad"} <input data-error-rate type="number" step="any" /></label>`;
+}
+
+function positionErrorJointSource(row) {
+  const unit = row.dataset.errorUnit || "deg";
+  if (unit === "cylindrical") {
+    const angle = readErrorChannel(row.querySelector("[data-error-angle]"), "deg");
+    const slide = readErrorChannel(row.querySelector("[data-error-slide]"), "mm");
+    const entry = {};
+    if (angle) entry.angle = angle;
+    if (slide) entry.slide = slide;
+    return Object.keys(entry).length ? entry : null;
+  }
+  return readErrorChannel(row, unit === "mm" ? "mm" : "deg");
+}
+
+function readErrorChannel(root, unit) {
+  if (!root) return null;
+  const slide = unit === "mm";
+  const encoder = optionalNumber(root.querySelector("[data-error-encoder]").value, "Encoder step must be a number.");
+  const backlash = optionalNumber(root.querySelector("[data-error-backlash]").value, "Backlash must be a number.");
+  const load = optionalNumber(
+    root.querySelector("[data-error-load]").value,
+    slide ? "Force must be a number." : "Torque must be a number.",
+  );
+  const rate = optionalNumber(root.querySelector("[data-error-rate]").value, "Stiffness must be a number.");
+  const entry = {};
+  if (encoder != null) entry.encoder = slide ? { resolution_mm: encoder } : { resolution_deg: encoder };
+  if (backlash != null) entry.backlash = slide ? { mm: backlash } : { deg: backlash };
+  if (load != null || rate != null) {
+    if (load == null || rate == null) {
+      throw new Error(
+        slide
+          ? "Enter both the force and the stiffness, or leave both blank."
+          : "Enter both the torque and the stiffness, or leave both blank.",
+      );
+    }
+    entry.stiffness = slide ? { force_n: load, n_per_mm: rate } : { torque_nmm: load, nmm_per_rad: rate };
+  }
+  return Object.keys(entry).length ? entry : null;
 }
 
 function optionalNumber(text, message) {
