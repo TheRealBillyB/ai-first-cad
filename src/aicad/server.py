@@ -78,6 +78,7 @@ worst case, and a root-sum-square. It passes when the worst case is within
 adds pulley wrap, slack or stretch, capstan tension, and collisions.
 `estimate_power` turns gravity and payloads into joint torque and then into
 hydraulic pressure and flow, or motor current and a rough battery figure.
+A sequence names a motion, or a motion study when no motion has that name.
 Read the assumptions on those reports. A clip route is a kinematic polyline.
 A tendon is anchors, pulleys, and an end anchor.
 
@@ -345,7 +346,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `solve_kinematics` solves the chain from the grounded part to `tool`. Pass `joints` for a forward pose. Pass `target` (`position`, `rotation_deg`, or `matrix`) for inverse kinematics. A planar elbow returns both bends. A spherical wrist returns each shoulder, elbow, and wrist branch that reaches. An unreachable, singular, or out-of-limit target is reported, and a value past a stop is not a solution. Pass `path` (`kind` `line` or `waypoints`) to step the tool and reuse the motion study for collisions and joint limits. The record is `kinematics.v1`.
 - `check_position_error` budgets the tip position error of that chain. `sources` maps a joint to `encoder`, `backlash`, and `stiffness`. Encoder `resolution_deg` or `counts` uses half a step. Backlash is the full gap: `deg`, `arcmin`, `mm` with `radius_mm`, or `mesh` (a spur, helical, or bevel pair; the circumferential arc divided by the operating pitch radius). Stiffness is `torque_nmm` over `nmm_per_rad`, or `force_n` over `n_per_mm`. `links` maps an instance to a stated `translation_mm` and `rotation_rad`, or to `fea` (the same setup as `solve_mechanics`). Pass `poses` or `path`. The pass is the worst case against `tolerance_mm`. Root-sum-square is reported and does not grant a pass. Read assumptions and limits. The record is `position_error.v1`.
 - `check_cables` routes polylines through waypoints fixed on parts, and tendons through anchors, pulleys, guides, and an end anchor. It reports length change, slack or stretch, strain, bend-radius violations, wrap angle, capstan tension from `actuator_force_n`, and pinching or collision. A tendon length includes the wrap arc. `sequence` may name a motion study. It does not simulate a flexible body.
-- `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
+- `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. sequence names a motion, or a study when no motion has that name. The report states what it leaves out.
 - `solve_gear_train` reads the assembly gear train and the tooth counts of the generated gears. It returns the speed and torque of every shaft for an input speed and torque. An external mesh reverses direction. An idler cancels. A compound train multiplies the stage ratios. A planetary set with the ring fixed turns the carrier at z_sun / (z_sun + z_ring) of the sun. An open differential keeps the average of the two outputs equal to the carrier. In a turn, one output speeds up as much as the other slows down, and the two torques stay equal. status is under_constrained or over_constrained when those speeds do not determine the train. Efficiency on a mesh defaults to 1.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
@@ -1072,13 +1073,16 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         sequence: str | None = None,
         motion: dict[str, Any] | None = None,
         actuators: list[dict[str, Any]] | None = None,
+        study: dict[str, Any] | None = None,
     ) -> dict:
         """Estimate joint torque and actuator power from gravity and payloads.
 
         Quasi-static: no inertia. A hydraulic_cylinder needs bore_mm, rod_mm, and
         moment_arm_mm on a revolute joint. An electric actuator needs
         torque_constant_nm_per_a or force_constant_n_per_a, plus voltage.
-        Read assumptions. Pressure is MPa, flow is mm³/s, power is watts.
+        sequence names a motion, or a study when no motion has that name.
+        study is an inline motion study. Read assumptions. Pressure is MPa,
+        flow is mm³/s, power is watts.
         """
         return guard(
             lambda: run(
@@ -1087,6 +1091,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 sequence=sequence,
                 motion=motion,
                 actuators=actuators,
+                study=study,
             )
         )
 
