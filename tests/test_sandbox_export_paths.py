@@ -33,7 +33,7 @@ def _canary(tmp_path: Path) -> Path:
 
 @pytest.mark.parametrize(
     "command",
-    ["export_drawing", "bill_of_materials", "exploded_view"],
+    ["export_drawing", "bill_of_materials", "exploded_view", "render_animation"],
 )
 @pytest.mark.parametrize(
     "path_for",

@@ -156,6 +156,7 @@ def _rasterize(
     scale: float,
     width: int,
     height: int,
+    background: tuple[int, int, int] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     x_cam, y_cam, z_cam = basis
     center = _projection_center(mesh.vertices, x_cam, y_cam)
@@ -163,7 +164,7 @@ def _rasterize(
     light_key = _unit(np.array([0.35, -0.55, 0.85]))
     light_fill = _unit(np.array([-0.7, 0.25, 0.35]))
     image = np.empty((height, width, 3), dtype=np.uint8)
-    image[:] = _PAPER
+    image[:] = _PAPER if background is None else background
     depth = np.full((height, width), -1e30, dtype=np.float64)
 
     triangles = mesh.triangles
@@ -857,6 +858,70 @@ def _scalar_contact(panels: dict[str, Image.Image]) -> Image.Image:
         col, row = index % 2, index // 2
         sheet.paste(panels[name], (col * cell_w, row * cell_h))
     return sheet
+
+
+def frame_scale(
+    meshes: list[TriangleMesh],
+    bases: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    view_w: int,
+    view_h: int,
+    ssaa: int = 1,
+) -> float:
+    """One pixels-per-millimeter scale so every frame fits in the viewport."""
+    if view_w < 1 or view_h < 1 or ssaa < 1:
+        raise RuntimeError("The animation viewport is empty.")
+    span = 1e-6
+    for mesh, basis in zip(meshes, bases, strict=True):
+        x_cam, y_cam, _z_cam = basis
+        if len(mesh.vertices) == 0:
+            continue
+        x = mesh.vertices @ x_cam
+        y = mesh.vertices @ y_cam
+        span = max(span, float(x.max() - x.min()), float(y.max() - y.min()))
+    usable = min(view_w, view_h) * 0.84 * ssaa
+    return usable / span
+
+
+def render_frame(
+    mesh: TriangleMesh,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+    scale: float,
+    width: int,
+    height: int,
+    *,
+    background: tuple[int, int, int] = _PAPER,
+    overlay: str = "",
+    ssaa: int = 1,
+) -> Image.Image:
+    """One RGB frame. ``width`` and ``height`` are the picture size."""
+    header = 0
+    if overlay:
+        header = max(14, min(28, height // 8))
+    view_h = height - header
+    if view_h < 1 or width < 1:
+        raise RuntimeError("The animation frame is smaller than one pixel.")
+    paper = tuple(int(channel) for channel in background)
+    buffer_w = width * ssaa
+    buffer_h = view_h * ssaa
+    color, _depth = _rasterize(mesh, basis, scale, buffer_w, buffer_h, background=paper)
+    view = Image.fromarray(color, mode="RGB")
+    if ssaa != 1:
+        view = view.resize((width, view_h), Image.Resampling.BOX)
+    if header == 0:
+        return view
+    canvas = Image.new("RGB", (width, height), paper)
+    canvas.paste(view, (0, header))
+    draw = ImageDraw.Draw(canvas)
+    size = max(10, min(15, header - 2))
+    draw.text((6, max(0, (header - size) // 2)), overlay, fill=_ink_for(paper), font=_font(size))
+    return canvas
+
+
+def _ink_for(background: tuple[int, int, int]) -> tuple[int, int, int]:
+    luminance = 0.2126 * background[0] + 0.7152 * background[1] + 0.0722 * background[2]
+    if luminance >= 140:
+        return _INK
+    return (236, 236, 232)
 
 
 def render_motion_frames(
