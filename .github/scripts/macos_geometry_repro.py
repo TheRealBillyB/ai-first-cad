@@ -4,7 +4,8 @@
 The first runs leave OpenCascade on its stock worker threads
 (``AICAD_MACOS_OCCT_WORKERS=default``) and disable the suite timeout, so a
 signal is not confused with the timeout helper. Later runs use the calling
-thread and the suite timeout. This file is not part of the suite.
+thread, including a hypoid build started off the main thread, and the suite
+timeout. This file is not part of the suite.
 """
 
 from __future__ import annotations
@@ -22,7 +23,14 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "macos-diagnostic-reports"
 PYTEST = ROOT / ".venv" / "bin" / "pytest"
 PYTHON = ROOT / ".venv" / "bin" / "python"
-TEST = "tests/test_gear_mesh.py::test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged"
+STOCK_TESTS = [
+    "tests/test_gear_mesh.py::test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged",
+]
+FIXED_TESTS = [
+    *STOCK_TESTS,
+    "tests/test_gear_mesh.py::test_a_hypoid_build_runs_on_a_worker_thread",
+    "tests/test_geometry.py::test_macos_python_threads_get_a_geometry_stack",
+]
 STAMP = time.time()
 
 
@@ -102,7 +110,7 @@ def _collect(label: str) -> None:
     print(f"copied {copied} reports for {label}")
 
 
-def _run(label: str, env: dict[str, str], timeout: int, extra: list[str]) -> str:
+def _run(label: str, env: dict[str, str], timeout: int, extra: list[str], tests: list[str]) -> str:
     log = OUT / f"{label}.log"
     command = [
         str(PYTEST),
@@ -113,7 +121,7 @@ def _run(label: str, env: dict[str, str], timeout: int, extra: list[str]) -> str
         "-vv",
         "--durations=10",
         *extra,
-        TEST,
+        *tests,
     ]
     print(f"=== {label} ===", flush=True)
     print(" ".join(command), flush=True)
@@ -125,13 +133,15 @@ def _run(label: str, env: dict[str, str], timeout: int, extra: list[str]) -> str
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            bufsize=0,
         )
         code: int | None = None
         assert process.stdout is not None
+        stream = process.stdout
+        os.set_blocking(stream.fileno(), False)
         watcher = selectors.DefaultSelector()
-        watcher.register(process.stdout, selectors.EVENT_READ)
+        watcher.register(stream, selectors.EVENT_READ)
+        pending = ""
 
         def _emit(line: str) -> None:
             handle.write(line)
@@ -139,17 +149,33 @@ def _run(label: str, env: dict[str, str], timeout: int, extra: list[str]) -> str
             sys.stdout.write(line)
             sys.stdout.flush()
 
+        def _take() -> bytes | None:
+            try:
+                chunk = os.read(stream.fileno(), 1 << 16)
+            except BlockingIOError:
+                return b""
+            return chunk
+
         try:
             while True:
-                if watcher.select(timeout=5):
-                    line = process.stdout.readline()
-                    if line:
-                        _emit(line)
+                readable = bool(watcher.select(timeout=5))
+                if readable:
+                    chunk = _take()
+                    if chunk:
+                        pending += chunk.decode("utf-8", errors="replace")
+                        lines = pending.split("\n")
+                        pending = lines[-1]
+                        for line in lines[:-1]:
+                            _emit(line + "\n")
                         continue
                 if process.poll() is not None:
-                    rest = process.stdout.read()
-                    if rest:
-                        _emit(rest)
+                    while True:
+                        chunk = _take()
+                        if not chunk:
+                            break
+                        pending += chunk.decode("utf-8", errors="replace")
+                    if pending:
+                        _emit(pending if pending.endswith("\n") else pending + "\n")
                     code = process.returncode
                     break
                 if time.monotonic() - started > timeout:
@@ -187,14 +213,14 @@ def main() -> int:
     results: list[str] = []
     crashed = False
     for index in range(1, 4):
-        outcome = _run(f"stock-{index}", stock, timeout=600, extra=["--timeout=0"])
+        outcome = _run(f"stock-{index}", stock, timeout=600, extra=["--timeout=0"], tests=STOCK_TESTS)
         results.append(f"stock-{index} {outcome}")
         if outcome.startswith("signal"):
             crashed = True
             break
     proof_failures = 0
     for index in range(1, 5):
-        outcome = _run(f"fixed-{index}", base, timeout=420, extra=[])
+        outcome = _run(f"fixed-{index}", base, timeout=720, extra=[], tests=FIXED_TESTS)
         results.append(f"fixed-{index} {outcome}")
         if outcome != "exit 0":
             proof_failures += 1

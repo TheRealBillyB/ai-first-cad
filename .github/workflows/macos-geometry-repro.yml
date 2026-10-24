@@ -13,7 +13,7 @@ jobs:
   hypoid:
     name: hypoid mesh check
     runs-on: macos-latest
-    timeout-minutes: 70
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +26,7 @@ jobs:
       - name: Install aicad
         run: python install.py
 
-      - name: Reproduce the hypoid mesh check, then run it on the calling thread
+      - name: Reproduce the hypoid mesh check, then run it on a worker thread
         run: python .github/scripts/macos_geometry_repro.py
 
       - name: Upload diagnostic reports

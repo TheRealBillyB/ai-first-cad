@@ -28,18 +28,26 @@ prepare_geometry_import()
 def _keep_opencascade_on_the_calling_thread() -> None:
     """Run OpenCascade on the caller on macOS.
 
-    A thread other than the main thread starts with a 512 KiB stack there.
     OpenCascade creates its pool with ``pthread_create`` and the default
-    attributes, so it does not enlarge that stack. A boolean or a mesh
-    recurses further than 512 KiB. The process is killed, and the pytest
-    worker exits with no Python traceback. ``threading.stack_size`` only
-    affects threads Python starts. The calling thread already has the
-    ordinary stack, which is the one Linux and Windows use for this work.
-    One pool thread is that caller, so the parallel algorithms stay on it.
+    attributes. On macOS that stack is 512 KiB. A boolean or a mesh recurses
+    further than that, the process is killed, and a pytest worker exits with
+    no Python traceback. ``threading.stack_size`` does not affect those pool
+    threads. One pool thread is the caller, so the work stays on the caller.
 
-    ``AICAD_MACOS_OCCT_WORKERS=default`` leaves the stock pool. The macOS
-    crash reproducer sets it for one run and then removes the switch.
+    That caller is a workspace request thread, an MCP tool thread, or a
+    thread a design script starts, as well as the main thread. On macOS those
+    Python threads also get 512 KiB unless a size is set. The call below sets
+    at least 8 MiB for threads started after this import. A sandboxed script runs on
+    the child process main thread, which keeps the stack the process was
+    started with.
+
+    ``AICAD_MACOS_OCCT_WORKERS=default`` leaves the stock pool. The Python
+    thread stack is still set. The macOS crash reproducer sets the switch
+    for one run and then removes it.
     """
+    from aicad.thread_stack import prepare_geometry_thread_stack
+
+    prepare_geometry_thread_stack()
     if sys.platform != "darwin":
         return
     if os.environ.get("AICAD_MACOS_OCCT_WORKERS") == "default":

@@ -309,6 +309,10 @@ def script_document(document, calls: list[dict]):
     import tempfile
     import threading
 
+    from aicad.thread_stack import prepare_geometry_thread_stack
+
+    # The calls run on this thread, including geometry.
+    prepare_geometry_thread_stack()
     directory = Path(tempfile.mkdtemp(prefix="aicad-calls-"))
     directory.mkdir(exist_ok=True)
     before: dict = {}
