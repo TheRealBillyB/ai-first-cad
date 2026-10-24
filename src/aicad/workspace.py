@@ -96,6 +96,9 @@ class Workspace:
             arguments = {}
         if not isinstance(arguments, dict):
             raise GeometryError(f"Arguments for {name} must be an object.")
+        missing = [key for key in command.parameters.get("required") or [] if key not in arguments]
+        if missing:
+            raise GeometryError(f"{name} needs {', '.join(missing)}.")
         with self._lock:
             if command.undo:
                 self._undo.append(self._snapshot())
