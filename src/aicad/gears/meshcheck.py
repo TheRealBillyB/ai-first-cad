@@ -2,8 +2,8 @@
 
 Spur and helical pairs use the ISO 21771 operating centre already computed for
 placement. Straight and spiral bevel pairs use the same Tredgold virtual spur
-as the contact ratio. An offset (hypoid) pair is not checked: register a
-checker for that axis layout and it is called with the same report shape.
+as the contact ratio. An offset pair is the hypoid face-mill solid: the ring
+tooth and the pinion blank that tooth leaves, placed on the offset shafts.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ _LIMITS = [
     "Tooth thickness is the nominal size, not a tolerance grade or a measured gap.",
     "The sweep tests the transverse tooth outline the solid is drawn from, through one turn of the smaller gear.",
     "A bevel pair is swept as the Tredgold virtual spur at the toe, the mid-face, and the heel.",
-    "An offset (hypoid) pair is not checked until a checker is registered for that layout.",
+    "An offset pair is checked on the generated face-mill solids at a few mesh poses, not as a spiral bevel and not through a full turn.",
 ]
 
 _WHAT = (
@@ -49,8 +49,8 @@ def register_mesh_check(axis_layout: str, checker: Callable) -> None:
     """Register the checker for one axis layout.
 
     Layouts are ``parallel`` (spur, helical), ``intersecting`` (straight and
-    spiral bevel), and ``offset`` (hypoid). Registering ``offset`` is how a
-    hypoid pair plugs in later. The checker returns the report body.
+    spiral bevel), and ``offset`` (hypoid). The offset checker is registered
+    with the others. The checker returns the report body.
     """
     if axis_layout not in {PARALLEL, INTERSECTING, OFFSET}:
         raise GeometryError(
@@ -104,7 +104,9 @@ def check_pair(
         )
     body = checker(pinion, gear, left, right, mounting or {}, _ranges(backlash_mm), steps)
     name = body.pop("result_name", None) or "gear pair"
-    return finish(body, kind=VERIFIED_CHECK, name=name, what=_WHAT, limits=_LIMITS)
+    what = body.pop("what", None) or _WHAT
+    limits = body.pop("limits", None) or _LIMITS
+    return finish(body, kind=VERIFIED_CHECK, name=name, what=what, limits=limits)
 
 
 def mounting_from_frames(pinion_matrix: list, gear_matrix: list) -> dict:
@@ -792,9 +794,16 @@ def _phase(matrix, axis, toward) -> float:
     return math.degrees(math.atan2(_dot(axis, crossed), _dot(target, local)))
 
 
+def _check_offset(pinion_spec, gear_spec, left, right, mounting, ranges, steps) -> dict:
+    from aicad.gears.hypoid_mesh import check_offset_pair
+
+    return check_offset_pair(pinion_spec, gear_spec, left, right, mounting, ranges, steps)
+
+
 def _install() -> None:
     register_mesh_check(PARALLEL, _check_parallel)
     register_mesh_check(INTERSECTING, _check_intersecting)
+    register_mesh_check(OFFSET, _check_offset)
 
 
 _install()

@@ -124,7 +124,7 @@ The smaller gear is turned through one full rotation in steps no coarser than 2 
 
 The range is `{min, max}` in millimetres and applies to both backlash numbers, or separate `circumferential` and `normal` ranges. A pair fails when backlash is outside the range, the total contact ratio is below 1, a member is undercut, or the outlines interfere.
 
-An offset layout has no checker yet. `register_mesh_check("offset", checker)` is the plug-in for a hypoid pair, and it returns the same report.
+A hypoid pair is checked on the generated solids, not as a spiral bevel. The ring tooth is the face-mill blade and the pinion is the blank that blade leaves. The shafts stay at the pinion offset. The sweep places those solids at three poses across one ring pitch and reports the intersection volume or the gap. Contact means the solid gap is under 0.05 mm or the solids interfere. Backlash along the tooth is the gap from the ring pitch flank to the pinion solid at the heel, the middle, and the toe. That gap is smallest near the middle of the face and larger toward the ends, and a backlash range is applied at all three stations. The closest solid gap can be smaller than the pitch-flank gap. The ratio is ring teeth divided by pinion teeth, and the axis offset is compared with the offset the pair was generated for. A hand or a tooth count that does not belong to that pair is refused. This is not a full turn, not a tolerance grade, and not a load rating.
 
 The command line is `aicad check-gears`. The assistant tool is `check_gears`.
 
@@ -154,4 +154,4 @@ The drive is `{inputs: [{shaft, speed_rpm, torque_nm}], speeds: [{shaft, speed_r
 
 ## Not in this module
 
-Tolerance grades and face-hobbing are not generated here. The small hypoid flank shift is not a backlash you specify, and other backlash is reported by the mesh check rather than cut into the solid. An offset pair has no mesh checker yet. The train solver does not check that the solids touch.
+Tolerance grades and face-hobbing are not generated here. The small hypoid flank shift is not a backlash you specify, and other backlash is reported by the mesh check rather than cut into the solid. The hypoid sweep is three poses, not a full turn. The train solver does not check that the solids touch.

@@ -15,7 +15,6 @@ from aicad.gears import (
     pair_geometry,
     register_mesh_check,
     registered_mesh_checks,
-    unregister_mesh_check,
 )
 from aicad.server import build_server
 from aicad.workspace import Workspace
@@ -158,22 +157,96 @@ def test_an_undercut_pinion_is_reported():
     assert any("undercut" in item.lower() for item in report["findings"])
 
 
-def test_hypoid_checker_is_unregistered_until_someone_plugs_one_in():
-    assert "offset" not in registered_mesh_checks()
+def _hypoid(role: str, **overrides) -> dict:
+    teeth, mate = (8, 16) if role == "pinion" else (16, 8)
+    spec = {
+        "type": "hypoid",
+        "role": role,
+        "teeth": teeth,
+        "mate_teeth": mate,
+        "offset_mm": 12,
+        "shaft_angle_deg": 90,
+        "ring_diameter_mm": 80,
+        "face_width_mm": 10,
+        "spiral_angle_deg": 35,
+        "pressure_angle_deg": 20,
+    }
+    spec.update(overrides)
+    return spec
+
+
+def test_the_hypoid_checker_is_registered_and_can_be_replaced():
+    assert "offset" in registered_mesh_checks()
     assert "parallel" in registered_mesh_checks()
     assert "intersecting" in registered_mesh_checks()
 
     def offset_checker(*_args, **_kwargs):
-        return {"status": "pass", "axis_layout": "offset", "result_name": "hypoid"}
+        return {"status": "pass", "axis_layout": "offset", "result_name": "stub"}
+
+    from aicad.gears.meshcheck import _check_offset
 
     register_mesh_check("offset", offset_checker)
     try:
         assert "offset" in registered_mesh_checks()
     finally:
-        unregister_mesh_check("offset")
-    assert "offset" not in registered_mesh_checks()
+        register_mesh_check("offset", _check_offset)
+    assert "offset" in registered_mesh_checks()
     with pytest.raises(GeometryError, match="parallel|intersecting|offset"):
         register_mesh_check("skew", offset_checker)
+
+
+def test_a_hypoid_pair_passes_the_mesh_check():
+    # The pitch-flank gap equals the designed shift near mid-face (0.052 mm)
+    # and opens toward the ends. A 0.05 cap is the solid contact bar, not this gap.
+    report = check_pair(_hypoid("pinion"), _hypoid("ring"), backlash_mm={"min": 0.0, "max": 0.30})
+    assert report["status"] == "pass", report["findings"]
+    assert report["result_kind"] == "verified_check"
+    assert report["axis_layout"] == "offset"
+    assert report["interference"] is False
+    assert report["contact"] is True
+    assert report["ratio"] == 2
+    assert report["offset_mm"] == pytest.approx(12)
+    assert report["ideal_offset_mm"] == pytest.approx(12)
+    assert abs(report["offset_error_mm"]) < 1e-6
+    assert report["sweep"]["model"] == "face-mill solid"
+    assert report["sweep"]["steps"] == 3
+    assert report["sweep"]["rotation_deg"] < 360
+    assert report["sweep"]["worst_overlap_mm3"] < 1e-4
+    assert report["sweep"]["worst_gap_mm"] < 0.05
+    assert len(report["backlash"]["along_tooth_mm"]) == 3
+    assert report["backlash"]["designed_flank_shift_mm"] == pytest.approx(0.052)
+    assert report["backlash"]["along_tooth_min_mm"] == pytest.approx(0.052, abs=0.012)
+    assert 0.05 < report["backlash"]["along_tooth_max_mm"] < 0.30
+    assert report["backlash"]["in_range"] is True
+    assert report["undercut"] is False
+    assert report["total_contact_ratio"] is None
+    assert "load rating" in " ".join(report["limits"]).lower()
+    assert "not a spiral bevel" in " ".join(report["limits"]).lower() or "not a spiral bevel" in " ".join(report["assumptions"]).lower()
+    assert report["findings"] == []
+
+
+def test_a_hypoid_plunge_interferes_and_a_wrong_offset_is_flagged():
+    report = check_pair(
+        _hypoid("pinion"),
+        _hypoid("ring"),
+        {"offset_mm": 12.5},
+        backlash_mm={"min": 0.0, "max": 1.0},
+    )
+    assert report["status"] == "fail"
+    assert report["offset_error_mm"] == pytest.approx(0.5)
+    assert report["interference"] is True
+    assert report["sweep"]["worst_overlap_mm3"] > 0.3
+    assert any("offset" in item.lower() for item in report["findings"])
+
+
+def test_a_mismatched_hypoid_hand_or_ratio_is_refused():
+    pinion = _hypoid("pinion", hand="right")
+    with pytest.raises(GeometryError, match="opposite"):
+        check_pair(pinion, _hypoid("ring"))
+    with pytest.raises(GeometryError, match="ring_spiral_angle_deg"):
+        check_pair(_hypoid("pinion"), _hypoid("ring", spiral_angle_deg=-35))
+    with pytest.raises(GeometryError, match="tooth counts"):
+        check_pair(_hypoid("pinion"), _hypoid("ring", teeth=18, mate_teeth=9))
 
 
 def test_assembly_pair_and_the_command_surfaces(tmp_path: Path):

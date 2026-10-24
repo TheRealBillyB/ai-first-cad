@@ -1110,6 +1110,40 @@ def _closed_tooth_profiles(design: dict, thetas, bias: float, tip_target: float,
     return profiles
 
 
+def ring_pitch_flank_points(spec: dict) -> list[tuple[float, float, float]]:
+    """Ring flank points at the pitch cone, three stations along the face.
+
+    Both flanks of the generated tooth are included, shifted into the metal by
+    the same bias the solid uses. Coordinates are in the ring frame, before
+    the mesh placement. The stations are ordered from one end of the face,
+    through the middle, to the other end.
+    """
+    # A mesh record has pinion_teeth and a cutter, but not ring_diameter_mm.
+    # Only a normalized hypoid spec has both, and that is what the pitch solve reads.
+    ready = (
+        "ring_diameter_mm" in spec
+        and "pinion_teeth" in spec
+        and isinstance(spec.get("cutter"), dict)
+    )
+    clean = spec if ready else normalize_hypoid(spec)
+    design = pitch_design(clean)
+    thetas = (-0.6 * design["theta_face"], 0.0, 0.6 * design["theta_face"])
+    points: list[tuple[float, float, float]] = []
+    for theta in thetas:
+        flanks = _tooth_flanks(
+            design,
+            theta,
+            False,
+            bias=_BIAS_MM,
+            start=0.0,
+            stop=0.0,
+            flank_count=2,
+        )
+        for flank in flanks:
+            points.append(tuple(flank[0][0]))
+    return points
+
+
 def ring_tooth_rings(design: dict) -> list[list[tuple[float, float, float]]]:
     """The ring tooth the solid is lofted from. Flanks are set in by the bias."""
     face_n, flank_n, tip_n, _root_n = _station_counts(design)
