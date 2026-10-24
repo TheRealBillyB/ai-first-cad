@@ -13,6 +13,7 @@ import numpy as np
 
 from aicad import cable as cable_mod
 from aicad import kernel
+from aicad import tendon as tendon_mod
 from aicad.errors import GeometryError
 from aicad.fea import lookup_material
 from aicad.honesty import ROUGH_ESTIMATE, VERIFIED_CHECK, finish
@@ -195,29 +196,45 @@ def check_cables(
     spec: dict,
     shapes: dict[str, kernel.Shape],
     motion: dict | None = None,
+    study: dict | None = None,
+    steps: int | None = None,
 ) -> dict:
-    samples = expand_motion(spec, motion) if motion else [{"index": 0, "time_s": 0.0, "joints": {}, "duration_s": 0.0}]
     cables = [cable_mod.normalize_cable(item, index) for index, item in enumerate(spec.get("cables") or [])]
     if not cables:
         raise GeometryError(f"Assembly {spec.get('name')!r} has no cables.")
+    if steps is not None and study is None:
+        raise GeometryError("steps is the number of poses in a motion study. Name a study, or pass one.")
+    samples = _cable_samples(spec, shapes, motion, study, steps)
     rest: dict[str, float] = {}
     per_cable: dict[str, list[dict]] = {cable["name"]: [] for cable in cables}
     for sample in samples:
-        solved, placed = posed_shapes(spec, shapes, sample["joints"] or None)
+        solved = sample["solved"]
+        placed = sample["placed"]
         for cable in cables:
-            points = cable_mod.world_waypoints(cable, solved)
-            if cable["name"] not in rest:
-                rest[cable["name"]] = cable["rest_length_mm"] if cable["rest_length_mm"] is not None else cable_mod.measure_route(points, cable, None)["length_mm"]
-            metrics = cable_mod.measure_route(points, cable, rest[cable["name"]])
-            pinches = _pinches(cable, points, placed)
-            metrics["pinches"] = pinches
-            metrics["status"] = cable_mod.route_status(metrics, pinches)
+            if cable["route"] == "pulley":
+                metrics, used = tendon_mod.evaluate(cable, solved, placed, rest.get(cable["name"]))
+                rest.setdefault(cable["name"], used)
+            else:
+                points = cable_mod.world_waypoints(cable, solved)
+                if cable["name"] not in rest:
+                    rest[cable["name"]] = (
+                        cable["rest_length_mm"]
+                        if cable["rest_length_mm"] is not None
+                        else cable_mod.measure_route(points, cable, None)["length_mm"]
+                    )
+                metrics = cable_mod.measure_route(points, cable, rest[cable["name"]])
+                pinches = _pinches(cable, points, placed)
+                metrics["pinches"] = pinches
+                metrics["status"] = cable_mod.route_status(metrics, pinches)
             metrics["frame"] = sample["index"]
             metrics["time_s"] = sample["time_s"]
             per_cable[cable["name"]].append(metrics)
     summaries = []
     for cable in cables:
         rows = per_cable[cable["name"]]
+        if cable["route"] == "pulley":
+            summaries.append(tendon_mod.summarize(cable, rows))
+            continue
         worst_bend = min((row["min_bend_radius_mm"] or 1e9) for row in rows)
         max_strain = max(row["strain"] for row in rows)
         pinches = [pinch for row in rows for pinch in row["pinches"]]
@@ -225,6 +242,7 @@ def check_cables(
             {
                 "name": cable["name"],
                 "kind": cable["kind"],
+                "route": "polyline",
                 "status": "fail" if any(row["status"] == "fail" for row in rows) else "pass",
                 "rest_length_mm": rows[0]["rest_length_mm"],
                 "length_mm": [row["length_mm"] for row in rows],
@@ -237,20 +255,58 @@ def check_cables(
                 "frames": rows,
             }
         )
-    return finish(
-        {
-            "cables": summaries,
-            "status": "fail" if any(item["status"] == "fail" for item in summaries) else "pass",
-            "assumptions": cable_mod.assumptions(),
-        },
-        kind=ROUGH_ESTIMATE,
-        name="Cables",
-        what="Length, bend, and pinch are a rough estimate of a polyline through fixed clips. The line does not sag.",
-        limits=[
-            "Bend radius is the circumradius of three waypoints, which is harsher than a filleted route.",
-            "Clips do not slip, and the line does not stretch except as a single strain number.",
-            "A pinch is a centerline sample, not a swept volume of the hose.",
-        ],
+    has_tendon = any(cable["route"] == "pulley" for cable in cables)
+    has_polyline = any(cable["route"] != "pulley" for cable in cables)
+    what, limits, notes = _cable_presentation(has_polyline, has_tendon)
+    payload = {
+        "cables": summaries,
+        "status": "fail" if any(item["status"] == "fail" for item in summaries) else "pass",
+        "assumptions": notes,
+    }
+    if study is not None:
+        payload["study"] = study.get("name")
+        payload["steps"] = len(samples)
+    return finish(payload, kind=ROUGH_ESTIMATE, name="Cables", what=what, limits=limits)
+
+
+def _cable_samples(spec, shapes, motion, study, steps):
+    if study is not None:
+        from aicad.motion_study import iter_study_poses
+
+        return iter_study_poses(spec, shapes, study, steps=steps)
+    if motion is not None:
+        rows = []
+        for sample in expand_motion(spec, motion):
+            solved, placed = posed_shapes(spec, shapes, sample["joints"] or None)
+            rows.append(
+                {
+                    "index": sample["index"],
+                    "time_s": sample["time_s"],
+                    "solved": solved,
+                    "placed": placed,
+                }
+            )
+        return rows
+    solved, placed = posed_shapes(spec, shapes, None)
+    return [{"index": 0, "time_s": 0.0, "solved": solved, "placed": placed}]
+
+
+def _cable_presentation(has_polyline: bool, has_tendon: bool) -> tuple[str, list[str], list[str]]:
+    polyline_what = "Length, bend, and pinch are a rough estimate of a polyline through fixed clips. The line does not sag."
+    polyline_limits = [
+        "Bend radius is the circumradius of three waypoints, which is harsher than a filleted route.",
+        "Clips do not slip, and the line does not stretch except as a single strain number.",
+        "A pinch is a centerline sample, not a swept volume of the hose.",
+    ]
+    tendon_what, tendon_limits = tendon_mod.presentation()
+    if has_tendon and not has_polyline:
+        return tendon_what, tendon_limits, tendon_mod.assumptions()
+    if has_polyline and not has_tendon:
+        return polyline_what, polyline_limits, cable_mod.assumptions()
+    return (
+        polyline_what + " A tendon adds pulley arcs and capstan tension from the actuator force.",
+        [*polyline_limits, *tendon_limits],
+        [*cable_mod.assumptions(), *tendon_mod.assumptions()],
     )
 
 

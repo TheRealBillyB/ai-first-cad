@@ -30,12 +30,12 @@ ASSUMPTIONS = [
     "One row is one part name, or one catalog size and length, at one material. A different spelling or a handbook alias of that material stays on the same row.",
     "Two instances of the same part add up. Two screws of the same size and length add up.",
     "A catalog screw, nut, or washer is a fastener. A bearing, seal, motor, or gearbox is a standard part.",
-    "A hose or a cable is a route on the assembly. It is not a solid, so it has no mass here.",
+    "A hose, a cable, or a tendon is a route on the assembly. It is not a solid, so it has no mass here.",
     "A published catalog mass is used when the table has one. It does not follow the instance material.",
     "Without a published mass, mass is volume times the handbook density. A motor or gearbox envelope is left blank.",
 ]
 _FASTENERS = {"socket_head_cap_screw", "hex_nut", "plain_washer"}
-_ORDER = {"part": 0, "fastener": 1, "standard": 2, "hose": 3, "cable": 4, "other": 5}
+_ORDER = {"part": 0, "fastener": 1, "standard": 2, "hose": 3, "cable": 4, "tendon": 5, "other": 6}
 
 
 def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, dict]) -> dict:
@@ -114,7 +114,7 @@ def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, di
             "One row is one part name, or one catalog size and length, at one material. A different spelling or a handbook alias of that material stays on the same row.",
             "Two instances of the same part add up. Two screws of the same size and length add up.",
             "A catalog screw, nut, or washer is a fastener. A bearing, seal, motor, or gearbox is a standard part.",
-            "A hose or a cable is a route on the assembly. It is not a solid.",
+            "A hose, a cable, or a tendon is a route on the assembly. It is not a solid.",
         ],
     }
     mass = {
@@ -128,7 +128,7 @@ def build_bom(spec: dict, shapes: dict[str, kernel.Shape], records: dict[str, di
         "limits": [
             "A material with no handbook density leaves a volume-based mass blank.",
             "A motor or gearbox with no published mass is left blank. The envelope is not that mass.",
-            "A hose or a cable is a route, so it has no mass here.",
+            "A hose, a cable, or a tendon is a route, so it has no mass here.",
         ],
         "assumptions": [
             "A published catalog mass does not follow the instance material.",
@@ -343,14 +343,28 @@ def _route_row(cable: dict, index: int) -> dict:
     if not isinstance(cable, dict):
         raise GeometryError(f"Cable {index} must be an object.")
     name = str(cable.get("name") or f"cable_{index + 1}")
-    kind = str(cable.get("kind") or "cable")
-    if kind not in ("cable", "hose"):
-        raise GeometryError(f"{name}: kind must be cable or hose.")
+    kind = str(cable.get("kind") or ("tendon" if cable.get("points") else "cable"))
+    if kind not in ("cable", "hose", "tendon"):
+        raise GeometryError(f"{name}: kind must be cable, hose, or tendon.")
     try:
         diameter = float(cable.get("diameter_mm") or cable.get("diameter") or 6.0)
     except (TypeError, ValueError) as exc:
         raise GeometryError(f"{name}: diameter_mm must be a number.") from exc
-    label = "Hose" if kind == "hose" else "Cable"
+    if kind == "hose":
+        label = "Hose"
+    elif kind == "tendon" or cable.get("points"):
+        label = "Tendon"
+        kind = "tendon"
+    else:
+        label = "Cable"
+    note = (
+        "No mass. The route is anchors, pulleys, and guides. Cut length is the cable check, not this list."
+        if cable.get("points")
+        else "No mass. The route is a polyline. Cut length is the cable check, not this list."
+    )
+    material = None
+    if isinstance(cable.get("material"), str) and cable.get("material").strip():
+        material = cable["material"].strip()
     return {
         "category": kind,
         "name": name,
@@ -359,12 +373,12 @@ def _route_row(cable: dict, index: int) -> dict:
         "size": None,
         "length_mm": None,
         "standard": None,
-        "material": None,
+        "material": material,
         "source": "route",
         "mass_estimate_kg": None,
         "quantity": 1,
         "instances": [],
-        "note": "No mass. The route is a polyline. Cut length is the cable check, not this list.",
+        "note": note,
     }
 
 
