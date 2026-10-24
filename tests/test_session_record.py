@@ -58,6 +58,9 @@ def test_recording_stays_off_until_it_is_turned_on(tmp_path, config_home):
     assert started["enabled"] is True
     assert started["steps"] == 0
     _create(workspace, "rail")
+    status = workspace.execute("session_record", {"action": "status"}, source="ui")
+    assert status["steps"] == 1
+    assert status["summary"] == "Recording is on. 1 step is stored."
     saved = _record(project)
     assert saved["format"] == "session_record.v1"
     assert len(saved["steps"]) == 1
