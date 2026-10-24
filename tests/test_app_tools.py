@@ -4,6 +4,7 @@ The page posts to /api/command. These tests follow that path: the static
 files name the button and the command, and the server runs that command.
 """
 
+import inspect
 import json
 import threading
 from http.client import HTTPConnection
@@ -16,6 +17,10 @@ from aicad.errors import GeometryError
 from aicad.workspace import Workspace
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# A hypoid in the model view can take longer than two minutes on a busy runner.
+# A request that never returns is still stopped by the suite limit.
+_REQUEST_TIMEOUT_S = 240
 
 _BUTTONS = {
     "open-library": "search_parts",
@@ -48,9 +53,9 @@ def server(tmp_path, monkeypatch):
         running.server_close()
 
 
-def _exchange(server, method, path, body=None, token="page", origin=True):
+def _exchange(server, method, path, body=None, token="page", origin=True, timeout=_REQUEST_TIMEOUT_S):
     host, port = server.server_address
-    connection = HTTPConnection(host, port, timeout=120)
+    connection = HTTPConnection(host, port, timeout=timeout)
     headers = {}
     if origin is True:
         headers["Origin"] = f"http://127.0.0.1:{port}"
@@ -158,6 +163,12 @@ def test_library_search_and_insert_show_up_in_the_model(server):
     scene = _scene(server)
     assert "bearing" in scene["parts"]
     assert scene["positions"]
+
+
+def test_a_model_view_request_waits_past_two_minutes():
+    timeout = inspect.signature(_exchange).parameters["timeout"].default
+    assert timeout == _REQUEST_TIMEOUT_S
+    assert timeout >= 240
 
 
 def test_spur_and_hypoid_gears_reach_the_model_view(server):

@@ -564,6 +564,48 @@ def test_bore_keyway_hub_and_splines_cut_the_blank():
     assert din_shape.impl.is_inside(metal)
 
 
+def test_a_stored_keyway_or_spline_builds_again(tmp_path: Path):
+    keyed = {
+        "type": "spur",
+        "module_mm": 2,
+        "teeth": 22,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 5,
+        "bore_mm": 20,
+        "keyway": {"standard": "DIN 6885-1:1968"},
+    }
+    stored = gear_data(keyed)["spec"]
+    assert stored["keyway"]["standard"] == "DIN 6885-1:1968"
+    assert gear_data(stored)["spec"]["keyway"]["width_mm"] == stored["keyway"]["width_mm"]
+    document = Document(tmp_path)
+    created = document.create_gear("keyed", keyed)
+    assert created["volume_mm3"] > 0
+    updated = document.update_gear("keyed", document.get_source("keyed")["gear"])
+    assert updated["volume_mm3"] == pytest.approx(created["volume_mm3"], rel=1e-6)
+
+    din = {
+        "type": "spur",
+        "module_mm": 3,
+        "teeth": 24,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 5,
+        "spline": {"standard": "DIN 5480-1:2006", "module_mm": 2, "teeth": 14, "reference_diameter_mm": 30},
+    }
+    stored_din = gear_data(din)["spec"]
+    assert stored_din["spline"]["standard"] == "DIN 5480-1:2006"
+    assert gear_data(stored_din)["spec"]["spline"]["teeth"] == 14
+    iso = {
+        "type": "spur",
+        "module_mm": 3,
+        "teeth": 24,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 5,
+        "spline": {"standard": "ISO 14:1982", "series": "medium", "minor_mm": 23},
+    }
+    stored_iso = gear_data(iso)["spec"]
+    assert gear_data(stored_iso)["spec"]["spline"]["minor_mm"] == stored_iso["spline"]["minor_mm"]
+
+
 def test_document_reloads_a_gear_and_the_command_layer_matches(tmp_path: Path):
     spec = {"type": "spur", "module_mm": 2, "teeth": 14, "pressure_angle_deg": 20, "face_width_mm": 4}
     document = Document(tmp_path / "project")
