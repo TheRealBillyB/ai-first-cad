@@ -546,6 +546,232 @@ def test_signals_are_refused_when_landlock_cannot_scope_them(tmp_path):
         assert rows[label] == "denied:1", label
 
 
+def _run_owner_signal_probe(workspace: str) -> None:
+    """Confined process. A resource limit or a file notice must not reach another pid.
+
+    ``AICAD_OWNER_ABI`` is read only here. The package has no such switch.
+    """
+    import ctypes
+    import threading
+
+    import aicad.sandbox as sandbox
+
+    abi = os.environ.get("AICAD_OWNER_ABI")
+    if abi:
+        _report_landlock_abi(int(abi))
+    root = Path(workspace).resolve()
+    sandbox.apply_sandbox(root, network=False)
+    libc = ctypes.CDLL(None, use_errno=True)
+    arch = sandbox._arch()
+    helper = int(os.environ["AICAD_HELPER_PID"])
+    lines = [
+        "abi:%s" % sandbox._landlock_abi_used,
+        "scope:%s" % sandbox._landlock_signal_scope,
+    ]
+
+    class Limit(ctypes.Structure):
+        _fields_ = [("cur", ctypes.c_ulong), ("max", ctypes.c_ulong)]
+
+    def status(result: int, err: int) -> str:
+        if result >= 0:
+            return "allowed"
+        return "denied:%s" % err
+
+    def prlimit(pid: int, new: Limit | None) -> str:
+        libc.syscall.argtypes = [
+            ctypes.c_long,
+            ctypes.c_long,
+            ctypes.c_long,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        libc.syscall.restype = ctypes.c_long
+        old = Limit()
+        ctypes.set_errno(0)
+        new_ptr = None if new is None else ctypes.byref(new)
+        result = libc.syscall(sandbox._PRLIMIT64[arch], pid, 0, new_ptr, ctypes.byref(old))
+        return status(int(result), ctypes.get_errno())
+
+    def fcntl_cmd(fd: int, cmd: int, arg: int) -> str:
+        libc.syscall.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_long, ctypes.c_long]
+        libc.syscall.restype = ctypes.c_long
+        ctypes.set_errno(0)
+        result = libc.syscall(sandbox._FCNTL[arch], fd, cmd, arg)
+        return status(int(result), ctypes.get_errno())
+
+    def ioctl_pgrp(fd: int, pid: int) -> str:
+        libc.syscall.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_ulong, ctypes.c_void_p]
+        libc.syscall.restype = ctypes.c_long
+        target = ctypes.c_int(pid)
+        ctypes.set_errno(0)
+        result = libc.syscall(sandbox._IOCTL[arch], fd, 0x5410, ctypes.byref(target))
+        return status(int(result), ctypes.get_errno())
+
+    def attempt(prefix: str) -> list[str]:
+        read_fd, write_fd = os.pipe()
+        try:
+            return [
+                "%s-prlimit:%s" % (prefix, prlimit(helper, Limit(0, 10**12))),
+                "%s-setown:%s" % (prefix, fcntl_cmd(read_fd, 8, helper)),
+                "%s-setsig:%s" % (prefix, fcntl_cmd(read_fd, 10, 10)),
+                "%s-ioctl:%s" % (prefix, ioctl_pgrp(read_fd, helper)),
+            ]
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+
+    lines.append("self-prlimit:%s" % prlimit(os.getpid(), None))
+    lines.append("zero-prlimit:%s" % prlimit(0, None))
+    lines.append("negative-prlimit:%s" % prlimit(-1, None))
+    read_fd, write_fd = os.pipe()
+    try:
+        lines.append("fcntl-getfl:%s" % fcntl_cmd(read_fd, 3, 0))
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+    lines.extend(attempt("main"))
+    boxed: list[str] = []
+
+    def worker() -> None:
+        boxed.extend(attempt("thread"))
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    lines.extend(boxed)
+    report_read, report_write = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(report_read)
+        code = 0
+        try:
+            text = "\n".join(attempt("child")) + "\n"
+            os.write(report_write, text.encode())
+        except Exception as exc:
+            os.write(report_write, ("child-error:%s\n" % exc).encode())
+            code = 1
+        finally:
+            os.close(report_write)
+            os._exit(code)
+    os.close(report_write)
+    _pid, status = os.waitpid(child, 0)
+    if status != 0:
+        raise RuntimeError("confined child status %s" % status)
+    lines.append(os.read(report_read, 65536).decode())
+    os.close(report_read)
+    time.sleep(0.4)
+    (root / "owner-signals.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+_OWNER_PROBE_LAUNCH = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[2])\n"
+    "from tests.test_sandbox_findings import _run_owner_signal_probe\n"
+    "_run_owner_signal_probe(sys.argv[1])\n"
+)
+
+
+def _start_signal_helper(tmp_path: Path) -> tuple[subprocess.Popen[bytes], Path]:
+    log = tmp_path / "helper-signals.txt"
+    ready = tmp_path / "helper-ready"
+    script = textwrap.dedent(
+        """
+        import os
+        import signal
+        import sys
+        import time
+
+        log, ready = sys.argv[1], sys.argv[2]
+
+        def handler(signum, _frame):
+            with open(log, "a", encoding="utf-8") as handle:
+                handle.write("signal:%s\\n" % signum)
+
+        for name in ("SIGUSR1", "SIGUSR2", "SIGIO", "SIGXCPU", "SIGWINCH", "SIGTERM"):
+            value = getattr(signal, name, None)
+            if value is not None:
+                signal.signal(value, handler)
+        with open(ready, "w", encoding="utf-8") as handle:
+            handle.write("%s\\n" % os.getpid())
+        while True:
+            time.sleep(0.2)
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script, str(log), str(ready)],
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if ready.is_file() and ready.read_text(encoding="utf-8").strip():
+            return proc, log
+        if proc.poll() is not None:
+            raise RuntimeError("signal helper exited")
+        time.sleep(0.02)
+    proc.kill()
+    raise RuntimeError("signal helper did not start")
+
+
+def test_a_resource_limit_or_file_notice_cannot_signal_another_process(tmp_path):
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux applies the signal filter in the kernel")
+    _sandbox_or_skip()
+    helper, log = _start_signal_helper(tmp_path)
+    try:
+        checkout = Path(__file__).resolve().parents[1]
+        env = os.environ.copy()
+        env["AICAD_HELPER_PID"] = str(helper.pid)
+        refused = (
+            "main-prlimit",
+            "main-setown",
+            "main-setsig",
+            "main-ioctl",
+            "thread-prlimit",
+            "thread-setown",
+            "thread-ioctl",
+            "child-prlimit",
+            "child-setown",
+            "child-ioctl",
+            "negative-prlimit",
+        )
+        allowed = ("self-prlimit", "zero-prlimit", "fcntl-getfl")
+        for abi in ("", "5"):
+            work = tmp_path / ("abi-real" if abi == "" else "abi-5")
+            work.mkdir()
+            run_env = env.copy()
+            if abi:
+                run_env["AICAD_OWNER_ABI"] = abi
+            else:
+                run_env.pop("AICAD_OWNER_ABI", None)
+            completed = subprocess.run(
+                [sys.executable, "-c", _OWNER_PROBE_LAUNCH, str(work), str(checkout)],
+                cwd=checkout,
+                env=run_env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            assert completed.returncode == 0, completed.stderr
+            text = (work / "owner-signals.txt").read_text(encoding="utf-8")
+            rows = dict(line.split(":", 1) for line in text.splitlines() if ":" in line)
+            if abi:
+                assert rows["abi"] == "5"
+                assert rows["scope"] == "False"
+            else:
+                assert rows["scope"] in {"True", "False"}
+            for label in allowed:
+                assert rows[label] == "allowed", label
+            for label in refused:
+                assert rows[label] == "denied:1", (label, rows.get(label))
+        time.sleep(0.4)
+        heard = log.read_text(encoding="utf-8") if log.is_file() else ""
+        assert heard == ""
+        assert helper.poll() is None
+    finally:
+        helper.kill()
+        helper.wait(timeout=5)
+
+
 def _assert_job_has_no_abi_cap(project: Path) -> None:
     jobs = project / ".aicad" / "jobs"
     files = list(jobs.glob("*/job.json")) if jobs.is_dir() else []
