@@ -74,7 +74,7 @@ def assumptions() -> list[str]:
     return [
         "The route is straight between tangent points and circular on each sheave. It does not sag, and it does not slip along a groove.",
         "radius_mm is the radius of the cable centerline, not the sheave metal. Bend radius for a pulley or a wrap is that number.",
-        "A guide with no radius is a point. Its bend radius is the circumradius of the incoming point, the guide, and the outgoing point.",
+        "A guide with no radius is a point. Its bend radius is the circumradius of the incoming point, the guide, and the outgoing point. A guide that sits on the incoming or outgoing point is not a corner, so that radius stays unlimited.",
         "Wrap is cw or ccw about the posed axis. When wrap is omitted, the solver keeps the combination with the smaller total arc.",
         "Rest length is the authored value, or the length of the first sample. Slack is a path more than 0.01 mm shorter than that. Stretch is a path more than 0.01 mm longer.",
         "actuator_force_n is the tension in the span at actuator_end. Across a pulley, tension on the far side is the near tension times exp(-friction × wrap in radians). Friction of zero passes the tension through.",
@@ -791,7 +791,8 @@ def _circumradius(a, b, c) -> tuple[float, float]:
     bc = _dist(b, c)
     ac = _dist(a, c)
     if ab < 1e-9 or bc < 1e-9:
-        return 0.0, 0.0
+        # A repeated point is not a corner. Radius 0 would fail every bend limit.
+        return math.inf, 0.0
     area = _triangle_area(a, b, c)
     turn = math.acos(max(-1.0, min(1.0, _cosine(a, b, c))))
     deflection = math.pi - turn

@@ -391,6 +391,28 @@ def test_workspace_and_cli_report_a_differential(tmp_path: Path):
     assert cli_main(["gear-train", "axle", "--file", str(path), "--workspace", str(tmp_path / "axle")]) == 0
 
 
+def test_a_design_script_records_a_gear_train_solve():
+    from aicad.parity import SCRIPT_METHODS
+    from aicad.sandbox_run import _CHECKS, script_document
+
+    class Doc:
+        def solve_gear_train(self, name, drive):
+            return {"status": "ok", "name": name, "inputs": len(drive["inputs"])}
+
+    calls: list[dict] = []
+    proxy = script_document(Doc(), calls)
+    report = proxy.solve_gear_train("axle", {"inputs": [{"shaft": "case"}]})
+    assert report["status"] == "ok"
+    assert "solve_gear_train" in SCRIPT_METHODS
+    recorded = [call for call in calls if call.get("method") in _CHECKS]
+    assert recorded == [
+        {
+            "method": "solve_gear_train",
+            "result": {"status": "ok", "name": "axle", "inputs": 1},
+        }
+    ]
+
+
 def test_a_train_without_meshes_is_refused(tmp_path: Path):
     document = Document(tmp_path / "empty")
     _box(document, "housing")

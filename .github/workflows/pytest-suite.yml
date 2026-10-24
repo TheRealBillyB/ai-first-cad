@@ -55,6 +55,14 @@ jobs:
       - name: Install aicad
         run: python install.py
 
+      # macOS and Windows have no CalculiX package on the runner image.
+      # The lock names every conda-forge file, and the script checks sha256
+      # before linking. ccx stays a separate program. Linux already installed
+      # it above. A runner the lock does not cover fails this step.
+      - name: Install pinned CalculiX
+        if: runner.os != 'Linux'
+        run: python .github/scripts/install_calculix.py
+
       - name: Make the apt archive cache readable
         if: runner.os == 'Linux' && always()
         run: |
@@ -63,7 +71,17 @@ jobs:
           fi
 
       - name: Check the install and CalculiX
-        run: python install.py --check
+        run: python install.py --check --require-ccx
+
+      - name: Check that Gmsh imports
+        shell: bash
+        run: |
+          if [ -x .venv/bin/python ]; then
+            PY=.venv/bin/python
+          else
+            PY=.venv/Scripts/python.exe
+          fi
+          "$PY" -I -c "import gmsh; print('gmsh', gmsh.__version__)"
 
       - name: Run the Windows sandbox tests
         if: inputs.os == 'windows-latest'

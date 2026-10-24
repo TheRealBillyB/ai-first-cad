@@ -331,6 +331,30 @@ def test_bh_f14_cli_module_runs(tmp_path):
     assert completed.stderr.startswith("error:")
 
 
+def test_a_design_script_returns_a_check_it_cannot_store():
+    from aicad.sandbox_run import script_document
+
+    class Unprintable:
+        def to_dict(self):
+            raise RuntimeError("no dict")
+
+        def __str__(self):
+            raise RuntimeError("no text")
+
+    class Doc:
+        def measure(self):
+            return Unprintable()
+
+    calls: list[dict] = []
+    proxy = script_document(Doc(), calls)
+    result = proxy.measure()
+    assert type(result).__name__ == "Unprintable"
+    assert calls == [{"method": "measure", "result": "Unprintable"}]
+    wrapper = proxy.measure
+    assert wrapper.__globals__.get("__builtins__") == {}
+    assert wrapper.__globals__.get("AttributeError") is AttributeError
+
+
 def test_a_design_script_cannot_read_the_document_wrapper():
     from aicad.sandbox_run import script_document
 

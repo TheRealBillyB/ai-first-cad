@@ -30,6 +30,7 @@ from aicad.printprep import list_printers as printer_catalog
 from aicad.robot import export_robot
 from aicad.errors import DocumentError, GeometryError, PartNotFound
 from aicad.chain import solve_kinematics as solve_chain
+from aicad.error_budget import check_position_error as budget_position_error
 from aicad.kinematics import normalize as normalize_assembly
 from aicad.kinematics import solve as solve_assembly
 from aicad.motion_study import run_study, study_by_name
@@ -1180,6 +1181,65 @@ class Document:
             spec = self._get_assembly(name)
             return solve_chain(spec, self._assembly_shapes(spec), request)
 
+    def check_position_error(self, name: str, request: dict) -> dict:
+        """Tip position error of the chain that ends at ``request['tool']``.
+
+        Joint sources are an encoder step, a backlash, and a stiffness under a
+        stated load. A mesh backlash is a gear spec or a gear part name. A link
+        source is a stated screw or a strength-check setup. The pass is the
+        worst case against ``tolerance_mm``.
+        """
+        if not isinstance(request, dict):
+            raise GeometryError("A position error request is an object.")
+        with self._lock:
+            spec = self._get_assembly(name)
+            resolved = self._resolve_position_sources(request)
+            out_dir = None
+            if _position_request_has_fea(resolved):
+                out_dir = _project_directory(
+                    self.workspace,
+                    self.workspace / "renders" / "assemblies" / spec["name"] / "position-error",
+                    "Render",
+                )
+            return budget_position_error(spec, self._assembly_shapes(spec), resolved, out_dir=out_dir)
+
+    def _resolve_position_sources(self, request: dict) -> dict:
+        request = copy.deepcopy(request)
+        sources = request.get("sources")
+        if not isinstance(sources, dict):
+            return request
+        for source in sources.values():
+            if not isinstance(source, dict):
+                continue
+            blocks = []
+            backlash = source.get("backlash")
+            if isinstance(backlash, dict) and isinstance(backlash.get("mesh"), dict):
+                blocks.append(backlash["mesh"])
+            for channel in ("angle", "slide"):
+                inner = source.get(channel)
+                if not isinstance(inner, dict):
+                    continue
+                nested = inner.get("backlash")
+                if isinstance(nested, dict) and isinstance(nested.get("mesh"), dict):
+                    blocks.append(nested["mesh"])
+            for mesh in blocks:
+                if isinstance(mesh.get("pinion"), str) or isinstance(mesh.get("gear"), str):
+                    mesh.update(self._resolve_mesh_block(mesh))
+        return request
+
+    def _resolve_mesh_block(self, mesh: dict) -> dict:
+        cleaned = dict(mesh)
+        pinion_spec, pinion_part = self._gear_member(mesh.get("pinion"), "pinion")
+        gear_spec, gear_part = self._gear_member(mesh.get("gear"), "gear")
+        cleaned["pinion"] = pinion_spec
+        cleaned["gear"] = gear_spec
+        if pinion_part is not None and gear_part is not None:
+            mounting = self._gear_mounting(cleaned, pinion_part, gear_part)
+            for key in ("centre_distance_mm", "shaft_angle_deg", "offset_mm", "pinion_phase_deg", "gear_phase_deg"):
+                if mounting.get(key) is not None and cleaned.get(key) is None:
+                    cleaned[key] = mounting[key]
+        return cleaned
+
     def check_cables(
         self,
         name: str,
@@ -2312,6 +2372,13 @@ def _project_file(root: Path, raw: object, label: str, *, allow_absolute_outside
     from aicad.paths import output_path
 
     return output_path(root, raw, label, GeometryError, allow_absolute_outside=allow_absolute_outside)
+
+
+def _position_request_has_fea(request: dict) -> bool:
+    links = request.get("links")
+    if not isinstance(links, dict):
+        return False
+    return any(isinstance(item, dict) and "fea" in item for item in links.values())
 
 
 def _project_directory(root: Path, path: Path, label: str) -> Path:

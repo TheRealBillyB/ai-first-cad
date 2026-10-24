@@ -374,8 +374,8 @@ def _solve_pitch(z1: int, z2: int, offset: float, shaft_deg: float, rm2: float, 
             best = (rank, solved)
     if best is None or best[0] >= 1.0e8:
         raise GeometryError(
-            "No hypoid pitch point fits this offset, shaft angle, ring diameter, and spiral. "
-            "A smaller offset or a milder spiral angle still has a tangent cone."
+            "No hypoid pitch point fits this offset_mm, shaft_angle_deg, ring_diameter_mm, "
+            "and spiral_angle_deg. Change one of those four."
         )
     solved = best[1]
     solved.update(
