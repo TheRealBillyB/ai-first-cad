@@ -1,6 +1,8 @@
 """Geometry measurements, scripts, operations, and checks."""
 
 import math
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -189,3 +191,133 @@ def test_interference_and_clearance(tmp_path):
     assert fit.passed is True
     tight = document.check_clearance("block", "pin", min_clearance_mm=0.5)
     assert tight.passed is False
+
+
+def test_macos_keeps_opencascade_on_the_calling_thread():
+    import aicad.kernel  # noqa: F401
+    from OCP.OSD import OSD_Parallel, OSD_ThreadPool
+
+    pool = OSD_ThreadPool.DefaultPool_s()
+    if sys.platform == "darwin":
+        assert pool.NbThreads() == 1
+        assert not pool.HasThreads()
+        assert pool.NbDefaultThreadsToLaunch() == 1
+        assert OSD_Parallel.ToUseOcctThreads_s()
+        return
+    assert pool.NbThreads() == OSD_Parallel.NbLogicalProcessors_s()
+
+
+def test_macos_python_threads_get_a_geometry_stack():
+    import threading
+
+    from aicad.thread_stack import (
+        GEOMETRY_THREAD_STACK,
+        current_thread_can_run_geometry,
+        current_thread_stack_bytes,
+        prepare_geometry_thread_stack,
+    )
+
+    assert current_thread_can_run_geometry() is True
+    if sys.platform != "darwin":
+        assert current_thread_stack_bytes() is None
+        assert prepare_geometry_thread_stack() == 0
+        if sys.platform != "win32":
+            # prepare must not clear a size already chosen by the process.
+            # Reading the size stores the default, so put the explicit size back.
+            threading.stack_size(2 * 1024 * 1024)
+            try:
+                assert prepare_geometry_thread_stack() == 0
+                current = threading.stack_size(2 * 1024 * 1024)
+                assert current == 2 * 1024 * 1024
+            finally:
+                threading.stack_size(0)
+        return
+    # Clear an explicit size, then let the product choose again.
+    # A call with no size stores the default, so the check below reads the
+    # thread itself.
+    threading.stack_size(0)
+    assert prepare_geometry_thread_stack() >= GEOMETRY_THREAD_STACK
+    main_stack = current_thread_stack_bytes()
+    assert main_stack is not None
+    assert main_stack + 64 * 1024 >= GEOMETRY_THREAD_STACK
+    seen: dict = {}
+
+    def read() -> None:
+        seen["main"] = threading.current_thread() is threading.main_thread()
+        seen["bytes"] = current_thread_stack_bytes()
+
+    worker = threading.Thread(target=read, name="aicad-geometry-stack")
+    worker.start()
+    worker.join()
+    assert seen["main"] is False
+    assert seen["bytes"] is not None
+    assert seen["bytes"] >= GEOMETRY_THREAD_STACK
+
+
+def test_child_processes_inherit_a_geometry_stack():
+    from aicad.thread_stack import _limit_covers_geometry, child_inherits_geometry_stack
+
+    try:
+        import resource
+    except ImportError:
+        with child_inherits_geometry_stack():
+            return
+        return
+    before = resource.getrlimit(resource.RLIMIT_STACK)
+    soft0, hard0 = before
+    # A limit already within 64 KiB of 8 MiB is the macOS maximum and stays.
+    already = _limit_covers_geometry(soft0) or not _limit_covers_geometry(hard0)
+    with child_inherits_geometry_stack():
+        soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+        if sys.platform == "darwin" and not already:
+            assert _limit_covers_geometry(soft)
+            assert soft >= soft0
+            assert hard == hard0
+        else:
+            assert (soft, hard) == before
+    assert resource.getrlimit(resource.RLIMIT_STACK) == before
+    # macOS rejects setrlimit on this resource, including a smaller limit.
+    # The raise itself is checked where the kernel accepts a new limit.
+    if sys.platform in ("darwin", "win32") or soft0 <= 1024 * 1024:
+        return
+    from aicad.thread_stack import GEOMETRY_THREAD_STACK, _raise_stack_limit
+
+    resource.setrlimit(resource.RLIMIT_STACK, (1024 * 1024, hard0))
+    try:
+        assert _raise_stack_limit(1024 * 1024, hard0, GEOMETRY_THREAD_STACK)
+        soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+        assert _limit_covers_geometry(soft)
+        assert hard == hard0
+    finally:
+        resource.setrlimit(resource.RLIMIT_STACK, before)
+
+
+def test_the_sandbox_child_sets_its_stack_before_geometry(tmp_path):
+    import subprocess
+
+    script = tmp_path / "load_stack.py"
+    script.write_text(
+        "import importlib.util\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "path = Path(sys.argv[1])\n"
+        "spec = importlib.util.spec_from_file_location('sandbox_run_early', path)\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "helper = module._early_thread_stack()\n"
+        "assert helper is not None\n"
+        "helper.prepare_geometry_thread_stack()\n"
+        "assert helper.current_thread_can_run_geometry() is True\n"
+        "assert 'aicad.kernel' not in sys.modules\n"
+        "assert 'build123d' not in sys.modules\n"
+        "assert 'OCP' not in sys.modules\n",
+        encoding="utf-8",
+    )
+    runner = Path(__file__).resolve().parents[1] / "src" / "aicad" / "sandbox_run.py"
+    completed = subprocess.run(
+        [sys.executable, str(script), str(runner)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
