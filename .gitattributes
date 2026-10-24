@@ -1,0 +1,5 @@
+# Generated masters and entry files stay LF on checkout, including Windows
+# runners where core.autocrlf is on.
+docs/*.md text eol=lf
+docs/**/*.md text eol=lf
+README.md text eol=lf
