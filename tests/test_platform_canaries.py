@@ -112,44 +112,72 @@ _PART_CANARY = textwrap.dedent(
                 return "allowed"
             return "denied:%s" % ctypes.get_errno()
 
-        def call_proc_limit():
-            # The same shape proc_set_wakemon_params uses: enable a wakeup
-            # monitor on another process. A high rate does not trip during
-            # this run. The call itself is the cross-process limit.
-            class WakeupMonitor(ctypes.Structure):
-                _fields_ = [("wm_flags", ctypes.c_uint32), ("wm_rate", ctypes.c_int32)]
-
-            params = WakeupMonitor(1, 1000000)
+        def control(flavor, arg):
             ctypes.set_errno(0)
             if hasattr(library, "proc_rlimit_control"):
                 library.proc_rlimit_control.argtypes = [
                     ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
                 ]
                 library.proc_rlimit_control.restype = ctypes.c_int
-                result = library.proc_rlimit_control(helper, 1, ctypes.byref(params))
-            else:
-                library.syscall.argtypes = [
-                    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                return library.proc_rlimit_control(helper, flavor, arg)
+            library.syscall.argtypes = [
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+            ]
+            library.syscall.restype = ctypes.c_int
+            return library.syscall(446, helper, flavor, arg)
+
+        def call_proc_limit():
+            # Ask for a wakeup monitor, then read it back. A kernel that no
+            # longer stores one leaves the read buffer untouched.
+            class WakeupMonitor(ctypes.Structure):
+                _fields_ = [("wm_flags", ctypes.c_uint32), ("wm_rate", ctypes.c_int32)]
+
+            params = WakeupMonitor(1, 1000000)
+            control(1, ctypes.byref(params))
+            params.wm_flags = 4
+            params.wm_rate = 0
+            control(1, ctypes.byref(params))
+            if params.wm_flags in (1, 17) and params.wm_rate == 1000000:
+                return "allowed"
+            return "denied:0"
+
+        def call_cpu_monitor():
+            class CpuMonitor(ctypes.Structure):
+                _fields_ = [
+                    ("attr", ctypes.c_uint32),
+                    ("percentage", ctypes.c_uint32),
+                    ("interval", ctypes.c_uint64),
+                    ("deadline", ctypes.c_uint64),
                 ]
-                library.syscall.restype = ctypes.c_int
-                result = library.syscall(446, helper, 1, ctypes.byref(params))
+
+            attr = CpuMonitor(5, 1, 1, 0)
+            library.syscall.argtypes = [
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_uint64,
+            ]
+            library.syscall.restype = ctypes.c_int
+            ctypes.set_errno(0)
+            result = library.syscall(323, 1, 10, 4, 3, ctypes.byref(attr), helper, 0)
             if result == 0:
                 return "allowed"
             return "denied:%s" % ctypes.get_errno()
 
         note("setpriority", call_setpriority())
         note("proc-limit", call_proc_limit())
+        note("cpu-monitor", call_cpu_monitor())
         boxed_limit = []
 
         def limit_worker():
             boxed_limit.append(call_setpriority())
             boxed_limit.append(call_proc_limit())
+            boxed_limit.append(call_cpu_monitor())
 
         limit_thread = threading.Thread(target=limit_worker)
         limit_thread.start()
         limit_thread.join()
         note("thread-setpriority", boxed_limit[0])
         note("thread-proc-limit", boxed_limit[1])
+        note("thread-cpu-monitor", boxed_limit[2])
 
     if sys.platform == "win32":
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -282,7 +310,14 @@ def test_a_confined_script_cannot_signal_or_limit_another_process(tmp_path, conf
             required.extend(["libc-kill", "thread-kill", "fork-kill"])
         if sys.platform == "darwin":
             required.extend(
-                ["setpriority", "proc-limit", "thread-setpriority", "thread-proc-limit"]
+                [
+                    "setpriority",
+                    "proc-limit",
+                    "cpu-monitor",
+                    "thread-setpriority",
+                    "thread-proc-limit",
+                    "thread-cpu-monitor",
+                ]
             )
         for label in required:
             assert rows[label].startswith("denied"), (label, text)
