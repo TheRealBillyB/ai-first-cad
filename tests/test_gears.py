@@ -564,6 +564,30 @@ def test_bore_keyway_hub_and_splines_cut_the_blank():
     assert din_shape.impl.is_inside(metal)
 
 
+def test_a_gear_past_a_kilometer_is_refused():
+    spur = {"type": "spur", "module_mm": 2, "teeth": 18, "pressure_angle_deg": 20, "face_width_mm": 8}
+    with pytest.raises(GeometryError, match="kilometer"):
+        gear_data({**spur, "module_mm": 1e7})
+    with pytest.raises(GeometryError, match="kilometer"):
+        gear_data({**spur, "face_width_mm": 2_000_000})
+    legal = gear_data({**spur, "module_mm": 100})
+    assert legal["pitch_diameter_mm"] == pytest.approx(1800)
+    with pytest.raises(GeometryError, match="kilometer"):
+        gear_data(
+            {
+                "type": "hypoid",
+                "role": "pinion",
+                "teeth": 9,
+                "mate_teeth": 35,
+                "offset_mm": 22,
+                "shaft_angle_deg": 90,
+                "ring_diameter_mm": 2_000_000,
+                "face_width_mm": 18,
+                "spiral_angle_deg": 35,
+            }
+        )
+
+
 def test_document_reloads_a_gear_and_the_command_layer_matches(tmp_path: Path):
     spec = {"type": "spur", "module_mm": 2, "teeth": 14, "pressure_angle_deg": 20, "face_width_mm": 4}
     document = Document(tmp_path / "project")

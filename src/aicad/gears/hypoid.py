@@ -175,6 +175,8 @@ def normalize_hypoid(spec: dict) -> dict:
         raise GeometryError("shaft_angle_deg must be between 1 and 179 degrees.")
     diameter = geom._required_positive(spec, "ring_diameter_mm")
     face = geom._required_positive(spec, "face_width_mm")
+    geom._reject_oversize(diameter, "ring_diameter_mm")
+    geom._reject_oversize(face, "face_width_mm")
     if face >= diameter * 0.45:
         raise GeometryError("face_width_mm must be shorter than the ring radius.")
     spiral = geom._number(spec.get("spiral_angle_deg"), "spiral_angle_deg", default=None)
@@ -217,6 +219,7 @@ def normalize_hypoid(spec: dict) -> dict:
         bore = geom._number(bore, "bore_mm")
         if bore <= 0:
             raise GeometryError("bore_mm must be positive.")
+        geom._reject_oversize(bore, "bore_mm")
     hub = geom._hub(spec.get("hub"))
     keyway = geom._keyway(spec.get("keyway"), bore)
     spline = geom._spline(spec.get("spline"))
