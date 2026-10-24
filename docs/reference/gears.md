@@ -114,7 +114,7 @@ A hypoid ring stays on +Z through the origin. The pinion axis is the reported di
 
 ## Mesh check
 
-`check_pair` and `check_gears` take one pair, or every gear relation in an assembly. The report compares the centre distance with the zero-backlash centre, gives circumferential and normal backlash against a range, the transverse and total contact ratio, undercut, and tooth interference.
+`check_pair` and `check_gears` take one pair, or the meshes of an assembly. When the assembly stores a gear train, each train mesh is checked on the two gear instances it names. A compound shaft carries more than one gear, and a gear relation only names the shaft joints, so the joint child is not enough to find that mesh. Without a train, the check is every gear relation, or every pair of gear instances when there is no gear relation. A pair that cannot be checked, for example two gears of different module, is a failed pair in the report. The other pairs are still checked. The report compares the centre distance with the zero-backlash centre, gives circumferential and normal backlash against a range, the transverse and total contact ratio, undercut, and tooth interference.
 
 For a spur or helical pair the centre distance is the distance between the axes. Omit it to use the zero-backlash centre from the pair geometry above. Circumferential backlash is `2 a (inv α' − inv α)` on the operating pitch circle. Normal backlash is that arc times `cos α' cos βw`.
 
