@@ -19,9 +19,20 @@ from aicad.gears import (
     registered_mesh_checks,
 )
 from aicad.server import build_server
-from aicad.workspace import Workspace
+from aicad.workspace import COMMANDS, Workspace
 
 _RANGE = {"min": 0.0, "max": 0.05}
+
+
+def test_check_gears_describes_the_hypoid_sweep():
+    command = COMMANDS["check_gears"]
+    assert "one pinion tooth" in command.description
+    assert "one turn of the smaller gear" in command.description
+    offset = command.parameters["properties"]["offset_mm"]["description"]
+    assert "hypoid mesh check" in offset
+    assert "later" not in offset
+    steps = command.parameters["properties"]["steps"]["description"]
+    assert "one pinion tooth" in steps
 
 
 def _spur(teeth: int) -> dict:
@@ -336,7 +347,12 @@ def _hypoid_assembly(document: Document, name: str, pinion_at, ring_at) -> None:
     )
 
 
-def test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
+def _mounted_hypoid(tmp_path: Path):
+    """One hypoid pair in a document, plus the assembly placement of that mesh.
+
+    Each check rebuilds both solids. Four checks in one test cross the per-test
+    limit on a busy macOS runner, so each situation is its own test.
+    """
     pinion_spec = _hypoid("pinion")
     ring_spec = _hypoid("ring")
     placement = mesh_placement(pinion_spec, ring_spec)
@@ -353,11 +369,6 @@ def test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
         position=placement["gear"]["position_mm"],
         rotation_deg=placement["gear"]["rotation_deg"],
     )
-    seated = document.check_gears({"pinion": "pinion", "gear": "ring", "backlash_mm": {"min": 0.0, "max": 0.30}})
-    assert seated["status"] == "pass", seated["findings"]
-    assert abs(seated["pinion_clock_deg"]) < 1e-3
-    assert abs(seated["gear_clock_deg"]) < 1e-3
-
     pinion_at = {
         "position_mm": list(placement["pinion"]["position_mm"]),
         "rotation_deg": _assembly_rotation(placement["pinion"]["position_mm"], placement["pinion"]["rotation_deg"]),
@@ -366,11 +377,27 @@ def test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
         "position_mm": list(placement["gear"]["position_mm"]),
         "rotation_deg": _assembly_rotation(placement["gear"]["position_mm"], placement["gear"]["rotation_deg"]),
     }
+    return document, pinion_at, ring_at
+
+
+def test_a_seated_hypoid_pair_passes(tmp_path: Path):
+    document, _pinion_at, _ring_at = _mounted_hypoid(tmp_path)
+    seated = document.check_gears({"pinion": "pinion", "gear": "ring", "backlash_mm": {"min": 0.0, "max": 0.30}})
+    assert seated["status"] == "pass", seated["findings"]
+    assert abs(seated["pinion_clock_deg"]) < 1e-3
+    assert abs(seated["gear_clock_deg"]) < 1e-3
+
+
+def test_a_seated_hypoid_assembly_passes(tmp_path: Path):
+    document, pinion_at, ring_at = _mounted_hypoid(tmp_path)
     _hypoid_assembly(document, "seated", pinion_at, ring_at)
     assembled = document.check_gears({"assembly": "seated", "backlash_mm": {"min": 0.0, "max": 0.30}})
     assert assembled["status"] == "pass", assembled["pairs"][0]["findings"]
     assert assembled["pairs"][0]["offset_error_mm"] == pytest.approx(0, abs=1e-3)
 
+
+def test_a_misclocked_hypoid_assembly_is_flagged(tmp_path: Path):
+    document, pinion_at, ring_at = _mounted_hypoid(tmp_path)
     clocked = {
         "position_mm": ring_at["position_mm"],
         "rotation_deg": [ring_at["rotation_deg"][0], ring_at["rotation_deg"][1], ring_at["rotation_deg"][2] + 2.0],
@@ -382,6 +409,9 @@ def test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
     assert abs(clocked_pair["gear_clock_deg"]) == pytest.approx(2.0, abs=0.05)
     assert any("clocked" in item.lower() for item in clocked_pair["findings"])
 
+
+def test_a_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
+    document, pinion_at, ring_at = _mounted_hypoid(tmp_path)
     shifted = {
         "position_mm": [pinion_at["position_mm"][0], pinion_at["position_mm"][1] + 0.5, pinion_at["position_mm"][2]],
         "rotation_deg": pinion_at["rotation_deg"],
@@ -509,3 +539,141 @@ def test_assembly_pair_and_the_command_surfaces(tmp_path: Path):
     assert body["status"] == "fail"
     assert body["backlash"]["in_range"] is False
     assert body["interference"] is False
+
+
+def _mount(document: Document, name: str, spec: dict, position, rotation) -> None:
+    document.create_gear(name, spec, position=position, rotation_deg=rotation)
+
+
+def test_a_compound_reducer_checks_the_train_meshes(tmp_path: Path):
+    stage1_pinion = _spur(18)
+    stage1_gear = _spur(36)
+    stage2_pinion = {**_spur(20), "module_mm": 1.5, "face_width_mm": 6}
+    stage2_gear = {**_spur(40), "module_mm": 1.5, "face_width_mm": 6}
+    place1 = mesh_placement(stage1_pinion, stage1_gear)
+    place2 = mesh_placement(stage2_pinion, stage2_gear)
+    document = Document(tmp_path / "reducer")
+    document.create_part_from_ops("frame", [{"op": "add", "shape": "box", "size": [4, 4, 4]}])
+    _mount(document, "pinion1", stage1_pinion, [0, 0, 0], [0, 0, 0])
+    _mount(document, "gear1", stage1_gear, place1["gear"]["position_mm"], place1["gear"]["rotation_deg"])
+    stack = 20.0
+    second = [place1["centre_distance_mm"] + place2["gear"]["position_mm"][0], 0.0, stack]
+    _mount(document, "pinion2", stage2_pinion, [place1["centre_distance_mm"], 0, stack], [0, 0, 0])
+    _mount(document, "gear2", stage2_gear, second, place2["gear"]["rotation_deg"])
+    spin1 = place1["gear"]["rotation_deg"][2]
+    spin2 = place2["gear"]["rotation_deg"][2]
+    document.create_assembly(
+        {
+            "name": "reducer",
+            "instances": [
+                {"name": "frame", "part": "frame"},
+                {"name": "in_gear", "part": "pinion1"},
+                {"name": "mid_gear", "part": "gear1"},
+                {"name": "mid_pinion", "part": "pinion2"},
+                {"name": "out_gear", "part": "gear2"},
+            ],
+            "joints": [
+                {"name": "input", "type": "revolute", "parent": "frame", "child": "in_gear", "axis": [0, 0, 1]},
+                {
+                    "name": "mid",
+                    "type": "revolute",
+                    "parent": "frame",
+                    "child": "mid_gear",
+                    "parent_anchor": place1["gear"]["position_mm"],
+                    "axis": [0, 0, 1],
+                    "value": spin1,
+                },
+                {
+                    "name": "mid_stack",
+                    "type": "revolute",
+                    "parent": "mid_gear",
+                    "child": "mid_pinion",
+                    "parent_anchor": [0, 0, stack],
+                    "axis": [0, 0, 1],
+                    "value": -spin1,
+                },
+                {
+                    "name": "output",
+                    "type": "revolute",
+                    "parent": "frame",
+                    "child": "out_gear",
+                    "parent_anchor": second,
+                    "axis": [0, 0, 1],
+                },
+            ],
+            "relations": [
+                {"name": "stage1", "type": "gear", "driver": "input", "driven": "mid", "ratio": -18 / 36, "offset": spin1},
+                {
+                    "name": "stage2",
+                    "type": "gear",
+                    "driver": "mid",
+                    "driven": "output",
+                    "ratio": -20 / 40,
+                    "offset": spin2 - (-20 / 40) * spin1,
+                },
+            ],
+            "gear_train": {
+                "shafts": [
+                    {"name": "input", "joint": "input", "gears": [{"name": "p1", "instance": "in_gear"}]},
+                    {
+                        "name": "intermediate",
+                        "joint": "mid",
+                        "gears": [
+                            {"name": "g1", "instance": "mid_gear"},
+                            {"name": "p2", "instance": "mid_pinion"},
+                        ],
+                    },
+                    {"name": "output", "joint": "output", "gears": [{"name": "g2", "instance": "out_gear"}]},
+                ],
+                "meshes": [
+                    {"name": "first", "a": "p1", "b": "g1", "kind": "external"},
+                    {"name": "second", "a": "p2", "b": "g2", "kind": "external"},
+                ],
+            },
+        }
+    )
+    report = document.check_gears({"assembly": "reducer", "backlash_mm": _RANGE, "steps": 8})
+    assert [(pair["relation"], tuple(pair["instances"])) for pair in report["pairs"]] == [
+        ("first", ("in_gear", "mid_gear")),
+        ("second", ("mid_pinion", "out_gear")),
+    ]
+    assert report["status"] == "pass"
+    named = document.check_gears(
+        {"assembly": "reducer", "pinion": "mid_pinion", "gear": "out_gear", "backlash_mm": _RANGE, "steps": 8}
+    )
+    assert named["pairs"][0]["instances"] == ["mid_pinion", "out_gear"]
+
+
+def test_one_incompatible_pair_stays_in_the_assembly_report(tmp_path: Path):
+    document = Document(tmp_path / "mixed")
+    document.create_part_from_ops("frame", [{"op": "add", "shape": "box", "size": [4, 4, 4]}])
+    document.create_gear("pinion", _spur(18))
+    document.create_gear("wheel", {**_spur(36), "module_mm": 1.5})
+    document.create_assembly(
+        {
+            "name": "mixed",
+            "instances": [
+                {"name": "frame", "part": "frame"},
+                {"name": "pinion", "part": "pinion"},
+                {"name": "wheel", "part": "wheel"},
+            ],
+            "joints": [
+                {"name": "in_spin", "type": "revolute", "parent": "frame", "child": "pinion", "axis": [0, 0, 1]},
+                {
+                    "name": "out_spin",
+                    "type": "revolute",
+                    "parent": "frame",
+                    "child": "wheel",
+                    "parent_anchor": [54, 0, 0],
+                    "axis": [0, 0, 1],
+                },
+            ],
+            "relations": [
+                {"name": "mesh", "type": "gear", "driver": "in_spin", "driven": "out_spin", "ratio": -0.5}
+            ],
+        }
+    )
+    report = document.check_gears({"assembly": "mixed", "backlash_mm": _RANGE, "steps": 8})
+    assert report["status"] == "fail"
+    assert report["failed"] == 1
+    assert "same normal module" in report["pairs"][0]["findings"][0]

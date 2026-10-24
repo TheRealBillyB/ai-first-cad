@@ -96,6 +96,9 @@ class Workspace:
             arguments = {}
         if not isinstance(arguments, dict):
             raise GeometryError(f"Arguments for {name} must be an object.")
+        missing = [key for key in command.parameters.get("required") or [] if key not in arguments]
+        if missing:
+            raise GeometryError(f"{name} needs {', '.join(missing)}.")
         with self._lock:
             if command.undo:
                 self._undo.append(self._snapshot())
@@ -1497,7 +1500,7 @@ _add(Command(
 ))
 _add(Command(
     "check_gears",
-    "Mesh and backlash of a gear pair, or every pair in an assembly. Reports centre distance, circumferential and normal backlash, contact ratio, undercut, and interference through one turn of the smaller gear.",
+    "Mesh and backlash of a gear pair, or every pair in an assembly. Reports centre distance, circumferential and normal backlash, contact ratio, undercut, and interference. A spur, helical, or bevel sweep is one turn of the smaller gear. A hypoid sweep is one pinion tooth.",
     _obj(
         {
             "spec": {
@@ -1509,9 +1512,9 @@ _add(Command(
             "assembly": _string("Assembly whose gear pairs to check."),
             "centre_distance_mm": _number("Actual centre distance. For a bevel, a signed axis offset from the intersecting mount."),
             "shaft_angle_deg": _number("Actual shaft angle in degrees."),
-            "offset_mm": _number("Axis offset in millimetres. A hypoid checker reads this later."),
+            "offset_mm": _number("Axis offset in millimetres. The hypoid mesh check uses this as the distance between the two shafts."),
             "backlash_mm": {"description": "{min, max} in millimetres, or circumferential and normal ranges."},
-            "steps": {"type": "integer", "description": "Samples over one full turn of the smaller gear. At least 8."},
+            "steps": {"type": "integer", "description": "Samples over one turn of the smaller gear, or across one pinion tooth of a hypoid. At least 8."},
         },
         [],
     ),

@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import ctypes
 import os
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 _SYSTEM_ROOTS = (
     "/usr",
@@ -34,8 +34,11 @@ _SYSTEM_ROOTS = (
 )
 
 
-def availability_error() -> str | None:
-    if shutil.which("sandbox-exec") is None:
+def availability_error(project: str | Path | None = None) -> str | None:
+    from aicad.prereqs import find_program
+
+    root = Path(project) if project is not None else None
+    if find_program("sandbox-exec", project=root) is None:
         return (
             "This Mac does not have sandbox-exec, so aicad cannot limit the script "
             "to the project folder. The script was not run."
@@ -141,8 +144,13 @@ def make_preexec(*, cpu_seconds: int, memory_bytes: int) -> Callable[[], None]:
     return preexec
 
 
-def command_prefix(profile_path: str) -> list[str]:
-    sandbox_exec = shutil.which("sandbox-exec") or "sandbox-exec"
+def command_prefix(profile_path: str, project: str | Path | None = None) -> list[str]:
+    from aicad.prereqs import find_program
+
+    root = Path(project) if project is not None else None
+    sandbox_exec = find_program("sandbox-exec", project=root)
+    if sandbox_exec is None:
+        sandbox_exec = "/usr/bin/sandbox-exec"
     return [sandbox_exec, "-f", profile_path]
 
 
@@ -357,6 +365,60 @@ def pids_holding_path(path: str) -> list[int] | None:
         return fn(1, 0, encoded, 0, ctypes.byref(buf), size)
 
     return _read_pids(call)
+
+
+# proc_bsdinfo. The group id is fixed at this offset in the public layout.
+# A short or mismatched read is ignored; callers then use getpgid.
+_PROC_PIDTBSDINFO = 3
+_PROC_STATUS_ZOMBIE = 5
+
+
+class _ProcBsdInfo(ctypes.Structure):
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
+
+
+def process_runtime(pid: int) -> tuple[int, bool] | None:
+    """``(process group, is zombie)`` for ``pid``.
+
+    None when the process is already gone or libproc cannot be asked. The
+    group still answers after the process has left the caller's session.
+    """
+    lib = _proc_pidinfo()
+    if lib is None or pid <= 1:
+        return None
+    info = _ProcBsdInfo()
+    ctypes.set_errno(0)
+    try:
+        written = int(lib.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info)))
+    except (OSError, ctypes.ArgumentError):
+        return None
+    # pbi_pgid ends at byte 104. A pid that does not match is the wrong layout.
+    if written < 104 or int(info.pbi_pid) != pid:
+        return None
+    return int(info.pbi_pgid), int(info.pbi_status) == _PROC_STATUS_ZOMBIE
 
 
 def process_identity(pid: int) -> tuple[int, int] | None:

@@ -167,7 +167,7 @@ def test_an_exploded_opening_moves_between_the_ends(tmp_path):
 
 
 def test_a_missing_ffmpeg_still_writes_the_gif(tmp_path, monkeypatch):
-    monkeypatch.setattr("aicad.animation.shutil.which", lambda _name: None)
+    monkeypatch.setattr("aicad.animation.find_program", lambda *_args, **_kwargs: None)
     document = Document(tmp_path)
     _stand(document)
     report = document.render_animation(
@@ -263,3 +263,41 @@ def test_the_command_line_writes_a_gif(tmp_path):
     with _gif(gif_path) as gif:
         assert gif.n_frames == 4
         assert gif.size == (96, 72)
+
+
+def test_frame_cleanup_leaves_a_linked_directory(tmp_path, monkeypatch):
+    from aicad.animation import _remove_frames
+
+    root = tmp_path / "project"
+    frames = root / "renders" / "frames"
+    frames.mkdir(parents=True)
+    kept = frames / "frame_0000.png"
+    kept.write_bytes(b"png")
+    monkeypatch.setattr("aicad.animation.is_reparse", lambda path: Path(path) == frames)
+    _remove_frames(frames, root)
+    assert kept.read_bytes() == b"png"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a junction is a Windows directory link")
+def test_frame_cleanup_does_not_follow_a_directory_junction(tmp_path):
+    from aicad.animation import _remove_frames
+    from aicad.paths import is_reparse
+
+    root = tmp_path / "project"
+    target = root / "kept"
+    target.mkdir(parents=True)
+    marker = target / "model.txt"
+    marker.write_text("keep", encoding="utf-8")
+    frames = root / "frames"
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(frames), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        pytest.skip("this machine cannot create a junction")
+    assert is_reparse(frames)
+    _remove_frames(frames, root)
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert frames.exists()

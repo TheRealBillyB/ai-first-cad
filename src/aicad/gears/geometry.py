@@ -1454,12 +1454,26 @@ def _hub(value) -> dict | None:
     return {"diameter_mm": diameter, "length_mm": length, "side": side}
 
 
+def _standard_token(value: str) -> str:
+    """Short name of a standard, so a stored citation matches the name a caller passes.
+
+    ``DIN 6885-1:1968`` and ``din6885`` are the same keyway. A trailing year
+    after a colon is the citation, not part of the name.
+    """
+    text = str(value).strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+    if ":" in text:
+        head, tail = text.split(":", 1)
+        if tail.isdigit():
+            return head
+    return text
+
+
 def _keyway(value, bore: float | None) -> dict | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise GeometryError("keyway must be an object.")
-    standard = str(value.get("standard") or "din6885").strip().lower().replace("-", "").replace("_", "")
+    standard = _standard_token(str(value.get("standard") or "din6885"))
     if standard not in {"din6885", "din68851"}:
         raise GeometryError("keyway.standard must be din6885 (DIN 6885-1).")
     if bore is None:
@@ -1490,8 +1504,8 @@ def _spline(value) -> dict | None:
         return None
     if not isinstance(value, dict):
         raise GeometryError("spline must be an object.")
-    standard = str(value.get("standard") or "").strip().lower().replace("-", "").replace("_", "").replace(" ", "")
-    if standard in {"iso14", "iso14:1982"}:
+    standard = _standard_token(str(value.get("standard") or ""))
+    if standard in {"iso14", "iso141982"}:
         series = str(value.get("series") or "medium").strip().lower()
         minor = value.get("minor_mm", value.get("minor_diameter_mm"))
         if minor is None:
@@ -1512,7 +1526,7 @@ def _spline(value) -> dict | None:
             "width_mm": row["width_mm"],
             "designation": row["designation"],
         }
-    if standard in {"din5480", "din54801"}:
+    if standard in {"din5480", "din54801", "din548012006"}:
         module = _number(value.get("module_mm"), "spline.module_mm")
         teeth = value.get("teeth")
         if teeth is None or isinstance(teeth, bool) or not float(teeth).is_integer():

@@ -58,6 +58,9 @@ def test_recording_stays_off_until_it_is_turned_on(tmp_path, config_home):
     assert started["enabled"] is True
     assert started["steps"] == 0
     _create(workspace, "rail")
+    status = workspace.execute("session_record", {"action": "status"}, source="ui")
+    assert status["steps"] == 1
+    assert status["summary"] == "Recording is on. 1 step is stored."
     saved = _record(project)
     assert saved["format"] == "session_record.v1"
     assert len(saved["steps"]) == 1
@@ -148,7 +151,7 @@ def test_replay_steps_through_the_record_and_export_writes_a_gif(tmp_path, confi
 
 
 def test_export_still_writes_a_gif_when_ffmpeg_is_missing(tmp_path, config_home, monkeypatch):
-    monkeypatch.setattr("aicad.animation.shutil.which", lambda _name: None)
+    monkeypatch.setattr("aicad.animation.find_program", lambda *_args, **_kwargs: None)
     project = tmp_path / "project"
     workspace = Workspace(project)
     workspace.execute("session_record", {"action": "start"}, source="ui")
@@ -194,6 +197,30 @@ def test_recording_drops_secrets_paths_and_outside_file_contents(tmp_path, confi
     assert "<link>" in text
     assert "<outside-project>" in text
     assert secret_file.read_text(encoding="utf-8") == "UNIQUE_OUTSIDE_FILE_BODY\n"
+
+
+def test_recording_marks_a_drive_relative_path_outside(tmp_path, config_home):
+    project = tmp_path / "project"
+    workspace = Workspace(project)
+    workspace.execute("session_record", {"action": "start"}, source="ui")
+    inside = project / "notes.md"
+    note = (
+        r"open C:secret.txt and C:..\outside\token.txt and ....\....\hidden.txt "
+        f"and keep {inside} plus exports/kept.step"
+    )
+    workspace.execute(
+        "write_document",
+        {"name": "notes.md", "markdown": note},
+        source="agent",
+    )
+    text = (project / "records" / "session.json").read_text(encoding="utf-8")
+    assert "secret.txt" not in text
+    assert "token.txt" not in text
+    assert "hidden.txt" not in text
+    assert "<outside-project>" in text
+    assert "notes.md" in text
+    assert "exports/kept.step" in text
+    assert str(inside) not in text
 
 
 def test_the_command_line_records_a_step_without_an_outside_script(tmp_path, config_home):

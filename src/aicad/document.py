@@ -1316,9 +1316,11 @@ class Document:
         """Centre distance, backlash, contact ratio, undercut, and interference of a gear pair.
 
         ``spec`` names two gear specs or two gear parts, or an assembly. An
-        assembly is every gear relation, or every pair of gear instances when
-        the assembly has no gear relation. The smaller gear is turned through
-        one full rotation.
+        assembly with a gear train checks each train mesh. Otherwise it checks
+        every gear relation, or every pair of gear instances when there is no
+        gear relation. The smaller gear is turned through one full rotation.
+        One pair that cannot be checked is reported as failed, and the other
+        pairs are still checked.
         """
         if not isinstance(spec, dict):
             raise GeometryError("A gear mesh check is an object.")
@@ -1367,15 +1369,26 @@ class Document:
             for key in ("centre_distance_mm", "shaft_angle_deg", "offset_mm", "pinion_phase_deg", "gear_phase_deg"):
                 if spec.get(key) is not None:
                     mounting[key] = spec[key]
-            report = gears_mod.check_pair(
-                copy.deepcopy(left_part.gear_spec),
-                copy.deepcopy(right_part.gear_spec),
-                mounting,
-                spec.get("backlash_mm"),
-                spec.get("steps"),
-            )
-            report["instances"] = [left_name, right_name]
-            report["relation"] = label
+            try:
+                report = gears_mod.check_pair(
+                    copy.deepcopy(left_part.gear_spec),
+                    copy.deepcopy(right_part.gear_spec),
+                    mounting,
+                    spec.get("backlash_mm"),
+                    spec.get("steps"),
+                )
+            except GeometryError as exc:
+                report = {
+                    "status": "fail",
+                    "instances": [left_name, right_name],
+                    "relation": label,
+                    "findings": [str(exc)],
+                    "interference": None,
+                    "assumptions": [],
+                }
+            else:
+                report["instances"] = [left_name, right_name]
+                report["relation"] = label
             reports.append(report)
         failed = [item for item in reports if item.get("status") != "pass"]
         return finish(
@@ -1397,6 +1410,25 @@ class Document:
         )
 
     def _assembly_gear_pairs(self, assembly: dict, pinion, gear) -> list[tuple[str, str, str]]:
+        train_pairs = self._train_mesh_pairs(assembly)
+        if train_pairs:
+            if pinion is None and gear is None:
+                return train_pairs
+            selected = []
+            for left, right, label in train_pairs:
+                forward = self._instance_named(assembly, left, pinion) and self._instance_named(
+                    assembly, right, gear
+                )
+                backward = self._instance_named(assembly, left, gear) and self._instance_named(
+                    assembly, right, pinion
+                )
+                if forward:
+                    selected.append((left, right, label))
+                elif backward:
+                    selected.append((right, left, label))
+            if not selected:
+                raise GeometryError(f"Assembly {assembly['name']!r} has no gear mesh for that pair.")
+            return selected
         joints = {joint["name"]: joint for joint in assembly["joints"]}
         relations = [item for item in assembly["relations"] if item["type"] == "gear"]
         if relations:
@@ -1436,6 +1468,39 @@ class Document:
             for right in names[index + 1 :]:
                 pairs.append((left, right, f"{left}/{right}"))
         return pairs
+
+    def _train_mesh_pairs(self, assembly: dict) -> list[tuple[str, str, str]]:
+        """Meshing instances from a stored gear train.
+
+        A gear relation names the shaft joints. On a compound shaft the joint's
+        child is only one of the gears, so the relation cannot name the mesh.
+        The train mesh names both gears.
+        """
+        train = assembly.get("gear_train")
+        if not train:
+            return []
+        gears = {
+            gear["name"]: gear.get("instance")
+            for shaft in train.get("shafts") or []
+            for gear in shaft.get("gears") or []
+        }
+        pairs = []
+        for mesh in train.get("meshes") or []:
+            left = gears.get(mesh.get("a"))
+            right = gears.get(mesh.get("b"))
+            if not left or not right:
+                continue
+            if not self._instance_is_gear(assembly, left) or not self._instance_is_gear(assembly, right):
+                continue
+            pairs.append((left, right, str(mesh.get("name") or f"{left}/{right}")))
+        return pairs
+
+    def _instance_is_gear(self, assembly: dict, instance_name: str) -> bool:
+        instance = next((item for item in assembly["instances"] if item["name"] == instance_name), None)
+        if instance is None:
+            return False
+        part = self._parts.get(instance["part"])
+        return bool(part and part.gear_spec)
 
     def _instance_named(self, assembly: dict, instance_name: str, wanted) -> bool:
         if wanted is None:

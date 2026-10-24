@@ -224,6 +224,52 @@ def test_a_solver_bin_keeps_ccx_libraries_and_leaves_system_dlls(tmp_path):
     assert module.stage_solver_bin(posix, [library], tmp_path / "unused") == posix.parent
 
 
+def test_a_lock_path_that_leaves_the_work_directory_is_refused(tmp_path):
+    module = _installer()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = outside / "SANDBOX_CANARY.txt"
+    work = tmp_path / "ciwork"
+    work.mkdir()
+
+    bad_name = _lock()
+    package = bad_name["platforms"]["osx-arm64"]["packages"][0]
+    package["filename"] = "../../outside/SANDBOX_CANARY.txt"
+    package["url"] = "https://example.invalid/../../outside/SANDBOX_CANARY.txt"
+    with pytest.raises(ValueError):
+        module.validate_lock(bad_name)
+
+    bad_exec = _lock()
+    bad_exec["micromamba"]["osx-arm64"]["executable"] = "../../outside/SANDBOX_CANARY.txt"
+    with pytest.raises(ValueError):
+        module.validate_lock(bad_exec)
+
+    bad_path = _lock()
+    bad_path["platforms"]["win-64"]["path"] = ["../../outside"]
+    with pytest.raises(ValueError):
+        module.validate_lock(bad_path)
+
+    absolute = _lock()
+    absolute["platforms"]["osx-arm64"]["path"] = ["/tmp/evil"]
+    with pytest.raises(ValueError):
+        module.validate_lock(absolute)
+
+    for root, relative in (
+        (work / "pkgs", "../../outside/SANDBOX_CANARY.txt"),
+        (work / "micromamba-bin", "../../outside/SANDBOX_CANARY.txt"),
+        (work / "prefix", "../../outside"),
+        (work / "pkgs", "/tmp/evil"),
+    ):
+        with pytest.raises(ValueError):
+            module.work_path(root, relative)
+    assert not canary.exists()
+    naive = (work / "pkgs" / "../../outside/SANDBOX_CANARY.txt").resolve()
+    assert naive == canary.resolve()
+    kept = module.work_path(work / "prefix", "Library/bin")
+    assert kept == (work / "prefix").resolve() / "Library" / "bin"
+    assert (work / "prefix").resolve() in kept.parents
+
+
 def test_a_missing_library_is_not_treated_as_a_started_solver():
     module = _installer()
     assert module.solver_started(0, "Usage: CalculiX.exe -i jobname\n", "")
