@@ -1578,12 +1578,71 @@ def _make_probe(workspace: Path) -> tuple[Path, str, str]:
 
 
 def _kill_pid(pid: int) -> None:
-    if pid <= 1:
+    if pid <= 1 or pid == os.getpid():
         return
     try:
         os.kill(pid, signal.SIGKILL)
     except OSError:
         pass
+
+
+def _related_pids(
+    root_ids: set[int],
+    identities: dict[int, tuple[int, int]],
+    holders: set[int],
+) -> set[int]:
+    """Pids holding the sentinel, plus anyone chained to ``root_ids``.
+
+    ``identities`` maps a pid to ``(unique_id, parent_unique_id)``. The parent
+    id stays put when a process leaves the group or is reparented.
+    """
+    known = {int(item) for item in root_ids if isinstance(item, int) and item > 0}
+    found = {int(pid) for pid in holders if isinstance(pid, int) and pid > 1 and pid != os.getpid()}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (unique_id, parent_id) in identities.items():
+            if not isinstance(pid, int) or pid <= 1 or pid == os.getpid():
+                continue
+            if parent_id not in known and pid not in found:
+                continue
+            if isinstance(unique_id, int) and unique_id > 0 and unique_id not in known:
+                known.add(unique_id)
+                changed = True
+            if pid not in found:
+                found.add(pid)
+                changed = True
+    return found
+
+
+def _refuse_unaccounted(ok: bool, survivors: set[int]) -> None:
+    """A run whose processes could not be listed is not a clean result."""
+    if ok and not survivors:
+        return
+    raise ScriptError(
+        "The sandbox could not account for every process the script started, so the run was stopped."
+    )
+
+
+class _Account:
+    """Whether macOS process listings for one script stayed usable."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.ok = True
+        self.ids: set[int] = set()
+
+    def fail(self) -> None:
+        with self._lock:
+            self.ok = False
+
+    def add_ids(self, ids: set[int]) -> None:
+        with self._lock:
+            self.ids.update(item for item in ids if isinstance(item, int) and item > 0)
+
+    def snapshot(self) -> tuple[bool, set[int]]:
+        with self._lock:
+            return self.ok, set(self.ids)
 
 
 def _descendants(leader: int) -> set[int]:
@@ -1657,6 +1716,216 @@ def _tree_resident_bytes(leader: int, children: set[int]) -> int | None:
     return total
 
 
+def _ps_descendants(leader: int) -> set[int] | None:
+    """Children listed by ``ps``. None when ``ps`` cannot be read.
+
+    This is not enough to see a child that has already left the group. Callers
+    use it only to kill what it can see, and then refuse a clean result.
+    """
+    if leader <= 1:
+        return set()
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    parent_of: dict[int, int] = {}
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            parent_of[int(parts[0])] = int(parts[1])
+        except ValueError:
+            continue
+    children: dict[int, list[int]] = {}
+    for pid, ppid in parent_of.items():
+        children.setdefault(ppid, []).append(pid)
+    found: set[int] = set()
+    stack = list(children.get(leader, []))
+    while stack:
+        pid = stack.pop()
+        if pid in found or pid <= 1:
+            continue
+        found.add(pid)
+        stack.extend(children.get(pid, []))
+    return found
+
+
+def _macos_quick(leader: int, sentinel: str, root_ids: set[int]) -> tuple[set[int], set[int], bool]:
+    """Pids to stop while the script is still running.
+
+    libproc lists the sentinel holders and the live children. ``ps`` is not
+    used here. A failed libproc listing is not treated as an empty tree.
+    """
+    from aicad.sandbox_macos import child_pids, pids_holding_path, process_identity
+
+    ok = True
+    holders = pids_holding_path(sentinel)
+    if holders is None:
+        ok = False
+        holders = []
+    found = {pid for pid in holders if pid > 1 and pid != os.getpid()}
+    ids = set(root_ids)
+    identity = process_identity(leader)
+    if identity is not None:
+        ids.add(identity[0])
+    direct = child_pids(leader)
+    if direct is None:
+        # The sentinel listing is the one that still sees a detached child.
+        # A child walk that failed does not erase a good sentinel listing,
+        # and it does not count as an empty tree when the sentinel failed.
+        direct = []
+    stack = list(direct)
+    walked: set[int] = set()
+    while stack:
+        pid = stack.pop()
+        if pid <= 1 or pid == os.getpid() or pid in walked:
+            continue
+        walked.add(pid)
+        found.add(pid)
+        if len(walked) > 500:
+            ok = False
+            break
+        grand = child_pids(pid)
+        if grand is None:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                continue
+            if not holders:
+                ok = False
+            break
+        stack.extend(grand)
+    return found, ids, ok
+
+
+def _macos_full(leader: int, sentinel: str, root_ids: set[int]) -> tuple[set[int], dict[int, tuple[int, int]], bool]:
+    """Every pid still tied to the script, after it has been allowed to leave the group."""
+    from aicad.sandbox_macos import all_pids, pids_holding_path, process_identity
+
+    ok = True
+    holders = pids_holding_path(sentinel)
+    if holders is None:
+        ok = False
+        ps_found = _ps_descendants(leader)
+        holders = [] if ps_found is None else list(ps_found)
+    identities: dict[int, tuple[int, int]] = {}
+    table = all_pids()
+    if table is None:
+        table = []
+    for pid in table:
+        if pid <= 1 or pid == os.getpid():
+            continue
+        identity = process_identity(pid)
+        if identity is not None:
+            identities[pid] = identity
+    found = _related_pids(root_ids, identities, set(holders))
+    leader_id = process_identity(leader)
+    if leader_id is not None:
+        found.update(_related_pids({leader_id[0]}, identities, found))
+    return found, identities, ok
+
+
+def _sweep_escaped(
+    leader: int,
+    sentinel: str,
+    account: _Account,
+    seen: set[int],
+    lock: threading.Lock,
+) -> None:
+    """Kill processes that have left the group. The waiter calls this itself.
+
+    The wait wakes on a short timeout, so the check does not depend on a
+    second thread finishing a ``ps`` listing.
+    """
+    _reliable, root_ids = account.snapshot()
+    try:
+        found, ids, listed = _macos_quick(leader, sentinel, root_ids)
+    except OSError:
+        account.fail()
+        return
+    if not listed:
+        account.fail()
+    else:
+        account.add_ids(ids)
+    escaped: list[int] = []
+    for pid in found:
+        if pid == leader or pid == os.getpid():
+            continue
+        try:
+            if os.getpgid(pid) != leader:
+                escaped.append(pid)
+        except OSError:
+            continue
+    with lock:
+        seen.update(found)
+    for pid in escaped:
+        _kill_pid(pid)
+
+
+def _wait_script(proc: subprocess.Popen, wall: float, sweep) -> tuple[bytes, bytes]:
+    """Wait for ``proc``. On macOS, ``sweep`` runs while the script is still going."""
+    if sweep is None:
+        return proc.communicate(timeout=wall)
+    deadline = time.monotonic() + wall
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(proc.args, wall)
+        try:
+            return proc.communicate(timeout=min(0.05, remaining))
+        except subprocess.TimeoutExpired:
+            sweep()
+
+
+def _still_alive(pids: set[int], identities: dict[int, tuple[int, int]]) -> set[int]:
+    """Pids that are still running. A recycled pid or a zombie is not alive."""
+    from aicad.sandbox_macos import process_identity
+
+    alive: set[int] = set()
+    for pid in pids:
+        if pid <= 1 or pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        identity = process_identity(pid)
+        if identity is None:
+            continue
+        expected = identities.get(pid)
+        if expected is not None and identity[0] != expected[0]:
+            continue
+        alive.add(pid)
+    return alive
+
+
+def _reap_macos(leader: int, sentinel: str, account: _Account, seen: set[int], lock: threading.Lock) -> None:
+    """Kill anything still tied to the script. Refuse a clean result if the list failed."""
+    ok, root_ids = account.snapshot()
+    found, identities, listed = _macos_full(leader, sentinel, root_ids)
+    if not listed:
+        ok = False
+    with lock:
+        targets = set(seen)
+        targets.update(found)
+    for pid in targets:
+        _kill_pid(pid)
+    found_again, identities_again, listed_again = _macos_full(leader, sentinel, root_ids)
+    if not listed_again:
+        ok = False
+    for pid in found_again:
+        _kill_pid(pid)
+    survivors = _still_alive(found_again, identities_again)
+    _refuse_unaccounted(ok and listed and listed_again, survivors)
+
+
 def _watch_descendants(
     leader: int,
     seen: set[int],
@@ -1666,16 +1935,33 @@ def _watch_descendants(
     memory_hit: threading.Event | None = None,
     process_cap: int | None = None,
     process_hit: threading.Event | None = None,
+    account: _Account | None = None,
+    sentinel: str | None = None,
 ) -> None:
     """Remember children, kill any that leave the group, and enforce the memory and process caps."""
     next_sample = 0.0
     while not stop.is_set():
-        try:
-            found = _descendants(leader)
-        except OSError:
-            found = set()
+        found: set[int] = set()
+        if account is not None and sentinel:
+            reliable, root_ids = account.snapshot()
+            try:
+                found, ids, listed = _macos_quick(leader, sentinel, root_ids)
+            except OSError:
+                found, ids, listed = set(), set(), False
+            if not listed:
+                account.fail()
+            else:
+                account.add_ids(ids)
+            _ = reliable
+        else:
+            try:
+                found = _descendants(leader)
+            except OSError:
+                found = set()
         escaped: list[int] = []
         for pid in found:
+            if pid == leader:
+                continue
             try:
                 if os.getpgid(pid) != leader:
                     escaped.append(pid)
@@ -1688,7 +1974,7 @@ def _watch_descendants(
         if process_cap is not None and _task_count({leader, *found}) > process_cap:
             if process_hit is not None:
                 process_hit.set()
-            _kill_process_tree(leader, seen, lock)
+            _kill_process_tree(leader, seen, lock, extra=found)
             return
         if memory_cap is not None and time.monotonic() >= next_sample:
             next_sample = time.monotonic() + _MEMORY_POLL_SECONDS
@@ -1696,12 +1982,17 @@ def _watch_descendants(
             if used is not None and used > memory_cap:
                 if memory_hit is not None:
                     memory_hit.set()
-                _kill_process_tree(leader, seen, lock)
+                _kill_process_tree(leader, seen, lock, extra=found)
                 return
         stop.wait(0.02)
 
 
-def _kill_process_tree(leader: int, seen: set[int], lock: threading.Lock) -> None:
+def _kill_process_tree(
+    leader: int,
+    seen: set[int],
+    lock: threading.Lock,
+    extra: set[int] | None = None,
+) -> None:
     """Kill the script's process group and any child that already left it."""
     try:
         os.killpg(leader, signal.SIGKILL)
@@ -1710,10 +2001,13 @@ def _kill_process_tree(leader: int, seen: set[int], lock: threading.Lock) -> Non
     _kill_pid(leader)
     with lock:
         targets = set(seen)
-    try:
-        targets.update(_descendants(leader))
-    except OSError:
-        pass
+    if extra:
+        targets.update(extra)
+    if sys.platform != "darwin":
+        try:
+            targets.update(_descendants(leader))
+        except OSError:
+            pass
     for pid in targets:
         _kill_pid(pid)
 
@@ -1833,6 +2127,9 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     process_hit = threading.Event()
     process_cap = _PROCESS_CAP if sys.platform.startswith("linux") else None
     pids_cgroup: Path | None = None
+    account: _Account | None = None
+    sentinel_fd: int | None = None
+    sentinel_path: str | None = None
     try:
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
@@ -1860,14 +2157,30 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         env.pop("AICAD_PIDS_CGROUP", None)
         if pids_cgroup is not None:
             env["AICAD_PIDS_CGROUP"] = str(pids_cgroup)
-        proc = subprocess.Popen(
-            command,
-            cwd=str(workspace),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        popen_kwargs: dict = {
+            "cwd": str(workspace),
+            "env": env,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "start_new_session": True,
+        }
+        if sys.platform == "darwin":
+            from aicad.sandbox_macos import open_sentinel, process_identity
+
+            opened = open_sentinel()
+            if opened is None:
+                raise ScriptError(
+                    "The sandbox could not keep track of processes for this script, so it was not run."
+                )
+            sentinel_fd, sentinel_path = opened
+            popen_kwargs["close_fds"] = True
+            popen_kwargs["pass_fds"] = (sentinel_fd,)
+            account = _Account()
+        proc = subprocess.Popen(command, **popen_kwargs)
+        if account is not None and sentinel_path is not None:
+            identity = process_identity(proc.pid)
+            if identity is not None:
+                account.add_ids({identity[0]})
         if pids_cgroup is not None:
             _move_into_pids_cgroup(pids_cgroup, proc.pid)
         stop_watch = threading.Event()
@@ -1883,17 +2196,31 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 process_cap,
                 process_hit,
             ),
+            kwargs={"account": account, "sentinel": sentinel_path},
             name="aicad-sandbox-reap",
             daemon=True,
         )
         watcher.start()
+
+        def sweep() -> None:
+            if account is None or sentinel_path is None:
+                return
+            _sweep_escaped(proc.pid, sentinel_path, account, seen, seen_lock)
+
         try:
-            stdout_b, stderr_b = proc.communicate(timeout=wall)
+            stdout_b, stderr_b = _wait_script(proc, wall, sweep if account is not None else None)
         except subprocess.TimeoutExpired:
             _stop_child(proc, seen, seen_lock)
+            if account is not None and sentinel_path is not None:
+                try:
+                    _reap_macos(proc.pid, sentinel_path, account, seen, seen_lock)
+                except ScriptError:
+                    pass
             shutil.rmtree(job, ignore_errors=True)
             raise ScriptError(f"The script ran longer than {wall} seconds, so it was stopped.") from None
         _kill_process_tree(proc.pid, seen, seen_lock)
+        if account is not None and sentinel_path is not None:
+            _reap_macos(proc.pid, sentinel_path, account, seen, seen_lock)
         return _payload_from_result(
             job,
             proc.returncode if proc.returncode is not None else -1,
@@ -1910,6 +2237,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         _release_pids_cgroup(pids_cgroup)
         if profile_path is not None:
             profile_path.unlink(missing_ok=True)
+        if sentinel_fd is not None and sentinel_path is not None:
+            from aicad.sandbox_macos import close_sentinel
+
+            close_sentinel(sentinel_fd, sentinel_path)
         if probe_root is not None:
             shutil.rmtree(probe_root, ignore_errors=True)
 
