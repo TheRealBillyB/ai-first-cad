@@ -40,12 +40,13 @@ jobs:
           # Windows and macOS use 3.11 because the sketch solver publishes wheels
           # for 3.11 and not for 3.12. 3.12 on those systems would have to compile it.
           # The job clock is a backstop. A single test is stopped sooner by pytest-timeout.
+          # The macOS suite already uses most of 25 minutes, so it gets the same clock as Windows.
           - os: windows-latest
             python: "3.11"
             job-timeout: 40
           - os: macos-latest
             python: "3.11"
-            job-timeout: 25
+            job-timeout: 40
     uses: ./.github/workflows/pytest-suite.yml
     with:
       os: ${{ matrix.os }}
