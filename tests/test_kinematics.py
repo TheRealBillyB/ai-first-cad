@@ -78,6 +78,30 @@ def _assert_round_trip(spec, solutions, tool, at, origin, nudged=None):
         assert item["position_error_mm"] <= 1e-6
 
 
+def test_placement_rotation_matches_a_placed_part():
+    from aicad import kernel
+    from aicad.chain import _euler_from
+    from aicad.kinematics import _euler, matrix_from_placement
+
+    box = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [10, 4, 2], "center": [5, 0, 1]}])
+    position = (12.0, -4.0, 8.0)
+    rotation = (30.0, 50.0, 70.0)
+    placed = kernel.place(box, position, rotation)
+    local = kernel.solid_inertia(box)["center_mm"]
+    world = kernel.solid_inertia(placed)["center_mm"]
+    matrix = matrix_from_placement({"position": list(position), "rotation_deg": list(rotation)})
+    assert transform_point(matrix, local) == pytest.approx(world, abs=1e-4)
+    assert _euler_from(_euler(*rotation)) == pytest.approx(rotation, abs=1e-6)
+
+    spec = _planar([0, 0, 1])
+    report = solve_kinematics(
+        spec,
+        None,
+        {"tool": "link2", "at": [0, 0, 0], "rotation_deg": list(rotation), "joints": {"shoulder": 0, "elbow": 0}},
+    )
+    assert report["forward"]["rotation_deg"] == pytest.approx(list(rotation), abs=1e-6)
+
+
 def test_planar_forward_matches_the_joint_solver_and_the_link_formula():
     spec = _planar([0, 0, 1])
     at = [80, 0, 0]

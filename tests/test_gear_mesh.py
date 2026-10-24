@@ -310,22 +310,6 @@ def test_a_hypoid_sweep_catches_interference_between_the_old_poses():
         assert kernel.overlap_volume(placed_pinion, placed_ring) < 1e-4
 
 
-def _assembly_rotation(position, rotation_deg) -> list[float]:
-    """Angles whose assembly matrix matches kernel.place of the same numbers."""
-    blank = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [1, 1, 1]}])
-    placed = kernel.place(blank, tuple(position), tuple(rotation_deg))
-    transform = placed.impl.wrapped.Location().Transformation()
-    rotation = [[transform.Value(row, column) for column in range(1, 4)] for row in range(1, 4)]
-    ry = math.asin(max(-1.0, min(1.0, -rotation[2][0])))
-    if abs(math.cos(ry)) > 1.0e-6:
-        rx = math.atan2(rotation[2][1], rotation[2][2])
-        rz = math.atan2(rotation[1][0], rotation[0][0])
-    else:
-        rx = 0.0
-        rz = math.atan2(-rotation[0][1], rotation[1][1])
-    return [math.degrees(rx), math.degrees(ry), math.degrees(rz)]
-
-
 def _hypoid_assembly(document: Document, name: str, pinion_at, ring_at) -> None:
     document.create_assembly(
         {
@@ -371,11 +355,11 @@ def _mounted_hypoid(tmp_path: Path):
     )
     pinion_at = {
         "position_mm": list(placement["pinion"]["position_mm"]),
-        "rotation_deg": _assembly_rotation(placement["pinion"]["position_mm"], placement["pinion"]["rotation_deg"]),
+        "rotation_deg": list(placement["pinion"]["rotation_deg"]),
     }
     ring_at = {
         "position_mm": list(placement["gear"]["position_mm"]),
-        "rotation_deg": _assembly_rotation(placement["gear"]["position_mm"], placement["gear"]["rotation_deg"]),
+        "rotation_deg": list(placement["gear"]["rotation_deg"]),
     }
     return document, pinion_at, ring_at
 
