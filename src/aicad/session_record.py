@@ -29,10 +29,13 @@ from PIL import Image, ImageDraw
 from aicad.errors import GeometryError
 from aicad.kernel import TriangleMesh
 from aicad.paths import (
+    _export_blocked,
+    _path_after_windows_trim,
     is_reparse,
     is_reserved_device_name,
     output_path,
     publish_text,
+    session_path_escapes,
     shared_file,
     stays_inside,
 )
@@ -863,17 +866,31 @@ def _looks_like_path(text: str) -> bool:
         return False
     if text.startswith(("~", "/", "\\", "./", "../", ".\\", "..\\")):
         return True
-    if re.match(r"^[A-Za-z]:[\\/]", text):
+    if session_path_escapes(text) or _trimmed_path_escapes(text):
         return True
     normalized = text.replace("\\", "/")
     return ".." in PurePosixPath(normalized).parts
+
+
+def _trimmed_path_escapes(text: str) -> bool:
+    """True when Win32's trimmed form of this text leaves the project.
+
+    ``....\\....\\hidden`` is ``..\\..\\hidden`` after trailing dots are removed.
+    A drive-relative path such as ``C:secret.txt`` is already an escape before
+    that trim.
+    """
+    normalized = text.replace("\\", "/")
+    trimmed = _path_after_windows_trim(text)
+    if trimmed == normalized:
+        return False
+    return session_path_escapes(trimmed)
 
 
 def _relative_or_outside(text: str, root: Path) -> str:
     normalized = text.replace("\\", "/")
     if ".." in PurePosixPath(normalized).parts or normalized.startswith("~"):
         return "<outside-project>"
-    if re.match(r"^[A-Za-z]:/", normalized) and os.name != "nt":
+    if _export_blocked(text, root) or _trimmed_path_escapes(text):
         return "<outside-project>"
     candidate = Path(text)
     if not candidate.is_absolute():
