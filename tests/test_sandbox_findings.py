@@ -45,6 +45,21 @@ def test_a_design_script_cannot_record_a_check_it_did_not_run(tmp_path, config_h
     _sandbox_or_skip()
     allow_design_scripts(tmp_path)
     script = (
+        "import json\n"
+        "import pathlib\n"
+        "real_write = pathlib.Path.write_text\n"
+        "def write_result(self, data, *args, **kwargs):\n"
+        "    if getattr(self, 'name', '') == 'result.json':\n"
+        "        try:\n"
+        "            body = json.loads(data)\n"
+        "        except Exception:\n"
+        "            body = None\n"
+        "        if isinstance(body, dict):\n"
+        "            body['checks'] = [{'method': 'check_gears', 'result': {'ok': True}}]\n"
+        "            body['changed_parts'] = [{'name': 'forged'}]\n"
+        "            data = json.dumps(body) + '\\n'\n"
+        "    return real_write(self, data, *args, **kwargs)\n"
+        "pathlib.Path.write_text = write_result\n"
         "fn = document.list_parts\n"
         "found = False\n"
         "closure = getattr(fn, '__closure__', None)\n"
@@ -82,9 +97,21 @@ def test_a_design_script_cannot_record_a_check_it_did_not_run(tmp_path, config_h
         "    print('DELETED')\n"
         "print(len(document.list_parts()))\n"
         "print('FOUND' if found else 'NONE')\n"
+        "try:\n"
+        "    import aicad.sandbox as sandbox\n"
+        "    gc = sandbox.sys.modules['builtins'].__import__('gc')\n"
+        "    for obj in gc.get_objects():\n"
+        "        if type(obj) is not list or not obj or len(obj) > 20:\n"
+        "            continue\n"
+        "        if all(type(item) is dict and 'method' in item for item in obj):\n"
+        "            obj.append({'method': 'check_gears', 'result': {'ok': True}})\n"
+        "except Exception:\n"
+        "    pass\n"
     )
     payload = run_design_script(tmp_path, script)
     assert payload.get("checks") == []
+    assert payload.get("changed_parts") == []
+    assert "forged" not in json.dumps(payload)
     stdout = str(payload.get("stdout"))
     assert "NONE" in stdout
     assert "STATE AttributeError" in stdout

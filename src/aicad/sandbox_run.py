@@ -80,10 +80,6 @@ def _jsonable(value):
     return str(value)
 
 
-_CALL_EVENT = "aicad.design_call"
-_WRAPPER_FILE = "<aicad-design-wrapper>"
-
-
 def _allowed_text() -> str:
     from aicad.parity import SCRIPT_METHODS
 
@@ -94,96 +90,16 @@ def _unavailable(name: str) -> AttributeError:
     return AttributeError(f"{name} is not available in a design script. Allowed calls: {_allowed_text()}.")
 
 
-def _wrapper_source(name: str) -> str:
-    return (
-        "def call(*args, **kwargs):\n"
-        "    box = []\n"
-        "    audit(%r, token, %r, args, kwargs, box)\n"
-        "    if not box:\n"
-        "        raise AttributeError('The call was refused.')\n"
-        "    flag, payload = box[0]\n"
-        "    if flag == 'err':\n"
-        "        raise payload from None\n"
-        "    return payload\n"
-    ) % (_CALL_EVENT, name)
-
-
-def _make_wrapper(token: object, name: str):
-    namespace = {"audit": sys.audit, "token": token, "__builtins__": {}}
-    exec(compile(_wrapper_source(name), _WRAPPER_FILE, "exec"), namespace)  # noqa: S102
-    return namespace["call"]
-
-
-def _plain_error(exc: Exception) -> Exception:
-    """An error the script can see, without the frames that handled the call."""
-    try:
-        fresh = type(exc)(str(exc))
-    except Exception:
-        fresh = RuntimeError(f"{type(exc).__name__}: {exc}")
-    fresh.__cause__ = None
-    fresh.__context__ = None
-    fresh.__traceback__ = None
-    return fresh
-
-
 def script_document(document, calls: list[dict]) -> "ScriptDocument":
     """The ``document`` name inside a design script.
 
     The real document and the check list are not stored on the object the
-    script holds. A public call is recorded only when it comes from a wrapper
-    created here.
+    script holds. Production runs the calls in another process. This helper
+    runs them beside the caller for tests.
     """
-    from aicad.parity import SCRIPT_METHODS
+    from aicad.design_calls import script_document as _script_document
 
-    token = object()
-    depth = [0]
-    codes: dict[str, object] = {}
-    wrappers: dict[str, object] = {}
-    for name in SCRIPT_METHODS:
-        function = _make_wrapper(token, name)
-        codes[name] = function.__code__
-        wrappers[name] = function
-
-    def hook(event, args):
-        if event != _CALL_EVENT:
-            return
-        try:
-            if not isinstance(args, tuple) or len(args) != 5:
-                return
-            got_token, name, call_args, call_kwargs, box = args
-            if got_token is not token or not isinstance(name, str) or not isinstance(box, list):
-                return
-            if not isinstance(call_args, tuple) or not isinstance(call_kwargs, dict):
-                return
-            code = codes.get(name)
-            if code is None:
-                return
-            frame = sys._getframe(1)
-            if frame.f_code is not code or frame.f_code.co_filename != _WRAPPER_FILE:
-                return
-            depth[0] += 1
-            outer = depth[0] == 1
-            try:
-                result = getattr(document, name)(*call_args, **call_kwargs)
-            except Exception as exc:
-                if outer:
-                    calls.append({"method": name, "error": f"{type(exc).__name__}: {exc}"})
-                box.append(("err", _plain_error(exc)))
-            else:
-                if outer:
-                    try:
-                        recorded = _jsonable(result)
-                    except Exception:
-                        recorded = str(result)
-                    calls.append({"method": name, "result": recorded})
-                box.append(("ok", result))
-            finally:
-                depth[0] -= 1
-        except Exception:
-            return
-
-    sys.addaudithook(hook)
-    return ScriptDocument(wrappers)
+    return _script_document(document, calls)
 
 
 class ScriptDocument:
@@ -298,15 +214,11 @@ def _part(workspace: Path, job: Path) -> int:
 
 
 def _design(workspace: Path, job: Path) -> int:
+    from aicad.design_calls import design_proxy
     from aicad.sandbox import STDOUT_MAX, script_builtins
 
     code = (job / "script.py").read_text(encoding="utf-8")
-    from aicad.document import Document
-
-    document = Document(workspace)
-    before = {row["name"]: row for row in document.session_payload().get("parts", [])}
-    calls: list[dict] = []
-    proxy = script_document(document, calls)
+    proxy, finish = design_proxy(job / "calls")
     namespace = {
         "__builtins__": script_builtins(),
         "__name__": "aicad_design_script",
@@ -325,44 +237,29 @@ def _design(workspace: Path, job: Path) -> int:
         error = str(exc) if isinstance(exc, Exception) and exc.__class__.__module__ == "aicad.errors" else _format(code, exc, "<aicad-design>")
         if not str(exc):
             error = _format(code, exc, "<aicad-design>")
-    after = {row["name"]: row for row in document.session_payload().get("parts", [])}
-    changed = [name for name, row in after.items() if before.get(name) != row]
-    deleted = [name for name in before if name not in after]
-    notes: list[str] = []
-    views = []
-    rendered = 0
-    for name in changed:
-        if rendered >= _RENDER_LIMIT:
-            notes.append(f"Only the first {_RENDER_LIMIT} changed parts were rendered.")
-            break
-        try:
-            for view in document.render(name):
-                views.append(view.to_dict())
-            rendered += 1
-        except Exception as exc:
-            notes.append(f"Could not render {name}: {exc}")
-    changed_parts = []
-    for info in document.list_parts():
-        if info.name in changed:
-            changed_parts.append(info.to_dict())
-    checks = [call for call in calls if call.get("method") in _CHECKS]
-    errors = notes[:]
-    if error:
-        errors.insert(0, error)
+    try:
+        finish()
+    except Exception as exc:
+        ok = False
+        finish_error = str(exc) or type(exc).__name__
+        error = finish_error if error is None else f"{error}\n{finish_error}"
+    errors = [error] if error else []
     stdout = captured.getvalue()
     if len(stdout) > STDOUT_MAX:
         stdout = stdout[:STDOUT_MAX] + "\n... output truncated ..."
+    # Checks, pictures, and changed parts are recorded by the process that ran
+    # the calls. This file does not supply them.
     _write(
         job,
         {
             "ok": ok,
             "error": error,
             "errors": errors,
-            "changed_parts": changed_parts,
-            "deleted_parts": deleted,
-            "checks": checks,
+            "changed_parts": [],
+            "deleted_parts": [],
+            "checks": [],
             "stdout": stdout,
-            "views": views,
+            "views": [],
         },
     )
     return 0
@@ -384,6 +281,10 @@ def _leave(code: int) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) == 3 and args[0] == "--model":
+        from aicad.design_calls import model_main
+
+        return model_main(Path(args[1]), Path(args[2]))
     if len(args) != 1:
         print("usage: python -P -m aicad.sandbox_run JOB_DIR", file=sys.stderr)
         return 2
