@@ -675,25 +675,47 @@ def _size_matches(kind: str, size: str, text: str) -> bool:
     """True when a query token is this size, or a fastener's series head.
 
     ``m3`` matches screw ``M3-0.5`` and washer ``M3``. It does not match
-    ``M30`` or ``M3.5``. ``M3-0.8`` does not match washer ``M3``.
+    ``M30`` or ``M3.5``. ``M3-0.8`` does not match washer ``M3``. A bearing,
+    seal, or motor designation matches the same way: ``6000`` does not match
+    ``60008``, and ``20x35x7`` does not match ``20x35x70``.
     """
     if kind in _FASTENERS:
         tokens = {part.upper() for part in text.split()}
         head = size.split("-", 1)[0].upper()
         return head in tokens or size.upper() in tokens
-    folded = "".join(text.lower().split()).replace("×", "x").replace("*", "x")
-    if size.lower() in folded or size.lower() in text.lower():
+    if _designation_equals(size, text):
         return True
     if kind == "ball_bearing":
         row = catalog_data.deep_groove(size)
         if row is not None:
             legacy = catalog_data.legacy_bearing_code(row)
-            if legacy and legacy.lower() in folded:
+            if legacy and _designation_equals(legacy, text):
                 return True
     if kind == "tapered_roller_bearing":
         for alias, target in catalog_data._TAPERED_ALIASES.items():  # noqa: SLF001
-            if target == size and alias.lower() in folded:
+            if target == size and _designation_equals(alias, text):
                 return True
+    return False
+
+
+def _folded_designation(text: str) -> str:
+    return "".join(text.lower().split()).replace("×", "x").replace("*", "x")
+
+
+def _designation_equals(size: str, text: str) -> bool:
+    """True when the designation is the whole query or one of its tokens.
+
+    Spaces are ignored, so ``20 x 35 x 7`` is ``20x35x7``. A longer number
+    that merely contains the designation does not match.
+    """
+    needle = _folded_designation(size)
+    if not needle:
+        return False
+    if _folded_designation(text) == needle:
+        return True
+    for token in text.split():
+        if _folded_designation(token.strip("\"'()[]{}<>,;")) == needle:
+            return True
     return False
 
 
