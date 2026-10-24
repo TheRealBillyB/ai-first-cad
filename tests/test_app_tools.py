@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 
 from aicad.app import make_server
+from aicad.errors import GeometryError
+from aicad.workspace import Workspace
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -404,3 +406,20 @@ def test_a_refused_tool_command_is_a_plain_error(server):
     assert body["ok"] is False
     assert "Traceback" not in payload.decode("utf-8")
     assert body["error"]
+
+
+def test_a_command_missing_its_fields_names_them(tmp_path, server):
+    workspace = Workspace(tmp_path / "direct")
+    with pytest.raises(GeometryError, match="create_gear needs name, spec"):
+        workspace.execute("create_gear", {})
+    status, payload = _exchange(
+        server,
+        "POST",
+        "/api/command",
+        body=json.dumps({"name": "create_gear", "arguments": {}}),
+    )
+    body = json.loads(payload.decode("utf-8"))
+    assert status == 400
+    assert body["ok"] is False
+    assert "create_gear needs name, spec" in body["error"]
+    assert "Traceback" not in payload.decode("utf-8")
