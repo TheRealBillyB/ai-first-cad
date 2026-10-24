@@ -484,6 +484,17 @@ def build_parser() -> argparse.ArgumentParser:
     mesh.add_argument("--backlash-max", type=float, default=None, help="Maximum circumferential and normal backlash, mm.")
     mesh.add_argument("--steps", type=int, default=None, help="Samples over one turn of the smaller gear.")
 
+    train = commands.add_parser(
+        "gear-train",
+        parents=[common],
+        help="Speed and torque of every shaft in an assembly gear train.",
+    )
+    train.add_argument("name")
+    train.add_argument("--file", type=Path, default=None, help="JSON drive: inputs and any extra speeds.")
+    train.add_argument("--shaft", default=None, help="Input shaft, used when --file is omitted.")
+    train.add_argument("--speed", type=float, default=None, help="Input speed in revolutions per minute.")
+    train.add_argument("--torque", type=float, default=None, help="Input torque in newton-metres.")
+
     from aicad.plugins import add_cli
 
     add_cli(commands, common)
@@ -640,6 +651,14 @@ def _dispatch(args: argparse.Namespace) -> int:
                 raise AICADError("Pass both --backlash-min and --backlash-max.")
             spec["backlash_mm"] = {"min": args.backlash_min, "max": args.backlash_max}
         return emit(document.check_gears(spec))
+    if args.command == "gear-train":
+        if args.file is not None:
+            drive = json.loads(args.file.read_text(encoding="utf-8"))
+        else:
+            if args.shaft is None or args.speed is None or args.torque is None:
+                raise AICADError("Pass --file, or --shaft, --speed, and --torque.")
+            drive = {"inputs": [{"shaft": args.shaft, "speed_rpm": args.speed, "torque_nm": args.torque}]}
+        return emit(document.solve_gear_train(args.name, drive))
     if args.command == "place":
         info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
         return emit(info.to_dict())

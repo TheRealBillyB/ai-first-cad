@@ -1135,6 +1135,24 @@ class Document:
             chosen = assembly.motion_by_name(spec, sequence, motion) if (sequence or motion) else None
             return assembly.check_cables(spec, self._assembly_shapes(spec), chosen)
 
+    def solve_gear_train(self, name: str, drive: dict) -> dict:
+        """Speed and torque of every shaft in the assembly gear train.
+
+        Tooth counts come from the generated gears on the train. ``drive`` gives
+        the input shaft, speed in rpm, and torque in N·m. A differential in a
+        turn also needs one output speed.
+        """
+        with self._lock:
+            spec = self._get_assembly(name)
+            gear_specs = {}
+            for instance in spec["instances"]:
+                part = self._get(instance["part"])
+                if part.gear_spec is not None:
+                    gear_specs[instance["name"]] = part.gear_spec
+            from aicad.gears.train import solve_gear_train as solve_train
+
+            return solve_train(spec, drive, gear_specs)
+
     def estimate_power(
         self,
         name: str,

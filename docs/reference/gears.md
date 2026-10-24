@@ -114,6 +114,30 @@ An offset layout has no checker yet. `register_mesh_check("offset", checker)` is
 
 The command line is `aicad check-gears`. The assistant tool is `check_gears`.
 
+## Gear train
+
+`aicad.gears.train` solves shaft speed and torque for a train stored on the assembly. The command is `aicad gear-train`. The assistant tool is `solve_gear_train`. Tooth counts come from gears this module built. An internal ring is a stated tooth count, because that solid is not built.
+
+A shaft lists the gears fixed to it, and may name the revolute or cylindrical joint that turns it. A mesh names two gears. `kind` is `external` (opposite directions) or `internal` (the same direction). `carrier` is the shaft the mesh orbits with. Omit it and the carrier is the housing, which is a fixed-axis mesh. `efficiency` defaults to 1. `fixed` names shafts held at zero speed.
+
+Relative to the carrier, an external mesh of tooth counts z_a and z_b gives
+
+(ω_b − ω_c) / (ω_a − ω_c) = −z_a / z_b
+
+An internal mesh gives +z_a / z_b. Gears on one shaft share one speed, so a compound train multiplies the stage ratios. An idler is one gear between two meshes, and its tooth count cancels.
+
+A planetary mesh names the carrier. With the ring fixed,
+
+ω_carrier / ω_sun = z_sun / (z_sun + z_ring)
+
+An open differential is `{carrier, left, right}`, not two ordinary meshes. The constraint is
+
+(ω_left + ω_right) / 2 = ω_carrier
+
+Straight ahead, both outputs match the carrier. In a turn, one output speeds up as much as the other slows down. The two outputs share the carrier torque. Give the carrier speed and one output speed. The carrier alone leaves one degree of freedom, and the report says the train is under-constrained. Speeds that do not average are over-constrained.
+
+The drive is `{inputs: [{shaft, speed_rpm, torque_nm}], speeds: [{shaft, speed_rpm}]}`. Speed is revolutions per minute. Torque is newton-metres, applied to the shaft in the positive direction. A load the shaft drives has the opposite sign. At efficiency 1 the shaft powers sum to zero, and the housing reaction cancels the shaft torques. An efficiency below 1 scales the torque delivered through that mesh. The report's `status` is `determined`, `under_constrained`, or `over_constrained`.
+
 ## Not in this module
 
-Tolerance grades, a hypoid offset, a circular face-mill or face-hob path, and a gear-train load are not generated here. Backlash other than the zero-backlash nominal is reported by the mesh check, not cut into the solid.
+Tolerance grades, a hypoid offset, and a circular face-mill or face-hob path are not generated here. Backlash other than the zero-backlash nominal is reported by the mesh check, not cut into the solid. The train solver does not check that the solids touch.
