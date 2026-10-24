@@ -40,17 +40,11 @@ def _keep_opencascade_on_the_calling_thread() -> None:
     below stores an explicit size of at least 8 MiB for threads started
     after this import. A sandboxed script runs on the child process main
     thread, which keeps the stack the process was started with.
-
-    ``AICAD_MACOS_OCCT_WORKERS=default`` leaves the stock pool. The Python
-    thread stack is still set. The macOS crash reproducer sets the switch
-    for one run and then removes it.
     """
     from aicad.thread_stack import prepare_geometry_thread_stack
 
     prepare_geometry_thread_stack()
     if sys.platform != "darwin":
-        return
-    if os.environ.get("AICAD_MACOS_OCCT_WORKERS") == "default":
         return
     from OCP.OSD import OSD_Parallel, OSD_ThreadPool
 
