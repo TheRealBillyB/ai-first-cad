@@ -1,0 +1,55 @@
+name: regenerate docs
+
+# Push to main only. The workflow checks out that commit and runs the
+# repository's generator. It does not run on pull_request_target, and it
+# does not execute code from a pull request head.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    name: Regenerate master docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Regenerate master documents
+        run: python tools/build_docs.py
+
+      # The commit stays unsigned. signoff adds the Developer Certificate of
+      # Origin trailer, and the author is the same identity as that trailer.
+      - name: Open or update one pull request
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          sign-commits: false
+          signoff: true
+          author: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          committer: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          commit-message: "Regenerate master docs from entry files."
+          branch: chore/regenerate-master-docs
+          base: main
+          delete-branch: true
+          title: Regenerate master docs from entry files
+          add-paths: |
+            docs/DECISIONS.md
+            README.md
+          body: |
+            The master documents are generated from the entry folders.
+
+            `tools/build_docs.py` rewrote them after entries landed on main.
+            This is the one pull request for that update.
