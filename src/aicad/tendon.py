@@ -79,7 +79,7 @@ def assumptions() -> list[str]:
         "Rest length is the authored value, or the length of the first sample. Slack is a path more than 0.01 mm shorter than that. Stretch is a path more than 0.01 mm longer.",
         "actuator_force_n is the tension in the span at actuator_end. Across a pulley, tension on the far side is the near tension times exp(-friction × wrap in radians). Friction of zero passes the tension through.",
         "A slack tendon carries no tension. Elastic elongation is force times length, divided by Young's modulus times the circular area, and it is not added to the path.",
-        "A collision is a centerline sample inside a solid, or closer to the surface than the cable radius plus pinch_mm. The arc seated on a pulley's own part is the groove and is not a hit. The sample step is the larger of 2 mm and the diameter.",
+        "A collision is a centerline sample inside a solid, or closer to the surface than the cable radius plus pinch_mm. When several samples meet one part, the report keeps the closest of that kind, and a centerline inside the solid is kept ahead of a rub. The arc seated on a pulley's own part is the groove and is not a hit. The sample step is the larger of 2 mm and the diameter.",
         "When two pulley axes are not parallel, the span is the straight line between the tangents taken in each pulley plane. Fleet angle is reported and is not a failure by itself.",
     ]
 
@@ -733,23 +733,23 @@ def _indexed_wraps(nodes, wraps):
 
 
 def _collisions(route: dict, cable: dict, placed: dict) -> list[dict]:
+    from aicad.cable import prefer_sample
+
     step = max(2.0, cable["diameter_mm"])
     seat = max(step, cable["diameter_mm"])
     limit = cable["diameter_mm"] / 2.0 + cable["pinch_mm"]
+    radius = cable["diameter_mm"] / 2.0
     hits: dict[str, dict] = {}
     for point, owners in _samples(route, step, seat):
         for instance, shape in placed.items():
             if instance in owners:
                 continue
-            previous = hits.get(instance)
-            if previous is not None and previous["inside"]:
-                continue
             gap = kernel.distance_to_point(shape, point)
             if not gap["inside"] and gap["distance_mm"] >= limit:
                 continue
-            if previous is not None and not gap["inside"]:
+            clearance = -gap["distance_mm"] if gap["inside"] else gap["distance_mm"] - radius
+            if not prefer_sample(hits.get(instance), gap["inside"], round(clearance, 3)):
                 continue
-            clearance = -gap["distance_mm"] if gap["inside"] else gap["distance_mm"] - cable["diameter_mm"] / 2.0
             hits[instance] = {
                 "part": instance,
                 "at_mm": [round(component, 3) for component in point],

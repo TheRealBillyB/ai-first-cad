@@ -362,3 +362,88 @@ def test_tendon_through_a_solid_and_a_rub_are_collisions(tmp_path: Path):
     assert rub["kind"] == "rub"
     assert rub["inside"] is False
     assert rub["part"] == "post"
+
+
+def test_a_cable_collision_keeps_the_closest_sample(tmp_path: Path):
+    document = Document(tmp_path)
+    _box(document, "frame_block", [10, 10, 10], [0, 0, 80])
+    # Top face at y = 5. The guide sits 0.4 mm above it.
+    _box(document, "wall_block", [40, 10, 20], [0, 0, 0])
+    graze = [
+        {"instance": "frame", "at": [-40, 20, 0]},
+        {"instance": "frame", "at": [0, 5.4, 0]},
+        {"instance": "frame", "at": [40, 20, 0]},
+    ]
+    through = [
+        {"instance": "frame", "at": [-40, 0, 0]},
+        {"instance": "frame", "at": [40, 0, 0]},
+    ]
+    document.create_assembly(
+        {
+            "name": "bay",
+            "instances": [
+                {"name": "frame", "part": "frame_block"},
+                {"name": "wall", "part": "wall_block"},
+            ],
+            "joints": [],
+            "cables": [
+                {
+                    "name": "graze",
+                    "kind": "cable",
+                    "diameter_mm": 4,
+                    "min_bend_radius_mm": 1,
+                    "pinch_mm": 0.5,
+                    "waypoints": [{**point, "clip": True} for point in graze],
+                },
+                {
+                    "name": "through",
+                    "kind": "cable",
+                    "diameter_mm": 4,
+                    "min_bend_radius_mm": 1,
+                    "pinch_mm": 0.5,
+                    "waypoints": [{**point, "clip": True} for point in through],
+                },
+                {
+                    "name": "graze_tendon",
+                    "kind": "tendon",
+                    "diameter_mm": 4,
+                    "material": "steel",
+                    "min_bend_radius_mm": 1,
+                    "pinch_mm": 0.5,
+                    "points": [
+                        {"role": "anchor", **graze[0]},
+                        {"role": "guide", "name": "low", **graze[1]},
+                        {"role": "anchor", **graze[2]},
+                    ],
+                },
+                {
+                    "name": "through_tendon",
+                    "kind": "tendon",
+                    "diameter_mm": 4,
+                    "material": "steel",
+                    "min_bend_radius_mm": 1,
+                    "pinch_mm": 0.5,
+                    "points": [
+                        {"role": "anchor", **through[0]},
+                        {"role": "anchor", **through[1]},
+                    ],
+                },
+            ],
+        }
+    )
+    cables = _by_name(document.check_cables("bay"))
+    # The vertex is 0.4 mm off the face. Clearance is that gap minus the 2 mm radius.
+    for name in ("graze", "graze_tendon"):
+        hit = _wall_hit(cables[name])
+        assert hit["inside"] is False
+        assert hit["clearance_mm"] == pytest.approx(-1.6, abs=0.15)
+    for name in ("through", "through_tendon"):
+        hit = _wall_hit(cables[name])
+        assert hit["inside"] is True
+        assert hit["part"] == "wall"
+
+
+def _wall_hit(cable: dict) -> dict:
+    frame = cable["frames"][0]
+    hits = frame.get("collisions") or frame.get("pinches") or []
+    return next(hit for hit in hits if hit["part"] == "wall")

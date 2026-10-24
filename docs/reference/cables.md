@@ -48,7 +48,7 @@ The bend radius of a pulley or a wrap is `radius_mm`, and only when the cable ac
 
 `actuator_force_n` is the tension in the span at `actuator_end` (`end` by default, or `start`). Across a pulley, the tension on the far side is the near tension times `e^(-friction × wrap)`, with the wrap in radians. The capstan ratio of that pulley is `e^(friction × wrap)`. Friction of zero passes the tension through unchanged. A slack tendon carries no tension. The geometric ratio is still reported.
 
-A collision is a centerline sample inside a solid, or closer to the surface than the cable radius plus `pinch_mm` (default 0.5). The sample step is the larger of 2 mm and the diameter. Samples on a pulley's own arc, and samples next to a point on that point's part, are the seat and are not counted against that part. `kind` is `inside` or `rub`.
+A collision is a centerline sample inside a solid, or closer to the surface than the cable radius plus `pinch_mm` (default 0.5). The sample step is the larger of 2 mm and the diameter. When several samples meet one part, the report keeps the closest clearance of that kind. A centerline inside the solid is kept ahead of a rub. The same choice is used for a clip polyline. Samples on a pulley's own arc, and samples next to a point on that point's part, are the seat and are not counted against that part. `kind` is `inside` or `rub`.
 
 Fleet angle is the angle between a span and the pulley plane. It is reported. It is not a failure by itself. When two pulley axes are not parallel, the span between them is the straight line joining the tangents taken in each pulley plane, and the report says that span is approximate.
 
