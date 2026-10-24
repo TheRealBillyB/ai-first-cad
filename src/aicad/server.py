@@ -59,7 +59,8 @@ in-plane strength used here.
 
 An assembly places several parts with joints (fixed, revolute, prismatic,
 cylindrical), gear, linkage, or cylinder relations, named poses, and motions.
-A cylinder relation sets a barrel angle and a rod extension from a revolute.
+A cylinder relation sets a barrel angle and a rod extension from a revolute
+or a cylindrical joint. The cylindrical slide moves the clevis with the driver.
 `run_motion` sweeps those joints and reports collisions, with a picture per
 frame. `run_motion_study` drives joints from expressions or keyframes, applies
 gear couplings, and reports collisions and joint-limit violations.
@@ -824,6 +825,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         or cylinder {driver, driven, stroke, moving_anchor, retracted_mm}.
         A linkage is a planar four-bar map, not a closed spatial loop. A cylinder
         keeps the rod eye on the moving clevis without adding a joint cycle.
+        When the driver is cylindrical, its slide moves that clevis along the joint axis.
         poses, motions, studies, cables, and actuators live on the same spec.
         gear_train, when present, is {shafts, meshes, fixed, differentials}.
         A shaft is {name, gears, joint}. A gear is an instance name, or

@@ -292,8 +292,11 @@ def _instant_ratio(relation: dict, solved: dict, spec: dict) -> float:
         from aicad.kinematics import _cylinder
 
         joints = {joint["name"]: joint for joint in spec["joints"]}
-        high, _extension, _offset = _cylinder(relation, joints, driver + step)
-        low, _extension, _offset = _cylinder(relation, joints, driver - step)
+        slide = next(
+            joint["slide"] for joint in solved["joints"] if joint["name"] == relation["driver"]
+        )
+        high, _extension, _offset = _cylinder(relation, joints, driver + step, slide)
+        low, _extension, _offset = _cylinder(relation, joints, driver - step, slide)
         return (high - low) / (2 * step)
     from aicad.kinematics import _four_bar
 
