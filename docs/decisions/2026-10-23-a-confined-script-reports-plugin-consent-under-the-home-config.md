@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 19
+order: 21
 ---
 
 # A confined script reports plugin consent under the home config

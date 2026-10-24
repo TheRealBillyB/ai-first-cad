@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 22
+order: 24
 ---
 
 # A Windows network check sends one unconnected datagram

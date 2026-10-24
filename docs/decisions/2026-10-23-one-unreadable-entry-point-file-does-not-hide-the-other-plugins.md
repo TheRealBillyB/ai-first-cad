@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 26
+order: 28
 ---
 
 # One unreadable entry-point file does not hide the other plugins

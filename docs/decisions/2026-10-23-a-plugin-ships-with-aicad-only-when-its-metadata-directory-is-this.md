@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 25
+order: 27
 ---
 
 # A plugin ships with aicad only when its metadata directory is this install's

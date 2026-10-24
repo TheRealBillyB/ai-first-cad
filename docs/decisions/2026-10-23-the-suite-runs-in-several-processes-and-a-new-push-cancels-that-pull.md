@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 2
+order: 4
 ---
 
 # The suite runs in several processes, and a new push cancels that pull request's older run

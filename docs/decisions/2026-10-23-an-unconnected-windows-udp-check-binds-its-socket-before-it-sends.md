@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 20
+order: 22
 ---
 
 # An unconnected Windows UDP check binds its socket before it sends

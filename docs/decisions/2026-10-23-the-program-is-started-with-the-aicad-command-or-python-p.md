@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 8
+order: 10
 ---
 
 # The program is started with the `aicad` command or `python -P`

@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 18
+order: 20
 ---
 
 # A Windows CPU stop is the job's user time

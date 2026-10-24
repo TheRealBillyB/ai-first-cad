@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 24
+order: 26
 ---
 
 # A Windows script starts from the base interpreter and stays suspended until the job holds it

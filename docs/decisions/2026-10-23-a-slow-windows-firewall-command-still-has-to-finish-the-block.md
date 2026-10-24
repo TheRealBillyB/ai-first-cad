@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 7
+order: 9
 ---
 
 # A slow Windows firewall command still has to finish the block

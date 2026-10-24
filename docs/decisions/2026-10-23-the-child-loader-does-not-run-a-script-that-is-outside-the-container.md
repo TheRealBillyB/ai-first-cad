@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 5
+order: 7
 ---
 
 # The child loader does not run a script that is outside the container

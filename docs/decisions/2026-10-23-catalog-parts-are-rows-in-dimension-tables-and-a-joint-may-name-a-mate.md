@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 9
+order: 11
 ---
 
 # Catalog parts are rows in dimension tables, and a joint may name a mate on those parts

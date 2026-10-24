@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 30
+order: 32
 ---
 
 # Interference starts with the axis-aligned boxes and only then intersects the solids

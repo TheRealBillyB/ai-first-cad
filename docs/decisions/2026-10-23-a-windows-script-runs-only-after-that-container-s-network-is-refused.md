@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 23
+order: 25
 ---
 
 # A Windows script runs only after that container's network is refused

@@ -1,6 +1,6 @@
 ---
 date: 2026-10-23
-order: 15
+order: 17
 ---
 
 # Windows firewall rules stay up for the next network-off script

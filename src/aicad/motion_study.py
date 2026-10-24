@@ -74,6 +74,7 @@ from aicad.assembly import posed_shapes
 from aicad.errors import GeometryError
 from aicad.honesty import VERIFIED_CHECK, finish
 from aicad.kinematics import normalize as normalize_assembly
+from aicad.kinematics import solve as solve_joints
 
 SCHEMA = "motion_study.v1"
 _MAX_STEPS = 10001
@@ -334,6 +335,24 @@ def run_study(
             "This is not a contact force.",
         ],
     )
+
+
+def posed_at(spec: dict, study: dict, frames: int) -> list[dict]:
+    """Solved poses at ``frames`` times across the study, with no collision test.
+
+    Each row is ``index``, ``time_s``, and ``solved``. ``time_s`` is the study
+    clock, from 0 through ``duration_s``. Couplings and joint limits match the
+    study record. ``frames`` replaces the study's own step count.
+    """
+    spec = normalize_assembly(spec)
+    chosen = normalize_study(study, spec["joints"], spec["relations"], name=study.get("name"))
+    count = _require_steps(frames, chosen["name"])
+    posed = _with_couplings(spec, chosen)
+    rows = []
+    for index, time_s in enumerate(_sample_times(chosen["duration_s"], count)):
+        solved = solve_joints(posed, _commands(chosen, time_s))
+        rows.append({"index": index, "time_s": round(time_s, 6), "solved": solved})
+    return rows
 
 
 def _drivers(raw, study: str, joints: dict[str, dict]) -> list[dict]:
