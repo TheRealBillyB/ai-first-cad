@@ -751,3 +751,162 @@ def test_bh_f06_a_failed_script_keeps_the_network_grant(tmp_path, config_home):
     assert workspace.script_status()["network"] == "next run"
     workspace.execute("run_design_script", {"script": "raise RuntimeError('boom')"})
     assert workspace.script_status()["network"] == "next run"
+
+
+def _run_existing_thread_probe(workspace: str) -> None:
+    """A thread that already exists must not signal or create a file."""
+    import ctypes
+    import mmap
+    import threading
+
+    import aicad.sandbox as sandbox
+
+    root = Path(workspace).resolve()
+    helper = int(os.environ["AICAD_HELPER_PID"])
+    marker_path = os.environ["AICAD_MARKER_PATH"]
+    canary_path = os.environ["AICAD_CANARY_PATH"]
+    report_fd = os.open(root / "report.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    marker_fd = os.open(marker_path, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.ftruncate(marker_fd, 4096)
+    started = threading.Event()
+    go = threading.Event()
+    notes: list[str] = []
+
+    def worker() -> None:
+        started.set()
+        go.wait()
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.syscall.restype = ctypes.c_long
+        arch = sandbox._arch()
+        number = sandbox._SIGNAL_SYSCALLS[arch]["kill"]
+        ctypes.set_errno(0)
+        result = libc.syscall(number, helper, 10)
+        if result == 0:
+            notes.append("kill:allowed")
+        else:
+            notes.append("kill:denied:%s" % ctypes.get_errno())
+        try:
+            fd = os.open(canary_path, os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError as exc:
+            notes.append("open:denied:%s" % exc.errno)
+        else:
+            os.close(fd)
+            notes.append("open:allowed")
+        try:
+            os.write(marker_fd, b"escaped\n")
+        except OSError as exc:
+            notes.append("write:denied:%s" % exc.errno)
+        else:
+            notes.append("write:allowed")
+        try:
+            mapped = mmap.mmap(
+                marker_fd,
+                4096,
+                flags=mmap.MAP_SHARED,
+                prot=mmap.PROT_READ | mmap.PROT_WRITE,
+            )
+        except OSError as exc:
+            notes.append("mmap:denied:%s" % exc.errno)
+        else:
+            mapped[0:1] = b"Z"
+            mapped.close()
+            notes.append("mmap:allowed")
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    started.wait()
+    raised = False
+    try:
+        sandbox.apply_sandbox(root, network=False, result_fd=report_fd)
+    except ScriptError as exc:
+        raised = str(exc) == sandbox._THREAD_CONFINE_ERROR
+    go.set()
+    thread.join()
+    payload = {"raised": raised, "notes": notes}
+    os.write(report_fd, (json.dumps(payload) + "\n").encode())
+    os.close(report_fd)
+    os.close(marker_fd)
+
+
+_EXISTING_THREAD_LAUNCH = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[2])\n"
+    "from tests.test_sandbox_findings import _run_existing_thread_probe\n"
+    "_run_existing_thread_probe(sys.argv[1])\n"
+)
+
+
+def test_a_script_is_not_run_when_another_thread_already_exists(tmp_path):
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux installs the process filter per thread")
+    _sandbox_or_skip()
+    log = tmp_path / "helper-signals.txt"
+    ready = tmp_path / "helper-ready"
+    helper_script = textwrap.dedent(
+        """
+        import signal
+        import sys
+        import time
+
+        log, ready = sys.argv[1], sys.argv[2]
+
+        def handler(signum, _frame):
+            with open(log, "a", encoding="utf-8") as handle:
+                handle.write("signal:%s\\n" % signum)
+
+        for name in ("SIGUSR1", "SIGXCPU", "SIGIO", "SIGTERM"):
+            value = getattr(signal, name, None)
+            if value is not None:
+                signal.signal(value, handler)
+        open(ready, "w", encoding="utf-8").write("ready\\n")
+        while True:
+            time.sleep(0.2)
+        """
+    )
+    helper = subprocess.Popen(
+        [sys.executable, "-c", helper_script, str(log), str(ready)],
+        start_new_session=True,
+    )
+    marker = Path("/tmp") / ("aicad-thread-marker-%s" % helper.pid)
+    canary = Path("/tmp") / ("aicad-thread-canary-%s" % helper.pid)
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.is_file() and time.monotonic() < deadline:
+            if helper.poll() is not None:
+                raise AssertionError("signal helper exited")
+            time.sleep(0.02)
+        assert ready.is_file()
+        work = tmp_path / "work"
+        work.mkdir()
+        env = os.environ.copy()
+        env["AICAD_HELPER_PID"] = str(helper.pid)
+        env["AICAD_MARKER_PATH"] = str(marker)
+        env["AICAD_CANARY_PATH"] = str(canary)
+        checkout = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            [sys.executable, "-c", _EXISTING_THREAD_LAUNCH, str(work), str(checkout)],
+            cwd=checkout,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert completed.returncode == 0, completed.stderr
+        report = json.loads((work / "report.txt").read_text(encoding="utf-8"))
+        assert report["raised"] is True
+        notes = dict(item.split(":", 1) for item in report["notes"])
+        assert notes["kill"] == "denied:1"
+        assert notes["open"] == "denied:1"
+        assert notes["write"] == "denied:1"
+        assert notes["mmap"] == "denied:1"
+        assert not canary.exists()
+        assert marker.read_bytes() == b"\x00" * 4096
+        time.sleep(0.4)
+        heard = log.read_text(encoding="utf-8") if log.is_file() else ""
+        assert heard == ""
+        assert helper.poll() is None
+    finally:
+        helper.kill()
+        helper.wait(timeout=5)
+        marker.unlink(missing_ok=True)
+        canary.unlink(missing_ok=True)
