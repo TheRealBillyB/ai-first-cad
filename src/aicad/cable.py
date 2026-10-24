@@ -162,7 +162,7 @@ def assumptions() -> list[str]:
         "Bend radius is the circumradius of three consecutive waypoints. A smooth fillet would be at least this large only when the points already lie on that arc. A repeated waypoint is not a corner: a zero-length span leaves the bend radius unlimited, the same as a straight run.",
         "Strain is (length - rest length) / rest length. Rest length is the authored value, or the length of the first frame when it is omitted.",
         "Tension is stiffness times positive strain. Stiffness is newtons per unit strain, a stand-in for EA. A shorter route is slack, not compression.",
-        "A pinch is a centerline sample closer to a solid than the cable radius plus pinch_mm, or two non-adjacent spans closer than the diameter. Samples within one sample step of a waypoint are the clip seat on that part and are not counted against it.",
+        "A pinch is a centerline sample closer to a solid than the cable radius plus pinch_mm, or two non-adjacent spans closer than the diameter. When several samples meet one part, the report keeps the closest of that kind, and a centerline inside the solid is kept ahead of a rub. Samples within one sample step of a waypoint are the clip seat on that part and are not counted against it.",
         "Clips do not slip. A later flexible-body model (a Cosserat rod or a chain of rigid segments with bending springs) would add sag, contact, and clip slip, and would be checked against these same length, bend, and gap limits.",
     ]
 
@@ -233,6 +233,23 @@ def _segment_distance(a, b, c, d) -> float:
 
 def _dist(a, b) -> float:
     return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
+
+
+def prefer_sample(previous: dict | None, inside: bool, clearance_mm: float) -> bool:
+    """Whether this sample replaces the hit already kept for one part.
+
+    A centerline inside the solid beats a rub. A rub clearance is the surface
+    gap minus the cable radius, so it can be more negative than the clearance
+    of an inside point, and the two are not ranked on that number. Among the
+    same kind, the smaller clearance is the closer sample.
+    """
+    if previous is None:
+        return True
+    if inside and not previous["inside"]:
+        return True
+    if previous["inside"] and not inside:
+        return False
+    return clearance_mm < previous["clearance_mm"]
 
 
 def route_status(metrics: dict, pinches: list[dict]) -> str:
