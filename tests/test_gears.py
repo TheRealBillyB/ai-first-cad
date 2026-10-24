@@ -204,6 +204,40 @@ def test_spur_and_helical_match_iso_21771():
     assert low["undercut"] is True
 
 
+def test_same_hand_gears_are_not_placed_as_a_mesh():
+    helical = {
+        "type": "helical",
+        "module_mm": 2,
+        "teeth": 20,
+        "pressure_angle_deg": 20,
+        "helix_angle_deg": 15,
+        "face_width_mm": 10,
+    }
+    with pytest.raises(GeometryError, match="opposite hands"):
+        pair_geometry(helical, helical)
+    opposite = pair_geometry(helical, {**helical, "helix_angle_deg": -15})
+    assert opposite["axis_layout"] == "parallel"
+    assert opposite["backlash_mm"] == 0.0
+    assert opposite["centre_distance_mm"] == pytest.approx(40 / math.cos(math.radians(15)), abs=1e-4)
+
+    spiral = {
+        "type": "spiral_bevel",
+        "module_mm": 2,
+        "teeth": 20,
+        "mate_teeth": 40,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 8,
+        "spiral_angle_deg": 25,
+        "shaft_angle_deg": 90,
+    }
+    mate = {**spiral, "teeth": 40, "mate_teeth": 20, "spiral_angle_deg": 25}
+    with pytest.raises(GeometryError, match="opposite hands"):
+        pair_geometry(spiral, mate)
+    meshed = pair_geometry(spiral, {**mate, "spiral_angle_deg": -25})
+    assert meshed["axis_layout"] == "intersecting"
+    assert meshed["backlash_mm"] == 0.0
+
+
 def test_spur_pair_contact_ratio_is_the_path_of_contact():
     alpha = math.radians(20)
     radius_1, radius_2 = 20.0, 40.0
@@ -524,6 +558,21 @@ def test_document_reloads_a_gear_and_the_command_layer_matches(tmp_path: Path):
     replaced = document.update_gear("pinion", {**spec, "teeth": 16})
     assert replaced["gear"]["teeth"] == 16
     assert abs(replaced["volume_mm3"] - volume) / volume > 0.05
+
+    document.place_part("pinion", [10, 20, 30], [0, 0, 15])
+    kept = document.update_gear("pinion", {**spec, "teeth": 18})
+    assert kept["gear"]["teeth"] == 18
+    assert document.get_source("pinion")["placement"] == {
+        "position": [10.0, 20.0, 30.0],
+        "rotation_deg": [0.0, 0.0, 15.0],
+    }
+    kept_box = document.measure("pinion").bounding_box
+    kept_center_x = (kept_box.min.x + kept_box.max.x) / 2
+    assert kept_center_x == pytest.approx(10, abs=0.5)
+    moved = document.update_gear("pinion", {**spec, "teeth": 18}, position=[1, 2, 3])
+    assert document.get_source("pinion")["placement"]["position"] == [1.0, 2.0, 3.0]
+    assert document.get_source("pinion")["placement"]["rotation_deg"] == [0.0, 0.0, 15.0]
+    _ = moved
 
     workspace = Workspace(tmp_path / "app")
     report = workspace.execute("create_gear", {"name": "pinion", "spec": spec, "position": [0, 0, 0]})

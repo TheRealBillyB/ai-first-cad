@@ -18,6 +18,12 @@ from aicad.gears.geometry import (
 )
 from aicad.gears.geometry import compute_bevel, compute_cylindrical
 from aicad.gears.hypoid import compute_hypoid
+from aicad.gears.meshcheck import (
+    check_pair,
+    register_mesh_check,
+    registered_mesh_checks,
+    unregister_mesh_check,
+)
 from aicad.gears.solid import build_bevel, build_cylindrical, build_gear, build_hypoid
 
 __all__ = [
@@ -25,6 +31,7 @@ __all__ = [
     "OFFSET",
     "PARALLEL",
     "build_gear",
+    "check_pair",
     "families",
     "gear_data",
     "mesh_placement",
@@ -32,6 +39,9 @@ __all__ = [
     "pair_geometry",
     "profile_points",
     "register_family",
+    "register_mesh_check",
+    "registered_mesh_checks",
+    "unregister_mesh_check",
 ]
 
 

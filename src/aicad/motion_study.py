@@ -337,6 +337,31 @@ def run_study(
     )
 
 
+def iter_study_poses(spec: dict, shapes: dict, study: dict, steps: int | None = None) -> list[dict]:
+    """Pose the assembly at each step of a motion study.
+
+    Each row has ``index``, ``time_s``, ``solved``, and ``placed``. Collisions
+    are left to the caller. ``steps`` replaces the study's step count.
+    """
+    spec = normalize_assembly(spec)
+    chosen = normalize_study(study, spec["joints"], spec["relations"], name=study.get("name"))
+    if steps is not None:
+        chosen["steps"] = _require_steps(steps, chosen["name"])
+    posed = _with_couplings(spec, chosen)
+    rows = []
+    for index, time_s in enumerate(_sample_times(chosen["duration_s"], chosen["steps"])):
+        solved, placed = posed_shapes(posed, shapes, _commands(chosen, time_s))
+        rows.append(
+            {
+                "index": index,
+                "time_s": round(time_s, 6),
+                "solved": solved,
+                "placed": placed,
+            }
+        )
+    return rows
+
+
 def posed_at(spec: dict, study: dict, frames: int) -> list[dict]:
     """Solved poses at ``frames`` times across the study, with no collision test.
 

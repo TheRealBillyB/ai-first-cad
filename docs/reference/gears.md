@@ -43,7 +43,7 @@ a = (d1 + d2) / 2 · cos αt / cos αwt
 
 If inv αwt is negative, backlash remains when the base circles touch. There is no zero-backlash centre distance, and the pair is refused.
 
-The transverse contact ratio is the length of the path of contact divided by the transverse base pitch. The overlap ratio is b sin|β| / (π mn), using the shorter face. External helical gears need opposite hands.
+The transverse contact ratio is the length of the path of contact divided by the transverse base pitch. The overlap ratio is b sin|β| / (π mn), using the shorter face. External helical gears need opposite hands. A same-hand pair is refused instead of being placed on parallel shafts.
 
 ## Straight and spiral bevel
 
@@ -76,7 +76,7 @@ A spiral is a logarithmic spiral of constant angle βm,
 
 θ(R) − θ(Rm) = tan βm / sin δ · ln(R / Rm)
 
-Positive βm is right-hand. It is not a circular-cutter trace. A pair needs opposite hands. The transverse contact ratio is the virtual spur pair at mid-face, with addendum scaled by Rm / Re. The overlap ratio is the spiral's rotation from toe to heel divided by the angular pitch.
+Positive βm is right-hand. It is not a circular-cutter trace. A pair needs opposite hands, and a same-hand spiral pair is refused. The transverse contact ratio is the virtual spur pair at mid-face, with addendum scaled by Rm / Re. The overlap ratio is the spiral's rotation from toe to heel divided by the angular pitch.
 
 Do not pass `profile_shift` on a bevel. The addendum split above is the shift, and the two members sum to zero.
 
@@ -112,6 +112,22 @@ A bevel pair keeps both pitch apexes at the origin. The mate is rotated about Y 
 
 A hypoid ring stays on +Z through the origin. The pinion axis is the reported direction through `pinion_axis_point_mm`, and the shortest distance between the axes is `offset_mm`. `mesh_placement(..., gear_angle_deg)` turns the ring and the pinion together at the tooth ratio. Rotation is degrees about X, then Y, then Z.
 
+## Mesh check
+
+`check_pair` and `check_gears` take one pair, or every gear relation in an assembly. The report compares the centre distance with the zero-backlash centre, gives circumferential and normal backlash against a range, the transverse and total contact ratio, undercut, and tooth interference.
+
+For a spur or helical pair the centre distance is the distance between the axes. Omit it to use the zero-backlash centre from the pair geometry above. Circumferential backlash is `2 a (inv α' − inv α)` on the operating pitch circle. Normal backlash is that arc times `cos α' cos βw`.
+
+For a bevel pair the centre distance is a signed axis offset. Zero keeps the pitch apexes together. Backlash is the mid-face virtual spur with that offset added to its centre. The sweep uses the virtual spur at the toe, the mid-face, and the heel, including the constant spiral angle unwrapped onto the back cone. It starts from the generated mesh phase and does not read a clocking of the two gears about the pitch generator.
+
+The smaller gear is turned through one full rotation in steps no coarser than 2 degrees, and the mate turns by the tooth ratio. At each step the tooth outlines on the line of centres are tested for overlap. A helical pair is also checked at both ends of the shorter face.
+
+The range is `{min, max}` in millimetres and applies to both backlash numbers, or separate `circumferential` and `normal` ranges. A pair fails when backlash is outside the range, the total contact ratio is below 1, a member is undercut, or the outlines interfere.
+
+An offset layout has no checker yet. `register_mesh_check("offset", checker)` is the plug-in for a hypoid pair, and it returns the same report.
+
+The command line is `aicad check-gears`. The assistant tool is `check_gears`.
+
 ## Gear train
 
 `aicad.gears.train` solves shaft speed and torque for a train stored on the assembly. The command is `aicad gear-train`. The assistant tool is `solve_gear_train`. Tooth counts come from gears this module built. An internal ring is a stated tooth count, because that solid is not built.
@@ -138,4 +154,4 @@ The drive is `{inputs: [{shaft, speed_rpm, torque_nm}], speeds: [{shaft, speed_r
 
 ## Not in this module
 
-Tolerance grades, a specified backlash other than the small hypoid flank shift, and face-hobbing are not generated here. The train solver does not check that the solids touch.
+Tolerance grades and face-hobbing are not generated here. The small hypoid flank shift is not a backlash you specify, and other backlash is reported by the mesh check rather than cut into the solid. An offset pair has no mesh checker yet. The train solver does not check that the solids touch.

@@ -191,13 +191,22 @@ def session_path_escapes(text: str) -> bool:
 
 
 def require_session_file(root: Path, raw: object, label: str, error: type[Exception]) -> Path:
-    """A session path that stays inside ``root``. The file is not opened here."""
+    """A session path that stays inside ``root``. The file is not opened here.
+
+    Win32 removes trailing dots and spaces from each part before it opens the
+    file. ``.. .`` is ``..`` after that, so the trimmed text is judged the same
+    way an export path is.
+    """
     if not isinstance(raw, str) or not raw.strip():
         raise error(f"{label} is missing.")
-    if "\x00" in raw or session_path_escapes(raw.strip()):
+    text = raw.strip()
+    if "\x00" in text or session_path_escapes(text):
+        raise error(f"{label} {raw!r} is outside the project. It was not read.")
+    trimmed = _path_after_windows_trim(text)
+    if trimmed != text.replace("\\", "/") and session_path_escapes(trimmed):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
     root_resolved = Path(root).resolve()
-    full = (root_resolved / raw.strip()).resolve()
+    full = (root_resolved / text).resolve()
     if not _is_inside(full, root_resolved):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
     return full
@@ -662,47 +671,75 @@ def link_leaves(root: Path, path: str | Path) -> bool:
     """True when a path inside ``root`` resolves outside it.
 
     Opening that path would leave the project by following a symlink or junction.
-    A path that is already outside ``root`` is not this case: the caller asked
-    for a different folder.
+    The check is the path as written, not the directory it resolves to: a link
+    in the middle still counts when the folder under it is outside. A path that
+    is already outside ``root`` is not this case: the caller asked for a
+    different folder.
     """
     root_resolved = Path(root).resolve()
     raw = Path(path).expanduser()
     if not raw.is_absolute():
         raw = root_resolved / raw
+    if not _lexical_inside(raw, root_resolved):
+        return False
     try:
-        parent = raw.parent.resolve()
         resolved = raw.resolve()
     except OSError:
         return False
-    return _is_inside(parent, root_resolved) and not _is_inside(resolved, root_resolved)
+    return not _is_inside(resolved, root_resolved)
+
+
+def _project_holding(start: Path) -> Path | None:
+    """Nearest ancestor with a real ``session.json``.
+
+    A marker that is itself a link does not count. The walk does not follow a
+    directory link, so a project reached only through that link is not chosen.
+    """
+    probe = start
+    seen: set[str] = set()
+    while True:
+        key = os.path.normcase(os.path.abspath(probe))
+        if key in seen:
+            return None
+        seen.add(key)
+        marker = probe / "session.json"
+        if not is_reparse(marker):
+            try:
+                if marker.is_file():
+                    return probe
+            except OSError:
+                pass
+        parent = probe.parent
+        if parent == probe:
+            return None
+        probe = parent
 
 
 def project_link_escapes(path: str | Path) -> bool:
     """True when ``path`` follows a link out of a project that contains it.
 
     The project is the nearest ancestor with a real ``session.json``. A symlink
-    the caller chose as the project folder itself is not this case.
+    the caller chose as the project folder itself is not this case. A folder
+    under that link is the same case when the link leaves the project above it.
     """
     raw = Path(path).expanduser()
     if not raw.is_absolute():
         raw = Path.cwd() / raw
-    probe = raw.parent
+    probe = raw
     seen: set[str] = set()
     while True:
         key = os.path.normcase(os.path.abspath(probe))
         if key in seen:
             return False
         seen.add(key)
-        marker = probe / "session.json"
-        if is_reparse(marker):
-            holds_project = False
-        else:
+        if is_reparse(probe):
+            project = _project_holding(probe.parent)
             try:
-                holds_project = marker.is_file()
+                target = probe.resolve()
             except OSError:
-                holds_project = False
-        if holds_project:
-            return not stays_inside(probe, raw)
+                return False
+            if project is not None and not _is_inside(target, Path(project).resolve()):
+                return True
         parent = probe.parent
         if parent == probe:
             return False
