@@ -7,7 +7,10 @@ not successfully run with.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import textwrap
 import time
 
 import pytest
@@ -29,7 +32,7 @@ def config_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_landlock_without_signal_scope_does_not_run(monkeypatch):
+def test_an_older_landlock_abi_still_runs_a_script(monkeypatch):
     class Libc:
         def __init__(self, abi: int):
             self.abi = abi
@@ -39,14 +42,122 @@ def test_landlock_without_signal_scope_does_not_run(monkeypatch):
 
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr("aicad.sandbox._arch", lambda: "x86_64")
-    monkeypatch.setattr("aicad.sandbox._libc", lambda: Libc(5))
-    ok, reason = sandbox_supported()
-    assert ok is False
-    assert "signal" in reason
-    monkeypatch.setattr("aicad.sandbox._libc", lambda: Libc(6))
-    ok, reason = sandbox_supported()
-    assert ok is True
-    assert reason == ""
+    for abi, supported in ((3, False), (4, True), (5, True), (6, True), (7, True)):
+        monkeypatch.setattr("aicad.sandbox._libc", lambda abi=abi: Libc(abi))
+        ok, reason = sandbox_supported()
+        assert ok is supported
+        if supported:
+            assert reason == ""
+        else:
+            assert "signal" not in reason
+
+
+def test_the_process_filter_refuses_a_signal_to_another_process(tmp_path):
+    if not sys.platform.startswith("linux"):
+        pytest.skip("the signal filter is the Linux process limit")
+    report = tmp_path / "signals.txt"
+    script = textwrap.dedent(
+        """
+        import ctypes
+        import os
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(38, 1, 0, 0, 0) != 0:
+            raise SystemExit("could not lock the process")
+        from aicad.sandbox import _GETTID, _ISOLATION_SYSCALLS, _SIGNAL_SYSCALLS, _arch, _block_sockets
+
+        _block_sockets(network=False)
+        arch = _arch()
+        libc.syscall.restype = ctypes.c_long
+        pid = os.getpid()
+        tid = int(libc.syscall(_GETTID[arch]))
+        parent = os.getppid()
+
+        def once(label, number, *args):
+            ctypes.set_errno(0)
+            result = libc.syscall(number, *args)
+            if result == 0:
+                return f"{label}:allowed"
+            return f"{label}:denied:{ctypes.get_errno()}"
+
+        signals = _SIGNAL_SYSCALLS[arch]
+        pidfd = next(number for number in _ISOLATION_SYSCALLS[arch] if number == 424)
+        lines = [
+            once("self-kill", signals["kill"], pid, 0),
+            once("parent-kill", signals["kill"], parent, 0),
+            once("init-kill", signals["kill"], 1, 0),
+            once("group-kill", signals["kill"], 0, 0),
+            once("self-tkill", signals["tkill"], tid, 0),
+            once("parent-tkill", signals["tkill"], parent, 0),
+            once("self-tgkill", signals["tgkill"], pid, tid, 0),
+            once("parent-tgkill", signals["tgkill"], parent, parent, 0),
+            once("self-rt", signals["rt_sigqueueinfo"], pid, 0, 0),
+            once("parent-rt", signals["rt_sigqueueinfo"], parent, 0, 0),
+            once("self-rt-tg", signals["rt_tgsigqueueinfo"], pid, tid, 0, 0),
+            once("parent-rt-tg", signals["rt_tgsigqueueinfo"], parent, parent, 0, 0),
+            once("pidfd", pidfd, 0, 0, 0, 0),
+        ]
+        open(os.environ["AICAD_SIGNAL_REPORT"], "w", encoding="utf-8").write("\\n".join(lines) + "\\n")
+        """
+    )
+    env = os.environ.copy()
+    env["AICAD_SIGNAL_REPORT"] = str(report)
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    text = report.read_text(encoding="utf-8")
+    rows = dict(line.split(":", 1) for line in text.splitlines())
+    assert rows["self-kill"] == "allowed"
+    assert rows["self-tkill"] == "allowed"
+    assert rows["self-tgkill"] == "allowed"
+    for label in ("self-rt", "self-rt-tg"):
+        assert rows[label] != "denied:1"
+    refused = (
+        "parent-kill",
+        "init-kill",
+        "group-kill",
+        "parent-tkill",
+        "parent-tgkill",
+        "parent-rt",
+        "parent-rt-tg",
+        "pidfd",
+    )
+    for label in refused:
+        assert rows[label] == "denied:1"
+
+
+def test_a_script_cannot_signal_outside_its_own_process(tmp_path):
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux applies the signal filter in the kernel")
+    _sandbox_or_skip()
+    script = (
+        "import aicad.sandbox as sandbox\n"
+        "def once(label, pid):\n"
+        "    try:\n"
+        "        sandbox.os.kill(pid, 0)\n"
+        "    except OSError as exc:\n"
+        "        return '%s:denied:%s' % (label, exc.errno)\n"
+        "    return '%s:allowed' % label\n"
+        "open('signals.txt', 'w', encoding='utf-8').write('\\n'.join([\n"
+        "    once('self', sandbox.os.getpid()),\n"
+        "    once('parent', sandbox.os.getppid()),\n"
+        "    once('init', 1),\n"
+        "    once('group', 0),\n"
+        "]) + '\\n')\n"
+        "part = Box(1, 1, 1)\n"
+    )
+    run_part_script(script, tmp_path)
+    text = (tmp_path / "signals.txt").read_text(encoding="utf-8")
+    assert "self:allowed" in text
+    assert "parent:denied:" in text
+    assert "init:denied:" in text
+    assert "group:denied:" in text
 
 
 def test_bh_s01_design_script_cannot_clear_the_plugin_gate(tmp_path, config_home):
