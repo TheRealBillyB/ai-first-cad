@@ -1,7 +1,6 @@
 """Linear static solves. The CalculiX binary is optional in CI; these skip without it."""
 
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -388,7 +387,7 @@ def test_cli_materials_and_fea(tmp_path):
 
 
 def test_missing_solver_message_names_ccx(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: None)
     available, reason = fea_available()
     assert available is False
     assert "ccx" in reason

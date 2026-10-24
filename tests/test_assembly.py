@@ -347,6 +347,51 @@ def test_sharp_cable_fails_bend_and_a_route_through_a_solid_pinches(tmp_path):
     assert report["assumptions"]
 
 
+def test_a_crossing_route_is_a_self_pinch(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "block", [10, 10, 10], [0, 0, 40])
+    document.create_assembly(
+        {
+            "name": "routed",
+            "instances": [{"name": "base", "part": "block"}],
+            "joints": [],
+            "cables": [
+                {
+                    "name": "cross",
+                    "kind": "cable",
+                    "diameter_mm": 6,
+                    "min_bend_radius_mm": 20,
+                    "waypoints": [
+                        {"instance": "base", "at": [0, 0, 0], "clip": True},
+                        {"instance": "base", "at": [70, 0, 0], "clip": True},
+                        {"instance": "base", "at": [35, -35, 0], "clip": True},
+                        {"instance": "base", "at": [35, 35, 0], "clip": True},
+                    ],
+                },
+                {
+                    "name": "parallel",
+                    "kind": "cable",
+                    "diameter_mm": 6,
+                    "min_bend_radius_mm": 20,
+                    "waypoints": [
+                        {"instance": "base", "at": [0, 0, 0], "clip": True},
+                        {"instance": "base", "at": [70, 0, 0], "clip": True},
+                        {"instance": "base", "at": [70, 20, 0], "clip": True},
+                        {"instance": "base", "at": [0, 20, 0], "clip": True},
+                    ],
+                },
+            ],
+        }
+    )
+    by_name = {cable["name"]: cable for cable in document.check_cables("routed")["cables"]}
+    cross = by_name["cross"]["frames"][0]["self_pinch"]
+    assert cross
+    assert cross[0]["gap_mm"] == pytest.approx(0.0, abs=0.001)
+    assert by_name["cross"]["status"] == "fail"
+    assert by_name["parallel"]["frames"][0]["self_pinch"] == []
+    assert by_name["parallel"]["status"] == "pass"
+
+
 def test_a_repeated_waypoint_is_not_a_sharp_bend(tmp_path):
     document = Document(tmp_path)
     _box(document, "block", [10, 10, 10], [0, 0, 40])
@@ -626,6 +671,49 @@ def test_cylinder_power_ratio_uses_the_cylindrical_slide():
     raised = _instant_ratio(relation, solved, cleaned)
     assert flat == pytest.approx(0.0, abs=1e-3)
     assert raised == pytest.approx(-1.0, abs=1e-2)
+
+
+def test_a_stroke_actuator_carries_the_arm_moment(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [20, 20, 20], [0, 0, 0])
+    _box(document, "arm", [20, 20, 20], [50, 0, 0])
+    _box(document, "barrel", [40, 10, 10], [20, 0, 0])
+    _box(document, "rod", [20, 6, 6], [10, 0, 0])
+    spec = _cylinder_spec(80)
+    for instance in spec["instances"]:
+        instance["material"] = "steel"
+    spec["instances"][1]["payload_kg"] = 10
+    spec["instances"][1]["payload_at"] = [100, 0, 0]
+    spec["joints"][0]["value"] = 30
+    spec["actuators"] = [
+        {
+            "name": "lift",
+            "kind": "hydraulic_cylinder",
+            "joint": "stroke",
+            "bore_mm": 25,
+            "rod_mm": 12,
+            "efficiency": 0.9,
+        }
+    ]
+    document.create_assembly(spec)
+    report = document.estimate_power("cyl")
+    torque = report["frames"][0]["joints"]["shoulder"]["torque_nm"]
+    actuator = report["actuators"][0]
+    from aicad.kinematics import _cylinder
+    from aicad.kinematics import normalize
+
+    cleaned = normalize(document.get_assembly("cyl")["assembly"])
+    relation = cleaned["relations"][0]
+    joints = {item["name"]: item for item in cleaned["joints"]}
+    driver = report["frames"][0]["joints"]["shoulder"]["value"]
+    _angle, high, _offset = _cylinder(relation, joints, driver + 0.5, 0.0)
+    _angle, low, _offset = _cylinder(relation, joints, driver - 0.5, 0.0)
+    ratio = high - low
+    expected = abs(torque * (math.pi / 180.0) * 1000.0 / ratio)
+    assert actuator["peak_force_n"] == pytest.approx(expected, abs=1.0)
+    assert actuator["peak_force_n"] > 20
+    assert actuator["peak_pressure_mpa"] > 0.01
+    assert any("stroke" in line for line in report["assumptions"])
 
 
 def test_cylinder_stroke_clamps_at_the_joint_limit():

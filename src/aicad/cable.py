@@ -162,7 +162,7 @@ def assumptions() -> list[str]:
         "Bend radius is the circumradius of three consecutive waypoints. A smooth fillet would be at least this large only when the points already lie on that arc. A repeated waypoint is not a corner: a zero-length span leaves the bend radius unlimited, the same as a straight run.",
         "Strain is (length - rest length) / rest length. Rest length is the authored value, or the length of the first frame when it is omitted.",
         "Tension is stiffness times positive strain. Stiffness is newtons per unit strain, a stand-in for EA. A shorter route is slack, not compression.",
-        "A pinch is a centerline sample closer to a solid than the cable radius plus pinch_mm, or two non-adjacent spans closer than the diameter. When several samples meet one part, the report keeps the closest of that kind, and a centerline inside the solid is kept ahead of a rub. Samples within one sample step of a waypoint are the clip seat on that part and are not counted against it.",
+        "A pinch is a centerline sample closer to a solid than the cable radius plus pinch_mm, or two non-adjacent spans whose shortest distance is less than the diameter. When several samples meet one part, the report keeps the closest of that kind, and a centerline inside the solid is kept ahead of a rub. Samples within one sample step of a waypoint are the clip seat on that part and are not counted against it.",
         "Clips do not slip. A later flexible-body model (a Cosserat rod or a chain of rigid segments with bending springs) would add sag, contact, and clip slip, and would be checked against these same length, bend, and gap limits.",
     ]
 
@@ -221,14 +221,42 @@ def _self_approach(coords: list[list[float]], diameter: float) -> list[dict]:
 
 
 def _segment_distance(a, b, c, d) -> float:
-    # Sample both spans. Exact segment distance is more code than this route needs.
-    best = _dist(a, c)
-    for u in range(8):
-        p = [a[axis] + (b[axis] - a[axis]) * (u / 7) for axis in range(3)]
-        for v in range(8):
-            q = [c[axis] + (d[axis] - c[axis]) * (v / 7) for axis in range(3)]
-            best = min(best, _dist(p, q))
-    return best
+    """Shortest distance between segment ab and segment cd.
+
+    The parameters are clamped to the segments, then clamped again, so a
+    crossing, a parallel pair, and a zero-length span all use the same rule.
+    """
+    ab = [b[i] - a[i] for i in range(3)]
+    cd = [d[i] - c[i] for i in range(3)]
+    ac = [a[i] - c[i] for i in range(3)]
+    aa = _dot(ab, ab)
+    bb = _dot(ab, cd)
+    cc = _dot(cd, cd)
+    dd = _dot(ab, ac)
+    ee = _dot(cd, ac)
+    denom = aa * cc - bb * bb
+    if denom < 1.0e-12:
+        first = 0.0
+    else:
+        first = _clamp((bb * ee - cc * dd) / denom)
+    second = 0.0 if cc < 1.0e-18 else _clamp((bb * first + ee) / cc)
+    first = 0.0 if aa < 1.0e-18 else _clamp((bb * second - dd) / aa)
+    second = 0.0 if cc < 1.0e-18 else _clamp((bb * first + ee) / cc)
+    point = [a[i] + first * ab[i] for i in range(3)]
+    other = [c[i] + second * cd[i] for i in range(3)]
+    return _dist(point, other)
+
+
+def _dot(left, right) -> float:
+    return left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+
+
+def _clamp(value: float) -> float:
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
 
 
 def _dist(a, b) -> float:
