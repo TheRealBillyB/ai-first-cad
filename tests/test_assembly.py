@@ -347,6 +347,51 @@ def test_sharp_cable_fails_bend_and_a_route_through_a_solid_pinches(tmp_path):
     assert report["assumptions"]
 
 
+def test_a_crossing_route_is_a_self_pinch(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "block", [10, 10, 10], [0, 0, 40])
+    document.create_assembly(
+        {
+            "name": "routed",
+            "instances": [{"name": "base", "part": "block"}],
+            "joints": [],
+            "cables": [
+                {
+                    "name": "cross",
+                    "kind": "cable",
+                    "diameter_mm": 6,
+                    "min_bend_radius_mm": 20,
+                    "waypoints": [
+                        {"instance": "base", "at": [0, 0, 0], "clip": True},
+                        {"instance": "base", "at": [70, 0, 0], "clip": True},
+                        {"instance": "base", "at": [35, -35, 0], "clip": True},
+                        {"instance": "base", "at": [35, 35, 0], "clip": True},
+                    ],
+                },
+                {
+                    "name": "parallel",
+                    "kind": "cable",
+                    "diameter_mm": 6,
+                    "min_bend_radius_mm": 20,
+                    "waypoints": [
+                        {"instance": "base", "at": [0, 0, 0], "clip": True},
+                        {"instance": "base", "at": [70, 0, 0], "clip": True},
+                        {"instance": "base", "at": [70, 20, 0], "clip": True},
+                        {"instance": "base", "at": [0, 20, 0], "clip": True},
+                    ],
+                },
+            ],
+        }
+    )
+    by_name = {cable["name"]: cable for cable in document.check_cables("routed")["cables"]}
+    cross = by_name["cross"]["frames"][0]["self_pinch"]
+    assert cross
+    assert cross[0]["gap_mm"] == pytest.approx(0.0, abs=0.001)
+    assert by_name["cross"]["status"] == "fail"
+    assert by_name["parallel"]["frames"][0]["self_pinch"] == []
+    assert by_name["parallel"]["status"] == "pass"
+
+
 def test_a_repeated_waypoint_is_not_a_sharp_bend(tmp_path):
     document = Document(tmp_path)
     _box(document, "block", [10, 10, 10], [0, 0, 40])
