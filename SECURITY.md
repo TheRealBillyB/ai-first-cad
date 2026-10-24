@@ -35,7 +35,9 @@ A design script, one program that calls several steps, stays off until you allow
 
 Opening a project does not run Python stored in it. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data. Importing a STEP file reads that file and does not open another path named inside it. A script result that is a link is not read. A geometry file or a picture named by that result is opened only when it is a regular file inside the project. A font configuration file shipped in the project is not read when the geometry libraries are imported. Those libraries use a configuration file packaged with aicad. The process working directory is not changed. An entry title and rationale are one line, with no line break and no comment, so a generated master stays one section.
 
-A reserved device name such as NUL, CON, PRN, AUX, COM1 through COM9, or LPT1 through LPT9 is refused as an output file or folder name, including a superscript digit. On the command line, an absolute export path is the location the person named. A drawing, bill of materials, or exploded view from the workspace stays inside the project.
+A reserved device name such as NUL, CON, PRN, AUX, COM1 through COM9, or LPT1 through LPT9 is refused as an output file or folder name, including a superscript digit. On the command line, an absolute export path is the location the person named. A drawing, bill of materials, or exploded view from the workspace stays inside the project. A strength-check picture from a position-error budget stays inside the project.
+
+A URDF or MJCF export escapes a part or joint name. A quote in that name stays inside its attribute, and the file parses as one document.
 
 ffmpeg, CalculiX, and a slicer are started from PATH outside the project. A copy in the project is not started, and the current directory is not searched.
 

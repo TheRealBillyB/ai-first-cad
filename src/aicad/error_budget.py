@@ -1010,15 +1010,36 @@ def _resolve_links(spec, shapes, links, out_dir) -> tuple[list[dict], list[str],
     return resolved, notes, warnings
 
 
+def _link_picture_dir(out_dir, name: str):
+    """A picture folder for one link, inside the directory the caller approved.
+
+    The instance name is taken from the assembly, including one loaded from a
+    shared session. It is an output path under ``out_dir``, not a suffix that
+    can replace that directory.
+    """
+    if out_dir is None:
+        return None
+    from pathlib import Path
+
+    from aicad.paths import output_dir, refuse_reserved_device, require_export_path
+
+    root = Path(out_dir)
+    if not isinstance(name, str) or "/" in name or "\\" in name or "\x00" in name:
+        raise GeometryError(
+            f"Strength-check picture {name!r} is outside the project folder {root.resolve()}."
+        )
+    refuse_reserved_device(name, root, "Strength-check picture", GeometryError)
+    require_export_path(root, name, "Strength-check picture", GeometryError)
+    return output_dir(root, name, "Strength-check picture", GeometryError)
+
+
 def _solve_link(shapes, link, out_dir) -> dict:
     from aicad.fea import solve_part
 
     part = link["part"]
     if not shapes or part not in shapes:
         raise GeometryError(f"Link {link['link']!r} uses part {part!r}, which has no solid for the strength check.")
-    from pathlib import Path
-
-    destination = None if out_dir is None else Path(out_dir) / link["link"]
+    destination = _link_picture_dir(out_dir, link["link"])
     report = solve_part(
         shapes[part],
         link["fea_setup"],
