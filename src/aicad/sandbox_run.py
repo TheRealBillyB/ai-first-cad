@@ -80,47 +80,133 @@ def _jsonable(value):
     return str(value)
 
 
+_CALL_EVENT = "aicad.design_call"
+_WRAPPER_FILE = "<aicad-design-wrapper>"
+
+
+def _allowed_text() -> str:
+    from aicad.parity import SCRIPT_METHODS
+
+    return ", ".join(sorted(SCRIPT_METHODS))
+
+
+def _unavailable(name: str) -> AttributeError:
+    return AttributeError(f"{name} is not available in a design script. Allowed calls: {_allowed_text()}.")
+
+
+def _wrapper_source(name: str) -> str:
+    return (
+        "def call(*args, **kwargs):\n"
+        "    box = []\n"
+        "    audit(%r, token, %r, args, kwargs, box)\n"
+        "    if not box:\n"
+        "        raise AttributeError('The call was refused.')\n"
+        "    flag, payload = box[0]\n"
+        "    if flag == 'err':\n"
+        "        raise payload from None\n"
+        "    return payload\n"
+    ) % (_CALL_EVENT, name)
+
+
+def _make_wrapper(token: object, name: str):
+    namespace = {"audit": sys.audit, "token": token, "__builtins__": {}}
+    exec(compile(_wrapper_source(name), _WRAPPER_FILE, "exec"), namespace)  # noqa: S102
+    return namespace["call"]
+
+
+def _plain_error(exc: Exception) -> Exception:
+    """An error the script can see, without the frames that handled the call."""
+    try:
+        fresh = type(exc)(str(exc))
+    except Exception:
+        fresh = RuntimeError(f"{type(exc).__name__}: {exc}")
+    fresh.__cause__ = None
+    fresh.__context__ = None
+    fresh.__traceback__ = None
+    return fresh
+
+
+def script_document(document, calls: list[dict]) -> "ScriptDocument":
+    """The ``document`` name inside a design script.
+
+    The real document and the check list are not stored on the object the
+    script holds. A public call is recorded only when it comes from a wrapper
+    created here.
+    """
+    from aicad.parity import SCRIPT_METHODS
+
+    token = object()
+    depth = [0]
+    codes: dict[str, object] = {}
+    wrappers: dict[str, object] = {}
+    for name in SCRIPT_METHODS:
+        function = _make_wrapper(token, name)
+        codes[name] = function.__code__
+        wrappers[name] = function
+
+    def hook(event, args):
+        if event != _CALL_EVENT:
+            return
+        try:
+            if not isinstance(args, tuple) or len(args) != 5:
+                return
+            got_token, name, call_args, call_kwargs, box = args
+            if got_token is not token or not isinstance(name, str) or not isinstance(box, list):
+                return
+            if not isinstance(call_args, tuple) or not isinstance(call_kwargs, dict):
+                return
+            code = codes.get(name)
+            if code is None:
+                return
+            frame = sys._getframe(1)
+            if frame.f_code is not code or frame.f_code.co_filename != _WRAPPER_FILE:
+                return
+            depth[0] += 1
+            outer = depth[0] == 1
+            try:
+                result = getattr(document, name)(*call_args, **call_kwargs)
+            except Exception as exc:
+                if outer:
+                    calls.append({"method": name, "error": f"{type(exc).__name__}: {exc}"})
+                box.append(("err", _plain_error(exc)))
+            else:
+                if outer:
+                    try:
+                        recorded = _jsonable(result)
+                    except Exception:
+                        recorded = str(result)
+                    calls.append({"method": name, "result": recorded})
+                box.append(("ok", result))
+            finally:
+                depth[0] -= 1
+        except Exception:
+            return
+
+    sys.addaudithook(hook)
+    return ScriptDocument(wrappers)
+
+
 class ScriptDocument:
     """The ``document`` name inside a design script. Only the public methods are visible."""
 
-    def __init__(self, document, calls: list[dict]):
-        # Stored off the instance so a script cannot read it back by name.
-        object.__setattr__(self, "_state", (document, calls, [0]))
+    def __init__(self, wrappers: dict):
+        object.__setattr__(self, "_wrappers", dict(wrappers))
 
     def __getattribute__(self, name: str):
         if name.startswith("_"):
-            from aicad.parity import SCRIPT_METHODS
-
-            allowed = ", ".join(sorted(SCRIPT_METHODS))
-            raise AttributeError(f"{name} is not available in a design script. Allowed calls: {allowed}.")
+            raise _unavailable(name)
         return object.__getattribute__(self, name)
 
     def __getattr__(self, name: str):
         from aicad.parity import SCRIPT_METHODS
 
         if name.startswith("_") or name not in SCRIPT_METHODS:
-            allowed = ", ".join(sorted(SCRIPT_METHODS))
-            raise AttributeError(f"{name} is not available in a design script. Allowed calls: {allowed}.")
-        document, calls, depth = object.__getattribute__(self, "_state")
-        method = getattr(document, name)
-
-        def wrapped(*args, **kwargs):
-            depth[0] += 1
-            outer = depth[0] == 1
-            try:
-                result = method(*args, **kwargs)
-            except Exception as exc:
-                if outer:
-                    calls.append({"method": name, "error": f"{type(exc).__name__}: {exc}"})
-                raise
-            else:
-                if outer:
-                    calls.append({"method": name, "result": _jsonable(result)})
-                return result
-            finally:
-                depth[0] -= 1
-
-        return wrapped
+            raise _unavailable(name)
+        wrappers = object.__getattribute__(self, "_wrappers")
+        try:
+            return wrappers[name]
+        except KeyError:
+            raise _unavailable(name) from None
 
 
 def _probe(workspace: Path, job: Path) -> int:
@@ -220,7 +306,7 @@ def _design(workspace: Path, job: Path) -> int:
     document = Document(workspace)
     before = {row["name"]: row for row in document.session_payload().get("parts", [])}
     calls: list[dict] = []
-    proxy = ScriptDocument(document, calls)
+    proxy = script_document(document, calls)
     namespace = {
         "__builtins__": script_builtins(),
         "__name__": "aicad_design_script",
