@@ -14,6 +14,8 @@ resident memory and stops it above the memory cap, because the address-space
 cap counts a system library cache and was stopping every script. Windows uses
 an AppContainer and a Job Object. CPU time, memory, and a wall-clock limit are
 set on that process. If those limits cannot be applied, the script is not run.
+On Linux the process filter is installed on every thread that already exists.
+If another thread is already there, the script is not run.
 
 The person turns design scripts on for one project. Opening a project, or
 reading a note, does not turn them on. Part scripts, the ones that assign
@@ -182,6 +184,26 @@ _SIGNAL_SYSCALLS = {
     "aarch64": {"kill": 129, "tkill": 130, "tgkill": 131, "rt_sigqueueinfo": 138, "rt_tgsigqueueinfo": 240},
 }
 _GETTID = {"x86_64": 186, "aarch64": 178}
+# Install the filter on every thread that already exists, not only the caller.
+_SECCOMP_FILTER_FLAG_TSYNC = 1
+_THREAD_CONFINE_ERROR = "Could not confine every thread, so the script was not run."
+# Calls that create or replace a file. Used only when a thread already exists
+# and the script is about to be refused.
+_NEW_FILE_SYSCALLS = {
+    "x86_64": (
+        2, 85, 257, 437, 83, 258, 87, 263, 82, 264, 316, 86, 265, 88, 266, 133, 259, 76, 77, 285, 40, 275, 326,
+    ),
+    "aarch64": (56, 437, 34, 35, 38, 276, 37, 36, 33, 46, 47, 71, 76, 285),
+}
+# Writes. Allowed only for the standard streams and the result the parent already opened.
+_WRITE_SYSCALLS = {
+    "x86_64": (1, 18, 20, 296, 328),
+    "aarch64": (64, 68, 66, 70, 287),
+}
+# A shared mapping of a file can change that file without write. Anonymous memory stays allowed.
+_MMAP = {"x86_64": 9, "aarch64": 222}
+_MAP_SHARED = 0x01
+_MAP_ANONYMOUS = 0x20
 # A resource limit names a process in its first argument. Pid 0 is this process.
 _PRLIMIT64 = {"x86_64": 302, "aarch64": 261}
 # Owner, signal, and lease commands. The command is the second argument.
@@ -1021,13 +1043,86 @@ def _block_sockets(*, network: bool) -> None:
         allow=allow,
     )
     program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    _install_filter(program)
+
+
+def _install_filter(program: list) -> None:
+    """Install ``program`` on this thread and on every thread that already exists."""
+    arch = _arch()
+    if arch is None:
+        raise ScriptError(sandbox_supported()[1])
     filters = (_SockFilter * len(program))(*program)
     prog = _SockFprog(len(program), filters)
-    libc = _libc()
-    if libc.syscall(_SECCOMP[arch], 1, 0, ctypes.byref(prog)) != 0:
+    if _libc().syscall(_SECCOMP[arch], 1, _SECCOMP_FILTER_FLAG_TSYNC, ctypes.byref(prog)) != 0:
         raise ScriptError(
             "Could not apply the script's process limits, so the script was not run."
         )
+
+
+def _python_thread_exists() -> bool:
+    """True when Python already started a thread besides this one.
+
+    A geometry library can start its own threads. Those are created after
+    confinement, so they inherit it. A thread that is already running does not.
+    """
+    import threading
+
+    return threading.active_count() > 1
+
+
+def _block_new_files(result_fd: int | None) -> None:
+    """Refuse new files, and writes except the standard streams and ``result_fd``.
+
+    Called only after the process filter is in place and only when another
+    thread already exists. The script is not run on that path.
+    """
+    arch = _arch()
+    if arch is None:
+        raise ScriptError(sandbox_supported()[1])
+    bpf_ld = 0x00 | 0x00 | 0x20
+    bpf_jeq = 0x05 | 0x10 | 0x00
+    bpf_jset = 0x05 | 0x40 | 0x00
+    bpf_ret = 0x06
+    allow = 0x7FFF0000
+    errno_eperm = 0x00050000 | 1
+    program = [
+        _SockFilter(bpf_ld, 0, 0, 4),
+        _SockFilter(bpf_jeq, 1, 0, _AUDIT_ARCH[arch]),
+        _SockFilter(bpf_ret, 0, 0, errno_eperm),
+        _SockFilter(bpf_ld, 0, 0, 0),
+    ]
+    if arch == "x86_64":
+        program.append(_SockFilter(bpf_jset, 0, 1, _X32_SYSCALL_BIT))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    for number in _NEW_FILE_SYSCALLS[arch]:
+        program.append(_SockFilter(bpf_jeq, 0, 1, number))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    allowed = [1, 2]
+    if result_fd is not None and result_fd not in allowed and 0 <= result_fd <= 0xFFFFFFFF:
+        allowed.append(result_fd)
+    count = len(allowed)
+    for number in _WRITE_SYSCALLS[arch]:
+        program.append(_SockFilter(bpf_jeq, 0, 6 + count, number))
+        program.append(_SockFilter(bpf_ld, 0, 0, 20))
+        program.append(_SockFilter(bpf_jeq, 1, 0, 0))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+        program.append(_SockFilter(bpf_ld, 0, 0, 16))
+        for index, descriptor in enumerate(allowed):
+            program.append(_SockFilter(bpf_jeq, count - index, 0, descriptor))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+        program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    # Shared file mappings can change a file. Anonymous memory stays available.
+    program.append(_SockFilter(bpf_jeq, 0, 8, _MMAP[arch]))
+    program.append(_SockFilter(bpf_ld, 0, 0, 44))
+    program.append(_SockFilter(bpf_jeq, 1, 0, 0))
+    program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    program.append(_SockFilter(bpf_ld, 0, 0, 40))
+    program.append(_SockFilter(bpf_jset, 1, 0, _MAP_ANONYMOUS))
+    program.append(_SockFilter(bpf_jset, 1, 0, _MAP_SHARED))
+    program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    program.append(_SockFilter(bpf_ret, 0, 0, allow))
+    _install_filter(program)
 
 
 # A literal public address. Loopback is often allowed inside a container, and a
@@ -1357,8 +1452,20 @@ def _refuse_foreign_kill() -> None:
     os.kill = kill  # type: ignore[method-assign]
 
 
-def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
-    """Confine the current process. Called only in the script's child process."""
+def apply_sandbox(
+    workspace: Path,
+    network: bool,
+    result_fd: int | None = None,
+    *,
+    extra_thread: bool = False,
+    result_path: Path | None = None,
+) -> list[Path]:
+    """Confine the current process. Called only in the script's child process.
+
+    ``result_fd`` is a result file this process already opened. It is used only
+    when another thread already exists and the script is refused. ``extra_thread``
+    is set when a thread existed before this module was imported.
+    """
     from aicad.plugins import seal_sandbox_plugins
     from aicad.sandbox_state import mark_sandboxed
 
@@ -1415,9 +1522,29 @@ def apply_sandbox(workspace: Path, network: bool) -> list[Path]:
         raise ScriptError(reason)
     _adopt_orphans()
     _join_pids_cgroup()
-    _set_limits()
+    # The address cap is applied after the geometry libraries are mapped.
+    # Mapping them under the cap fails before the script can run.
     _landlock(workspace, network=network, read_roots=roots)
+    extra = extra_thread or _python_thread_exists()
     _block_sockets(network=network)
+    if extra or _python_thread_exists():
+        fd = result_fd
+        opened = False
+        if fd is None and result_path is not None:
+            fd = os.open(
+                result_path,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            opened = True
+        _block_new_files(fd)
+        if opened and fd is not None:
+            os.write(
+                fd,
+                (json.dumps({"ok": False, "error": _THREAD_CONFINE_ERROR}) + "\n").encode(),
+            )
+            os.close(fd)
+        raise ScriptError(_THREAD_CONFINE_ERROR)
     return roots
 
 

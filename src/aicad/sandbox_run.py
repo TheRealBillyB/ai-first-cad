@@ -400,6 +400,44 @@ def _leave(code: int) -> int:
     return code
 
 
+def _os_thread_count() -> int:
+    try:
+        return len(os.listdir("/proc/self/task"))
+    except OSError:
+        return 1
+
+
+def _load_sandbox():
+    """Import the sandbox before the geometry libraries.
+
+    Importing the package runs those libraries and starts their threads.
+    Threads started before confinement do not inherit it. Load the sandbox
+    module first, confine the process, then import the package.
+    """
+    import types
+
+    package = Path(__file__).resolve().parent
+    preloaded = False
+    if "aicad" not in sys.modules:
+        stub = types.ModuleType("aicad")
+        stub.__path__ = [str(package)]
+        stub.__package__ = "aicad"
+        stub.__file__ = str(package / "__init__.py")
+        sys.modules["aicad"] = stub
+        preloaded = True
+    from aicad.sandbox import _THREAD_CONFINE_ERROR, apply_sandbox, install_python_guard
+
+    return preloaded, _THREAD_CONFINE_ERROR, apply_sandbox, install_python_guard
+
+
+def _import_package(preloaded: bool) -> None:
+    """Load the package after confinement so its threads inherit the limits."""
+    if not preloaded:
+        return
+    sys.modules.pop("aicad", None)
+    import aicad  # noqa: F401
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
@@ -416,16 +454,35 @@ def main(argv: list[str] | None = None) -> int:
         pass
     os.environ["AICAD_SANDBOX_CHILD"] = "1"
     os.chdir(workspace)
+    # A thread that exists before this package is imported did not come from
+    # the geometry libraries. -m imports the package first; those library
+    # threads are handled by installing the filter on every thread.
+    package_loaded = "aicad" in sys.modules
+    early_threads = (not package_loaded) and _os_thread_count() > 1
     try:
-        from aicad.sandbox import apply_sandbox, install_python_guard
+        preloaded, _THREAD_CONFINE_ERROR, apply_sandbox, install_python_guard = _load_sandbox()
+        if preloaded and _os_thread_count() > 1:
+            early_threads = True
 
         try:
             # The job file names the script kind and the network switch.
             # It does not choose the Landlock version.
-            roots = apply_sandbox(workspace, network=bool(spec.get("network")))
+            roots = apply_sandbox(
+                workspace,
+                network=bool(spec.get("network")),
+                extra_thread=early_threads,
+                result_path=job / "result.json",
+            )
         except Exception as exc:
+            if str(exc) == _THREAD_CONFINE_ERROR:
+                return _leave(0)
             _write(job, {"ok": False, "error": f"{exc}\n{traceback.format_exc()}"})
             return _leave(0)
+        _import_package(preloaded)
+        if sys.platform.startswith("linux"):
+            from aicad.sandbox import _set_limits
+
+            _set_limits()
         kind = spec.get("kind")
         try:
             if kind == "probe":
