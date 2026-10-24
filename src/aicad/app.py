@@ -133,6 +133,13 @@ class _WorkspaceServer(ThreadingHTTPServer):
     page_token: str
     agent_token: str
 
+    def process_request(self, request, client_address) -> None:
+        # This request's geometry runs on the thread started below.
+        from aicad.thread_stack import prepare_geometry_thread_stack
+
+        prepare_geometry_thread_stack()
+        super().process_request(request, client_address)
+
     def server_close(self) -> None:
         port = int(self.server_address[1])
         super().server_close()
@@ -203,6 +210,9 @@ def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, 
 
 
 def make_server(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765) -> _WorkspaceServer:
+    from aicad.thread_stack import prepare_geometry_thread_stack
+
+    prepare_geometry_thread_stack()
     session = Workspace(workspace)
     remember_project(session.root)
     handler = _handler(session)
