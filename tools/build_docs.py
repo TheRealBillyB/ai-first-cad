@@ -115,22 +115,25 @@ def repo_relative(root: Path, file: Path) -> str:
 
 
 def read_text(path: Path) -> str:
-    data = path.read_bytes()
-    if data.startswith(b"\xef\xbb\xbf"):
-        raise FormatProblem("byte order mark is not allowed")
-    if b"\x00" in data:
-        raise FormatProblem("file is not utf-8 text")
+    """Read UTF-8 text and return LF endings, including from a CRLF checkout."""
     try:
-        text = data.decode("utf-8")
+        with path.open("r", encoding="utf-8", newline="\n") as handle:
+            text = handle.read()
     except UnicodeDecodeError as exc:
         raise FormatProblem("file is not utf-8 text") from exc
+    if text.startswith("\ufeff"):
+        raise FormatProblem("byte order mark is not allowed")
+    if "\x00" in text:
+        raise FormatProblem("file is not utf-8 text")
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def write_text(path: Path, text: str) -> None:
+    """Write LF only, including on Windows where the default translation is CRLF."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # newline="\n" keeps the master identical on Windows.
-    path.write_text(text, encoding="utf-8", newline="\n")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(normalized)
 
 
 def escape_cell(text: str) -> str:

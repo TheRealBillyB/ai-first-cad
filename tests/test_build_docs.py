@@ -9,6 +9,7 @@ the master.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -105,6 +106,49 @@ def test_entry_directory_joins_windows_separators(tmp_path):
     assert build.repo_relative(root, folder / "2026-10-24-alpha.md") == (
         "docs/decisions/2026-10-24-alpha.md"
     )
+
+
+def test_write_text_strips_cr_and_uses_lf(tmp_path):
+    build = _build()
+    path = tmp_path / "docs" / "DECISIONS.md"
+    build.write_text(path, "alpha\r\nbeta\rgamma\n")
+    assert path.read_bytes() == b"alpha\nbeta\ngamma\n"
+
+
+def test_crlf_checkout_check_matches_lf_and_rebuild_writes_lf(tmp_path):
+    build = _build()
+    root = _tree(tmp_path)
+    _write(root, "docs/decisions/2026-10-24-alpha.md", _decision())
+    _write(root, "docs/tools/inspect-part.md", _tool(order=1))
+    assert build.build(root) == []
+    lf_decisions = (root / "docs" / "DECISIONS.md").read_bytes()
+    lf_readme = (root / "README.md").read_bytes()
+    assert b"\r" not in lf_decisions
+    assert b"\r" not in lf_readme
+    for path in root.rglob("*.md"):
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    assert build.check(root) == []
+    assert build.main(["--check", "--root", str(root)]) == 0
+    assert build.build(root) == []
+    assert (root / "docs" / "DECISIONS.md").read_bytes() == lf_decisions
+    assert (root / "README.md").read_bytes() == lf_readme
+
+
+def test_git_attributes_check_out_generated_docs_as_lf():
+    paths = ["docs/DECISIONS.md", "README.md"]
+    decision = next((ROOT / "docs" / "decisions").glob("*.md"))
+    tool = next((ROOT / "docs" / "tools").glob("*.md"))
+    paths.append(decision.relative_to(ROOT).as_posix())
+    paths.append(tool.relative_to(ROOT).as_posix())
+    result = subprocess.run(
+        ["git", "check-attr", "eol", "--", *paths],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for path in paths:
+        assert f"{path}: eol: lf" in result.stdout.splitlines()
 
 
 def test_crlf_entries_match_lf_entries(tmp_path):
