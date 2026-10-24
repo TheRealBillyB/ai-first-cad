@@ -1,6 +1,6 @@
 /* Controls for library, gears, mesh, train, motion study, kinematics,
-   packaging, drawing, bill of materials, exploded view, animation,
-   fatigue, clearance, and STEP import. Each button calls the existing command. */
+   position error, packaging, drawing, bill of materials, exploded view,
+   animation, fatigue, clearance, and STEP import. Each button calls the existing command. */
 
 function bindWorkspaceTools() {
   $("app-notice-dismiss").onclick = () => clearNotice();
@@ -11,6 +11,7 @@ function bindWorkspaceTools() {
     "assembly-mesh": "mesh",
     "assembly-train": "train",
     "assembly-kinematics": "kinematics",
+    "assembly-error": "error",
     "assembly-package": "package",
     "assembly-drawing": "drawing",
     "assembly-bom": "bom",
@@ -126,6 +127,35 @@ function assemblyFormHtml(tool, current) {
       <p data-tool-progress class="muted" role="status"></p>
       <p data-tool-error class="warn" hidden></p>
       <button type="submit" class="primary">Solve</button>`;
+  }
+  if (tool === "error") {
+    const joints = current.joints || [];
+    const jointRows = joints.map((joint) => `<div class="field-grid" data-error-joint="${escapeAttr(joint.name)}">
+        <p><strong>${escapeHtml(joint.name)}</strong> <span class="meta">${escapeHtml(joint.type || "")}</span></p>
+        <label>Encoder step deg <input data-error-encoder type="number" step="any" /></label>
+        <label>Backlash deg <input data-error-backlash type="number" step="any" /></label>
+        <label>Torque N·mm <input data-error-torque type="number" step="any" /></label>
+        <label>Stiffness N·mm/rad <input data-error-rate type="number" step="any" /></label>
+      </div>`).join("");
+    const poseBoxes = (current.poses || []).map((name) =>
+      `<label class="inline"><input type="checkbox" data-error-pose value="${escapeAttr(name)}" /> ${escapeHtml(name)}</label>`
+    ).join("");
+    return `<h3>Position error</h3>
+      <p class="muted">Worst-case tip error from an encoder step, backlash, or joint stiffness. The encoder step is the full step; the check uses half of it. Root-sum-square is shown and does not grant a pass. This calls check_position_error.</p>
+      <div class="field-grid">
+        <label>Tool <select id="error-tool">${instances || `<option value="">No instances</option>`}</select></label>
+        <label>Tolerance mm <input id="error-tolerance" type="number" min="0" step="any" /></label>
+        <label>Tool point X <input id="error-at-x" type="number" step="any" value="0" /></label>
+        <label>Y <input id="error-at-y" type="number" step="any" value="0" /></label>
+        <label>Z <input id="error-at-z" type="number" step="any" value="0" /></label>
+      </div>
+      ${poseBoxes ? `<div class="field-grid"><span class="meta">Stored poses</span>${poseBoxes}</div>
+        <p class="muted">Leave every pose unchecked to use the joint values already set.</p>` : ""}
+      ${jointRows || `<p class="muted">This assembly has no joints.</p>`}
+      <p class="muted">Enter an encoder step, a backlash, or both a torque and a stiffness. Leave a joint blank to omit it.</p>
+      <p data-tool-progress class="muted" role="status"></p>
+      <p data-tool-error class="warn" hidden></p>
+      <button type="submit" class="primary">Check position error</button>`;
   }
   if (tool === "package") {
     return `<h3>Packaging</h3>
@@ -582,6 +612,7 @@ function submitAssemblyForm(tool) {
     mesh: runGearMesh,
     train: runGearTrain,
     kinematics: runKinematics,
+    error: runPositionError,
     package: () => runPackaging(button),
     drawing: runDrawing,
     bom: runBom,
@@ -682,6 +713,49 @@ async function runKinematics(button) {
   ui.reportFocus = "kinematics";
   await refresh();
   showKinematicsReport(report);
+}
+
+async function runPositionError(button) {
+  if (!ui.assembly) throw new Error("Select an assembly first.");
+  const tool = $("error-tool").value;
+  if (!tool) throw new Error("Choose the tool instance.");
+  const tolerance = requiredNumber($("error-tolerance").value, "Enter the tolerance in millimeters.");
+  if (!(tolerance > 0)) throw new Error("Tolerance must be greater than zero.");
+  const args = {
+    name: ui.assembly,
+    tool,
+    tolerance_mm: tolerance,
+    at: [
+      requiredNumber($("error-at-x").value, "Tool point X must be a number."),
+      requiredNumber($("error-at-y").value, "Tool point Y must be a number."),
+      requiredNumber($("error-at-z").value, "Tool point Z must be a number."),
+    ],
+  };
+  const form = $("assembly-form");
+  const poses = [...form.querySelectorAll("[data-error-pose]:checked")].map((node) => node.value);
+  if (poses.length) args.poses = poses;
+  const sources = {};
+  form.querySelectorAll("[data-error-joint]").forEach((row) => {
+    const encoder = optionalNumber(row.querySelector("[data-error-encoder]").value, "Encoder step must be a number.");
+    const backlash = optionalNumber(row.querySelector("[data-error-backlash]").value, "Backlash must be a number.");
+    const torque = optionalNumber(row.querySelector("[data-error-torque]").value, "Torque must be a number.");
+    const rate = optionalNumber(row.querySelector("[data-error-rate]").value, "Stiffness must be a number.");
+    const entry = {};
+    if (encoder != null) entry.encoder = { resolution_deg: encoder };
+    if (backlash != null) entry.backlash = { deg: backlash };
+    if (torque != null || rate != null) {
+      if (torque == null || rate == null) throw new Error("Enter both the torque and the stiffness, or leave both blank.");
+      entry.stiffness = { torque_nmm: torque, nmm_per_rad: rate };
+    }
+    if (Object.keys(entry).length) sources[row.dataset.errorJoint] = entry;
+  });
+  if (Object.keys(sources).length) args.sources = sources;
+  const report = await runTool(button, "Checking position error…", () => command("check_position_error", args));
+  if (!report) return;
+  clearNotice();
+  ui.reportFocus = "position_error";
+  await refresh();
+  showPositionErrorReport(report);
 }
 
 async function runDrawing(button) {
@@ -837,7 +911,7 @@ function showFocusedReport() {
 
 function showKnownAssemblyReport() {
   const panels = ui.state.panels || {};
-  const order = ["motion_study", "gears", "gear_train", "kinematics", "packaging", "drawing", "bom", "exploded", "animation"];
+  const order = ["motion_study", "gears", "gear_train", "kinematics", "position_error", "packaging", "drawing", "bom", "exploded", "animation"];
   for (let index = 0; index < order.length; index += 1) {
     const key = order[index];
     const report = panels[key];
@@ -854,6 +928,7 @@ function paintAssemblyReport(key, report) {
     gears: showGearMeshReport,
     gear_train: showGearTrainReport,
     kinematics: showKinematicsReport,
+    position_error: showPositionErrorReport,
     packaging: showPackagingReport,
     drawing: showDrawingReport,
     bom: showBomReport,
@@ -930,6 +1005,32 @@ function showKinematicsReport(report) {
     </div>
     ${solutions ? `<ul>${solutions}</ul>` : ""}
     <p class="muted">${escapeHtml(report.note || "")}</p>`;
+}
+
+function showPositionErrorReport(report) {
+  const tool = report.tool && typeof report.tool === "object" ? report.tool.instance : report.tool;
+  const poses = (report.poses || []).map((pose) => {
+    const rows = (pose.contributions || []).filter((item) => item.used !== false).map((item) =>
+      `<li>${escapeHtml(item.id || "")} ${escapeHtml(item.kind || "")} · ${item.magnitude_mm != null ? Number(item.magnitude_mm).toFixed(4) : "n/a"} mm</li>`
+    ).join("");
+    return `<li><strong>${escapeHtml(pose.name || "")}</strong> ${escapeHtml(pose.status || "")}
+      · worst ${pose.worst_case_mm != null ? Number(pose.worst_case_mm).toFixed(4) : "n/a"} mm
+      · rss ${pose.rss_mm != null ? Number(pose.rss_mm).toFixed(4) : "n/a"} mm
+      ${rows ? `<ul>${rows}</ul>` : ""}</li>`;
+  }).join("");
+  $("assembly-status").textContent = `Position error ${report.status || ""}`.trim();
+  showPicture(null);
+  $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Position error</h3>
+    <div class="kv">
+      <span>Status</span><b>${escapeHtml(report.status || "")}</b>
+      <span>Tool</span><b>${escapeHtml(tool || "")}</b>
+      <span>Worst case</span><b>${report.worst_case_mm != null ? Number(report.worst_case_mm).toFixed(4) : "n/a"} mm</b>
+      <span>Root-sum-square</span><b>${report.rss_mm != null ? Number(report.rss_mm).toFixed(4) : "n/a"} mm</b>
+      <span>Worst pose</span><b>${escapeHtml(report.worst_pose || "")}</b>
+      <span>Tolerance</span><b>${report.tolerance_mm != null ? report.tolerance_mm : ""} mm</b>
+    </div>
+    <ul>${poses || "<li>No poses</li>"}</ul>
+    <p class="muted">${escapeHtml(report.summary || "")}</p>`;
 }
 
 function showPackagingReport(report) {

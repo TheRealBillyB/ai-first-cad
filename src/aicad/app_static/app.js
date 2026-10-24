@@ -1577,7 +1577,7 @@ function renderAssemblies() {
   });
   const current = assemblies.find((item) => item.name === ui.assembly);
   if (!current) {
-    $("assembly-controls").innerHTML = `<p class="muted">No assembly yet. The tools above the picture run a motion study, gear mesh, gear train, kinematics, packaging, a drawing, a bill of materials, an exploded view, or an animation.</p>`;
+    $("assembly-controls").innerHTML = `<p class="muted">No assembly yet. The tools above the picture run a motion study, gear mesh, gear train, kinematics, a position error budget, packaging, a drawing, a bill of materials, an exploded view, or an animation.</p>`;
     return;
   }
   const signature = JSON.stringify(current);
