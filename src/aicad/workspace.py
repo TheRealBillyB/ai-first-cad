@@ -124,7 +124,29 @@ class Workspace:
                 self.geometry_revision += 1
                 self._mesh_cache.clear()
                 self._requirement_cache.clear()
-                for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power", "vibration", "bolts", "fatigue", "print", "robot", "drawing", "bom", "exploded", "animation"):
+                for panel in (
+                    "inspect",
+                    "section",
+                    "features",
+                    "fea",
+                    "motion",
+                    "motion_study",
+                    "cables",
+                    "power",
+                    "vibration",
+                    "bolts",
+                    "fatigue",
+                    "print",
+                    "robot",
+                    "gears",
+                    "gear_train",
+                    "kinematics",
+                    "packaging",
+                    "drawing",
+                    "bom",
+                    "exploded",
+                    "animation",
+                ):
                     self.panels.pop(panel, None)
             self.event_id += 1
             event = self._event(name, arguments, result, source)
@@ -547,7 +569,7 @@ def _cmd_clearance(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_packaging(workspace: Workspace, arguments: dict) -> dict:
-    return workspace.document.check_packaging(
+    report = workspace.document.check_packaging(
         arguments["envelope"],
         parts=arguments.get("parts"),
         assembly=arguments.get("assembly"),
@@ -555,6 +577,7 @@ def _cmd_packaging(workspace: Workspace, arguments: dict) -> dict:
         joints=arguments.get("joints"),
         min_clearance_mm=float(arguments.get("min_clearance_mm") or 0.0),
     ).to_dict()
+    return workspace._remember_panel("packaging", report)  # noqa: SLF001
 
 
 def _cmd_render(workspace: Workspace, arguments: dict) -> dict:

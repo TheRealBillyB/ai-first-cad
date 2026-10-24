@@ -29,6 +29,10 @@ const ui = {
   parameters: null,
   parameterKey: "",
   shapeTimer: 0,
+  reports: {},
+  reportFocus: null,
+  gearDraft: null,
+  packageDraft: null,
 };
 
 function sessionToken() {
@@ -225,6 +229,7 @@ function renderTree() {
         + (stale ? `<li class="meta">Feature list is from an older revision.</li>` : "")
     : `<li class="meta">${features && features.tracked === false ? "Not tracked" : "Run Inspect or Features"}</li>`;
   $("part-list").querySelectorAll("[data-part]").forEach((node) => {
+    armRow(node);
     node.onclick = async () => {
       ui.viewAssembly = null;
       ui.part = node.dataset.part;
@@ -234,8 +239,20 @@ function renderTree() {
     };
   });
   $("sketch-list").querySelectorAll("[data-sketch]").forEach((node) => {
+    armRow(node);
     node.onclick = () => openSketch(node.dataset.sketch);
   });
+}
+
+function armRow(node) {
+  node.tabIndex = 0;
+  node.setAttribute("role", "button");
+  node.onkeydown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      node.click();
+    }
+  };
 }
 
 function renderPanel() {
@@ -286,7 +303,7 @@ function renderPanel() {
     const report = state.panels.fea;
     const materials = (state.materials.materials || []).map((item) => `<option value="${item.id}">${item.name}</option>`).join("");
     root.innerHTML = `
-      <h3>Linear static</h3>
+      <h3>Strength</h3>
       <div class="row"><select id="fea-material">${materials}</select>
         <label>mesh <input id="fea-mesh" type="number" value="1.5" step="0.1" style="width:64px" /></label>
         <label>SF <input id="fea-sf" type="number" value="2" step="0.5" style="width:56px" /></label></div>
@@ -296,7 +313,7 @@ function renderPanel() {
         <button type="button" id="fea-run" class="primary">Solve</button>
       </div>
       <div id="fea-setup" class="muted"></div>
-      ${report ? feaHtml(report, state.panel_revision.fea !== state.revision) : `<p class="muted">Hold faces, apply a force, and read the safety factor. A selected face is a ref the solver accepts.</p>`}`;
+      ${report ? feaHtml(report, state.panel_revision.fea !== state.revision) : `<p class="muted">Strength is this linear static check. Hold faces, apply a force, and read the safety factor.</p>`}`;
     $("fea-fix").onclick = () => rememberLoad("fix");
     $("fea-load").onclick = () => rememberLoad("force");
     $("fea-run").onclick = () => runFea();
@@ -380,6 +397,22 @@ function renderPanel() {
       </div>
       ${report && report.part === ui.part ? printHtml(report) : `<p class="muted">Colors show how far each face leans from vertical. A face past the overhang angle needs support, unless it is the face on the bed.</p>`}`;
     $("print-run").onclick = () => runPrint().catch(showError);
+    return;
+  }
+  if (ui.tab === "library") {
+    renderLibraryPanel();
+    return;
+  }
+  if (ui.tab === "gear") {
+    renderGearPanel();
+    return;
+  }
+  if (ui.tab === "package") {
+    renderPackagePanel();
+    return;
+  }
+  if (ui.tab !== "checks") {
+    root.innerHTML = `<p class="muted">This panel is empty.</p>`;
     return;
   }
   const checks = state.requirements || [];
@@ -1412,7 +1445,10 @@ function renderDocs() {
   if (!$("page-docs") || $("page-docs").hidden) return;
   const docs = ui.state.documents || [];
   $("doc-list").innerHTML = docs.map((name) => `<li data-doc="${name}" class="${name === ui.doc ? "on" : ""}">${name}</li>`).join("");
-  $("doc-list").querySelectorAll("[data-doc]").forEach((node) => { node.onclick = () => loadDoc(node.dataset.doc); });
+  $("doc-list").querySelectorAll("[data-doc]").forEach((node) => {
+    armRow(node);
+    node.onclick = () => loadDoc(node.dataset.doc);
+  });
   const checks = ui.state.requirements || [];
   $("req-list").innerHTML = checks.length
     ? checks.map((item) => {
@@ -1512,15 +1548,17 @@ function renderAssemblies() {
     `<li data-assembly="${item.name}" class="${item.name === ui.assembly ? "on" : ""}"><span>${item.name}</span><span class="meta">${item.joints.length} joints</span></li>`
   ).join("") || `<li class="meta">No assemblies yet</li>`;
   $("assembly-list").querySelectorAll("[data-assembly]").forEach((node) => {
+    armRow(node);
     node.onclick = () => {
       ui.assembly = node.dataset.assembly;
       ui.assemblySignature = "";
+      ui.reportFocus = null;
       renderAssemblies();
     };
   });
   const current = assemblies.find((item) => item.name === ui.assembly);
   if (!current) {
-    $("assembly-controls").innerHTML = `<p class="muted">Create an assembly with create_assembly, or run <code>python examples/rod_arm.py</code> and open that workspace.</p>`;
+    $("assembly-controls").innerHTML = `<p class="muted">No assembly yet. The tools above the picture run a motion study, gear mesh, gear train, kinematics, packaging, a drawing, a bill of materials, an exploded view, or an animation.</p>`;
     return;
   }
   const signature = JSON.stringify(current);
@@ -1535,7 +1573,7 @@ function renderAssemblies() {
       </div>`).join("");
     const poses = current.poses.map((pose) => `<button type="button" data-pose="${pose}">${pose}</button>`).join(" ");
     const motions = current.motions.map((motion) => `<button type="button" data-motion="${motion}">${motion}</button>`).join(" ");
-    const studies = (current.studies || []).map((study) => `<span class="meta">${escapeHtml(study)}</span>`).join(" ");
+    const studies = (current.studies || []).map((study) => `<button type="button" data-study="${escapeAttr(study)}">${escapeHtml(study)}</button>`).join(" ");
     $("assembly-controls").innerHTML = `
       <h3>Joints</h3>
       ${joints || `<p class="muted">Grounded only.</p>`}
@@ -1543,8 +1581,12 @@ function renderAssemblies() {
       <div class="row">${poses || `<span class="muted">None</span>`}</div>
       <h3>Motion</h3>
       <div class="row">${motions || `<span class="muted">None</span>`}</div>
-      <h3>Studies</h3>
-      <div class="row">${studies || `<span class="muted">None</span>`}</div>
+      <h3>Motion study</h3>
+      <div class="row">${studies || `<span class="muted">None yet. A study is a timeline on the assembly.</span>`}</div>
+      <div class="row">
+        <label>Steps <input id="study-steps" type="number" min="2" step="1" value="8" /></label>
+        <label>Clearance <input id="study-clearance" type="number" min="0" step="0.1" value="0" /> mm</label>
+      </div>
       <p class="muted">${current.instances.map((item) => item.name).join(", ")}</p>`;
     $("assembly-controls").querySelectorAll("[data-apply]").forEach((button) => {
       button.onclick = async () => {
@@ -1567,15 +1609,20 @@ function renderAssemblies() {
         $("assembly-status").textContent = "Running " + button.dataset.motion + "…";
         await command("run_motion", { name: ui.assembly, sequence: button.dataset.motion });
         ui.assemblySignature = "";
+        ui.reportFocus = "motion";
         await refresh();
         showMotionReport();
       };
+    });
+    $("assembly-controls").querySelectorAll("[data-study]").forEach((button) => {
+      button.onclick = () => runMotionStudy(button.dataset.study, button).catch(showError);
     });
   }
   showStoredAssemblyReports();
 }
 
 function showStoredAssemblyReports() {
+  if (typeof showFocusedReport === "function" && showFocusedReport()) return;
   const motion = ui.state.panels.motion;
   const cables = ui.state.panels.cables;
   const power = ui.state.panels.power;
@@ -1586,6 +1633,20 @@ function showStoredAssemblyReports() {
   else if (power && power.assembly === ui.assembly) showPowerReport(power);
   else if (vibration && vibration.assembly === ui.assembly) showModalReport(vibration);
   else if (bolts && bolts.assembly === ui.assembly) showBoltReport(bolts);
+  else if (typeof showKnownAssemblyReport === "function" && showKnownAssemblyReport()) return;
+  else setAssemblyEmpty();
+}
+
+function setAssemblyEmpty() {
+  const picture = $("assembly-picture");
+  if (picture) {
+    picture.hidden = true;
+    picture.removeAttribute("src");
+  }
+  const report = $("assembly-report");
+  if (report) {
+    report.innerHTML = `<p class="muted">Run a check or an export. The picture and the numbers show here. A new part shows in the model view.</p>`;
+  }
 }
 
 function showMotionReport() {
@@ -1695,6 +1756,9 @@ function showPage(page) {
   $("nav-model").classList.toggle("on", page === "model");
   $("nav-docs").classList.toggle("on", page === "documents");
   $("nav-assembly").classList.toggle("on", page === "assembly");
+  $("nav-model").setAttribute("aria-current", page === "model" ? "page" : "false");
+  $("nav-docs").setAttribute("aria-current", page === "documents" ? "page" : "false");
+  $("nav-assembly").setAttribute("aria-current", page === "assembly" ? "page" : "false");
   if (page === "documents" && ui.state) {
     renderDocs();
     if (!$("doc-editor").value) loadDoc(ui.doc);
@@ -2095,10 +2159,11 @@ async function boot() {
   $("tabs").onclick = (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    ui.tab = button.dataset.tab;
-    $("tabs").querySelectorAll("button").forEach((item) => item.classList.toggle("on", item === button));
-    renderPanel();
+    selectModelTab(button.dataset.tab);
   };
+  $("tabs").addEventListener("keydown", moveTab);
+  $("page-nav").addEventListener("keydown", moveTab);
+  bindWorkspaceTools();
   $("doc-save").onclick = async () => {
     await command("write_document", { name: ui.doc, markdown: $("doc-editor").value });
     $("doc-preview").innerHTML = markdown($("doc-editor").value);
@@ -2229,7 +2294,42 @@ async function editSettings() {
 }
 
 function showError(error) {
-  appendBubble("tool", error.message || String(error));
+  const message = error && error.message ? error.message : String(error || "The command failed.");
+  const banner = $("app-notice");
+  const text = $("app-notice-text");
+  if (banner && text) {
+    text.textContent = message;
+    banner.hidden = false;
+  }
+  if ($("chat-log")) appendBubble("tool", message);
+}
+
+function clearNotice() {
+  const banner = $("app-notice");
+  if (banner) banner.hidden = true;
+}
+
+function selectModelTab(name) {
+  ui.tab = name;
+  ui.page = "model";
+  showPage("model");
+  $("tabs").querySelectorAll("button").forEach((item) => {
+    const on = item.dataset.tab === name;
+    item.classList.toggle("on", on);
+    item.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  renderPanel();
+}
+
+function moveTab(event) {
+  if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+  const buttons = [...event.currentTarget.querySelectorAll("button")];
+  const index = buttons.indexOf(document.activeElement);
+  if (index < 0) return;
+  event.preventDefault();
+  const next = buttons[(index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length];
+  next.focus();
+  next.click();
 }
 
 function handleLiveEvent(event) {
@@ -2387,4 +2487,3 @@ void main() {
   gl_FragColor = mix(vec4(0.05, 0.05, 0.06, 1.0), vec4(0.91, 0.62, 0.24, 1.0), clamp(vSelect, 0.0, 1.0));
 }`;
 
-boot().catch(showError);

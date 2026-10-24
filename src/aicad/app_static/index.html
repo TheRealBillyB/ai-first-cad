@@ -12,8 +12,8 @@
 <body>
   <header>
     <div class="brand">aicad <em>workspace</em></div>
-    <nav>
-      <button type="button" id="nav-model" class="on">Model</button>
+    <nav id="page-nav" aria-label="Pages">
+      <button type="button" id="nav-model" class="on" aria-current="page">Model</button>
       <button type="button" id="nav-assembly">Assembly</button>
       <button type="button" id="nav-docs">Documents</button>
     </nav>
@@ -28,12 +28,20 @@
     <span id="who" class="who"></span>
   </header>
   <div id="script-warning" class="script-warning" hidden></div>
+  <div id="app-notice" class="app-notice" role="alert" hidden>
+    <p id="app-notice-text"></p>
+    <button type="button" id="app-notice-dismiss">Dismiss</button>
+  </div>
 
   <div id="page-model" class="shell">
     <aside class="tree">
       <div class="tree-head">
         <h2>Project</h2>
+      </div>
+      <div class="row" role="group" aria-label="Project actions">
         <button type="button" id="new-sketch">New sketch</button>
+        <button type="button" id="open-library">Library</button>
+        <button type="button" id="open-gear">Gear</button>
       </div>
       <h3>Parts</h3>
       <ul id="part-list"></ul>
@@ -105,15 +113,18 @@
     </section>
 
     <aside class="side">
-      <div class="tabs" id="tabs">
-        <button type="button" data-tab="inspect" class="on">Inspect</button>
-        <button type="button" data-tab="section">Section</button>
-        <button type="button" data-tab="features">Features</button>
-        <button type="button" data-tab="fea">FEA</button>
-        <button type="button" data-tab="vibration">Vibration</button>
-        <button type="button" data-tab="bolts">Bolts</button>
-        <button type="button" data-tab="print">Print</button>
-        <button type="button" data-tab="checks">Checks</button>
+      <div class="tabs" id="tabs" role="tablist" aria-label="Model panels">
+        <button type="button" role="tab" data-tab="inspect" class="on" aria-selected="true">Inspect</button>
+        <button type="button" role="tab" data-tab="section" aria-selected="false">Section</button>
+        <button type="button" role="tab" data-tab="features" aria-selected="false">Features</button>
+        <button type="button" role="tab" data-tab="fea" aria-selected="false">Strength</button>
+        <button type="button" role="tab" data-tab="vibration" aria-selected="false">Vibration</button>
+        <button type="button" role="tab" data-tab="bolts" aria-selected="false">Bolts</button>
+        <button type="button" role="tab" data-tab="print" aria-selected="false">Print</button>
+        <button type="button" role="tab" data-tab="checks" aria-selected="false">Checks</button>
+        <button type="button" role="tab" data-tab="library" aria-selected="false">Library</button>
+        <button type="button" role="tab" data-tab="gear" aria-selected="false">Gear</button>
+        <button type="button" role="tab" data-tab="package" aria-selected="false">Package</button>
       </div>
       <div id="panel" class="panel"></div>
     </aside>
@@ -146,14 +157,25 @@
         <button type="button" id="assembly-cables">Cables</button>
         <button type="button" id="assembly-power">Power</button>
         <button type="button" id="assembly-modes">Modes</button>
-        <label>drill rpm <input id="assembly-rpm" type="number" value="120" style="width:64px" /></label>
+        <label>Drill rpm <input id="assembly-rpm" class="narrow" type="number" value="120" /></label>
         <button type="button" id="assembly-bolts">Bolt check</button>
         <button type="button" id="assembly-robot">Export robot</button>
-        <span id="assembly-status" class="meta"></span>
+        <span id="assembly-status" class="meta" role="status" aria-live="polite"></span>
       </div>
+      <div class="stage-bar" id="assembly-tools" role="toolbar" aria-label="Assembly tools">
+        <button type="button" id="assembly-mesh">Gear mesh</button>
+        <button type="button" id="assembly-train">Gear train</button>
+        <button type="button" id="assembly-kinematics">Kinematics</button>
+        <button type="button" id="assembly-package">Package</button>
+        <button type="button" id="assembly-drawing">Drawing</button>
+        <button type="button" id="assembly-bom">Bill of materials</button>
+        <button type="button" id="assembly-exploded">Exploded view</button>
+        <button type="button" id="assembly-animate">Animate</button>
+      </div>
+      <form id="assembly-form" class="tool-form assembly-form" hidden></form>
       <div id="assembly-view" class="assembly-view">
-        <img id="assembly-picture" alt="Assembly frames" hidden />
-        <div id="assembly-report"></div>
+        <img id="assembly-picture" alt="" hidden />
+        <div id="assembly-report"><p class="muted">Run a check or an export. The picture and the numbers show here. A new part shows in the model view.</p></div>
       </div>
     </section>
   </div>
@@ -207,5 +229,6 @@
 
   <script src="/static/plan.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/tools.js"></script>
 </body>
 </html>
