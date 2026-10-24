@@ -500,6 +500,10 @@ class PlanStore:
         return self._read(path)
 
     def _read(self, path: Path) -> dict:
+        from aicad.paths import shared_file
+
+        if shared_file(path):
+            raise PlanError(f"{path.name} has another name and was not opened.")
         if path.stat().st_size > _MAX_BYTES:
             raise PlanError(f"{path.name} is larger than a plan file should be. It was not opened.")
         try:
