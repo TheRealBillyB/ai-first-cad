@@ -1,6 +1,6 @@
 # Principles
 
-These are the rules for choosing what to build. A feature that needs to break one of them gets a new entry in the [decision log](DECISIONS.md) first.
+These are the rules for choosing what to build. A feature that needs to break one of them gets a new file in [docs/decisions/](decisions/) first. The [decision log](DECISIONS.md) is generated from those files.
 
 A person and an assistant share one command layer. The rules below are how that stays true once the program can do more than make a single part.
 
