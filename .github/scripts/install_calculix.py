@@ -177,8 +177,22 @@ def _extract_member(archive: Path, member: str, dest: Path) -> None:
     dest.chmod(dest.stat().st_mode | stat.S_IEXEC)
 
 
+def link_environment(base: dict[str, str], package_cache: Path) -> dict[str, str]:
+    """Environment for one micromamba link.
+
+    Offline mode reads every package cache and stops if any of them is missing.
+    A fresh runner has no ``~/.mamba/pkgs``. Point the process at one cache we
+    just created, instead of a runner setting that names a directory that is not there.
+    """
+
+    env = dict(base)
+    env["CONDA_PKGS_DIRS"] = str(package_cache)
+    return env
+
+
 def _link(micromamba: Path, prefix: Path, root: Path, packages: list[Path]) -> None:
-    root.mkdir(parents=True, exist_ok=True)
+    package_cache = root / "pkgs"
+    package_cache.mkdir(parents=True, exist_ok=True)
     command = [
         str(micromamba),
         "--no-rc",
@@ -195,7 +209,12 @@ def _link(micromamba: Path, prefix: Path, root: Path, packages: list[Path]) -> N
         "disabled",
         *[str(path) for path in packages],
     ]
-    completed = subprocess.run(command, check=False, text=True)
+    completed = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        env=link_environment(os.environ, package_cache),
+    )
     if completed.returncode != 0:
         raise SystemExit(f"micromamba could not link CalculiX (exit {completed.returncode})")
 

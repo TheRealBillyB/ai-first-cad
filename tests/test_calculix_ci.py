@@ -80,6 +80,16 @@ def test_the_ccx_directory_is_searched_first():
     assert path[1] == "/solver/Library/mingw-w64/bin"
 
 
+def test_the_link_uses_one_package_cache_that_the_job_creates():
+    module = _installer()
+    env = module.link_environment(
+        {"CONDA_PKGS_DIRS": "/missing/runner/pkgs", "PATH": "/usr/bin"},
+        Path("/work/root/pkgs"),
+    )
+    assert env["CONDA_PKGS_DIRS"] == "/work/root/pkgs"
+    assert env["PATH"] == "/usr/bin"
+
+
 def test_a_missing_library_is_not_treated_as_a_started_solver():
     module = _installer()
     assert module.solver_started(0, "Usage: CalculiX.exe -i jobname\n", "")
