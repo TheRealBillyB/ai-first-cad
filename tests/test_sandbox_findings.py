@@ -1021,6 +1021,255 @@ def test_a_reparented_child_stays_in_the_set_and_a_failed_listing_is_not_clean()
         _refuse_unaccounted(True, {6})
 
 
+def test_the_running_check_does_not_list_open_files(monkeypatch):
+    """While the script is running, descendants are found by parent, not by open files."""
+    import aicad.sandbox as sandbox
+    import aicad.sandbox_macos as macos
+
+    calls = {"n": 0}
+
+    def holders(path):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(macos, "pids_holding_path", holders)
+    monkeypatch.setattr(macos, "child_pids", lambda pid: [])
+    monkeypatch.setattr(macos, "process_identity", lambda pid: None)
+    found, _ids, ok = sandbox._macos_quick(2_000_000_001, "hold", set())
+    assert calls["n"] == 0
+    assert found == set()
+    assert ok is True
+
+
+def test_a_child_listing_that_fails_while_the_process_is_alive_is_not_clean(monkeypatch):
+    import aicad.sandbox as sandbox
+    import aicad.sandbox_macos as macos
+
+    monkeypatch.setattr(macos, "child_pids", lambda pid: None)
+    monkeypatch.setattr(macos, "process_identity", lambda pid: None)
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: None)
+    monkeypatch.setattr(sandbox.os, "kill", lambda pid, sig: None)
+    _found, _ids, ok = sandbox._macos_quick(2_000_000_001, "hold", set())
+    assert ok is False
+
+    def dead(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(sandbox.os, "kill", dead)
+    _found, _ids, ok = sandbox._macos_quick(2_000_000_001, "hold", set())
+    assert ok is True
+
+
+def test_a_full_pid_listing_that_fails_is_not_an_empty_tree(monkeypatch):
+    import aicad.sandbox as sandbox
+    import aicad.sandbox_macos as macos
+
+    def children(pid):
+        if pid == 2_000_000_001:
+            return [77]
+        return []
+
+    monkeypatch.setattr(macos, "child_pids", children)
+    monkeypatch.setattr(macos, "all_pids", lambda: None)
+    monkeypatch.setattr(macos, "pids_holding_path", lambda path: [])
+    monkeypatch.setattr(macos, "process_identity", lambda pid: None)
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: None)
+    found, _identities, ok = sandbox._macos_full(2_000_000_001, "hold", {100})
+    assert ok is False
+    assert 77 in found
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
+def test_a_group_that_cannot_be_read_is_outside_the_group(monkeypatch):
+    import aicad.sandbox as sandbox
+    import aicad.sandbox_macos as macos
+
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: None)
+
+    def denied(pid):
+        raise PermissionError(sandbox.errno.EPERM, "denied")
+
+    monkeypatch.setattr(sandbox.os, "getpgid", denied)
+    assert sandbox._outside_group(77, 50) is True
+
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: (50, False))
+    assert sandbox._outside_group(77, 50) is False
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: (99, False))
+    assert sandbox._outside_group(77, 50) is True
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: (99, True))
+    assert sandbox._outside_group(77, 50) is None
+
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: None)
+
+    def gone(pid):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(sandbox.os, "getpgid", gone)
+    assert sandbox._outside_group(77, 50) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
+def test_a_child_whose_group_cannot_be_read_is_stopped(monkeypatch):
+    import threading
+
+    import aicad.sandbox as sandbox
+    import aicad.sandbox_macos as macos
+
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(sandbox, "_walk_children", lambda leader: ({77}, {77: (5, 4)}, True))
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: None)
+    monkeypatch.setattr(macos, "process_identity", lambda pid: (5, 4))
+
+    def denied(pid):
+        raise PermissionError(sandbox.errno.EPERM, "denied")
+
+    monkeypatch.setattr(sandbox.os, "getpgid", denied)
+    monkeypatch.setattr(sandbox, "_signal_pid", lambda pid, sig: signals.append((pid, sig)))
+    account = sandbox._Account()
+    sandbox._sweep_escaped(50, "hold", account, set(), threading.Lock())
+    assert (77, sandbox.signal.SIGSTOP) in signals
+    assert (77, sandbox.signal.SIGKILL) in signals
+    reliable, ids = account.snapshot()
+    assert reliable is True
+    assert 5 in ids
+
+    signals.clear()
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: (50, False))
+    sandbox._sweep_escaped(50, "hold", account, set(), threading.Lock())
+    assert signals == []
+
+    monkeypatch.setattr(macos, "process_runtime", lambda pid: (99, True))
+    sandbox._sweep_escaped(50, "hold", account, set(), threading.Lock())
+    assert signals == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
+def test_reap_stops_a_child_that_appears_between_looks_and_waits_for_a_second_empty_scan(monkeypatch):
+    import threading
+
+    import aicad.sandbox as sandbox
+
+    scans = [
+        ({10}, {10: (200, 100)}, True),
+        ({10, 11}, {10: (200, 100), 11: (300, 200)}, True),
+        ({10, 11}, {10: (200, 100), 11: (300, 200)}, True),
+        (set(), {}, True),
+        (set(), {}, True),
+    ]
+    calls = {"n": 0, "killed": False}
+    stopped: list[int] = []
+
+    def full(leader, sentinel, root_ids):
+        item = scans[calls["n"]]
+        calls["n"] += 1
+        return item
+
+    def signal_pid(pid, sig):
+        if sig == sandbox.signal.SIGSTOP:
+            stopped.append(pid)
+
+    def exited(pid, expected):
+        return calls["killed"]
+
+    def kill_and_wait(pids, leader, root_ids=None, identities=None):
+        calls["killed"] = True
+        return set()
+
+    monkeypatch.setattr(sandbox, "_walk_children", lambda leader: (set(), {}, True))
+    monkeypatch.setattr(sandbox, "_macos_full", full)
+    monkeypatch.setattr(sandbox, "_signal_pid", signal_pid)
+    monkeypatch.setattr(sandbox, "_signal_group", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sandbox, "_exited", exited)
+    monkeypatch.setattr(sandbox, "_kill_and_wait", kill_and_wait)
+    account = sandbox._Account()
+    account.add_ids({100})
+    sandbox._reap_macos(2_000_000_001, "hold", account, set(), threading.Lock())
+    assert calls["n"] == 5
+    assert calls["killed"] is True
+    assert 10 in stopped
+    assert 11 in stopped
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
+def test_a_known_descendant_is_stopped_before_the_full_listing(monkeypatch):
+    import threading
+
+    import aicad.sandbox as sandbox
+    import aicad.sandbox_macos as macos
+
+    order: list[object] = []
+    alive = {12}
+
+    monkeypatch.setattr(sandbox, "_walk_children", lambda leader: (set(), {}, True))
+
+    def full(leader, sentinel, root_ids):
+        order.append("full")
+        return set(), {}, True
+
+    def signal_pid(pid, sig):
+        if sig == sandbox.signal.SIGSTOP:
+            order.append(("stop", pid))
+
+    def exited(pid, expected):
+        return pid not in alive
+
+    def kill_and_wait(pids, leader, root_ids=None, identities=None):
+        alive.clear()
+        return set()
+
+    monkeypatch.setattr(sandbox, "_macos_full", full)
+    monkeypatch.setattr(sandbox, "_signal_pid", signal_pid)
+    monkeypatch.setattr(sandbox, "_signal_group", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sandbox, "_exited", exited)
+    monkeypatch.setattr(sandbox, "_kill_and_wait", kill_and_wait)
+    monkeypatch.setattr(macos, "process_identity", lambda pid: (8, 4))
+    account = sandbox._Account()
+    account.add_ids({4})
+    sandbox._reap_macos(2_000_000_001, "hold", account, {12}, threading.Lock())
+    assert order[0] == ("stop", 12)
+    assert order[1] == "full"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
+def test_reap_refuses_a_clean_result_when_every_listing_fails(monkeypatch):
+    import threading
+
+    import aicad.sandbox as sandbox
+
+    monkeypatch.setattr(sandbox, "_walk_children", lambda leader: (set(), {}, True))
+    monkeypatch.setattr(sandbox, "_macos_full", lambda *args, **kwargs: (set(), {}, False))
+    monkeypatch.setattr(sandbox, "_exited", lambda pid, expected: True)
+    monkeypatch.setattr(sandbox, "_signal_pid", lambda pid, sig: None)
+    monkeypatch.setattr(sandbox, "_signal_group", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sandbox, "_kill_and_wait", lambda *args, **kwargs: set())
+    account = sandbox._Account()
+    with pytest.raises(ScriptError, match="could not account"):
+        sandbox._reap_macos(2_000_000_001, "hold", account, set(), threading.Lock())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
+def test_a_kill_without_an_exit_watch_still_checks_who_is_alive(monkeypatch):
+    import aicad.sandbox as sandbox
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(sandbox, "_arm_exit_watch", lambda pids: None)
+    monkeypatch.setattr(sandbox, "_signal_pid", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(sandbox, "_signal_group", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sandbox, "_exited", lambda pid, expected: False)
+    monkeypatch.setattr(sandbox, "_still_alive", lambda pids, identities: set(pids))
+    left = sandbox._kill_and_wait({77, 1}, 50, {4})
+    assert left == {77}
+    assert killed == [(77, sandbox.signal.SIGKILL)]
+
+
+def test_an_exit_watch_is_unavailable_without_kqueue(monkeypatch):
+    import aicad.sandbox as sandbox
+
+    monkeypatch.setattr(sandbox.sys, "platform", "darwin")
+    monkeypatch.setattr(sandbox.select, "kqueue", None, raising=False)
+    assert sandbox._arm_exit_watch([77]) is None
+
+
 def test_bh_f06_a_failed_script_keeps_the_network_grant(tmp_path, config_home):
     _sandbox_or_skip()
     allow_design_scripts(tmp_path)
