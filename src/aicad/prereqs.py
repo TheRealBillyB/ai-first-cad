@@ -103,9 +103,19 @@ def ccx_status() -> SolverStatus:
 
 
 def _program_roots(project: Path | None) -> tuple[Path, ...]:
-    from aicad.paths import project_roots
+    """Open projects, plus ``project`` when the caller named one.
 
-    roots = list(project_roots())
+    The installer loads this file by path, before the package is imported.
+    With no package, there are no remembered projects, and the search still runs.
+    """
+
+    roots: list[Path] = []
+    try:
+        from aicad.paths import project_roots
+    except ImportError:
+        pass
+    else:
+        roots.extend(project_roots())
     if project is None:
         return tuple(roots)
     try:
