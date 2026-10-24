@@ -1079,6 +1079,7 @@ def test_a_full_pid_listing_that_fails_is_not_an_empty_tree(monkeypatch):
     assert 77 in found
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
 def test_a_group_that_cannot_be_read_is_outside_the_group(monkeypatch):
     import aicad.sandbox as sandbox
     import aicad.sandbox_macos as macos
@@ -1107,6 +1108,7 @@ def test_a_group_that_cannot_be_read_is_outside_the_group(monkeypatch):
     assert sandbox._outside_group(77, 50) is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
 def test_a_child_whose_group_cannot_be_read_is_stopped(monkeypatch):
     import threading
 
@@ -1141,6 +1143,7 @@ def test_a_child_whose_group_cannot_be_read_is_stopped(monkeypatch):
     assert signals == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
 def test_reap_stops_a_child_that_appears_between_looks_and_waits_for_a_second_empty_scan(monkeypatch):
     import threading
 
@@ -1187,6 +1190,7 @@ def test_reap_stops_a_child_that_appears_between_looks_and_waits_for_a_second_em
     assert 11 in stopped
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
 def test_a_known_descendant_is_stopped_before_the_full_listing(monkeypatch):
     import threading
 
@@ -1226,6 +1230,7 @@ def test_a_known_descendant_is_stopped_before_the_full_listing(monkeypatch):
     assert order[1] == "full"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
 def test_reap_refuses_a_clean_result_when_every_listing_fails(monkeypatch):
     import threading
 
@@ -1242,6 +1247,7 @@ def test_reap_refuses_a_clean_result_when_every_listing_fails(monkeypatch):
         sandbox._reap_macos(2_000_000_001, "hold", account, set(), threading.Lock())
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
 def test_a_kill_without_an_exit_watch_still_checks_who_is_alive(monkeypatch):
     import aicad.sandbox as sandbox
 
