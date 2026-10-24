@@ -119,6 +119,13 @@ async function applyRefresh(options = {}) {
   $("undo").disabled = !ui.state.can_undo;
   $("redo").disabled = !ui.state.can_redo;
   $("live").classList.toggle("on", ui.live);
+  const record = ui.state.session_record || {};
+  $("record-session").classList.toggle("on", !!record.enabled);
+  $("record-session").textContent = record.enabled ? "Recording" : "Record";
+  $("record-session").title = record.enabled
+    ? `Recording design steps (${record.steps || 0} stored)`
+    : "Record design steps in this project";
+  $("record-timelapse").disabled = !(record.steps > 0);
   if (ui.page === "model" && ui.stage === "solid" && (ui.viewAssembly || ui.state.parts.length)) await loadMesh(options);
   else if (ui.page === "model" && ui.stage === "sketch") drawSketch();
   else if (ui.page === "model") {
@@ -2048,6 +2055,31 @@ async function boot() {
     $("live").classList.toggle("on", ui.live);
     renderActivity();
     drawSolid();
+  };
+  $("record-session").onclick = async () => {
+    const enabled = ui.state && ui.state.session_record && ui.state.session_record.enabled;
+    try {
+      await command("session_record", { action: enabled ? "stop" : "start" });
+      await refresh();
+    } catch (error) {
+      showError(error);
+    }
+  };
+  $("record-timelapse").onclick = async () => {
+    try {
+      const report = await command("session_record", {
+        action: "export",
+        fps: 8,
+        camera: "iso",
+        width: 320,
+        height: 240,
+        video: "gif",
+        path: "records/session/timelapse.gif",
+      });
+      $("who").textContent = report.summary || "Wrote a timelapse";
+    } catch (error) {
+      showError(error);
+    }
   };
   $("measure-clear").onclick = () => clearMeasure();
   $("new-sketch").onclick = async () => {

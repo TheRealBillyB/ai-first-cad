@@ -62,6 +62,8 @@ A person designs the part here: sketch, extrude, select a face, edit a dimension
 
 Requirements are checked against every design. The first kinds of goal: it holds this load, it fits the printer bed, it stays under this mass.
 
+- **Design session record.** **Done.** While a session runs from the app, the command line, or MCP, an opt-in record stores each design step. Replay steps through that record. Export writes a timelapse GIF, and MP4 or WebM when ffmpeg is on PATH.
+
 ### Gears, mechanisms, and checks
 
 **Planned.**

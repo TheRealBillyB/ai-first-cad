@@ -58,6 +58,7 @@ CLI_TOOLS = {
     "bill-of-materials": "bill_of_materials",
     "exploded-view": "exploded_view",
     "animate": "render_animation",
+    "record": "session_record",
     "start-plan": "start_plan",
     "list-plans": "list_plans",
     "get-plan": "get_plan",

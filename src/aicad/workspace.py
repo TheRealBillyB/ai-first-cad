@@ -126,6 +126,7 @@ class Workspace:
                 self._requirement_cache.clear()
                 for panel in ("inspect", "section", "features", "fea", "motion", "cables", "power", "vibration", "bolts", "fatigue", "print", "robot", "drawing", "bom", "exploded", "animation"):
                     self.panels.pop(panel, None)
+            self._record(name, arguments, result, source)
             self.event_id += 1
             event = self._event(name, arguments, result, source)
             listeners = list(self._listeners)
@@ -142,6 +143,7 @@ class Workspace:
             self.geometry_revision += 1
             self.event_id += 1
             result = {"undone": True, "revision": self.geometry_revision}
+            self._record("undo", {}, result, source)
             event = self._event("undo", {}, result, source)
             listeners = list(self._listeners)
         for listener in listeners:
@@ -157,6 +159,7 @@ class Workspace:
             self.geometry_revision += 1
             self.event_id += 1
             result = {"redone": True, "revision": self.geometry_revision}
+            self._record("redo", {}, result, source)
             event = self._event("redo", {}, result, source)
             listeners = list(self._listeners)
         for listener in listeners:
@@ -210,10 +213,34 @@ class Workspace:
                 "panel_revision": {key: value["revision"] for key, value in self.panels.items()},
                 "materials": self.document.list_materials(),
                 "design_scripts": self.script_status(),
+                "session_record": self._session_record_status(),
                 "problems": list(self.document.problems),
                 "plans": self.document.list_plans()["plans"],
 
             }
+
+    def _record(self, name: str, arguments: dict, result: dict, source: str) -> None:
+        try:
+            from aicad.session_record import record_command
+
+            record_command(
+                self.document,
+                name,
+                arguments if isinstance(arguments, dict) else {},
+                result if isinstance(result, dict) else {},
+                source=source,
+                revision=self.geometry_revision,
+            )
+        except Exception:
+            return
+
+    def _session_record_status(self) -> dict:
+        try:
+            from aicad.session_record import status
+
+            return status(self.root)
+        except Exception:
+            return {"enabled": False, "steps": 0, "path": "records/session.json"}
 
     def script_status(self) -> dict:
         """Whether design scripts may run, and whether the next one may use the network."""
@@ -2038,6 +2065,33 @@ _add(Command(
     "Start simulation from a plan. Refuses, and says why, until the person has approved the current revision. Then returns the approved dimensions and assumptions. Does not run a solver.",
     _PLAN,
     _cmd_start_simulation_from_plan,
+))
+
+
+def _cmd_session_record(workspace: Workspace, arguments: dict) -> dict:
+    from aicad.session_record import run_action
+
+    return run_action(workspace.document, arguments, revision=workspace.geometry_revision)
+
+
+_add(Command(
+    "session_record",
+    "Record design steps in this project, step through that record, or write a timelapse. Recording stays off until action is start. Replay and export do not run the recorded commands.",
+    _obj(
+        {
+            "action": _string("start, stop, status, replay, or export."),
+            "fps": _number("Playback frames per second, from 1 to 60."),
+            "camera": _string("iso, front, back, left, right, top, or bottom."),
+            "steps": {"type": "array", "description": "Step numbers to include. Omit for every step. A string such as 1,3-5 is also accepted."},
+            "step": _number("One step to return when action is replay."),
+            "video": _string("gif, mp4, webm, or both. gif skips the video. mp4 and webm need ffmpeg."),
+            "width": _number("Picture width in pixels. An even number from 16 to 1280."),
+            "height": _number("Picture height in pixels. An even number from 16 to 1280."),
+            "path": _string("A .gif, .mp4, or .webm file, or a directory, inside the project."),
+        },
+        ["action"],
+    ),
+    _cmd_session_record,
 ))
 
 
