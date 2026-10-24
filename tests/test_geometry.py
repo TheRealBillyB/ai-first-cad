@@ -223,13 +223,23 @@ def test_macos_python_threads_get_a_geometry_stack():
     assert current_thread_can_run_geometry() is True
     if sys.platform != "darwin":
         assert current_thread_stack_bytes() is None
-        before = threading.stack_size()
-        assert prepare_geometry_thread_stack() == before
+        assert prepare_geometry_thread_stack() == 0
+        if sys.platform != "win32":
+            # prepare must not clear a size already chosen by the process.
+            # Reading the size stores the default, so put the explicit size back.
+            threading.stack_size(2 * 1024 * 1024)
+            try:
+                assert prepare_geometry_thread_stack() == 0
+                current = threading.stack_size(2 * 1024 * 1024)
+                assert current == 2 * 1024 * 1024
+            finally:
+                threading.stack_size(0)
         return
-    # The product size, not a larger stack chosen only by this test.
+    # Clear an explicit size, then let the product choose again.
+    # A call with no size stores the default, so the check below reads the
+    # thread itself.
     threading.stack_size(0)
     assert prepare_geometry_thread_stack() >= GEOMETRY_THREAD_STACK
-    assert threading.stack_size() >= GEOMETRY_THREAD_STACK
     main_stack = current_thread_stack_bytes()
     assert main_stack is not None
     assert main_stack + 64 * 1024 >= GEOMETRY_THREAD_STACK

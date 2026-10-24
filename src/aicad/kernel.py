@@ -35,11 +35,11 @@ def _keep_opencascade_on_the_calling_thread() -> None:
     threads. One pool thread is the caller, so the work stays on the caller.
 
     That caller is a workspace request thread, an MCP tool thread, or a
-    thread a design script starts, as well as the main thread. On macOS those
-    Python threads also get 512 KiB unless a size is set. The call below sets
-    at least 8 MiB for threads started after this import. A sandboxed script runs on
-    the child process main thread, which keeps the stack the process was
-    started with.
+    thread a design script starts, as well as the main thread. CPython on
+    macOS gives those threads about 16 MiB when no size is set. The call
+    below stores an explicit size of at least 8 MiB for threads started
+    after this import. A sandboxed script runs on the child process main
+    thread, which keeps the stack the process was started with.
 
     ``AICAD_MACOS_OCCT_WORKERS=default`` leaves the stock pool. The Python
     thread stack is still set. The macOS crash reproducer sets the switch

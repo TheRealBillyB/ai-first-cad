@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Run the hypoid mesh check on macOS and keep the native crash report.
+"""Run the hypoid checks on macOS and keep a native report if one is written.
 
-The first runs leave OpenCascade on its stock worker threads
-(``AICAD_MACOS_OCCT_WORKERS=default``) and disable the suite timeout, so a
-signal is not confused with the timeout helper. Later runs use the calling
-thread, including a hypoid build started off the main thread, and the suite
-timeout. This file is not part of the suite.
+The probe prints the main thread, a Python thread, and a raw pthread.
+The pytest runs use the suite timeout, including a hypoid build started
+off the main thread. This file is not part of the suite.
 """
 
 from __future__ import annotations
@@ -208,16 +206,7 @@ def main() -> int:
     base = os.environ.copy()
     base["PYTHONUNBUFFERED"] = "1"
     base["PYTHONFAULTHANDLER"] = "1"
-    stock = dict(base)
-    stock["AICAD_MACOS_OCCT_WORKERS"] = "default"
     results: list[str] = []
-    crashed = False
-    for index in range(1, 4):
-        outcome = _run(f"stock-{index}", stock, timeout=600, extra=["--timeout=0"], tests=STOCK_TESTS)
-        results.append(f"stock-{index} {outcome}")
-        if outcome.startswith("signal"):
-            crashed = True
-            break
     proof_failures = 0
     for index in range(1, 5):
         outcome = _run(f"fixed-{index}", base, timeout=720, extra=[], tests=FIXED_TESTS)
@@ -225,13 +214,11 @@ def main() -> int:
         if outcome != "exit 0":
             proof_failures += 1
             _collect(f"fixed-{index}")
-    summary = "\n".join(results) + f"\ncrashed={crashed} proof_failures={proof_failures}\n"
+    summary = "\n".join(results) + f"\nproof_failures={proof_failures}\n"
     (OUT / "summary.txt").write_text(summary, encoding="utf-8")
     print(summary, flush=True)
     if proof_failures:
         return 1
-    if not crashed:
-        return 3
     return 0
 
 

@@ -548,7 +548,6 @@ def test_a_hypoid_build_runs_on_a_worker_thread():
     assert worker.is_alive() is False
     assert box.get("main") is False
     if sys.platform == "darwin":
-        assert threading.stack_size() >= GEOMETRY_THREAD_STACK
         assert box.get("stack") is not None
         assert box["stack"] >= GEOMETRY_THREAD_STACK
     error = box.get("error")

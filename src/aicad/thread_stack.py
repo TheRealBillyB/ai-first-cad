@@ -1,11 +1,12 @@
 """Stack size for threads that run geometry on macOS.
 
 OpenCascade recurses through a boolean or a mesh on the calling thread once
-its own pool is that caller. A thread Python starts on macOS gets 512 KiB
-unless a size was set. CPython 3.11 leaves ``THREAD_STACK_SIZE`` at 0, so
-that 512 KiB default is what a workspace request, an MCP tool, or a design
-script's call thread would use. The process main thread keeps the stack it
-was given when the process started.
+its own pool is that caller. A thread created with ``pthread_create`` and
+the default attributes gets 512 KiB. CPython's own threads on macOS are
+about 16 MiB when the size is left unset, which is large enough. Calling
+``threading.stack_size`` with no size stores that unset default and returns
+the previous explicit size, so a read has to put the explicit size back.
+The process main thread keeps the stack it was given when the process started.
 """
 
 from __future__ import annotations
@@ -18,28 +19,74 @@ from contextlib import contextmanager
 # 8 MiB, a multiple of the machine page. This is the main-thread stack this
 # work already runs on, and the size Linux gives a thread.
 GEOMETRY_THREAD_STACK = 8 * 1024 * 1024
+# 16 MiB, the stack CPython gives a macOS thread when no size is set.
+# A multiple of the 16 KiB page.
+_PYTHON_THREAD_STACK = 16 * 1024 * 1024
 # pthread_get_stacksize_np can report a few pages under the reserved stack.
 _STACK_REPORT_SLACK = 64 * 1024
 
 SMALL_CALLER_STACK = "The stack on this thread is too small for geometry, so the script was not run."
 
+_lock = threading.Lock()
+_chosen: int | None = None
+
+
+def _measure_default_thread() -> int:
+    """Stack of one new thread while the explicit size is still unset."""
+
+    found: dict[str, int] = {}
+
+    def read() -> None:
+        size = current_thread_stack_bytes()
+        if size is not None:
+            found["size"] = size
+
+    thread = threading.Thread(target=read, name="aicad-stack-size")
+    thread.start()
+    thread.join()
+    return found.get("size", 0)
+
+
+def _choose_stack_size() -> int:
+    """Pick an explicit size and remember it.
+
+    ``threading.stack_size(0)`` stores the platform default and returns the
+    previous explicit size. A previous size of at least 8 MiB is kept. An
+    unset size is measured: the CPython default is kept when that thread is
+    already large enough, and 8 MiB is stored when it is not.
+    """
+
+    global _chosen
+    if _chosen is not None:
+        return _chosen
+    previous = int(threading.stack_size(0))
+    if previous >= GEOMETRY_THREAD_STACK:
+        _chosen = previous
+        return previous
+    if previous:
+        threading.stack_size(previous)
+    measured = _measure_default_thread() if previous == 0 else 0
+    if measured >= GEOMETRY_THREAD_STACK:
+        _chosen = _PYTHON_THREAD_STACK
+    else:
+        _chosen = GEOMETRY_THREAD_STACK
+    return _chosen
+
 
 def prepare_geometry_thread_stack() -> int:
     """Give later Python threads a stack large enough for geometry.
 
-    On macOS, set 8 MiB when the current size is unset or smaller. A larger
-    size already chosen by the process is left in place. Other systems are
-    unchanged. Returns the size Python will use for a new thread, or 0 when
-    the platform default stays in force.
+    On macOS, store an explicit size of at least 8 MiB and apply it again
+    on every call. Other systems are unchanged. Returns that size, or 0
+    where the platform default stays in force.
     """
 
     if sys.platform != "darwin":
-        return threading.stack_size()
-    current = threading.stack_size()
-    if current >= GEOMETRY_THREAD_STACK:
-        return current
-    threading.stack_size(GEOMETRY_THREAD_STACK)
-    return GEOMETRY_THREAD_STACK
+        return 0
+    with _lock:
+        chosen = _choose_stack_size()
+        threading.stack_size(chosen)
+        return chosen
 
 
 def current_thread_stack_bytes() -> int | None:
