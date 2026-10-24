@@ -318,9 +318,35 @@ def _import_package(preloaded: bool) -> None:
     import aicad  # noqa: F401
 
 
+def _early_thread_stack():
+    """The stack helper, without importing the geometry package.
+
+    Importing ``aicad`` starts geometry threads. Those threads have to start
+    after confinement. This loads the helper by file so the child can set the
+    Python thread stack, and can refuse a main thread that is too small,
+    before that import.
+    """
+
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "thread_stack.py"
+    spec = importlib.util.spec_from_file_location("_aicad_thread_stack_early", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def main(argv: list[str] | None = None) -> int:
+    stack = _early_thread_stack()
+    if stack is not None:
+        stack.prepare_geometry_thread_stack()
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) == 3 and args[0] == "--model":
+        if stack is not None and not stack.current_thread_can_run_geometry():
+            print(stack.SMALL_CALLER_STACK, file=sys.stderr)
+            return 1
         from aicad.design_calls import model_main
 
         return model_main(Path(args[1]), Path(args[2]))
@@ -328,6 +354,12 @@ def main(argv: list[str] | None = None) -> int:
         print("usage: python -P -m aicad.sandbox_run JOB_DIR", file=sys.stderr)
         return 2
     job = Path(args[0])
+    if stack is not None and not stack.current_thread_can_run_geometry():
+        try:
+            _write(job, {"ok": False, "error": stack.SMALL_CALLER_STACK})
+        except Exception:
+            print(stack.SMALL_CALLER_STACK, file=sys.stderr)
+        return _leave(0)
     spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
     workspace = Path(os.environ["AICAD_WORKSPACE"]).resolve()
     try:
