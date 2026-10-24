@@ -743,6 +743,30 @@ def _cmd_modal_assembly(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("vibration", report)
 
 
+def _cmd_check_gears(workspace: Workspace, arguments: dict) -> dict:
+    spec = arguments.get("spec")
+    if spec is None:
+        spec = {
+            key: value
+            for key, value in arguments.items()
+            if key in {
+                "pinion",
+                "gear",
+                "assembly",
+                "centre_distance_mm",
+                "shaft_angle_deg",
+                "offset_mm",
+                "backlash_mm",
+                "steps",
+                "pinion_phase_deg",
+                "gear_phase_deg",
+            }
+        }
+    if not isinstance(spec, dict):
+        raise GeometryError("check_gears needs a spec for a gear pair or an assembly.")
+    return workspace._remember_panel("gears", workspace.document.check_gears(spec))
+
+
 def _cmd_bolts(workspace: Workspace, arguments: dict) -> dict:
     spec = arguments.get("spec")
     if not isinstance(spec, dict):
@@ -963,6 +987,8 @@ def _cmd_check_cables(workspace: Workspace, arguments: dict) -> dict:
         arguments["name"],
         sequence=arguments.get("sequence"),
         motion=arguments.get("motion"),
+        study=arguments.get("study"),
+        steps=arguments.get("steps"),
     )
     report["assembly"] = arguments["name"]
     return workspace._remember_panel("cables", report)  # noqa: SLF001
@@ -1393,6 +1419,28 @@ _add(Command(
     _cmd_modal_assembly,
 ))
 _add(Command(
+    "check_gears",
+    "Mesh and backlash of a gear pair, or every pair in an assembly. Reports centre distance, circumferential and normal backlash, contact ratio, undercut, and interference through one turn of the smaller gear.",
+    _obj(
+        {
+            "spec": {
+                "type": "object",
+                "description": "pinion and gear (specs or part names), optional assembly, centre_distance_mm, shaft_angle_deg, offset_mm, backlash_mm {min, max}, and steps.",
+            },
+            "pinion": {"description": "Gear spec or part name."},
+            "gear": {"description": "Mate spec or part name."},
+            "assembly": _string("Assembly whose gear pairs to check."),
+            "centre_distance_mm": _number("Actual centre distance. For a bevel, a signed axis offset from the intersecting mount."),
+            "shaft_angle_deg": _number("Actual shaft angle in degrees."),
+            "offset_mm": _number("Axis offset in millimetres. A hypoid checker reads this later."),
+            "backlash_mm": {"description": "{min, max} in millimetres, or circumferential and normal ranges."},
+            "steps": {"type": "integer", "description": "Samples over one full turn of the smaller gear. At least 8."},
+        },
+        [],
+    ),
+    _cmd_check_gears,
+))
+_add(Command(
     "check_bolts",
     "Preload, tightening torque, slip margin, thread stripping, yield, and a vibration-loosening rating for a library fastener size.",
     _obj(
@@ -1582,8 +1630,24 @@ _add(Command(
 ))
 _add(Command(
     "check_cables",
-    "Measure cable and hose length, strain, bend radius, and pinching through a pose or a motion.",
-    _MOTION,
+    "Measure cable, hose, and tendon routes through a pose, a motion, or a motion study. "
+    "A clip route uses waypoints. A tendon uses points: an anchor, pulleys or guides or wraps fixed on parts, and an end anchor, plus diameter_mm and material. "
+    "A pulley has at, axis, radius_mm for the cable centerline, optional wrap cw or ccw, and optional friction. "
+    "The report has path length with wrap arcs, length change, slack or stretch, wrap angle, bend-radius violations, capstan tension from actuator_force_n, and collisions. "
+    "sequence names a motion, or a study when no motion has that name. study is an inline motion study. steps overrides the study.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "sequence": _string("Named motion, or a named study when no motion has that name."),
+            "motion": {"type": "object", "description": "Inline sweep or keyframes, used when sequence is omitted."},
+            "study": {
+                "type": "object",
+                "description": "Inline motion study with drivers, couplings, duration_s, and steps.",
+            },
+            "steps": _number("Poses to solve for a study, including both ends."),
+        },
+        ["name"],
+    ),
     _cmd_check_cables,
 ))
 _add(Command(

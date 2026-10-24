@@ -126,6 +126,40 @@ def test_spur_and_helical_match_iso_21771():
     assert low["undercut"] is True
 
 
+def test_same_hand_gears_are_not_placed_as_a_mesh():
+    helical = {
+        "type": "helical",
+        "module_mm": 2,
+        "teeth": 20,
+        "pressure_angle_deg": 20,
+        "helix_angle_deg": 15,
+        "face_width_mm": 10,
+    }
+    with pytest.raises(GeometryError, match="opposite hands"):
+        pair_geometry(helical, helical)
+    opposite = pair_geometry(helical, {**helical, "helix_angle_deg": -15})
+    assert opposite["axis_layout"] == "parallel"
+    assert opposite["backlash_mm"] == 0.0
+    assert opposite["centre_distance_mm"] == pytest.approx(40 / math.cos(math.radians(15)), abs=1e-4)
+
+    spiral = {
+        "type": "spiral_bevel",
+        "module_mm": 2,
+        "teeth": 20,
+        "mate_teeth": 40,
+        "pressure_angle_deg": 20,
+        "face_width_mm": 8,
+        "spiral_angle_deg": 25,
+        "shaft_angle_deg": 90,
+    }
+    mate = {**spiral, "teeth": 40, "mate_teeth": 20, "spiral_angle_deg": 25}
+    with pytest.raises(GeometryError, match="opposite hands"):
+        pair_geometry(spiral, mate)
+    meshed = pair_geometry(spiral, {**mate, "spiral_angle_deg": -25})
+    assert meshed["axis_layout"] == "intersecting"
+    assert meshed["backlash_mm"] == 0.0
+
+
 def test_spur_pair_contact_ratio_is_the_path_of_contact():
     alpha = math.radians(20)
     radius_1, radius_2 = 20.0, 40.0

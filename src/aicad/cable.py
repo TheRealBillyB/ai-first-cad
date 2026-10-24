@@ -3,9 +3,10 @@
 Waypoints and clips are points fixed on assembly instances. The route is the
 polyline through those points after the joints move. Bend radius is the
 circumradius of each three consecutive samples. Length, strain, and pinch
-gaps are geometric. A flexible-body model would replace this polyline with a
-rod that sags, contacts, and slips through clips; the numbers reported here
-are the checks that model would still have to pass.
+gaps are geometric. A tendon over pulleys and guides is :mod:`aicad.tendon`.
+A flexible-body model would replace this polyline with a rod that sags,
+contacts, and slips through clips; the numbers reported here are the checks
+that model would still have to pass.
 """
 
 from __future__ import annotations
@@ -20,6 +21,10 @@ _STIFFNESS = {"low": 80.0, "medium": 600.0, "high": 4000.0}
 
 
 def normalize_cable(cable: dict, index: int = 0) -> dict:
+    if isinstance(cable, dict) and "points" in cable:
+        from aicad.tendon import normalize_tendon
+
+        return normalize_tendon(cable, index)
     if not isinstance(cable, dict):
         raise GeometryError(f"Cable {index} must be an object.")
     name = str(cable.get("name") or f"cable_{index + 1}")
@@ -65,6 +70,7 @@ def normalize_cable(cable: dict, index: int = 0) -> dict:
         "pinch_mm": float(cable.get("pinch_mm") if cable.get("pinch_mm") is not None else 0.5),
         "waypoints": cleaned,
         "rest_length_mm": None if cable.get("rest_length_mm") is None else float(cable["rest_length_mm"]),
+        "route": "polyline",
     }
 
 

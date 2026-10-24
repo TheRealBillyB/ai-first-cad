@@ -1,10 +1,14 @@
 """Print orientation, overhangs, printer fit, and the slicer skip path."""
 
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
 from aicad.document import Document
 from aicad.errors import GeometryError
-from aicad.printprep import parse_gcode, slice_mesh
+from aicad.printprep import _score, parse_gcode, slice_mesh
 from aicad.workspace import Workspace
-import pytest
 
 
 def _plate(document: Document) -> None:
@@ -105,6 +109,27 @@ def test_comments_at_the_end_of_a_file_still_count():
     parsed = parse_gcode(body)
     assert parsed["seconds"] == 45 * 60 + 10
     assert parsed["grams"] == pytest.approx(3.25)
+
+
+def test_support_follows_the_angle_from_vertical():
+    # Bed triangle faces up. The other face leans 45 degrees from vertical
+    # and points down, so it needs support below that angle and not above it.
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 10.0],
+            [0.0, 1.0, 10.0],
+            [1.0, 0.0, 9.0],
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [3, 4, 5]])
+    mesh = SimpleNamespace(vertices=vertices, triangles=triangles)
+    needs = _score(mesh, "z_up", 30)["support_area_mm2"]
+    clear = _score(mesh, "z_up", 60)["support_area_mm2"]
+    assert needs > 0
+    assert clear == pytest.approx(0)
 
 
 def test_a_missing_slicer_is_skipped(tmp_path, monkeypatch):
