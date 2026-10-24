@@ -12,6 +12,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | --- | --- |
 | A cable collision reports the closest sample | The first sample inside the pinch limit is not the clearance. The report keeps the smallest gap of that kind, and a centerline inside a solid beats a rub. |
 | A cylinder on a cylindrical joint follows the slide | The moving clevis is on the driver child, so the pin-to-pin length includes travel along that joint as well as its angle. |
+| A cylinder stroke actuator carries the driver moment | The rod force is the driver torque divided by the pin-to-pin rate. A moment arm on the driver joint is still a number you supply. |
 | A design script cannot record a check it did not run | The check report lists only public document calls the script made. |
 | A design-script check that ran is returned and recorded | A result that cannot be stored is still the value the script called. The report names that result, and the script receives it. |
 | A design session record is opt-in and replay does not run it | Recording stays off until it is turned on. A record from a shared project is data for a picture, and playing it does not run commands or leave the project. |
@@ -21,13 +22,19 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A hypoid mesh sweep follows the placed gears | One pinion tooth is the engagement that can interfere, and a mounted pair sits where the assembly puts it. |
 | A hypoid pinion is cut when the pitch point exists | A roll pose that does not leave one solid is recut with a small tolerance or left out, and a shaft angle, offset, diameter, and spiral with no cuttable pitch point is refused before that roll. |
 | A hypoid shaft angle is the angle between the two axes | An angle past 90 degrees stays that angle. Folding it to the acute side reports a pair that was generated correctly as misaligned. |
+| A macOS script returns only after its descendants have exited | Every descendant is stopped, the list is read again for a child created in that gap, and the call waits until those processes have exited. It returns only when a second look is empty. A listing that fails is not a clean run. |
 | A repeated waypoint is not a sharp bend | A zero-length span has no corner. The bend radius stays unlimited, the same as a straight run. |
 | A resource limit cannot signal another process | The process filter refuses a resource limit aimed at another process, and a file-owner or terminal notice that can deliver a signal. |
 | A script cannot signal another process | Landlock can scope signals only on a newer kernel. The process filter blocks a signal call unless it names the script process that installed it, including from a child of that script, and the Landlock scope is used as well when the kernel has it. A project file, configuration, environment variable, plugin, or tool argument cannot turn that scope off. |
 | A script is not run when another thread already exists | The process filter is installed on every thread that already exists. Geometry libraries are imported after that, and if a thread was already running the script is not run. |
+| An assembly mesh check uses the gear train when one is stored | A compound shaft carries two gears, and a gear relation names the shaft joints, so the joint children are not the meshing solids. |
 | An entry line cannot break the generated master | A title and a rationale stay one line, so they cannot end the generated section or start another line. |
+| An external program is not taken from the project | ffmpeg, CalculiX, and a slicer are started by a path outside the project, so a copy in the project is not the program that runs. |
 | CI installs a pinned CalculiX on macOS and Windows | Strength checks have to run on every runner, and the Python installer still does not download CalculiX. |
+| The CalculiX CI install keeps its files inside the work directory | A lock path that leaves that directory is refused before anything is written. |
 | The doc generator does not follow links | A symlink, junction, or second file name would read or write a different file when the masters are generated. |
+| The macOS test job uses the same clock as Windows | The suite on that runner already takes most of 25 minutes, and one test is still stopped at its own limit. |
+| The next release is v1.0 for the feature set already in the tree | No new feature track starts before that release. It is a stability and safety release for what is already here. |
 | The process that runs a call records the check | A design script does not supply the check report, and earlier calls stay in it. |
 | Tip error is the positional Jacobian times each stated bound | A factor on the reach would hide which joint, which source, and which pose moves the tool. |
 | Workspace buttons call the same commands as the assistant | Library, gears, mesh, train, motion study, kinematics, packaging, drawing, bill of materials, exploded view, and animation are panels on commands that already exist. |
