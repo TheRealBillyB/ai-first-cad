@@ -25,6 +25,43 @@ def test_search_finds_an_m3_screw_and_a_608_bearing(tmp_path):
     assert all(item["kind"] == "socket_head_cap_screw" for item in screws["matches"])
 
 
+def test_a_longer_designation_does_not_match_a_shorter_catalog_size(tmp_path):
+    document = Document(tmp_path)
+    assert _bearing_sizes(document, "60008") == []
+    assert _bearing_sizes(document, "62005") == []
+    assert "608" not in _bearing_sizes(document, "1608")
+    seals = [
+        item["size"]
+        for item in document.search_parts("20x35x70")["matches"]
+        if item["kind"] == "radial_shaft_seal"
+    ]
+    assert seals == []
+    assert "6008" in _bearing_sizes(document, "6008")
+    assert "6205" in _bearing_sizes(document, "6205 bearing")
+    assert "608" in _bearing_sizes(document, "608 bearing")
+    assert "20x35x7" in {
+        item["size"]
+        for item in document.search_parts("20 x 35 x 7")["matches"]
+        if item["kind"] == "radial_shaft_seal"
+    }
+    tapered = [
+        item["size"]
+        for item in document.search_parts("32005")["matches"]
+        if item["kind"] == "tapered_roller_bearing"
+    ]
+    assert tapered == ["32005X"]
+    assert "6000" in _bearing_sizes(document, "M10-26-8")
+    assert _bearing_sizes(document, "M10-26-80") == []
+
+
+def _bearing_sizes(document: Document, query: str) -> list[str]:
+    return [
+        item["size"]
+        for item in document.search_parts(query)["matches"]
+        if item["kind"] == "ball_bearing"
+    ]
+
+
 def test_a_size_that_is_not_in_the_catalog_is_not_replaced_by_other_sizes(tmp_path):
     document = Document(tmp_path)
     missed = document.search_parts("M3-0.8 screw")
