@@ -1181,6 +1181,193 @@ class Document:
             )
             return solve_modal_assembly(spec, self._assembly_shapes(spec), setup or {}, out_dir)
 
+    def check_gears(self, spec: dict) -> dict:
+        """Centre distance, backlash, contact ratio, undercut, and interference of a gear pair.
+
+        ``spec`` names two gear specs or two gear parts, or an assembly. An
+        assembly is every gear relation, or every pair of gear instances when
+        the assembly has no gear relation. The smaller gear is turned through
+        one full rotation.
+        """
+        if not isinstance(spec, dict):
+            raise GeometryError("A gear mesh check is an object.")
+        with self._lock:
+            if spec.get("assembly"):
+                return self._check_assembly_gears(spec)
+            return self._check_named_gear_pair(spec)
+
+    def _check_named_gear_pair(self, spec: dict) -> dict:
+        pinion_spec, pinion_part = self._gear_member(spec.get("pinion"), "pinion")
+        gear_spec, gear_part = self._gear_member(spec.get("gear"), "gear")
+        return gears_mod.check_pair(
+            pinion_spec,
+            gear_spec,
+            self._gear_mounting(spec, pinion_part, gear_part),
+            spec.get("backlash_mm"),
+            spec.get("steps"),
+        )
+
+    def _check_assembly_gears(self, spec: dict) -> dict:
+        from aicad.gears.meshcheck import _LIMITS, mounting_from_frames
+        from aicad.honesty import VERIFIED_CHECK, finish
+
+        name = str(spec["assembly"])
+        assembly = self._get_assembly(name)
+        solved = solve_assembly(assembly)
+        frames = {item["name"]: item["matrix"] for item in solved["instances"]}
+        selected = self._assembly_gear_pairs(assembly, spec.get("pinion"), spec.get("gear"))
+        reports = []
+        for left_name, right_name, label in selected:
+            left_part = self._instance_gear(assembly, left_name)
+            right_part = self._instance_gear(assembly, right_name)
+            measured = mounting_from_frames(frames[left_name], frames[right_name])
+            mounting = {}
+            if measured["parallel"]:
+                mounting["centre_distance_mm"] = measured["centre_distance_mm"]
+                mounting["shaft_angle_deg"] = measured["shaft_angle_deg"]
+                if "pinion_phase_deg" in measured:
+                    mounting["pinion_phase_deg"] = measured["pinion_phase_deg"]
+                    mounting["gear_phase_deg"] = measured["gear_phase_deg"]
+            else:
+                mounting["centre_distance_mm"] = measured["centre_distance_mm"]
+                mounting["shaft_angle_deg"] = measured["shaft_angle_deg"]
+            for key in ("centre_distance_mm", "shaft_angle_deg", "offset_mm", "pinion_phase_deg", "gear_phase_deg"):
+                if spec.get(key) is not None:
+                    mounting[key] = spec[key]
+            report = gears_mod.check_pair(
+                copy.deepcopy(left_part.gear_spec),
+                copy.deepcopy(right_part.gear_spec),
+                mounting,
+                spec.get("backlash_mm"),
+                spec.get("steps"),
+            )
+            report["instances"] = [left_name, right_name]
+            report["relation"] = label
+            reports.append(report)
+        failed = [item for item in reports if item.get("status") != "pass"]
+        return finish(
+            {
+                "status": "fail" if failed else "pass",
+                "assembly": name,
+                "pairs": reports,
+                "passed": len(reports) - len(failed),
+                "failed": len(failed),
+                "assumptions": list(reports[0].get("assumptions") or []),
+            },
+            kind=VERIFIED_CHECK,
+            name=name,
+            what=(
+                "Mesh and backlash of every gear pair in the assembly. "
+                "A pair fails when its backlash, contact ratio, undercut, or interference fails."
+            ),
+            limits=list(_LIMITS),
+        )
+
+    def _assembly_gear_pairs(self, assembly: dict, pinion, gear) -> list[tuple[str, str, str]]:
+        joints = {joint["name"]: joint for joint in assembly["joints"]}
+        relations = [item for item in assembly["relations"] if item["type"] == "gear"]
+        if relations:
+            pairs = []
+            for relation in relations:
+                driver = joints[relation["driver"]]["child"]
+                driven = joints[relation["driven"]]["child"]
+                if pinion is None and gear is None:
+                    pairs.append((driver, driven, relation["name"]))
+                    continue
+                forward = self._instance_named(assembly, driver, pinion) and self._instance_named(
+                    assembly, driven, gear
+                )
+                backward = self._instance_named(assembly, driver, gear) and self._instance_named(
+                    assembly, driven, pinion
+                )
+                if forward:
+                    pairs.append((driver, driven, relation["name"]))
+                elif backward:
+                    pairs.append((driven, driver, relation["name"]))
+            if not pairs:
+                raise GeometryError(f"Assembly {assembly['name']!r} has no gear relation for that pair.")
+            return pairs
+        names = [
+            instance["name"]
+            for instance in assembly["instances"]
+            if self._parts.get(instance["part"]) and self._parts[instance["part"]].gear_spec
+        ]
+        if pinion is not None or gear is not None:
+            left = self._find_instance(assembly, pinion, "pinion")
+            right = self._find_instance(assembly, gear, "gear")
+            return [(left, right, f"{left}/{right}")]
+        if len(names) < 2:
+            raise GeometryError(f"Assembly {assembly['name']!r} has no gear pair to check.")
+        pairs = []
+        for index, left in enumerate(names):
+            for right in names[index + 1 :]:
+                pairs.append((left, right, f"{left}/{right}"))
+        return pairs
+
+    def _instance_named(self, assembly: dict, instance_name: str, wanted) -> bool:
+        if wanted is None:
+            return True
+        if instance_name == wanted:
+            return True
+        instance = next(item for item in assembly["instances"] if item["name"] == instance_name)
+        return instance["part"] == wanted
+
+    def _find_instance(self, assembly: dict, wanted, label: str) -> str:
+        if not isinstance(wanted, str):
+            raise GeometryError(f"In an assembly, {label} is an instance name or a part name.")
+        matches = [
+            instance["name"]
+            for instance in assembly["instances"]
+            if instance["name"] == wanted or instance["part"] == wanted
+        ]
+        if len(matches) != 1:
+            raise GeometryError(f"Assembly {assembly['name']!r} needs one instance for {label} {wanted!r}.")
+        return matches[0]
+
+    def _instance_gear(self, assembly: dict, instance_name: str):
+        instance = next(item for item in assembly["instances"] if item["name"] == instance_name)
+        part = self._get(instance["part"])
+        if not part.gear_spec:
+            raise GeometryError(
+                f"Instance {instance_name!r} uses part {part.name!r}, which is not a generated gear."
+            )
+        return part
+
+    def _gear_member(self, value, label: str):
+        if isinstance(value, str):
+            part = self._get(value)
+            if not part.gear_spec:
+                raise GeometryError(f"{label} {value!r} is not a generated gear.")
+            return copy.deepcopy(part.gear_spec), part
+        if isinstance(value, dict):
+            return value, None
+        raise GeometryError(f"{label} must be a gear spec or the name of a gear part.")
+
+    def _gear_mounting(self, spec: dict, pinion_part, gear_part) -> dict:
+        mounting = {}
+        for key in ("centre_distance_mm", "shaft_angle_deg", "offset_mm", "pinion_phase_deg", "gear_phase_deg"):
+            if spec.get(key) is not None:
+                mounting[key] = spec[key]
+        if (
+            pinion_part is not None
+            and gear_part is not None
+            and "centre_distance_mm" not in mounting
+            and "offset_mm" not in mounting
+        ):
+            from aicad.gears.meshcheck import mounting_from_frames
+            from aicad.kinematics import matrix_from_placement
+
+            measured = mounting_from_frames(
+                matrix_from_placement(pinion_part.placement),
+                matrix_from_placement(gear_part.placement),
+            )
+            mounting.setdefault("centre_distance_mm", measured["centre_distance_mm"])
+            mounting.setdefault("shaft_angle_deg", measured["shaft_angle_deg"])
+            if "pinion_phase_deg" in measured:
+                mounting.setdefault("pinion_phase_deg", measured["pinion_phase_deg"])
+                mounting.setdefault("gear_phase_deg", measured["gear_phase_deg"])
+        return mounting
+
     def check_bolts(self, spec: dict) -> dict:
         """Preload, torque, slip, and loosening for a fastener. A library part can supply the size."""
         if not isinstance(spec, dict):
