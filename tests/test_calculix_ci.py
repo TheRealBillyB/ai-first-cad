@@ -90,6 +90,27 @@ def test_the_link_uses_one_package_cache_that_the_job_creates():
     assert env["PATH"] == "/usr/bin"
 
 
+def test_a_dll_that_is_not_beside_ccx_exe_is_copied_there(tmp_path):
+    module = _installer()
+    exe_dir = tmp_path / "Library" / "bin"
+    other = tmp_path / "Library" / "mingw-w64" / "bin"
+    exe_dir.mkdir(parents=True)
+    other.mkdir(parents=True)
+    exe = exe_dir / "ccx.exe"
+    exe.write_bytes(b"exe")
+    (exe_dir / "libblas.dll").write_bytes(b"blas")
+    (other / "libarpack.dll").write_bytes(b"arpack")
+    (other / "libblas.dll").write_bytes(b"other-blas")
+    copied = module.stage_sibling_dlls(exe, [exe_dir, other])
+    assert [path.name for path in copied] == ["libarpack.dll"]
+    assert (exe_dir / "libarpack.dll").read_bytes() == b"arpack"
+    assert (exe_dir / "libblas.dll").read_bytes() == b"blas"
+    posix = tmp_path / "bin" / "ccx"
+    posix.parent.mkdir()
+    posix.write_bytes(b"ccx")
+    assert module.stage_sibling_dlls(posix, [other]) == []
+
+
 def test_a_missing_library_is_not_treated_as_a_started_solver():
     module = _installer()
     assert module.solver_started(0, "Usage: CalculiX.exe -i jobname\n", "")

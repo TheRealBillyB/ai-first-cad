@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import stat
 import subprocess
 import sys
@@ -228,6 +229,31 @@ def _find_ccx(prefix: Path, relative_dirs: list[str]) -> Path:
     raise SystemExit(f"ccx was not linked under {prefix}")
 
 
+def stage_sibling_dlls(binary: Path, directories: list[Path]) -> list[Path]:
+    """Copy DLLs that conda placed away from ccx.exe into its directory.
+
+    Windows searches the executable's directory before PATH. conda-forge puts
+    ``libarpack.dll`` in ``Library/mingw-w64/bin``, so ``ccx.exe`` exits with a
+    missing-library status until that file sits beside it. An existing file is
+    left alone. Other systems do not use this layout.
+    """
+
+    if binary.suffix.lower() != ".exe":
+        return []
+    destination = binary.parent
+    copied: list[Path] = []
+    for directory in directories:
+        if not directory.is_dir() or directory.resolve() == destination.resolve():
+            continue
+        for source in sorted(directory.glob("*.dll")):
+            target = destination / source.name
+            if target.exists():
+                continue
+            shutil.copy2(source, target)
+            copied.append(target)
+    return copied
+
+
 def _probe(binary: Path) -> None:
     try:
         completed = subprocess.run(
@@ -285,9 +311,12 @@ def install(lock: dict, *, system: str, machine: str, work: Path, prefix: Path) 
         _download(package["url"], dest, package["sha256"], package["size"])
         packages.append(dest)
     _link(micromamba, prefix, work / "root", packages)
+    directories = [prefix / relative for relative in spec["path"]]
     binary = _find_ccx(prefix, spec["path"])
+    for copied in stage_sibling_dlls(binary, directories):
+        print(f"placed {copied.name} beside {binary.name}")
+    _publish(directories)
     _probe(binary)
-    _publish([prefix / relative for relative in spec["path"]])
     return 0
 
 
