@@ -17,6 +17,42 @@ def _box(document: Document, name: str, size: list[float], center: list[float]) 
     )
 
 
+def test_a_yawed_base_is_ninety_degrees_in_mjcf(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [20, 10, 6], [10, 0, 0])
+    document.create_assembly(
+        {
+            "name": "yawed",
+            "instances": [
+                {
+                    "name": "base",
+                    "part": "base",
+                    "placement": {"position": [0, 0, 0], "rotation_deg": [0, 0, 90]},
+                }
+            ],
+            "joints": [],
+        }
+    )
+    report = document.export_robot("yawed", tmp_path / "robot")
+    mjcf = ET.parse(report["mjcf"]).getroot()
+    assert mjcf.find("compiler").get("angle") == "degree"
+    euler = [float(value) for value in mjcf.find(".//body[@name='base']").get("euler").split()]
+    assert euler == pytest.approx([90.0, 0.0, 0.0], abs=1e-4)
+    urdf = ET.parse(report["urdf"]).getroot()
+    rpy = [float(value) for value in urdf.find("joint[@name='world_to_base']/origin").get("rpy").split()]
+    assert rpy == pytest.approx([0.0, 0.0, math.pi / 2], abs=1e-6)
+    if report["validation"]["mujoco"]["status"] != "loaded":
+        return
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_path(report["mjcf"])
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base")
+    axis = data.xmat[body].reshape(3, 3)[:, 0]
+    assert list(axis) == pytest.approx([0.0, 1.0, 0.0], abs=1e-6)
+
+
 def test_box_inertia_matches_the_handbook(tmp_path):
     document = Document(tmp_path)
     _box(document, "block", [10, 20, 30], [0, 0, 0])

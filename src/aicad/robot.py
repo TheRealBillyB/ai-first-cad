@@ -351,8 +351,8 @@ def _mjcf_body(joint: dict, by_parent: dict, links: dict, indent: int) -> list[s
     child = joint["child"]
     link = links.get(child)
     pos = _xyz(joint["xyz"])
-    # eulerseq zyx consumes yaw, pitch, roll. URDF rpy is roll, pitch, yaw.
-    roll, pitch, yaw = joint["rpy"]
+    # eulerseq zyx consumes yaw, pitch, roll, in degrees. URDF rpy is radians.
+    roll, pitch, yaw = (math.degrees(angle) for angle in joint["rpy"])
     euler = _xyz([yaw, pitch, roll])
     lines = [f'{pad}<body name="{escape(child)}" pos="{pos}" euler="{euler}">']
     if link:
