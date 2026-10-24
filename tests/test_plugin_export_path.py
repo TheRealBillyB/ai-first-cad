@@ -6,6 +6,7 @@ plugin is imported.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -57,8 +58,15 @@ def test_a_plugin_export_cannot_leave_the_project(tmp_path, monkeypatch):
             export_with("toy", "note", "box", reserved, document=document)
     assert not outside.exists()
     assert loaded["count"] == 0
-    assert not (project / "NUL").exists()
-    assert not (project / "CONOUT$.txt").exists()
+    # os.walk returns directory entries. Path.exists("NUL") is true on
+    # Windows because that name is the null device, which this export did
+    # not create.
+    found = []
+    for _current, dirnames, filenames in os.walk(project):
+        for entry in dirnames + filenames:
+            if entry in {"NUL", "COM1", "CON", "CONOUT$.txt", "CONIN$"}:
+                found.append(entry)
+    assert found == []
 
     written = export_with("toy", "note", "box", "exports/box.txt", document=document)
     path = Path(written["path"])
