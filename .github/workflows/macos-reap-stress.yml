@@ -1,0 +1,77 @@
+name: macos reap stress
+
+# Temporary. Repeats the two descendant checks on this branch, then this file goes away.
+on:
+  push:
+    branches:
+      - cursor/macos-reap-before-return-72c8
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: repeat detached-child checks
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install aicad
+        run: python install.py
+
+      - name: Repeat both detached-child checks
+        shell: bash
+        env:
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          set -euo pipefail
+          if [ -x .venv/bin/pytest ]; then
+            PY=.venv/bin/pytest
+          else
+            PY=pytest
+          fi
+          tests=(
+            tests/bughunt/test_findings.py::test_bh_s03_script_cannot_leave_a_detached_child
+            tests/test_sandbox_findings.py::test_bh_s03_script_cannot_leave_a_detached_child
+          )
+          for i in $(seq 1 25); do
+            echo "serial $i"
+            "$PY" -p no:xdist -q --tb=line "${tests[@]}"
+          done
+          echo "parallel"
+          pids=()
+          fail=0
+          for i in $(seq 1 8); do
+            "$PY" -p no:xdist -q --tb=line "${tests[@]}" > "stress-$i.log" 2>&1 &
+            pids+=($!)
+            if [ "${#pids[@]}" -eq 4 ]; then
+              for pid in "${pids[@]}"; do
+                if ! wait "$pid"; then
+                  fail=1
+                fi
+              done
+              pids=()
+            fi
+          done
+          for pid in "${pids[@]}"; do
+            if ! wait "$pid"; then
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "parallel stress failed"
+            for i in $(seq 1 8); do
+              echo "----- stress-$i.log -----"
+              cat "stress-$i.log" || true
+            done
+            exit 1
+          fi
