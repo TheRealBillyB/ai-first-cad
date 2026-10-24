@@ -108,6 +108,7 @@ nav { display: flex; gap: 4px; }
 .flag { color: var(--fail); font-size: 11px; }
 
 .stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+#assembly-tools { flex-wrap: wrap; }
 .stage-bar, .sketch-tools {
   min-width: 0;
   max-width: 100%;
