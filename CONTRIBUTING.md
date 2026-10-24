@@ -29,7 +29,7 @@ Discussion and review follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ### Decision file
 
-Name it `docs/decisions/YYYY-MM-DD-short-slug.md`. The slug is a few words from the decision, not a sequence number, so two branches can each add a file when the names differ. The `date` field is that same day. Keep the rationale to one line. Leave `order` unset.
+Name it `docs/decisions/YYYY-MM-DD-short-slug.md`. The slug is a few words from the decision, not a sequence number, so two branches can each add a file when the names differ. The `date` field is that same day. Keep the title and the rationale to one line each: no line break and no HTML comment. Leave `order` unset.
 
 ```markdown
 ---
@@ -48,7 +48,7 @@ Name it `docs/tools/short-slug.md`. Leave `order` unset. The new row is listed a
 ```markdown
 # `tool_name`
 
-What the tool does, in one line.
+What the tool does, in one line. No line break and no HTML comment.
 ```
 
 ### A branch that already edited a generated document
