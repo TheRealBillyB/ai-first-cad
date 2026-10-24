@@ -311,6 +311,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
 - `check_cables` routes polylines through waypoints fixed on parts, and tendons through anchors, pulleys, guides, and an end anchor. It reports length change, slack or stretch, strain, bend-radius violations, wrap angle, capstan tension from `actuator_force_n`, and pinching or collision. A tendon length includes the wrap arc. `sequence` may name a motion study. It does not simulate a flexible body.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
+- `solve_gear_train` reads the assembly gear train and the tooth counts of the generated gears. It returns the speed and torque of every shaft for an input speed and torque. An external mesh reverses direction. An idler cancels. A compound train multiplies the stage ratios. A planetary set with the ring fixed turns the carrier at z_sun / (z_sun + z_ring) of the sun. An open differential keeps the average of the two outputs equal to the carrier. In a turn, one output speeds up as much as the other slows down, and the two torques stay equal. status is under_constrained or over_constrained when those speeds do not determine the train. Efficiency on a mesh defaults to 1.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
 - `check_bolts` takes size, grade, axial_n, shear_n, and vibration (`mild`, `moderate`, `intense`). Slip under transverse load is the loosening mechanism. The countermeasures explain what a nyloc nut, a wedge washer, threadlocker, and safety wire do and do not do.
@@ -781,6 +782,14 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         A linkage is a planar four-bar map, not a closed spatial loop. A cylinder
         keeps the rod eye on the moving clevis without adding a joint cycle.
         poses, motions, studies, cables, and actuators live on the same spec.
+        gear_train, when present, is {shafts, meshes, fixed, differentials}.
+        A shaft is {name, gears, joint}. A gear is an instance name, or
+        {name, instance, teeth}. Teeth come from the generated gear unless teeth
+        is set, which is how an internal ring is named. A mesh is
+        {a, b, kind, carrier, efficiency}. kind is external or internal.
+        carrier is the shaft that mesh orbits with. Omit it for a fixed axis.
+        An open differential is {carrier, left, right}. The two output speeds
+        average to the carrier. fixed lists shafts held at zero speed.
         """
         return guard(lambda: run("create_assembly", spec=spec))
 
@@ -893,6 +902,20 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 steps=steps,
             )
         )
+
+    @mcp.tool()
+    def solve_gear_train(name: str, drive: dict[str, Any]) -> dict:
+        """Speed and torque of every shaft in an assembly gear train.
+
+        The assembly gear_train lists shafts, meshes, fixed members, and any
+        open differential. Tooth counts come from the generated gears. drive
+        inputs are {shaft, speed_rpm, torque_nm}. For a differential in a turn,
+        speeds is {shaft, speed_rpm} for one output: that output speeds up as
+        much as the other slows down, and both still average to the carrier.
+        status is determined, under_constrained, or over_constrained.
+        Efficiency on a mesh defaults to 1. Read assumptions and limits.
+        """
+        return guard(lambda: run("solve_gear_train", name=name, drive=drive))
 
     @mcp.tool()
     def estimate_power(

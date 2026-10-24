@@ -955,6 +955,15 @@ def _cmd_check_cables(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("cables", report)  # noqa: SLF001
 
 
+def _cmd_solve_gear_train(workspace: Workspace, arguments: dict) -> dict:
+    drive = arguments.get("drive")
+    if not isinstance(drive, dict):
+        raise GeometryError("solve_gear_train needs drive: inputs with shaft, speed_rpm, and torque_nm.")
+    report = workspace.document.solve_gear_train(arguments["name"], drive)
+    report["assembly"] = arguments["name"]
+    return workspace._remember_panel("gear_train", report)  # noqa: SLF001
+
+
 def _cmd_estimate_power(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.estimate_power(
         arguments["name"],
@@ -1528,6 +1537,21 @@ _add(Command(
         ["name"],
     ),
     _cmd_check_cables,
+))
+_add(Command(
+    "solve_gear_train",
+    "Speed and torque of every shaft in an assembly gear train. drive.inputs gives the driven shaft, speed_rpm, and torque_nm. A differential in a turn also needs drive.speeds for one output.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "drive": {
+                "type": "object",
+                "description": "inputs: [{shaft, speed_rpm, torque_nm}]. speeds: [{shaft, speed_rpm}] when a differential is in a turn.",
+            },
+        },
+        ["name", "drive"],
+    ),
+    _cmd_solve_gear_train,
 ))
 _add(Command(
     "estimate_power",
