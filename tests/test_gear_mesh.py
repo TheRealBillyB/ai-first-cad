@@ -197,6 +197,19 @@ def test_the_hypoid_checker_is_registered_and_can_be_replaced():
         register_mesh_check("skew", offset_checker)
 
 
+def test_a_hypoid_shaft_angle_past_a_right_angle_is_not_folded():
+    report = check_pair(
+        _hypoid("pinion", shaft_angle_deg=95),
+        _hypoid("ring", shaft_angle_deg=95),
+        backlash_mm={"min": 0.0, "max": 1.0},
+        steps=8,
+    )
+    assert report["ideal_shaft_angle_deg"] == pytest.approx(95)
+    assert report["shaft_angle_deg"] == pytest.approx(95, abs=0.05)
+    assert abs(report["shaft_angle_error_deg"]) < 0.05
+    assert not any("shaft angle" in item.lower() for item in report["findings"])
+
+
 def test_a_hypoid_pair_passes_the_mesh_check():
     # The pitch-flank gap equals the designed shift near mid-face (0.052 mm)
     # and opens toward the ends. A 0.05 cap is the solid contact bar, not this gap.
