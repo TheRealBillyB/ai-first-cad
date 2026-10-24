@@ -852,6 +852,45 @@ def _remove_frames(folder: Path, root: Path) -> None:
     shutil.rmtree(resolved, ignore_errors=True)
 
 
+def write_frames(
+    root: Path,
+    images: list[Image.Image],
+    *,
+    fps: int | None = None,
+    video: str | None = None,
+    path: str | Path | None = None,
+    stem: str = "timelapse",
+) -> dict:
+    """Write frames with the same GIF and ffmpeg path as an assembly animation.
+
+    The GIF is always written. MP4 and WebM are written when ``video`` asks
+    for them and ``ffmpeg`` is on PATH. A missing encoder leaves the GIF.
+    """
+    if not images:
+        raise GeometryError("There are no frames to write.")
+    rate = 12 if fps is None else _whole(fps, "fps", 1, 60)
+    formats = _video_formats(video)
+    targets = _targets(root, path, stem, formats)
+    frame_ms = max(10, int(math.floor(1000 / rate / 10 + 0.5)) * 10)
+    _write_png(targets["poster"], images[0])
+    _write_gif(targets["gif"], images, frame_ms)
+    videos, video_message = _write_videos(root, targets, images, rate, formats)
+    report = {
+        "frames": len(images),
+        "fps": rate,
+        "frame_ms": frame_ms,
+        "width": images[0].width,
+        "height": images[0].height,
+        "gif": targets["gif"],
+        "poster": targets["poster"],
+        "video_message": video_message,
+    }
+    for fmt, destination in targets["videos"].items():
+        if fmt in videos:
+            report[fmt] = destination
+    return report
+
+
 def _whole(value, label: str, low: int, high: int) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise GeometryError(f"{label} must be a whole number.")

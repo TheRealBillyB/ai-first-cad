@@ -220,6 +220,7 @@ def solve_part(
     out_dir: Path | None = None,
     stem: str = "part",
     part_name: str | None = None,
+    probes_mm: list | None = None,
 ) -> FeaReport:
     """Mesh a solid and run a linear static solve.
 
@@ -227,7 +228,12 @@ def solve_part(
     ``mesh_size_mm`` and ``target_safety_factor`` (default 2). A fix or a load
     has ``name``, ``select``, and, for a load, ``type`` of ``force``,
     ``pressure``, or ``bolt``.
+
+    ``probes_mm`` is one point, or three points, in the part frame. Each probe
+    reports the displacement of the nearest mesh node. Three points are enough
+    for a caller to fit a small rotation. The points do not change the solve.
     """
+    probe_points = _probe_points(probes_mm)
     if not isinstance(setup, dict):
         raise GeometryError("A mechanics setup is an object with material, fixes, and loads.")
     material = lookup_material(str(setup.get("material", "")))
@@ -429,6 +435,7 @@ def solve_part(
             )
         )
     note = _summary(material, peak, safety, magnitude[move_index], review, warnings)
+    probes = None if probe_points is None else tuple(_probe_nodes(mesh["points"], disp, probe_points))
     return FeaReport(
         part=part_name,
         status="solved",
@@ -449,7 +456,40 @@ def solve_part(
         review=review,
         views=views,
         note=note,
+        probes=probes,
     )
+
+
+def _probe_points(value) -> list[list[float]] | None:
+    """One point, or three, in the part frame. None means the solve has no probes."""
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)) or not value:
+        raise GeometryError("probes_mm must be one point, or three points, in millimeters.")
+    if len(value) not in (1, 3):
+        raise GeometryError("probes_mm must be one point, or three points that fit a small rotation.")
+    return [list(kernel.finite_vec3(point, "Probe")) for point in value]
+
+
+def _probe_nodes(points: np.ndarray, displacement: np.ndarray, probes: list[list[float]]) -> list[dict]:
+    """Displacement of the mesh node nearest each probe. The node may sit off the point."""
+    cloud = np.asarray(points, dtype=float)
+    field = np.asarray(displacement, dtype=float)
+    rows = []
+    for probe in probes:
+        target = np.asarray(probe, dtype=float)
+        distance = np.linalg.norm(cloud - target, axis=1)
+        index = int(np.argmin(distance))
+        gap = float(distance[index])
+        rows.append(
+            {
+                "at_mm": [round(float(component), 6) for component in target],
+                "node_mm": [round(float(component), 6) for component in cloud[index]],
+                "distance_mm": round(gap, 6),
+                "displacement_mm": [round(float(component), 6) for component in field[index]],
+            }
+        )
+    return rows
 
 
 def _bind_support(item: dict, catalog: list[dict], index: int) -> dict:

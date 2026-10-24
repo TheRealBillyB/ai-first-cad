@@ -90,7 +90,7 @@ The ring tooth is the cone of one circular face-mill blade. `pressure_angle_deg`
 
 The pinion is the blank left after that same tooth is rolled. Both shafts turn at the tooth ratio about the offset axes, and each pose of the tooth is cut out of a tip-cone blank. The groove is then copied around the pinion. The ring flank is shifted a little into the metal, and the cutting tooth is shifted a little into the space, so a flat facet of the blade cannot cross the mate. The reported backlash is those two shifts. Between the sampled turns the pinion can sit slightly closer. Root clearance is deeper than the mate tip. The proportions are a simple addendum split, not a cited hypoid standard.
 
-A zero offset is a spiral bevel, not a hypoid. A very large offset, or a pinion with too few teeth for the blade, is refused when the tooth is cut away. This is not a tolerance grade and not a load rating.
+A zero offset is a spiral bevel, not a hypoid. When a pitch point exists and its tooth can be cut, the roll is cut into the pinion. A combination of `offset_mm`, `shaft_angle_deg`, `ring_diameter_mm`, and `spiral_angle_deg` with no pitch point, or whose pitch-point tooth cannot be cut, is refused before that roll, and the message names those inputs. A very large offset, or a pinion with too few teeth for the blade, is refused when the tooth is cut away. This is not a tolerance grade and not a load rating.
 
 ## Bore, hub, keyway, spline
 

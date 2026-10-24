@@ -62,6 +62,8 @@ A person designs the part here: sketch, extrude, select a face, edit a dimension
 
 Requirements are checked against every design. The first kinds of goal: it holds this load, it fits the printer bed, it stays under this mass.
 
+- **Design session record.** **Done.** While a session runs from the app, the command line, or MCP, an opt-in record stores each design step. Replay steps through that record. Export writes a timelapse GIF, and MP4 or WebM when ffmpeg is on PATH.
+
 ### Gears, mechanisms, and checks
 
 **Planned.**
@@ -72,7 +74,7 @@ Requirements are checked against every design. The first kinds of goal: it holds
 - **Gear-train solver.** Done. Speed and torque for a simple or compound train, an idler, a planetary set, and an open differential. The report says when the train is under-constrained or over-constrained.
 - **Motion study.** **Done.** Drives assembly joints through angles or paths over time, and reports collisions and joint-limit violations.
 - **Kinematics.** **Done.** Solves forward and inverse kinematics for a serial chain of joints, including the joint values that reach a target pose, and steps a tool path through the motion study.
-- **Positional error budget.** Estimates the end-point position error of a jointed mechanism from link deflection (using the strength check), gear backlash, joint stiffness, and encoder resolution, and reports pass or fail against a tolerance.
+- **Positional error budget.** **Done.** The tip position error of a serial chain is the positional Jacobian times each joint bound (an encoder half-step, a gear-mesh or stated backlash, and a stated load over joint stiffness), plus a small screw for link deflection from the strength check or a stated deflection. Each contribution is listed. The worst case tries every sign of those contributions. A root-sum-square is reported beside it and does not grant a pass. The check names the pose, on a pose list or a tool path, where the worst case is largest. It passes when that worst case is within the tolerance and every contribution was computed. An offset gear pair's backlash along the tooth is not turned into an angle. Link rotation is fit only from three probe points; one probe is a translation. The strength check is the link in its own frame, and a degraded mesh cannot support a pass. Thermal growth, bearing runout, and an assembly stack-up are omitted unless they are stated as one of those contributions.
 - **Cable and pulley routing.** **Done.** Routes cables over pulleys and guides through joints, and checks how cable length and tension change across a joint's range of motion.
 - **Standard parts library.** **Done.** Inserts bearings, seals, fasteners, small motors, and gearboxes by catalog designation.
 - **Animated renders.** **Done.** Writes a motion study, a camera orbit, or an exploded opening to a GIF, and to MP4 or WebM when ffmpeg is on PATH.
