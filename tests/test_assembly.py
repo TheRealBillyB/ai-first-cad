@@ -561,6 +561,42 @@ def test_cylinder_relation_puts_the_rod_eye_on_the_clevis():
     assert relation["stroke_mm"] == pytest.approx(11.803, abs=0.05)
 
 
+def test_a_cylinder_on_a_cylindrical_joint_includes_the_slide():
+    spec = _cylinder_spec(80)
+    shoulder = spec["joints"][0]
+    shoulder["type"] = "cylindrical"
+    shoulder["axis"] = [0, 0, 1]
+    parked = solve(spec)
+    parked_values = {joint["name"]: joint for joint in parked["joints"]}
+    assert parked_values["stroke"]["value"] == pytest.approx(50.0, abs=1e-3)
+    assert parked_values["barrel"]["value"] == pytest.approx(0.0, abs=1e-3)
+    slid = solve(spec, {"shoulder": {"value": 0, "slide": 50}})
+    slid_values = {joint["name"]: joint for joint in slid["joints"]}
+    length = math.hypot(150.0, 50.0)
+    assert slid_values["stroke"]["value"] == pytest.approx(length - 100.0, abs=1e-3)
+    assert slid_values["barrel"]["value"] == pytest.approx(math.degrees(math.atan2(-50.0, 150.0)), abs=1e-3)
+    revolute = solve(_cylinder_spec(80), {"shoulder": {"value": 0, "slide": 50}})
+    revolute_stroke = next(joint for joint in revolute["joints"] if joint["name"] == "stroke")
+    assert revolute_stroke["value"] == pytest.approx(50.0, abs=1e-3)
+
+
+def test_cylinder_power_ratio_uses_the_cylindrical_slide():
+    from aicad.kinematics import normalize
+    from aicad.power import _instant_ratio
+
+    spec = _cylinder_spec(80)
+    spec["joints"][0]["type"] = "cylindrical"
+    spec["joints"][0]["axis"] = [0, 0, 1]
+    cleaned = normalize(spec)
+    relation = cleaned["relations"][0]
+    solved = {"joints": [{"name": "shoulder", "value": 90.0, "slide": 0.0}]}
+    flat = _instant_ratio(relation, solved, cleaned)
+    solved["joints"][0]["slide"] = 50.0
+    raised = _instant_ratio(relation, solved, cleaned)
+    assert flat == pytest.approx(0.0, abs=1e-3)
+    assert raised == pytest.approx(-1.0, abs=1e-2)
+
+
 def test_cylinder_stroke_clamps_at_the_joint_limit():
     solved = solve(_cylinder_spec(40))
     stroke = next(joint for joint in solved["joints"] if joint["name"] == "stroke")
