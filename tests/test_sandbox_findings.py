@@ -743,6 +743,22 @@ def test_bh_s03_script_cannot_leave_a_detached_child(tmp_path):
     assert not (tmp_path / "phase2.txt").exists()
 
 
+def test_descendant_walk_keeps_every_child_and_stops_when_a_listing_fails():
+    from aicad.sandbox import _descendant_tree
+
+    tree = {10: [11, 12], 11: [13], 12: [], 13: []}
+    found = _descendant_tree(10, lambda pid: tree.get(pid, []))
+    assert found == {11, 12, 13}
+
+    def missing(pid: int):
+        if pid == 13:
+            return None
+        return tree.get(pid, [])
+
+    assert _descendant_tree(10, missing) is None
+    assert _descendant_tree(10, lambda _pid: []) == set()
+
+
 def test_bh_f06_a_failed_script_keeps_the_network_grant(tmp_path, config_home):
     _sandbox_or_skip()
     allow_design_scripts(tmp_path)
