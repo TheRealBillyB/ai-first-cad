@@ -108,6 +108,10 @@ fasteners, and hoses, and writes a CSV. It has no prices. A mass on that
 list is a handbook estimate. `exploded_view` pulls the parts apart along
 the joints for a picture. The gap is not a dimension. Read `result_kind`,
 `result_label`, and `limits` on each of those reports.
+`render_animation` writes a GIF of a motion study, a camera orbit, or an
+exploded opening. MP4 and WebM are added when ffmpeg is on PATH. If it is
+not, the GIF is still written and `video_message` says so. The files stay
+in the project.
 A design that should be planned first starts with `start_plan`. Record research
 with `add_plan_research` (every note needs a source), draw rough blueprint
 sheets with `put_plan_sheet` (blocks, dimensions, and labels), and list
@@ -313,6 +317,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
 - `check_cables` routes polylines through waypoints fixed on parts. It reports length change, strain, bend-radius violations, and pinching. It does not simulate a flexible body.
 - `estimate_power` is quasi-static. Gravity is along −Z. Hydraulic actuators need bore_mm and, on a revolute joint, moment_arm_mm. Electric actuators need a torque constant. The report states what it leaves out.
+- `solve_gear_train` reads the assembly gear train and the tooth counts of the generated gears. It returns the speed and torque of every shaft for an input speed and torque. An external mesh reverses direction. An idler cancels. A compound train multiplies the stage ratios. A planetary set with the ring fixed turns the carrier at z_sun / (z_sun + z_ring) of the sun. An open differential keeps the average of the two outputs equal to the carrier. In a turn, one output speeds up as much as the other slows down, and the two torques stay equal. status is under_constrained or over_constrained when those speeds do not determine the train. Efficiency on a mesh defaults to 1.
 - `solve_modal` returns natural frequencies. fixes use the same face selectors as `solve_mechanics`. excitations are `{name, kind, rpm}` or `{hz}`. Rotating sources check harmonics 1, 2, and 3. A pump checks 1 and 2. The mode picture is magnified; it is not an amplitude.
 - `solve_assembly_modal` meshes the posed assembly and ties each joint with a few translation equations. Omit fixes to hold the grounded bottom face. A revolute is locked, so the frequencies are an upper bound.
 - `check_bolts` takes size, grade, axial_n, shear_n, and vibration (`mild`, `moderate`, `intense`). Slip under transverse load is the loosening mechanism. The countermeasures explain what a nyloc nut, a wedge washer, threadlocker, and safety wire do and do not do.
@@ -320,6 +325,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `export_drawing` writes a third-angle sheet (front, top, right, isometric) as PDF and DXF, with overall dimensions, a title block, and a scale. The sizes are the axis-aligned box of the posed solids. It is a layout drawing. It has no GD&T, no tolerances, and no threads. Read `result_label` and `limits`.
 - `bill_of_materials` counts parts, catalog fasteners, bearings, hoses, and cables, and writes a CSV. The quantities are a count. A mass is an estimate from volume and handbook density. It has no prices. Read `result_label` and `limits`.
 - `exploded_view` pulls parts apart along their joints and returns a picture. The grounded part stays. Pass `on_drawing` to put that view on the sheet. The gap is not a dimension. Read `result_label` and `limits`.
+- `render_animation` writes a GIF of a motion study, a camera orbit, or an exploded opening. `frames` counts both ends. `fps` is the playback rate. `width` and `height` are even pixel sizes. `camera` is iso, front, back, left, right, top, bottom, or orbit. `camera_path` is a list of `{azimuth_deg, elevation_deg}`. `background` is `paper`, `white`, `black`, or `#rrggbb`. `colors` and `materials` recolor parts in the pictures only. `overlay` is `none`, `step`, `time`, or `value`. `video` is `gif`, `mp4`, `webm`, or `both`. MP4 and WebM need `ffmpeg` on PATH. If it is missing, the GIF is still written and `video_message` says so. `path` stays inside the project.
 - `check_print` reports overhang area, a best orientation among the six axis poses, and printer fit. `list_printers` names the beds. A requirement of kind `fits_printer` uses `printer` and optional `orientation`.
 - `export_robot` writes URDF and MJCF next to STL meshes. Joint origins are the zero pose. A cylindrical joint becomes a revolute plus a prismatic.
 """.strip()
@@ -786,6 +792,14 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         A linkage is a planar four-bar map, not a closed spatial loop. A cylinder
         keeps the rod eye on the moving clevis without adding a joint cycle.
         poses, motions, studies, cables, and actuators live on the same spec.
+        gear_train, when present, is {shafts, meshes, fixed, differentials}.
+        A shaft is {name, gears, joint}. A gear is an instance name, or
+        {name, instance, teeth}. Teeth come from the generated gear unless teeth
+        is set, which is how an internal ring is named. A mesh is
+        {a, b, kind, carrier, efficiency}. kind is external or internal.
+        carrier is the shaft that mesh orbits with. Omit it for a fixed axis.
+        An open differential is {carrier, left, right}. The two output speeds
+        average to the carrier. fixed lists shafts held at zero speed.
         """
         return guard(lambda: run("create_assembly", spec=spec))
 
@@ -874,6 +888,20 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         is a polyline. It does not sag.
         """
         return guard(lambda: run("check_cables", name=name, sequence=sequence, motion=motion))
+
+    @mcp.tool()
+    def solve_gear_train(name: str, drive: dict[str, Any]) -> dict:
+        """Speed and torque of every shaft in an assembly gear train.
+
+        The assembly gear_train lists shafts, meshes, fixed members, and any
+        open differential. Tooth counts come from the generated gears. drive
+        inputs are {shaft, speed_rpm, torque_nm}. For a differential in a turn,
+        speeds is {shaft, speed_rpm} for one output: that output speeds up as
+        much as the other slows down, and both still average to the carrier.
+        status is determined, under_constrained, or over_constrained.
+        Efficiency on a mesh defaults to 1. Read assumptions and limits.
+        """
+        return guard(lambda: run("solve_gear_train", name=name, drive=drive))
 
     @mcp.tool()
     def estimate_power(
@@ -1043,6 +1071,72 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 )
             )
         )
+
+    @mcp.tool()
+    def render_animation(
+        name: str,
+        kind: str | None = None,
+        sequence: str | None = None,
+        study: dict[str, Any] | None = None,
+        frames: int | None = None,
+        fps: float | None = None,
+        duration_s: float | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        camera: str | None = None,
+        camera_path: list[dict[str, Any]] | None = None,
+        turns: float | None = None,
+        elevation_deg: float | None = None,
+        background: str | None = None,
+        colors: dict[str, Any] | None = None,
+        materials: dict[str, Any] | None = None,
+        overlay: str | None = None,
+        joint: str | None = None,
+        gap_mm: float | None = None,
+        video: str | None = None,
+        path: str | None = None,
+    ) -> list[str | Image]:
+        """Write a GIF of a motion study, a camera orbit, or an exploded opening.
+
+        frames counts both ends. fps is the playback rate. width and height are
+        even pixel sizes. camera is iso, front, back, left, right, top, bottom,
+        or orbit. camera_path is a list of {azimuth_deg, elevation_deg}.
+        background is paper, white, black, or #rrggbb. colors and materials
+        recolor the pictures only and do not change the assembly. overlay is
+        none, step, time, or value. value draws a joint angle, the explode
+        gap, or the orbit angle. video is gif, mp4, webm, or both. MP4 and
+        WebM need ffmpeg on PATH. If it is missing, the GIF is still written
+        and video_message says so. path stays inside the project.
+        """
+        return guard(
+            lambda: _images(
+                run(
+                    "render_animation",
+                    name=name,
+                    kind=kind,
+                    sequence=sequence,
+                    study=study,
+                    frames=frames,
+                    fps=fps,
+                    duration_s=duration_s,
+                    width=width,
+                    height=height,
+                    camera=camera,
+                    camera_path=camera_path,
+                    turns=turns,
+                    elevation_deg=elevation_deg,
+                    background=background,
+                    colors=colors,
+                    materials=materials,
+                    overlay=overlay,
+                    joint=joint,
+                    gap_mm=gap_mm,
+                    video=video,
+                    path=path,
+                )
+            )
+        )
+
     @mcp.tool()
     def start_plan(
         name: str,

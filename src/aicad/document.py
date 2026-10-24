@@ -1148,6 +1148,24 @@ class Document:
             chosen = assembly.motion_by_name(spec, sequence, motion) if (sequence or motion) else None
             return assembly.check_cables(spec, self._assembly_shapes(spec), chosen)
 
+    def solve_gear_train(self, name: str, drive: dict) -> dict:
+        """Speed and torque of every shaft in the assembly gear train.
+
+        Tooth counts come from the generated gears on the train. ``drive`` gives
+        the input shaft, speed in rpm, and torque in N·m. A differential in a
+        turn also needs one output speed.
+        """
+        with self._lock:
+            spec = self._get_assembly(name)
+            gear_specs = {}
+            for instance in spec["instances"]:
+                part = self._get(instance["part"])
+                if part.gear_spec is not None:
+                    gear_specs[instance["name"]] = part.gear_spec
+            from aicad.gears.train import solve_gear_train as solve_train
+
+            return solve_train(spec, drive, gear_specs)
+
     def estimate_power(
         self,
         name: str,
@@ -1418,6 +1436,83 @@ class Document:
                 limits=list(report.get("omits") or explode_mod.OMITS),
             )
             return finished
+
+    def render_animation(
+        self,
+        name: str,
+        kind: str | None = None,
+        sequence: str | None = None,
+        study: dict | None = None,
+        frames: int | None = None,
+        fps: float | None = None,
+        duration_s: float | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        camera: str | dict | None = None,
+        camera_path: list | None = None,
+        turns: float | None = None,
+        elevation_deg: float | None = None,
+        background: str | None = None,
+        colors: dict | None = None,
+        materials: dict | None = None,
+        overlay: str | None = None,
+        joint: str | None = None,
+        gap_mm: float | None = None,
+        video: str | None = None,
+        path: str | Path | None = None,
+    ) -> dict:
+        """Write a GIF of this assembly, and a video when ffmpeg is on PATH.
+
+        ``kind`` is ``motion``, ``orbit``, or ``exploded``. ``frames`` counts
+        both ends. ``fps`` is the playback rate. ``width`` and ``height`` are
+        even pixel sizes. ``camera`` is a view name or ``orbit``.
+        ``camera_path`` is a list of ``{azimuth_deg, elevation_deg}``.
+        ``background`` is ``paper``, ``white``, ``black``, or ``#rrggbb``.
+        ``colors`` and ``materials`` recolor the pictures only. ``overlay`` is
+        ``none``, ``step``, ``time``, or ``value``. ``video`` is ``gif``,
+        ``mp4``, ``webm``, or ``both``. ``path`` is a file or a directory
+        inside the project. A missing ffmpeg still leaves the GIF, and
+        ``video_message`` says why the video was not written.
+        """
+        with self._lock:
+            if path is not None:
+                from aicad.animation import refuse_output
+
+                refuse_output(self.workspace, path)
+            spec = self._get_assembly(name)
+            from aicad.animation import render_clip
+
+            try:
+                return render_clip(
+                    root=self.workspace,
+                    spec=spec,
+                    shapes=self._assembly_shapes(spec),
+                    libraries=self._library_specs(spec),
+                    kind=kind,
+                    sequence=sequence,
+                    study=study,
+                    frames=frames,
+                    fps=fps,
+                    duration_s=duration_s,
+                    width=width,
+                    height=height,
+                    camera=camera,
+                    camera_path=camera_path,
+                    turns=turns,
+                    elevation_deg=elevation_deg,
+                    background=background,
+                    colors=colors,
+                    materials=materials,
+                    overlay=overlay,
+                    joint=joint,
+                    gap_mm=gap_mm,
+                    video=video,
+                    path=path,
+                )
+            except OSError as exc:
+                raise GeometryError(
+                    f"Could not write the animation for {spec['name']}. {exc.strerror or exc}."
+                ) from exc
 
     def assembly_mesh(self, name: str) -> dict:
         with self._lock:

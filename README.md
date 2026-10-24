@@ -285,6 +285,13 @@ aicad bill-of-materials rod_handler --workspace examples/rod_handler_workspace
 aicad exploded-view rod_handler --workspace examples/rod_handler_workspace
 ```
 
+An animation is the same headless picture, one frame after another. `render_animation` (CLI: `aicad animate`) writes a GIF of a motion study, a camera orbit, or an exploded opening. Resolution, frame rate, duration, camera path, background, and per-part colors or materials are arguments. An overlay can show the step, the time, or a joint value. When `ffmpeg` is on PATH the same frames are also written as MP4 or WebM. When it is not, the GIF is still written and the report says the video was skipped. The files stay in the project.
+
+```bash
+aicad animate rod_arm --kind orbit --frames 24 --fps 12 --workspace ./aicad_workspace
+aicad animate rod_arm --kind exploded --workspace ./aicad_workspace
+```
+
 The sheet is third-angle, A3, PDF and DXF, with the overall box of the posed assembly, a title block, and a scale. The usual ratios run from 10:1 to 1:1000. A larger assembly uses a smaller ratio, and the sheet says which one. It is a layout drawing. It has no GD&T, no tolerances, and no threads. The count is a CSV of parts, catalog fasteners, other catalog parts, and hoses, written as UTF-8 with a byte order mark so Excel keeps the names. Quantities are exact. A mass is a published catalog mass when the table has one, and otherwise volume times a handbook density. There are no prices. The exploded picture pulls a slide along its axis, a hinge off its pin, and a catalog fastener out along its axis. The gap is not a dimension, and the picture is not a disassembly procedure. A Windows reserved name such as `con` is refused. Pick another name.
 
 On the rod handler at its stored pose the sheet is 1:20, including the isometric, because that view fits. The exploded isometric is 1:50 so the opened joints fit, and the view says so. The overall box is 1252 by 946.1 by 482.4 mm. That box is the space the swung arm occupies, not the length of a link. The list is 18 lines and 31 items, including eight M20 screws as one line and two hoses with no mass. The picture opens each joint by 227.8 mm.
@@ -402,6 +409,7 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `search_parts` | Find a catalog part by designation: ISO 4762 screw, ISO 4032 nut, ISO 7089 washer, ISO 15 bearing (`608`), ISO 355 tapered bearing (`30205`), ISO 6194 seal (`20x35x7`), NEMA ICS 16 stepper (`NEMA17`), or a published gearbox. |
 | `insert_standard_part` | Insert one catalog part and place it. Screws need `length` (shank under the head, mm). A joint can name `parent_mate` and `child_mate` from that part. |
 | `create_gear` | Spur, helical, straight bevel, or spiral bevel gear from module, tooth count, and face width. |
+| `solve_gear_train` | Speed and torque of every shaft in an assembly gear train, including a planetary set and an open differential. |
 | `section_part` | A planar cross-section: an image, the cut area, and the outline. Axis plus offset, or an origin and a normal. |
 | `feature_report` | For each boolean step, how much material was new, buried, or actually removed. |
 | `inspect_part` | Measure, estimate wall thickness, report feature contribution, and return the pictures. Call this after every edit. |
@@ -426,6 +434,7 @@ A resource at `aicad://guide` repeats the script rules below. The server instruc
 | `create_assembly` / `update_assembly` / `get_assembly` / `list_assemblies` | Place parts, replace a spec (a spec that does not solve leaves the previous assembly), and read joint values. |
 | `set_joint` / `set_pose` / `run_motion` / `render_assembly` | Move an assembly, sweep a motion, and render the pose. Motion and the assembly render return pictures. |
 | `run_motion_study` | Drive joints from expressions or keyframes, apply gear couplings, and report collisions and joint-limit violations. The record is `motion_study.v1`. |
+| `render_animation` | GIF of a motion study, a camera orbit, or an exploded opening. MP4 or WebM when ffmpeg is on PATH. |
 | `check_cables` / `estimate_power` | Cable length and strain, and a quasi-static power estimate. Read the assumptions. |
 | `list_sketches` / `update_sketch` / `update_part_from_sketch` | Sketch names, a replaced sketch spec, and a solid rebuilt from it. |
 | `session_payload` / `replace_session` / `save_project` / `open_project` | Read or replace the saved document, confirm `session.json`, or switch project folder. Opening does not run scripts. |
@@ -531,6 +540,8 @@ A result is either a **verified check** or a **rough estimate**. A verified chec
 **Catalog parts.** Designations are rows in `src/aicad/catalog_data.py`. Adding a size is a new row; geometry, search, the bill of materials, and joint mates read that table. Deep-groove boundary dimensions are ISO 15. Tapered bore, outside diameter, overall width, cone width, and cup width are ISO 355. Radial shaft seals are DIN 3760 / ISO 6194-1 nominal shaft × housing × width. Socket-head screws are ISO 4762, nuts are ISO 4032, washers are ISO 7089, and the modeled shank is the ISO 724 basic minor diameter so a clearance check is not against the major diameter. Stepper faces, pilots, and default shafts are NEMA ICS 16; the body length is not in that standard. The two gearboxes are the published mounting dimensions of those designations, including an input bore that can be shorter or smaller than the default NEMA shaft. Load ratings are public catalog figures (ISO 281 method), not a requirement of the dimension standard. A screw's shank points down (−Z) and the underside of the head sits on local z = 0. Nuts, washers, bearings, and seals sit on z = 0 and grow toward +Z. A motor face is on z = 0 with the shaft toward +Z. A gearbox input face is on z = 0 with the output toward +Z, so naming both faces as mates stacks them. Fastener sizes that are not in the local table, and non-default fastener types, still come from [bd_warehouse](https://github.com/gumyr/bd_warehouse). `import_step` plus `place_part` is the path for a STEP file from McMaster-Carr or anywhere else.
 
 **Gears.** `create_gear` builds an external spur, helical, straight bevel, spiral bevel, or hypoid as a solid, and reports the pitch diameters, base diameter, cone angles, and contact ratio. Spur and helical teeth follow ISO 21771:2007 with an ISO 53:1998 basic rack. Straight and spiral bevel teeth use the intersecting-axis pitch cones of ISO 23509:2016 and the virtual cylindrical gear of ANSI/AGMA 2005-D03. A hypoid ring tooth is a face-mill blade cone, and the pinion is the blank left after that tooth is rolled at the tooth ratio about the offset shafts. A bore, a hub, a DIN 6885-1 keyway, or an ISO 14 or DIN 5480 spline is optional. The formulas and the limits are in [docs/reference/gears.md](docs/reference/gears.md).
+
+`solve_gear_train` (CLI: `aicad gear-train`) reads an assembly gear train and those tooth counts. It reports the speed and torque of every shaft for an input speed and torque. A compound train multiplies the stage ratios. An idler cancels. A planetary set with the ring held turns the carrier at z_sun / (z_sun + z_ring) of the sun. An open differential keeps the average of the two output speeds equal to the carrier. In a turn, one output speeds up as much as the other slows down. The report says when the train is under-constrained or over-constrained. Mesh efficiency defaults to 1, and at 1 the shaft powers sum to zero.
 
 ## Development
 

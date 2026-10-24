@@ -354,6 +354,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     exploded.add_argument("--out", type=Path, default=None, help="Directory for the sheet, used with --on-drawing.")
 
+    animate = commands.add_parser(
+        "animate",
+        parents=[common],
+        help="Write a GIF of a motion study, a camera orbit, or an exploded opening.",
+    )
+    animate.add_argument("name")
+    animate.add_argument("--kind", choices=["motion", "orbit", "exploded"], default=None)
+    animate.add_argument("--sequence", default=None, help="Study stored on the assembly.")
+    animate.add_argument("--file", type=Path, default=None, help="JSON motion study.")
+    animate.add_argument("--frames", type=int, default=None, help="Pictures, including both ends.")
+    animate.add_argument("--fps", type=int, default=None, help="Playback frames per second.")
+    animate.add_argument("--duration", dest="duration_s", type=float, default=None, help="Playback length in seconds when --frames is omitted.")
+    animate.add_argument("--width", type=int, default=None, help="Picture width in pixels. Even, from 16 to 1280.")
+    animate.add_argument("--height", type=int, default=None, help="Picture height in pixels. Even, from 16 to 1280.")
+    animate.add_argument(
+        "--camera",
+        default=None,
+        help="iso, front, back, left, right, top, bottom, or orbit.",
+    )
+    animate.add_argument(
+        "--camera-file",
+        type=Path,
+        default=None,
+        help="JSON list of {azimuth_deg, elevation_deg} points.",
+    )
+    animate.add_argument("--turns", type=float, default=None, help="How many times an orbit goes around.")
+    animate.add_argument("--elevation", dest="elevation_deg", type=float, default=None, help="Orbit elevation in degrees.")
+    animate.add_argument("--background", default=None, help="paper, white, black, or #rrggbb.")
+    animate.add_argument("--colors", type=Path, default=None, help="JSON map of instance name to a color.")
+    animate.add_argument("--materials", type=Path, default=None, help="JSON map of instance name to a material.")
+    animate.add_argument("--overlay", choices=["none", "step", "time", "value"], default=None)
+    animate.add_argument("--joint", default=None, help="Joint drawn when the overlay is value.")
+    animate.add_argument("--gap", type=float, default=None, help="Millimeters each joint opens in an exploded animation.")
+    animate.add_argument(
+        "--video",
+        choices=["gif", "mp4", "webm", "both"],
+        default=None,
+        help="gif writes only the GIF. mp4 and webm need ffmpeg.",
+    )
+    animate.add_argument("--out", type=Path, default=None, help="A .gif, .mp4, or .webm file, or a directory, inside the project.")
+
     start_plan = commands.add_parser(
         "start-plan", parents=[common], help="Start a plan. Optional JSON bundle of research, sheets, and questions."
     )
@@ -471,6 +512,17 @@ def build_parser() -> argparse.ArgumentParser:
     gear.add_argument("--role", default=None, choices=["pinion", "ring"], help="Which member of a hypoid pair this gear is.")
     gear.add_argument("--at", default=None, help="Position x,y,z in mm.")
     gear.add_argument("--rot", default=None, help="Rotation about X, Y, Z in degrees.")
+
+    train = commands.add_parser(
+        "gear-train",
+        parents=[common],
+        help="Speed and torque of every shaft in an assembly gear train.",
+    )
+    train.add_argument("name")
+    train.add_argument("--file", type=Path, default=None, help="JSON drive: inputs and any extra speeds.")
+    train.add_argument("--shaft", default=None, help="Input shaft, used when --file is omitted.")
+    train.add_argument("--speed", type=float, default=None, help="Input speed in revolutions per minute.")
+    train.add_argument("--torque", type=float, default=None, help="Input torque in newton-metres.")
 
     from aicad.plugins import add_cli
 
@@ -611,6 +663,14 @@ def _dispatch(args: argparse.Namespace) -> int:
         else:
             report = document.create_gear(args.name, spec, position, rotation)
         return emit(report)
+    if args.command == "gear-train":
+        if args.file is not None:
+            drive = json.loads(args.file.read_text(encoding="utf-8"))
+        else:
+            if args.shaft is None or args.speed is None or args.torque is None:
+                raise AICADError("Pass --file, or --shaft, --speed, and --torque.")
+            drive = {"inputs": [{"shaft": args.shaft, "speed_rpm": args.speed, "torque_nm": args.torque}]}
+        return emit(document.solve_gear_train(args.name, drive))
     if args.command == "place":
         info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
         return emit(info.to_dict())
@@ -718,6 +778,34 @@ def _dispatch(args: argparse.Namespace) -> int:
                 gap_mm=args.gap,
                 on_drawing=bool(args.on_drawing),
                 out_dir=args.out,
+            )
+        )
+    if args.command == "animate":
+        if args.camera and args.camera_file:
+            raise AICADError("Pass --camera or --camera-file, not both.")
+        return emit(
+            document.render_animation(
+                args.name,
+                kind=args.kind,
+                sequence=args.sequence,
+                study=_json_object(args.file) if args.file else None,
+                frames=args.frames,
+                fps=args.fps,
+                duration_s=args.duration_s,
+                width=args.width,
+                height=args.height,
+                camera=args.camera,
+                camera_path=_camera_path_file(args.camera_file) if args.camera_file else None,
+                turns=args.turns,
+                elevation_deg=args.elevation_deg,
+                background=args.background,
+                colors=_json_object(args.colors) if args.colors else None,
+                materials=_json_object(args.materials) if args.materials else None,
+                overlay=args.overlay,
+                joint=args.joint,
+                gap_mm=args.gap,
+                video=args.video,
+                path=args.out,
             )
         )
     if args.command == "start-plan":
@@ -834,6 +922,22 @@ def _plane_from_args(args) -> dict:
     if not args.axis:
         raise AICADError("A section needs --axis (and optional --offset), or --origin and --normal.")
     return {"axis": args.axis, "offset": args.offset}
+
+
+def _camera_path_file(path: Path) -> list:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise AICADError(f"Could not read {path}: {exc}") from exc
+    except OSError as exc:
+        raise AICADError(f"Could not read {path}: {exc}") from exc
+    if isinstance(payload, dict):
+        if set(payload) - {"path"}:
+            raise AICADError(f'{path} must be a list of points, or {{"path": [...]}}.')
+        payload = payload.get("path")
+    if not isinstance(payload, list):
+        raise AICADError(f"{path} must be a list of camera points.")
+    return payload
 
 
 def _json_object(path: Path) -> dict:

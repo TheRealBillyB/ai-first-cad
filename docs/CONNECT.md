@@ -70,7 +70,7 @@ That connection is the assistant, not the person. The app labels it that way, an
 
 ## What the assistant can do
 
-The tools match the `aicad` command line and the buttons in the app: create and edit parts and assemblies, run the checks, render pictures, and export STEP, STL, URDF, and MJCF. It can also read the project (`get_state`, `session_payload`, and the `aicad://` resources), save, open another folder, and undo.
+The tools match the `aicad` command line and the buttons in the app: create and edit parts and assemblies, run the checks, render pictures and animations, and export STEP, STL, URDF, and MJCF. It can also read the project (`get_state`, `session_payload`, and the `aicad://` resources), save, open another folder, and undo.
 
 `run_design_script` is the way to hand the assistant one Python program that calls several steps. It is off until you allow it. The assistant cannot allow it.
 
