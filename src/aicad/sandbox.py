@@ -149,8 +149,8 @@ _ESCAPE_SYSCALLS = {
     "aarch64": (157, 154),
 }
 # Refused on every run, including when the network is on. io_uring can issue a
-# socket call this filter would not see. ptrace, cross-process memory, and
-# pidfd_getfd reach a process outside the script.
+# socket call this filter would not see. ptrace, cross-process memory,
+# pidfd_getfd, and a signal sent through a pidfd reach a process outside the script.
 _ISOLATION_SYSCALLS = {
     "x86_64": (
         101,  # ptrace
@@ -159,6 +159,7 @@ _ISOLATION_SYSCALLS = {
         425,  # io_uring_setup
         426,  # io_uring_enter
         427,  # io_uring_register
+        424,  # pidfd_send_signal
         438,  # pidfd_getfd
     ),
     "aarch64": (
@@ -168,9 +169,18 @@ _ISOLATION_SYSCALLS = {
         425,  # io_uring_setup
         426,  # io_uring_enter
         427,  # io_uring_register
+        424,  # pidfd_send_signal
         438,  # pidfd_getfd
     ),
 }
+# A signal call is allowed only when its first argument is this process.
+# tkill names a thread. The others name a thread group. A pidfd does not
+# carry a pid this filter can read, so pidfd_send_signal is refused above.
+_SIGNAL_SYSCALLS = {
+    "x86_64": {"kill": 62, "tkill": 200, "tgkill": 234, "rt_sigqueueinfo": 129, "rt_tgsigqueueinfo": 297},
+    "aarch64": {"kill": 129, "tkill": 130, "tgkill": 131, "rt_sigqueueinfo": 138, "rt_tgsigqueueinfo": 240},
+}
+_GETTID = {"x86_64": 186, "aarch64": 178}
 # seccomp_data.arch. A 32-bit int 0x80 call on x86_64 is a different architecture
 # and a different syscall number, so a filter that only compares the native
 # number would let it through. x32 numbers set bit 30 on this same architecture.
@@ -179,6 +189,10 @@ _X32_SYSCALL_BIT = 0x40000000
 # How often the macOS parent checks the script's resident memory.
 _MEMORY_POLL_SECONDS = 0.25
 _LANDLOCK_SCOPE_SIGNAL = 1 << 1
+# What this process actually installed. Tests read these after the sandbox
+# starts. Writing them does not change the kernel ruleset.
+_landlock_abi_used: int | None = None
+_landlock_signal_scope = False
 # Threads in this script only. RLIMIT_NPROC counts every thread of the user,
 # so a fixed 256 was stopping geometry on a desktop that already had a browser open.
 _PROCESS_CAP = 256
@@ -825,11 +839,16 @@ def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
         if libc.prctl(38, 1, 0, 0, 0) != 0:
             raise ScriptError("Could not lock the script process, so the script was not run.")
     net = 0 if network else (_NET_BIND | _NET_CONNECT)
+    global _landlock_abi_used, _landlock_signal_scope
     abi = int(libc.syscall(create, None, 0, 1))
-    if abi >= 6:
+    # One choice for the struct and the record.
+    use_signal_scope = abi >= 6
+    if use_signal_scope:
         attr = _RulesetAttrScoped(_HANDLED_FS, net, _LANDLOCK_SCOPE_SIGNAL)
     else:
         attr = _RulesetAttr(_HANDLED_FS, net)
+    _landlock_abi_used = abi
+    _landlock_signal_scope = use_signal_scope
     ruleset = libc.syscall(create, ctypes.byref(attr), ctypes.sizeof(attr), 0)
     if ruleset < 0:
         raise ScriptError(
@@ -865,6 +884,15 @@ def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
         )
 
 
+def _own_process_ids(arch: str) -> tuple[int, int]:
+    """The process and thread this filter may signal. Anything else is refused."""
+    pid = os.getpid()
+    tid = int(_libc().syscall(_GETTID[arch]))
+    if pid <= 0 or tid <= 0 or pid > 0xFFFFFFFF or tid > 0xFFFFFFFF:
+        raise ScriptError("Could not apply the script's process limits, so the script was not run.")
+    return pid, tid
+
+
 def _block_sockets(*, network: bool) -> None:
     arch = _arch()
     if arch is None:
@@ -892,6 +920,17 @@ def _block_sockets(*, network: bool) -> None:
     for number in numbers:
         program.append(_SockFilter(bpf_jeq, 0, 1, number))
         program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+    pid, tid = _own_process_ids(arch)
+    for name, number in _SIGNAL_SYSCALLS[arch].items():
+        # Not this call: skip the seven instructions that judge its target.
+        program.append(_SockFilter(bpf_jeq, 0, 7, number))
+        program.append(_SockFilter(bpf_ld, 0, 0, 20))
+        program.append(_SockFilter(bpf_jeq, 1, 0, 0))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+        program.append(_SockFilter(bpf_ld, 0, 0, 16))
+        program.append(_SockFilter(bpf_jeq, 1, 0, tid if name == "tkill" else pid))
+        program.append(_SockFilter(bpf_ret, 0, 0, errno_eperm))
+        program.append(_SockFilter(bpf_ret, 0, 0, allow))
     program.append(_SockFilter(bpf_ret, 0, 0, allow))
     filters = (_SockFilter * len(program))(*program)
     prog = _SockFprog(len(program), filters)
