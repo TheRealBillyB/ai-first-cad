@@ -355,7 +355,7 @@ def estimate_power(
         what="Joint torque and pump or motor power are a quasi-static estimate. Inertia and friction are left out.",
         limits=[
             "Gravity and the stated payload are included. Inertia, seal drag, and line loss are not.",
-            "A hydraulic moment arm is a number you supply, not a cylinder found in the assembly.",
+            "A hydraulic moment arm on a revolute joint is a number you supply. An actuator on the stroke of a cylinder relation uses the pin-to-pin rate.",
             "Electric braking energy is counted as spent.",
         ],
     )
