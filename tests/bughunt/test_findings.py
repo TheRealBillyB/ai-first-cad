@@ -332,7 +332,7 @@ def test_bh_f14_cli_module_runs(tmp_path):
 
 
 def test_a_design_script_cannot_read_the_document_wrapper():
-    from aicad.sandbox_run import ScriptDocument
+    from aicad.sandbox_run import script_document
 
     class Doc:
         def measure(self):
@@ -342,12 +342,26 @@ def test_a_design_script_cannot_read_the_document_wrapper():
             raise AssertionError("approve_plan was called")
 
     calls: list[dict] = []
-    proxy = ScriptDocument(Doc(), calls)
+    document = Doc()
+    proxy = script_document(document, calls)
     assert proxy.measure()["volume_mm3"] == 1
     assert calls == [{"method": "measure", "result": {"volume_mm3": 1}}]
-    for name in ("_state", "_document", "_calls", "__dict__"):
+    for name in ("_state", "_document", "_calls", "_wrappers", "__dict__"):
         with pytest.raises(AttributeError):
             getattr(proxy, name)
+    for name in ("_state", "_document", "_calls"):
+        with pytest.raises(AttributeError):
+            object.__getattribute__(proxy, name)
+    stored = object.__getattribute__(proxy, "__dict__")
+    assert document not in stored.values()
+    assert calls not in stored.values()
     with pytest.raises(AttributeError):
         proxy.approve_plan()
+    function = proxy.measure
+    hidden = []
+    if function.__closure__:
+        hidden.extend(cell.cell_contents for cell in function.__closure__)
+    hidden.extend(function.__globals__.values())
+    assert document not in hidden
+    assert calls not in hidden
     assert calls == [{"method": "measure", "result": {"volume_mm3": 1}}]

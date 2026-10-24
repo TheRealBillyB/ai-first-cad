@@ -41,6 +41,59 @@ def config_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_a_design_script_cannot_record_a_check_it_did_not_run(tmp_path, config_home):
+    _sandbox_or_skip()
+    allow_design_scripts(tmp_path)
+    script = (
+        "fn = document.list_parts\n"
+        "found = False\n"
+        "closure = getattr(fn, '__closure__', None)\n"
+        "if closure:\n"
+        "    for cell in closure:\n"
+        "        value = cell.cell_contents\n"
+        "        if isinstance(value, list):\n"
+        "            value.append({'method': 'check_gears', 'result': {'ok': True}})\n"
+        "            found = True\n"
+        "for value in list(getattr(fn, '__globals__', {}).values()):\n"
+        "    if isinstance(value, list):\n"
+        "        value.append({'method': 'check_gears', 'result': {'ok': True}})\n"
+        "        found = True\n"
+        "try:\n"
+        "    object.__getattribute__(document, '_state')\n"
+        "    print('STATE')\n"
+        "except Exception as exc:\n"
+        "    print('STATE %s' % type(exc).__name__)\n"
+        "try:\n"
+        "    document.approve_plan()\n"
+        "    print('APPROVED')\n"
+        "except Exception as exc:\n"
+        "    print('PLAN %s' % type(exc).__name__)\n"
+        "try:\n"
+        "    document.delete_part()\n"
+        "except Exception as exc:\n"
+        "    tb = exc.__traceback__\n"
+        "    leaked = False\n"
+        "    while tb is not None:\n"
+        "        if type(tb.tb_frame.f_locals.get('self')).__name__ == 'Document':\n"
+        "            leaked = True\n"
+        "        tb = tb.tb_next\n"
+        "    print('LEAK' if leaked else 'CLEAN')\n"
+        "else:\n"
+        "    print('DELETED')\n"
+        "print(len(document.list_parts()))\n"
+        "print('FOUND' if found else 'NONE')\n"
+    )
+    payload = run_design_script(tmp_path, script)
+    assert payload.get("checks") == []
+    stdout = str(payload.get("stdout"))
+    assert "NONE" in stdout
+    assert "STATE AttributeError" in stdout
+    assert "PLAN AttributeError" in stdout
+    assert "CLEAN" in stdout
+    assert "APPROVED" not in stdout
+    assert "DELETED" not in stdout
+
+
 def test_an_older_landlock_abi_still_runs_a_script(monkeypatch):
     class Libc:
         def __init__(self, abi: int):
