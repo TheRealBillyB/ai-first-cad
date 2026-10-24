@@ -509,6 +509,22 @@ def build_parser() -> argparse.ArgumentParser:
     gear.add_argument("--at", default=None, help="Position x,y,z in mm.")
     gear.add_argument("--rot", default=None, help="Rotation about X, Y, Z in degrees.")
 
+    mesh = commands.add_parser(
+        "check-gears",
+        parents=[common],
+        help="Centre distance, backlash, contact ratio, and interference for a gear pair.",
+    )
+    mesh.add_argument("pinion", nargs="?", default=None, help="Gear spec name, or omit when --file or --assembly is set.")
+    mesh.add_argument("gear", nargs="?", default=None, help="Mate gear.")
+    mesh.add_argument("--file", type=Path, default=None, help="JSON spec. Flags override it.")
+    mesh.add_argument("--assembly", default=None, help="Check every gear pair in this assembly.")
+    mesh.add_argument("--centre", type=float, default=None, help="Actual centre distance, or a signed bevel axis offset.")
+    mesh.add_argument("--shaft-angle", type=float, default=None, help="Actual shaft angle in degrees.")
+    mesh.add_argument("--offset", type=float, default=None, help="Axis offset in millimetres. Reserved for a hypoid pair.")
+    mesh.add_argument("--backlash-min", type=float, default=None, help="Minimum circumferential and normal backlash, mm.")
+    mesh.add_argument("--backlash-max", type=float, default=None, help="Maximum circumferential and normal backlash, mm.")
+    mesh.add_argument("--steps", type=int, default=None, help="Samples over one turn of the smaller gear.")
+
     train = commands.add_parser(
         "gear-train",
         parents=[common],
@@ -655,6 +671,27 @@ def _dispatch(args: argparse.Namespace) -> int:
         else:
             report = document.create_gear(args.name, spec, position, rotation)
         return emit(report)
+    if args.command == "check-gears":
+        spec = _json_object(args.file) if args.file is not None else {}
+        if args.pinion is not None:
+            spec["pinion"] = args.pinion
+        if args.gear is not None:
+            spec["gear"] = args.gear
+        if args.assembly is not None:
+            spec["assembly"] = args.assembly
+        if args.centre is not None:
+            spec["centre_distance_mm"] = args.centre
+        if args.shaft_angle is not None:
+            spec["shaft_angle_deg"] = args.shaft_angle
+        if args.offset is not None:
+            spec["offset_mm"] = args.offset
+        if args.steps is not None:
+            spec["steps"] = args.steps
+        if args.backlash_min is not None or args.backlash_max is not None:
+            if args.backlash_min is None or args.backlash_max is None:
+                raise AICADError("Pass both --backlash-min and --backlash-max.")
+            spec["backlash_mm"] = {"min": args.backlash_min, "max": args.backlash_max}
+        return emit(document.check_gears(spec))
     if args.command == "gear-train":
         if args.file is not None:
             drive = json.loads(args.file.read_text(encoding="utf-8"))
