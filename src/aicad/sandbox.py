@@ -842,6 +842,8 @@ def _landlock(
             raise ScriptError("Could not lock the script process, so the script was not run.")
     net = 0 if network else (_NET_BIND | _NET_CONNECT)
     global _landlock_abi_used, _landlock_signal_scope
+    # Ignore a cap that did not come from the signal-scope probe.
+    abi_cap = _harness_landlock_abi(abi_cap)
     abi = int(libc.syscall(create, None, 0, 1))
     # A second ruleset cannot drop the signal scope chosen for this process.
     if _landlock_abi_used is not None:
@@ -1275,20 +1277,75 @@ def _refuse_foreign_kill() -> None:
     os.kill = kill  # type: ignore[method-assign]
 
 
-def _landlock_abi_cap(value: int | None, *, from_host: bool) -> int | None:
-    """A host-side cap. A confined script cannot pass one into a new job."""
-    if value is None:
+# The signal-scope test starts one process with this text. It is not a setting,
+# and nothing that opens a project reads it.
+_LANDLOCK_PROBE_LAUNCH = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[2])\n"
+    "from tests.test_sandbox_findings import _run_capped_signal_probe\n"
+    "_run_capped_signal_probe(sys.argv[1])\n"
+)
+
+
+def _repo_probe_file() -> Path | None:
+    """The signal-probe test next to this checkout, when this file is the source tree."""
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "tests" / "test_sandbox_findings.py"
+        if candidate.is_file() and (parent / "pyproject.toml").is_file():
+            return candidate
+    return None
+
+
+def _probe_code(filename: str) -> object | None:
+    """The probe function as this checkout's test file compiles it."""
+    repo = _repo_probe_file()
+    if repo is None:
         return None
-    from aicad.sandbox_state import in_sandbox
+    try:
+        origin = Path(filename).resolve()
+    except OSError:
+        return None
+    if origin != repo.resolve():
+        return None
+    try:
+        source = repo.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    module = compile(source, filename, "exec")
+    for const in module.co_consts:
+        if getattr(const, "co_name", None) == "_run_capped_signal_probe":
+            return const
+    return None
 
-    if isinstance(value, bool) or not isinstance(value, int) or value < 4 or (from_host and in_sandbox()):
-        raise ScriptError(
-            "Could not confine the script to the project folder, so the script was not run."
-        )
-    return value
+
+def _harness_landlock_abi(value: int | None) -> int | None:
+    """ABI cap for the signal-scope probe. Every other caller gets none.
+
+    A project file, app config, environment variable, plugin, and tool argument
+    are not read. A function that only imitates the probe is not the probe.
+    """
+    if value is None or type(value) is not int or value < 4:
+        return None
+    frame = sys._getframe(1)
+    # dont_inherit: this module's future annotations must not change the flags.
+    # python -c compiles the launch text without them.
+    launch = compile(_LANDLOCK_PROBE_LAUNCH, "<string>", "exec", dont_inherit=True)
+    while frame is not None:
+        code = frame.f_code
+        if code.co_name == "_run_capped_signal_probe":
+            caller = frame.f_back
+            if caller is None or caller.f_code != launch:
+                return None
+            expected = _probe_code(code.co_filename)
+            if expected is None or code != expected:
+                return None
+            return value
+        frame = frame.f_back
+    return None
 
 
-def apply_sandbox(workspace: Path, network: bool, *, landlock_abi_cap: int | None = None) -> list[Path]:
+def apply_sandbox(workspace: Path, network: bool, *, _test_landlock_abi: int | None = None) -> list[Path]:
     """Confine the current process. Called only in the script's child process."""
     from aicad.plugins import seal_sandbox_plugins
     from aicad.sandbox_state import mark_sandboxed
@@ -1351,7 +1408,7 @@ def apply_sandbox(workspace: Path, network: bool, *, landlock_abi_cap: int | Non
         workspace,
         network=network,
         read_roots=roots,
-        abi_cap=_landlock_abi_cap(landlock_abi_cap, from_host=False),
+        abi_cap=_test_landlock_abi,
     )
     _block_sockets(network=network)
     return roots
@@ -1710,14 +1767,7 @@ def _child_command(job: Path) -> list[str]:
     return [sys.executable, "-P", "-B", "-u", runner, str(job)]
 
 
-def _spawn(
-    workspace: Path,
-    kind: str,
-    script: str | None,
-    network: bool,
-    *,
-    landlock_abi_cap: int | None = None,
-) -> dict:
+def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
         raise ScriptError(reason)
@@ -1741,12 +1791,6 @@ def _spawn(
     except OSError as exc:
         raise ScriptError("Could not create a project folder, so the script was not run.") from exc
     spec: dict = {"kind": kind, "network": network}
-    # Only the host that starts the sandbox can cap the ABI. The check rejects
-    # the cap when this process is already confined, and the script cannot
-    # change the ruleset that was installed before it ran.
-    cap = _landlock_abi_cap(landlock_abi_cap, from_host=True)
-    if cap is not None:
-        spec["landlock_abi_cap"] = cap
     probe_root = None
     if kind == "probe":
         probe_root, spec["probe_read"], spec["probe_write"] = _make_probe(workspace)
@@ -2038,9 +2082,7 @@ def _drop_job(payload: dict) -> None:
         shutil.rmtree(job, ignore_errors=True)
 
 
-def run_part_script(
-    code: str, workspace: str | Path | None = None, *, _test_landlock_abi: int | None = None
-):
+def run_part_script(code: str, workspace: str | Path | None = None):
     """Run a part script (``part = ...``) in the sandbox and return the solid."""
     _check_script(code)
     temporary = None
@@ -2048,7 +2090,7 @@ def run_part_script(
         temporary = tempfile.TemporaryDirectory(prefix="aicad-script-")
         workspace = Path(temporary.name)
     try:
-        payload = _spawn(Path(workspace), "part", code, network=False, landlock_abi_cap=_test_landlock_abi)
+        payload = _spawn(Path(workspace), "part", code, network=False)
         if not payload.get("ok"):
             raise ScriptError(str(payload.get("error") or "The part script failed."))
         from aicad.kernel import import_step_file
@@ -2065,9 +2107,7 @@ def run_part_script(
             temporary.cleanup()
 
 
-def run_design_script(
-    workspace: str | Path, code: str, network: bool = False, *, _test_landlock_abi: int | None = None
-) -> dict:
+def run_design_script(workspace: str | Path, code: str, network: bool = False) -> dict:
     """Run a design script against the project. The person must have allowed it."""
     root = Path(workspace).resolve()
     _check_script(code)
@@ -2075,7 +2115,7 @@ def run_design_script(
         status = design_script_status(root)
         raise ScriptError(f"{status['warning']} It is off for this project. Turn it on with: {status['enable']}")
     try:
-        payload = _spawn(root, "design", code, network=network, landlock_abi_cap=_test_landlock_abi)
+        payload = _spawn(root, "design", code, network=network)
     except ScriptError as exc:
         _append_log(root, code, False, str(exc))
         raise

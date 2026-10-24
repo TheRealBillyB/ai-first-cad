@@ -316,11 +316,9 @@ def main(argv: list[str] | None = None) -> int:
         from aicad.sandbox import apply_sandbox, install_python_guard
 
         try:
-            roots = apply_sandbox(
-                workspace,
-                network=bool(spec.get("network")),
-                landlock_abi_cap=spec.get("landlock_abi_cap"),
-            )
+            # The job file names the script kind and the network switch.
+            # It does not choose the Landlock version.
+            roots = apply_sandbox(workspace, network=bool(spec.get("network")))
         except Exception as exc:
             _write(job, {"ok": False, "error": f"{exc}\n{traceback.format_exc()}"})
             return _leave(0)
