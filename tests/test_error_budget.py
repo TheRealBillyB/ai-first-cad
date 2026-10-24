@@ -445,8 +445,6 @@ def test_a_bevel_uses_the_mid_face_virtual_spur_and_an_offset_pair_is_refused():
     tip = mesh["circumferential_mm"] / mesh["radius_mm"] * 100.0
     assert report["worst_case_mm"] == pytest.approx(tip, abs=1e-4)
 
-    from tests.test_gears import _hypoid_member
-
     with pytest.raises(GeometryError, match="along the tooth"):
         check_position_error(
             spec,
@@ -459,8 +457,8 @@ def test_a_bevel_uses_the_mid_face_virtual_spur_and_an_offset_pair_is_refused():
                     "shoulder": {
                         "backlash": {
                             "mesh": {
-                                "pinion": _hypoid_member("pinion"),
-                                "gear": _hypoid_member("ring"),
+                                "pinion": _hypoid("pinion"),
+                                "gear": _hypoid("ring"),
                                 "member": "pinion",
                                 "steps": 8,
                             }
@@ -789,6 +787,22 @@ def test_link_deflection_comes_from_the_strength_check_and_a_tight_tolerance_fai
     assert report["status"] == "fail"
     assert report["worst_case_mm"] > 0.001
     assert any("linear" in line.lower() for line in report["assumptions"])
+
+
+def _hypoid(role: str) -> dict:
+    teeth, mate = (8, 16) if role == "pinion" else (16, 8)
+    return {
+        "type": "hypoid",
+        "role": role,
+        "teeth": teeth,
+        "mate_teeth": mate,
+        "offset_mm": 12,
+        "shaft_angle_deg": 90,
+        "ring_diameter_mm": 80,
+        "face_width_mm": 10,
+        "spiral_angle_deg": 35,
+        "pressure_angle_deg": 20,
+    }
 
 
 def _virtual_record(section: dict, data: dict) -> dict:
