@@ -29,6 +29,7 @@ _CHECKS = frozenset(
         "inspect",
         "measure",
         "render",
+        "render_animation",
         "render_assembly",
         "run_motion",
         "run_motion_study",

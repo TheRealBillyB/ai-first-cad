@@ -1032,6 +1032,7 @@ def _summary(name: str, arguments: dict, result: dict, parts: list[str]) -> str:
         "set_joint": f"Set joint {arguments.get('joint')} to {arguments.get('value')}",
         "set_pose": f"Applied pose {arguments.get('pose')}",
         "run_motion": f"Ran motion on {part}",
+        "render_animation": f"Rendered an animation of {part}",
         "write_document": f"Wrote {arguments.get('name')}",
         "delete_document": f"Deleted note {arguments.get('name')}",
         "check_clearance": "Checked clearance",
