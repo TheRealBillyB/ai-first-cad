@@ -35,7 +35,7 @@ _LIMITS = [
     "Tooth thickness is the nominal size, not a tolerance grade or a measured gap.",
     "The sweep tests the transverse tooth outline the solid is drawn from, through one turn of the smaller gear.",
     "A bevel pair is swept as the Tredgold virtual spur at the toe, the mid-face, and the heel.",
-    "An offset pair is checked on the generated face-mill solids at a few mesh poses, not as a spiral bevel and not through a full turn.",
+    "An offset pair is checked on the face-mill solids through one pinion tooth. A mounted pair uses that placement and clocking. It is not a spiral bevel and not a full turn.",
 ]
 
 _WHAT = (

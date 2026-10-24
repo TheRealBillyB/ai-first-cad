@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 
+from aicad import kernel
 from aicad.cli import main as cli_main
 from aicad.document import Document
 from aicad.errors import GeometryError
 from aicad.gears import (
+    build_gear,
     check_pair,
     gear_data,
     mesh_placement,
@@ -209,8 +211,12 @@ def test_a_hypoid_pair_passes_the_mesh_check():
     assert report["ideal_offset_mm"] == pytest.approx(12)
     assert abs(report["offset_error_mm"]) < 1e-6
     assert report["sweep"]["model"] == "face-mill solid"
-    assert report["sweep"]["steps"] == 3
-    assert report["sweep"]["rotation_deg"] < 360
+    assert report["sweep"]["member"] == "pinion"
+    assert report["sweep"]["steps"] == 13
+    assert report["sweep"]["rotation_deg"] == pytest.approx(22.5)
+    assert report["sweep"]["step_deg"] == pytest.approx(22.5 / 12)
+    poses = report["sweep"]["poses"]
+    assert poses[-1]["gear_angle_deg"] - poses[0]["gear_angle_deg"] == pytest.approx(22.5)
     assert report["sweep"]["worst_overlap_mm3"] < 1e-4
     assert report["sweep"]["worst_gap_mm"] < 0.05
     assert len(report["backlash"]["along_tooth_mm"]) == 3
@@ -237,6 +243,142 @@ def test_a_hypoid_plunge_interferes_and_a_wrong_offset_is_flagged():
     assert report["interference"] is True
     assert report["sweep"]["worst_overlap_mm3"] > 0.3
     assert any("offset" in item.lower() for item in report["findings"])
+
+
+def test_a_hypoid_step_count_covers_one_pinion_tooth():
+    with pytest.raises(GeometryError, match="one pinion tooth"):
+        check_pair(_hypoid("pinion"), _hypoid("ring"), steps=3)
+    from aicad.gears.hypoid_mesh import _engagement_angles
+
+    angles, step, pitch = _engagement_angles(16, 10)
+    assert len(angles) == 10
+    assert pitch == pytest.approx(22.5)
+    assert angles[0] == pytest.approx(-0.25 * pitch)
+    assert angles[-1] - angles[0] == pytest.approx(pitch)
+    assert step == pytest.approx(pitch / 9)
+
+
+def test_a_hypoid_sweep_catches_interference_between_the_old_poses():
+    pinion_spec = _hypoid("pinion")
+    ring_spec = _hypoid("ring")
+    report = check_pair(
+        pinion_spec,
+        ring_spec,
+        {"offset_mm": 11.993},
+        backlash_mm={"min": 0.0, "max": 1.0},
+    )
+    assert report["interference"] is True
+    assert report["sweep"]["worst_overlap_mm3"] > 1e-4
+    # 0, 8, and 16 degrees were the whole of the old sweep. The hit sits between them.
+    assert 8.0 < report["sweep"]["worst_at_deg"] < 16.0
+    pinion = kernel.adopt(build_gear(pinion_spec))
+    ring = kernel.adopt(build_gear(ring_spec))
+    for angle in (0.0, 8.0, 16.0):
+        placement = mesh_placement(pinion_spec, ring_spec, angle)
+        position = list(placement["pinion"]["position_mm"])
+        position[1] = 11.993
+        placed_pinion = kernel.place(pinion, tuple(position), tuple(placement["pinion"]["rotation_deg"]))
+        placed_ring = kernel.place(
+            ring,
+            tuple(placement["gear"]["position_mm"]),
+            tuple(placement["gear"]["rotation_deg"]),
+        )
+        assert kernel.overlap_volume(placed_pinion, placed_ring) < 1e-4
+
+
+def _assembly_rotation(position, rotation_deg) -> list[float]:
+    """Angles whose assembly matrix matches kernel.place of the same numbers."""
+    blank = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [1, 1, 1]}])
+    placed = kernel.place(blank, tuple(position), tuple(rotation_deg))
+    transform = placed.impl.wrapped.Location().Transformation()
+    rotation = [[transform.Value(row, column) for column in range(1, 4)] for row in range(1, 4)]
+    ry = math.asin(max(-1.0, min(1.0, -rotation[2][0])))
+    if abs(math.cos(ry)) > 1.0e-6:
+        rx = math.atan2(rotation[2][1], rotation[2][2])
+        rz = math.atan2(rotation[1][0], rotation[0][0])
+    else:
+        rx = 0.0
+        rz = math.atan2(-rotation[0][1], rotation[1][1])
+    return [math.degrees(rx), math.degrees(ry), math.degrees(rz)]
+
+
+def _hypoid_assembly(document: Document, name: str, pinion_at, ring_at) -> None:
+    document.create_assembly(
+        {
+            "name": name,
+            "instances": [
+                {
+                    "name": "pinion",
+                    "part": "pinion",
+                    "placement": {"position": pinion_at["position_mm"], "rotation_deg": pinion_at["rotation_deg"]},
+                },
+                {
+                    "name": "ring",
+                    "part": "ring",
+                    "placement": {"position": ring_at["position_mm"], "rotation_deg": ring_at["rotation_deg"]},
+                },
+            ],
+            "joints": [],
+        }
+    )
+
+
+def test_a_misclocked_or_misplaced_hypoid_assembly_is_flagged(tmp_path: Path):
+    pinion_spec = _hypoid("pinion")
+    ring_spec = _hypoid("ring")
+    placement = mesh_placement(pinion_spec, ring_spec)
+    document = Document(tmp_path / "hypoid-mesh")
+    document.create_gear(
+        "pinion",
+        pinion_spec,
+        position=placement["pinion"]["position_mm"],
+        rotation_deg=placement["pinion"]["rotation_deg"],
+    )
+    document.create_gear(
+        "ring",
+        ring_spec,
+        position=placement["gear"]["position_mm"],
+        rotation_deg=placement["gear"]["rotation_deg"],
+    )
+    seated = document.check_gears({"pinion": "pinion", "gear": "ring", "backlash_mm": {"min": 0.0, "max": 0.30}})
+    assert seated["status"] == "pass", seated["findings"]
+    assert abs(seated["pinion_clock_deg"]) < 1e-3
+    assert abs(seated["gear_clock_deg"]) < 1e-3
+
+    pinion_at = {
+        "position_mm": list(placement["pinion"]["position_mm"]),
+        "rotation_deg": _assembly_rotation(placement["pinion"]["position_mm"], placement["pinion"]["rotation_deg"]),
+    }
+    ring_at = {
+        "position_mm": list(placement["gear"]["position_mm"]),
+        "rotation_deg": _assembly_rotation(placement["gear"]["position_mm"], placement["gear"]["rotation_deg"]),
+    }
+    _hypoid_assembly(document, "seated", pinion_at, ring_at)
+    assembled = document.check_gears({"assembly": "seated", "backlash_mm": {"min": 0.0, "max": 0.30}})
+    assert assembled["status"] == "pass", assembled["pairs"][0]["findings"]
+    assert assembled["pairs"][0]["offset_error_mm"] == pytest.approx(0, abs=1e-3)
+
+    clocked = {
+        "position_mm": ring_at["position_mm"],
+        "rotation_deg": [ring_at["rotation_deg"][0], ring_at["rotation_deg"][1], ring_at["rotation_deg"][2] + 2.0],
+    }
+    _hypoid_assembly(document, "clocked", pinion_at, clocked)
+    clock_report = document.check_gears({"assembly": "clocked", "backlash_mm": {"min": 0.0, "max": 1.0}})
+    clocked_pair = clock_report["pairs"][0]
+    assert clock_report["status"] == "fail"
+    assert abs(clocked_pair["gear_clock_deg"]) == pytest.approx(2.0, abs=0.05)
+    assert any("clocked" in item.lower() for item in clocked_pair["findings"])
+
+    shifted = {
+        "position_mm": [pinion_at["position_mm"][0], pinion_at["position_mm"][1] + 0.5, pinion_at["position_mm"][2]],
+        "rotation_deg": pinion_at["rotation_deg"],
+    }
+    _hypoid_assembly(document, "shifted", shifted, ring_at)
+    shift_report = document.check_gears({"assembly": "shifted", "backlash_mm": {"min": 0.0, "max": 1.0}})
+    shifted_pair = shift_report["pairs"][0]
+    assert shift_report["status"] == "fail"
+    assert shifted_pair["offset_error_mm"] == pytest.approx(0.5, abs=0.02)
+    assert any("offset" in item.lower() for item in shifted_pair["findings"])
 
 
 def test_a_mismatched_hypoid_hand_or_ratio_is_refused():
