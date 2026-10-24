@@ -1129,11 +1129,31 @@ class Document:
                 clearance_mm=clearance_mm,
             )
 
-    def check_cables(self, name: str, sequence: str | None = None, motion: dict | None = None) -> dict:
+    def check_cables(
+        self,
+        name: str,
+        sequence: str | None = None,
+        motion: dict | None = None,
+        study: dict | str | None = None,
+        steps: int | None = None,
+    ) -> dict:
+        """Length, bend, and pinch for clip routes and tendon routes.
+
+        ``sequence`` is a motion, or a motion study when no motion has that name.
+        ``study`` is a study name or an inline study. ``steps`` overrides the
+        study's pose count. A tendon is anchors, pulleys, guides, and an end
+        anchor. Its length includes the wrap arcs.
+        """
         with self._lock:
             spec = self._get_assembly(name)
-            chosen = assembly.motion_by_name(spec, sequence, motion) if (sequence or motion) else None
-            return assembly.check_cables(spec, self._assembly_shapes(spec), chosen)
+            chosen_motion, chosen_study = _cable_timeline(spec, sequence, motion, study)
+            return assembly.check_cables(
+                spec,
+                self._assembly_shapes(spec),
+                chosen_motion,
+                study=chosen_study,
+                steps=steps,
+            )
 
     def solve_gear_train(self, name: str, drive: dict) -> dict:
         """Speed and torque of every shaft in the assembly gear train.
@@ -2074,6 +2094,35 @@ class Document:
             )
         specs = {name: copy.deepcopy(self._parts[name].library_spec) for name in needed}
         return library.resolve_assembly_mates(spec, specs)
+
+
+def _cable_timeline(spec: dict, sequence, motion, study):
+    """A stored motion, or a motion study when that is what the name refers to."""
+    if study is not None and motion is not None:
+        raise GeometryError("Pass a motion or a motion study, not both.")
+    if isinstance(study, str):
+        return None, study_by_name(spec, study, None)
+    if isinstance(study, dict):
+        return None, study_by_name(spec, sequence, study)
+    if motion is not None:
+        return assembly.motion_by_name(spec, sequence, motion), None
+    if not sequence:
+        return None, None
+    motions = spec.get("motions") or {}
+    studies = spec.get("studies") or {}
+    if sequence in motions and sequence in studies:
+        raise GeometryError(
+            f"{sequence!r} is both a motion and a motion study. Pass the motion or the study on its own."
+        )
+    if sequence in studies:
+        return None, study_by_name(spec, sequence, None)
+    if sequence in motions:
+        return assembly.motion_by_name(spec, sequence, None), None
+    known_motions = ", ".join(motions) or "(none)"
+    known_studies = ", ".join(studies) or "(none)"
+    raise GeometryError(
+        f"No motion or motion study {sequence!r}. Motions: {known_motions}. Studies: {known_studies}."
+    )
 
 
 def _unbuilt_message(name: str) -> str:

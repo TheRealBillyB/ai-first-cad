@@ -297,7 +297,9 @@ def _score(mesh, name: str, threshold: float) -> dict:
     centroids = vertices[triangles].mean(axis=1)
     min_z = float(vertices[:, 2].min()) if len(vertices) else 0.0
     on_bed = centroids[:, 2] <= min_z + 0.4
-    limit = -math.cos(math.radians(threshold))
+    # A face that leans phi from vertical has normal z of -sin(phi).
+    # Straight down is 90 degrees and a vertical wall is 0.
+    limit = -math.sin(math.radians(threshold))
     overhang = (normals[:, 2] < limit) & ~on_bed
     total = float(areas.sum()) or 1.0
     support = float(areas[overhang].sum())

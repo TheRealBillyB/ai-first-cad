@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from aicad.errors import AICADError
+from aicad.errors import AICADError, GeometryError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,9 +262,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum allowed gap in millimeters. A smaller gap is interference.",
     )
 
-    cables = commands.add_parser("cables", parents=[common], help="Check cables and hoses.")
+    cables = commands.add_parser("cables", parents=[common], help="Check cables, hoses, and tendon routes.")
     cables.add_argument("name")
-    cables.add_argument("--sequence", default=None)
+    cables.add_argument(
+        "--sequence",
+        default=None,
+        help="Motion, or a motion study when no motion has this name.",
+    )
+    cables.add_argument("--study", default=None, help="Motion study stored on the assembly.")
+    cables.add_argument("--file", type=Path, default=None, help="JSON motion study.")
+    cables.add_argument("--steps", type=int, default=None, help="Poses to solve, including both ends.")
 
     power = commands.add_parser(
         "power", parents=[common], help="Estimate joint loads and actuator power."
@@ -756,7 +763,17 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         )
     if args.command == "cables":
-        return emit(document.check_cables(args.name, sequence=args.sequence))
+        if args.file and args.study:
+            raise GeometryError("Pass --study or --file, not both.")
+        inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
+        return emit(
+            document.check_cables(
+                args.name,
+                sequence=args.sequence,
+                study=inline if inline is not None else args.study,
+                steps=args.steps,
+            )
+        )
     if args.command == "power":
         return emit(document.estimate_power(args.name, sequence=args.sequence))
     if args.command == "fea":
