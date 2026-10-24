@@ -720,8 +720,13 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
         path = Path(directory)
         (path / "job.inp").write_text(_frequency_deck(bodies, fixed_nodes, equations, nmodes), encoding="utf-8")
         # ccx is GPL-2.0-only. Frequency solves launch it as a separate process.
+        from aicad.prereqs import find_program
+
+        solver = find_program("ccx")
+        if solver is None:
+            return None, None, "CalculiX (ccx) is not on PATH."
         completed = subprocess.run(
-            ["ccx", "-i", "job"],
+            [solver, "-i", "job"],
             cwd=directory,
             capture_output=True,
             text=True,

@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import ctypes
 import os
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 _SYSTEM_ROOTS = (
     "/usr",
@@ -34,8 +34,11 @@ _SYSTEM_ROOTS = (
 )
 
 
-def availability_error() -> str | None:
-    if shutil.which("sandbox-exec") is None:
+def availability_error(project: str | Path | None = None) -> str | None:
+    from aicad.prereqs import find_program
+
+    root = Path(project) if project is not None else None
+    if find_program("sandbox-exec", project=root) is None:
         return (
             "This Mac does not have sandbox-exec, so aicad cannot limit the script "
             "to the project folder. The script was not run."
@@ -141,8 +144,13 @@ def make_preexec(*, cpu_seconds: int, memory_bytes: int) -> Callable[[], None]:
     return preexec
 
 
-def command_prefix(profile_path: str) -> list[str]:
-    sandbox_exec = shutil.which("sandbox-exec") or "sandbox-exec"
+def command_prefix(profile_path: str, project: str | Path | None = None) -> list[str]:
+    from aicad.prereqs import find_program
+
+    root = Path(project) if project is not None else None
+    sandbox_exec = find_program("sandbox-exec", project=root)
+    if sandbox_exec is None:
+        sandbox_exec = "/usr/bin/sandbox-exec"
     return [sandbox_exec, "-f", profile_path]
 
 

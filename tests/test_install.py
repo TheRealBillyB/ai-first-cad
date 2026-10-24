@@ -1,6 +1,5 @@
 """Install hints for CalculiX. The solver stays a separate program."""
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,7 +31,7 @@ def test_linux_hint_names_apt():
 
 
 def test_missing_ccx_message_is_the_hint_for_this_machine(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: None)
     status = ccx_status()
     assert status.found is False
     assert status.path is None
@@ -41,7 +40,7 @@ def test_missing_ccx_message_is_the_hint_for_this_machine(monkeypatch):
 
 
 def test_found_ccx_message_includes_the_path(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/ccx")
+    monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "/usr/bin/ccx")
     status = ccx_status()
     assert status.found is True
     assert status.path == "/usr/bin/ccx"

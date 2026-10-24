@@ -190,7 +190,7 @@ def test_calculix_stays_a_separate_process():
     for name in ("fea.py", "modal.py"):
         text = (root / name).read_text(encoding="utf-8")
         assert "subprocess.run" in text
-        assert '["ccx"' in text
+        assert 'find_program("ccx")' in text
         lowered = text.lower()
         assert "import calculix" not in lowered
         assert "import ccx" not in lowered

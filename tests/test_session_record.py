@@ -148,7 +148,7 @@ def test_replay_steps_through_the_record_and_export_writes_a_gif(tmp_path, confi
 
 
 def test_export_still_writes_a_gif_when_ffmpeg_is_missing(tmp_path, config_home, monkeypatch):
-    monkeypatch.setattr("aicad.animation.shutil.which", lambda _name: None)
+    monkeypatch.setattr("aicad.animation.find_program", lambda *_args, **_kwargs: None)
     project = tmp_path / "project"
     workspace = Workspace(project)
     workspace.execute("session_record", {"action": "start"}, source="ui")

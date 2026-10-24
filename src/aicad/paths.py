@@ -792,6 +792,11 @@ def remember_project(root: Path) -> None:
         _PROJECTS.add(resolved)
 
 
+def project_roots() -> tuple[Path, ...]:
+    """Projects opened in this process. The caller cannot change the stored set."""
+    return tuple(_PROJECTS)
+
+
 def _project_containing(path: Path) -> Path | None:
     """The longest remembered project that lexically contains ``path``."""
     if not path.is_absolute():
