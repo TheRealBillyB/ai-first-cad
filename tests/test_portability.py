@@ -250,6 +250,24 @@ def test_nested_divert_restores_the_outer_descriptor(capfd):
     assert captured.out == "AFTER"
 
 
+def test_a_mount_point_reparse_tag_is_a_junction():
+    from aicad.paths import _mount_point_tag
+
+    assert _mount_point_tag(0x400, 0xA0000003) is True
+    assert _mount_point_tag(0x400, 0xA000000C) is False
+    assert _mount_point_tag(0x10, 0xA0000003) is False
+    assert _mount_point_tag(0xFFFFFFFF, 0xA0000003) is False
+
+
+def test_a_normal_directory_is_not_a_link_without_isjunction(tmp_path, monkeypatch):
+    from aicad.paths import is_reparse
+
+    monkeypatch.delattr(os.path, "isjunction", raising=False)
+    folder = tmp_path / "plain"
+    folder.mkdir()
+    assert is_reparse(folder) is False
+
+
 def test_divert_restores_stdout_when_the_body_raises(tmp_path, monkeypatch, capfd):
     sink = tmp_path / "null-device"
     sink.write_bytes(b"")
