@@ -845,7 +845,8 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         (degrees in value, millimeters in slide). relations are gear {driver, driven, ratio, offset},
         linkage {driver, driven, ground_mm, crank_mm, coupler_mm, rocker_mm, branch},
         or cylinder {driver, driven, stroke, moving_anchor, retracted_mm}.
-        A linkage is a planar four-bar map, not a closed spatial loop. A cylinder
+        A linkage is a planar four-bar map between revolute or cylindrical joints, not a closed spatial loop.
+        One relation drives a joint. A cycle is refused. A cylinder
         keeps the rod eye on the moving clevis without adding a joint cycle.
         When the driver is cylindrical, its slide moves that clevis along the joint axis.
         poses, motions, studies, cables, and actuators live on the same spec.
