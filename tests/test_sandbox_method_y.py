@@ -106,6 +106,43 @@ def test_the_child_environment_is_scrubbed(tmp_path, monkeypatch):
     assert str(marker_bin) not in program.get("PATH", "")
 
 
+def _env_value(env: dict[str, str], name: str) -> str:
+    for key, value in env.items():
+        if key.upper() == name:
+            return value
+    return ""
+
+
+def test_a_child_keeps_the_windows_system_variables(monkeypatch, tmp_path):
+    from aicad import sandbox as sandbox_mod
+
+    monkeypatch.setattr(
+        sandbox_mod,
+        "_DROPPED_ENV",
+        sandbox_mod._DROPPED_ENV | frozenset({"SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"}),
+    )
+    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+    monkeypatch.setenv("WINDIR", r"C:\Windows")
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    monkeypatch.setenv("TEMP", r"C:\Temp")
+    monkeypatch.setenv("TMP", r"C:\Temp")
+    monkeypatch.setenv("LD_PRELOAD", "libcanary.so")
+    project = tmp_path / "project"
+    project.mkdir()
+    program = program_environment()
+    assert _env_value(program, "SYSTEMROOT") == r"C:\Windows"
+    assert _env_value(program, "WINDIR") == r"C:\Windows"
+    assert _env_value(program, "COMSPEC") == r"C:\Windows\System32\cmd.exe"
+    assert _env_value(program, "TEMP") == r"C:\Temp"
+    assert "LD_PRELOAD" not in _upper_keys(program)
+    child = _child_env(project, project / "job", network=False)
+    assert _env_value(child, "SYSTEMROOT") == r"C:\Windows"
+    assert _env_value(child, "WINDIR") == r"C:\Windows"
+    assert _env_value(child, "COMSPEC") == r"C:\Windows\System32\cmd.exe"
+    assert _env_value(child, "TEMP") == str(project / ".aicad" / "tmp")
+    assert "LD_PRELOAD" not in _upper_keys(child)
+
+
 def test_the_network_block_uses_system_powershell(monkeypatch, tmp_path):
     from aicad import sandbox_windows as win
 

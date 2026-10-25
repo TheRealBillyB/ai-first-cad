@@ -1786,7 +1786,26 @@ def scrubbed_environment(workspace: Path | None = None) -> dict[str, str]:
     pythonpath = _trusted_pythonpath(workspace)
     if pythonpath:
         env["PYTHONPATH"] = pythonpath
+    _restore_os_environment(env)
     return env
+
+
+# Windows refuses to start a program when these are missing. A scrub keeps
+# them even when a drop rule would have removed the name.
+_OS_ENV = ("COMSPEC", "PATHEXT", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "WINDIR")
+
+
+def _restore_os_environment(env: dict[str, str]) -> None:
+    """Put back the variables Windows needs to start a process."""
+
+    found = {key.upper() for key in env}
+    parent = {key.upper(): value for key, value in os.environ.items()}
+    for name in _OS_ENV:
+        if name in found:
+            continue
+        value = parent.get(name)
+        if value:
+            env[name] = value
 
 
 def program_environment() -> dict[str, str]:
