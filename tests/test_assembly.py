@@ -711,6 +711,180 @@ def test_cylinder_relation_puts_the_rod_eye_on_the_clevis():
     assert relation["stroke_mm"] == pytest.approx(11.803, abs=0.05)
 
 
+def _side_cylinder(y_offset: float) -> dict:
+    return {
+        "name": "cyl",
+        "instances": [
+            {"name": "base", "part": "base"},
+            {"name": "arm", "part": "arm"},
+            {"name": "barrel", "part": "barrel"},
+            {"name": "rod", "part": "rod"},
+        ],
+        "joints": [
+            {"name": "shoulder", "type": "revolute", "parent": "base", "child": "arm", "axis": [0, 1, 0]},
+            {
+                "name": "barrel",
+                "type": "revolute",
+                "parent": "base",
+                "child": "barrel",
+                "parent_anchor": [-50, y_offset, 40],
+                "axis": [0, 1, 0],
+            },
+            {
+                "name": "stroke",
+                "type": "prismatic",
+                "parent": "barrel",
+                "child": "rod",
+                "parent_anchor": [120, 0, 0],
+                "axis": [1, 0, 0],
+                "min": -80,
+                "max": 400,
+            },
+        ],
+        "relations": [
+            {
+                "name": "lift",
+                "type": "cylinder",
+                "driver": "shoulder",
+                "driven": "barrel",
+                "stroke": "stroke",
+                "moving_anchor": [180, 0, 20],
+                "retracted_mm": 120,
+                "bore_axis": [1, 0, 0],
+            }
+        ],
+    }
+
+
+def test_a_side_offset_cylinder_uses_the_in_plane_length():
+    """The barrel pin cannot tilt. The eye stops at the barrel plane and misses by the offset."""
+    for angle in (0, 25, -20):
+        solved = solve(_side_cylinder(30), {"shoulder": angle})
+        theta = math.radians(angle)
+        clevis = [
+            math.cos(theta) * 180 + math.sin(theta) * 20,
+            0.0,
+            -math.sin(theta) * 180 + math.cos(theta) * 20,
+        ]
+        pin = [-50.0, 30.0, 40.0]
+        span = math.dist(pin, clevis)
+        offset = abs(clevis[1] - pin[1])
+        in_plane = math.sqrt(span * span - offset * offset)
+        stroke = next(joint for joint in solved["joints"] if joint["name"] == "stroke")
+        eye = next(item["origin_mm"] for item in solved["instances"] if item["name"] == "rod")
+        assert stroke["value"] == pytest.approx(in_plane - 120.0, abs=1e-3)
+        assert math.dist(eye, clevis) == pytest.approx(offset, abs=0.02)
+        assert any("in-plane length" in note for note in solved["warnings"])
+    flat = solve(_side_cylinder(0), {"shoulder": 25})
+    theta = math.radians(25)
+    clevis = [
+        math.cos(theta) * 180 + math.sin(theta) * 20,
+        0.0,
+        -math.sin(theta) * 180 + math.cos(theta) * 20,
+    ]
+    eye = next(item["origin_mm"] for item in flat["instances"] if item["name"] == "rod")
+    assert math.dist(eye, [-50.0, 0.0, 40.0]) == pytest.approx(math.dist([-50.0, 0.0, 40.0], clevis), abs=0.02)
+    assert math.dist(eye, clevis) == pytest.approx(0, abs=0.02)
+    assert flat["warnings"] == []
+
+
+def test_two_in_plane_cylinders_meet_both_clevises():
+    spec = {
+        "name": "ex",
+        "instances": [
+            {"name": "base", "part": "base"},
+            {"name": "boom", "part": "boom"},
+            {"name": "stick", "part": "stick"},
+            {"name": "b_barrel", "part": "b_barrel"},
+            {"name": "b_rod", "part": "b_rod"},
+            {"name": "s_barrel", "part": "s_barrel"},
+            {"name": "s_rod", "part": "s_rod"},
+        ],
+        "joints": [
+            {"name": "boom", "type": "revolute", "parent": "base", "child": "boom", "axis": [0, 1, 0]},
+            {
+                "name": "stick",
+                "type": "revolute",
+                "parent": "boom",
+                "child": "stick",
+                "parent_anchor": [400, 0, 0],
+                "axis": [0, 1, 0],
+            },
+            {
+                "name": "boom_barrel",
+                "type": "revolute",
+                "parent": "base",
+                "child": "b_barrel",
+                "parent_anchor": [60, 0, 80],
+                "axis": [0, 1, 0],
+            },
+            {
+                "name": "boom_stroke",
+                "type": "prismatic",
+                "parent": "b_barrel",
+                "child": "b_rod",
+                "parent_anchor": [150, 0, 0],
+                "axis": [1, 0, 0],
+                "min": -100,
+                "max": 400,
+            },
+            {
+                "name": "stick_barrel",
+                "type": "revolute",
+                "parent": "boom",
+                "child": "s_barrel",
+                "parent_anchor": [220, 0, 70],
+                "axis": [0, 1, 0],
+            },
+            {
+                "name": "stick_stroke",
+                "type": "prismatic",
+                "parent": "s_barrel",
+                "child": "s_rod",
+                "parent_anchor": [140, 0, 0],
+                "axis": [1, 0, 0],
+                "min": -100,
+                "max": 400,
+            },
+        ],
+        "relations": [
+            {
+                "name": "boom_cyl",
+                "type": "cylinder",
+                "driver": "boom",
+                "driven": "boom_barrel",
+                "stroke": "boom_stroke",
+                "moving_anchor": [160, 0, 30],
+                "retracted_mm": 150,
+            },
+            {
+                "name": "stick_cyl",
+                "type": "cylinder",
+                "driver": "stick",
+                "driven": "stick_barrel",
+                "stroke": "stick_stroke",
+                "moving_anchor": [140, 0, -20],
+                "retracted_mm": 140,
+            },
+        ],
+    }
+
+    def world_point(matrix, point):
+        return [
+            matrix[0][0] * point[0] + matrix[0][1] * point[1] + matrix[0][2] * point[2] + matrix[0][3],
+            matrix[1][0] * point[0] + matrix[1][1] * point[1] + matrix[1][2] * point[2] + matrix[1][3],
+            matrix[2][0] * point[0] + matrix[2][1] * point[1] + matrix[2][2] * point[2] + matrix[2][3],
+        ]
+
+    for boom, stick in ((0, 0), (20, -30), (35, 15), (-10, 40)):
+        solved = solve(spec, {"boom": boom, "stick": stick})
+        frames = {item["name"]: item for item in solved["instances"]}
+        boom_clevis = world_point(frames["boom"]["matrix"], [160, 0, 30])
+        stick_clevis = world_point(frames["stick"]["matrix"], [140, 0, -20])
+        assert math.dist(frames["b_rod"]["origin_mm"], boom_clevis) == pytest.approx(0, abs=1e-3)
+        assert math.dist(frames["s_rod"]["origin_mm"], stick_clevis) == pytest.approx(0, abs=1e-3)
+
+
 def test_a_cylinder_on_a_cylindrical_joint_includes_the_slide():
     spec = _cylinder_spec(80)
     shoulder = spec["joints"][0]
