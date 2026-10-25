@@ -44,6 +44,7 @@ _STATIC = Path(__file__).resolve().parent / "app_static"
 _FILE_SUFFIXES = {".png", ".gif", ".svg", ".json", ".md", ".txt"}
 # A project file shown in the workspace is read on the host. Past this it is refused.
 _MAX_SERVED_BYTES = 32 * 1024 * 1024
+_MAX_COMMAND_BYTES = 32 * 1024 * 1024
 _TOKEN_HEADER = "X-Aicad-Token"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1"}
 # These change who may run code, who may use the network, or where a chat is sent.
@@ -220,9 +221,9 @@ class HttpCommandClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                payload = json.loads(_bounded_body(response, _MAX_COMMAND_BYTES).decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            detail = _bounded_body(exc, _MAX_COMMAND_BYTES).decode("utf-8", errors="replace")
             try:
                 message = json.loads(detail).get("error", detail)
             except json.JSONDecodeError:
@@ -233,6 +234,31 @@ class HttpCommandClient:
         if not payload.get("ok"):
             raise GeometryError(str(payload.get("error") or "The workspace command failed."))
         return payload.get("result") or {}
+
+
+def _bounded_body(response, maximum: int) -> bytes:
+    """Read at most ``maximum`` bytes. A larger response is not kept."""
+
+    declared = response.headers.get("Content-Length") if response.headers is not None else None
+    if declared is not None:
+        try:
+            size = int(declared)
+        except ValueError:
+            size = None
+        if size is not None and size > maximum:
+            raise GeometryError("The workspace response is too large.")
+    chunks: list[bytes] = []
+    remaining = maximum + 1
+    while remaining > 0:
+        block = response.read(min(65536, remaining))
+        if not block:
+            break
+        chunks.append(block)
+        remaining -= len(block)
+    data = b"".join(chunks)
+    if len(data) > maximum:
+        raise GeometryError("The workspace response is too large.")
+    return data
 
 
 def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
