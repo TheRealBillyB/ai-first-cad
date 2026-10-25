@@ -1724,7 +1724,10 @@ def _refuse_step_file_outside_folder(path: Path, data: bytes) -> None:
     leading slash, a backslash, or ``..`` would leave the folder, so the
     file is not read at all. A name that stays in the folder is not opened
     either: only this file is read. ``data`` is the capped read of this file.
+    The scan uses that same cap, so a larger buffer is not decoded.
     """
+    if len(data) > MAX_STEP_BYTES:
+        raise GeometryError(f"STEP file {path} is too large.")
     text = data.decode("latin-1")
     try:
         code, values = _step_code_and_strings(text)
@@ -1760,6 +1763,7 @@ def _step_code_and_strings(text: str) -> tuple[str, list[str]]:
             continue
         if text[index] == "'":
             raw, index = _read_step_literal(text, index)
+            pieces = [raw]
             while True:
                 cursor = index
                 while cursor < length and text[cursor] in " \t\r\n":
@@ -1773,11 +1777,11 @@ def _step_code_and_strings(text: str) -> tuple[str, list[str]]:
                         cursor += 1
                 if cursor < length and text[cursor] == "'":
                     nxt, index = _read_step_literal(text, cursor)
-                    raw += nxt
+                    pieces.append(nxt)
                     continue
                 index = cursor
                 break
-            values.append(_decode_step_string(raw))
+            values.append(_decode_step_string("".join(pieces)))
             code.append("''")
             continue
         code.append(text[index])
