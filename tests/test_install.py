@@ -1,8 +1,11 @@
 """Install hints for CalculiX. The solver stays a separate program."""
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from aicad.prereqs import ccx_hint, ccx_status
 
@@ -45,6 +48,59 @@ def test_found_ccx_message_includes_the_path(monkeypatch):
     assert status.found is True
     assert status.path == "/usr/bin/ccx"
     assert "/usr/bin/ccx" in status.message
+
+
+def _load_install():
+    spec = importlib.util.spec_from_file_location("aicad_install_under_test", ROOT / "install.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_an_old_virtualenv_is_not_reused(tmp_path, monkeypatch):
+    module = _load_install()
+    name = "python.exe" if sys.platform == "win32" else "python"
+    fake = tmp_path / name
+    fake.write_text("", encoding="utf-8")
+    monkeypatch.setattr(module, "_venv_python", lambda: fake)
+
+    def too_old(_command, **_kwargs):
+        class Done:
+            returncode = 1
+
+        return Done()
+
+    monkeypatch.setattr(module.subprocess, "run", too_old)
+    with pytest.raises(SystemExit, match="older than Python 3.11"):
+        module._ensure_venv()
+
+
+def test_a_current_virtualenv_is_reused(tmp_path, monkeypatch):
+    module = _load_install()
+    name = "python.exe" if sys.platform == "win32" else "python"
+    fake = tmp_path / name
+    fake.write_text("", encoding="utf-8")
+    monkeypatch.setattr(module, "_venv_python", lambda: fake)
+    calls: list[list[str]] = []
+
+    def current(command, **_kwargs):
+        calls.append(list(command))
+
+        class Done:
+            returncode = 0
+
+        return Done()
+
+    monkeypatch.setattr(module.subprocess, "run", current)
+    assert module._ensure_venv() == fake
+    assert calls == [
+        [
+            str(fake),
+            "-c",
+            "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)",
+        ]
+    ]
 
 
 def test_ccx_status_runs_when_the_package_is_not_imported():

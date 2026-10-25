@@ -9,7 +9,8 @@ from urllib.parse import quote
 
 import pytest
 
-from aicad.app import make_server
+from aicad.app import _bind_host_is_loopback, _peer_is_loopback, make_server
+from aicad.errors import GeometryError
 
 _CREATE = {
     "name": "create_part_from_ops",
@@ -268,6 +269,46 @@ def test_a_note_outside_the_project_is_refused(server, tmp_path):
         assert b"outside the project" in payload
         assert b"secret-note" not in payload
         assert b"sibling-note" not in payload
+    status, payload, _headers = _exchange(
+        server, "GET", "/api/file?path=" + quote("..../..../secret.txt"), token="page"
+    )
+    assert status == 400
+    assert b"outside the project" in payload
+    assert b"secret-note" not in payload
+    status, payload, _headers = _exchange(
+        server, "GET", "/api/file?path=" + quote("notes/.. ./notes.txt"), token="page"
+    )
+    assert status == 400
+    assert b"outside the project" in payload
+    assert payload != b"hello\n"
+
+
+def test_loopback_addresses_are_the_only_ones_accepted():
+    assert _bind_host_is_loopback("127.0.0.1")
+    assert _bind_host_is_loopback("localhost")
+    assert _bind_host_is_loopback("::1")
+    assert _bind_host_is_loopback("[::1]")
+    assert not _bind_host_is_loopback("0.0.0.0")
+    assert not _bind_host_is_loopback("192.168.1.5")
+    assert not _bind_host_is_loopback("")
+    assert _peer_is_loopback("127.0.0.1")
+    assert _peer_is_loopback("127.1.2.3")
+    assert _peer_is_loopback("::1")
+    assert _peer_is_loopback("::ffff:127.0.0.1")
+    assert not _peer_is_loopback("::ffff:8.8.8.8")
+    assert not _peer_is_loopback("192.168.0.2")
+    assert not _peer_is_loopback("0.0.0.0")
+    assert not _peer_is_loopback("evil.example")
+
+
+def test_a_public_bind_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    monkeypatch.setenv("AICAD_SERVER_TOKENS", str(tmp_path / "tokens"))
+    project = tmp_path / "project"
+    project.mkdir()
+    for host in ("0.0.0.0", "192.168.1.5", ""):
+        with pytest.raises(GeometryError, match="only listens on this computer"):
+            make_server(project, host, 0)
 
 
 def test_a_negative_content_length_is_refused(server):

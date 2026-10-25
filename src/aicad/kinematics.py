@@ -3,9 +3,11 @@
 A structural joint (fixed, revolute, prismatic, cylindrical) is an edge in a
 tree. Gear and linkage relations write one driven joint from a driver. A
 cylinder relation writes two: the barrel angle and the rod extension, from
-the pin-to-pin distance of a revolute or cylindrical driver. A cylindrical
-driver includes its slide. That keeps a hydraulic cylinder
-on its clevises without a spatial loop. A linkage here is a planar four-bar
+the in-plane pin distance of a revolute or cylindrical driver. A cylindrical
+driver includes its slide. The barrel joint cannot tilt, so a side offset is
+how far the eye misses the clevis and the stroke does not include it. That
+keeps a hydraulic cylinder on its clevises without a spatial loop. A linkage
+here is a planar four-bar
 map, and a gear is a linear map between joint values.
 
 Serial-chain inverse kinematics and a tool path are solved in ``aicad.chain``.
@@ -226,7 +228,7 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
                 if offset_mm > 2.0:
                     note = (
                         f"{relation['name']} is {offset_mm:.1f} mm out of the plane of its pin. "
-                        "The clevises do not share that plane, so the barrel angle is the in-plane part only."
+                        "The stroke is the in-plane length. The eye misses the clevis by that offset."
                     )
                     if note not in warnings:
                         warnings.append(note)
@@ -457,10 +459,12 @@ def _cylinder(
     The moving clevis is a point on the driver child. The fixed clevis is the
     barrel joint's parent anchor. Both are in the shared parent frame. With
     the barrel pin as the axis, angle 0 points ``bore_axis`` along the barrel
-    child. Extension is pin-to-pin length minus ``retracted_mm``. A cylindrical
-    driver also shifts that clevis by its slide along the joint axis, the same
-    travel the joint matrix uses. A revolute has no slide, and a caller that
-    omits the type leaves the clevis unshifted.
+    child. Extension is the in-plane pin distance minus ``retracted_mm``. The
+    barrel cannot tilt, so the out-of-plane offset is the distance the eye
+    misses the clevis and is not part of the stroke. A cylindrical driver also
+    shifts that clevis by its slide along the joint axis, the same travel the
+    joint matrix uses. A revolute has no slide, and a caller that omits the
+    type leaves the clevis unshifted.
     """
     driver = joints[relation["driver"]]
     barrel = joints[relation["driven"]]
@@ -494,8 +498,9 @@ def _cylinder(
     if math.hypot(cosine, sine) < 1e-6:
         raise GeometryError(f"Cylinder {relation['name']!r} lies on its pin axis.")
     angle = math.degrees(math.atan2(sine, cosine))
-    extension = length - relation["retracted_mm"]
     offset = abs(sum(delta[i] * axis[i] for i in range(3)))
+    in_plane = math.sqrt(max(0.0, length * length - offset * offset))
+    extension = in_plane - relation["retracted_mm"]
     return angle, extension, offset
 
 

@@ -32,8 +32,7 @@ def export_robot(spec: dict, shapes: dict, out_dir: Path) -> dict:
     if not isinstance(spec, dict) or not spec.get("instances"):
         raise GeometryError("A robot export needs an assembly with instances.")
     out_dir = Path(out_dir)
-    mesh_dir = out_dir / "meshes"
-    mesh_dir.mkdir(parents=True, exist_ok=True)
+    mesh_dir = _mesh_directory(out_dir)
     links = []
     written: dict[str, str] = {}
     for instance in spec["instances"]:
@@ -52,8 +51,8 @@ def export_robot(spec: dict, shapes: dict, out_dir: Path) -> dict:
 
     urdf_path = out_dir / "robot.urdf"
     mjcf_path = out_dir / "robot.xml"
-    publish_text(urdf_path, _urdf(name, links, joints, spec))
-    publish_text(mjcf_path, _mjcf(name, links, joints, spec))
+    publish_text(urdf_path, _urdf(name, links, joints, spec), root=out_dir)
+    publish_text(mjcf_path, _mjcf(name, links, joints, spec), root=out_dir)
     validation = validate_robot(urdf_path, mjcf_path)
     loaded = validation["mujoco"]["status"] == "loaded" or validation["pybullet"]["status"] == "loaded"
     report = {
@@ -100,6 +99,22 @@ def export_robot(spec: dict, shapes: dict, out_dir: Path) -> dict:
             "A missing MuJoCo or PyBullet install still writes the files and says they were not stepped.",
         ],
     )
+
+
+def _mesh_directory(out_dir: Path) -> Path:
+    """A real ``meshes`` folder under ``out_dir``. A link is not followed.
+
+    ``out_dir`` itself may not exist yet. The nearest existing parent is the
+    anchor, and missing folders under it are created. A symlink or junction
+    in that path is not followed, including one whose target stays inside
+    ``out_dir``.
+    """
+    from aicad.paths import output_dir as make_dir
+
+    anchor = out_dir
+    while not anchor.exists() and anchor.parent != anchor:
+        anchor = anchor.parent
+    return make_dir(anchor, out_dir / "meshes", "Robot meshes", GeometryError)
 
 
 def validate_robot(urdf_path: Path, mjcf_path: Path) -> dict:
