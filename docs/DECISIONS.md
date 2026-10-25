@@ -23,6 +23,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A shared STEP file and a served project file have a size cap | The host returns an error past that cap. A mesh stops at a fixed triangle count, and the macOS file helper uses the same cap as the script. |
 | A STEP file with another name is not imported | A STEP file in the project that has another name is not opened. A file the person named by an absolute path is still read. |
 | A STEP text scan and a saved session stay inside their size caps | The scan refuses a buffer larger than the STEP read, and saving a project does not copy a session past 32 MiB. |
+| A traverse grant does not change the folder after the wait | The grant thread is told to stop when the wait ends, and it does not write the access entry after that. |
 | A trimmed Windows path is refused before a record, a STEP name, or a workspace file is opened | ``....\....\hidden`` is ``..\..\hidden`` after Win32 removes trailing dots. Those readers now use the same check as a session path. |
 | A workspace command response stops at 32 MiB | The assistant's command client does not keep a response larger than that. |
 | A workspace file with another name is not shown | The workspace file view does not open a file that is a link or that has another name. |

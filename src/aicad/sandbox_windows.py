@@ -615,25 +615,62 @@ def _dacl_needs_grant(
     return True
 
 
+class _GrantStopped(BaseException):
+    """The grant wait ended. The folder must be left unchanged."""
+
+
+_grant_stop = threading.local()
+
+
+def _grant_was_stopped() -> bool:
+    """True after the grant wait has given up. The writer has to stop."""
+
+    event = getattr(_grant_stop, "event", None)
+    return event is not None and event.is_set()
+
+
+def _stop_grant_thread(thread: threading.Thread) -> None:
+    """Ask the grant thread to raise at its next Python instruction."""
+
+    ident = thread.ident
+    if not ident:
+        return
+    api = ctypes.pythonapi.PyThreadState_SetAsyncExc
+    api.argtypes = [ctypes.c_ulong, ctypes.py_object]
+    api.restype = ctypes.c_int
+    count = api(ctypes.c_ulong(ident), ctypes.py_object(_GrantStopped))
+    if count > 1:
+        api(ctypes.c_ulong(ident), None)
+
+
 def _finish_within(seconds: float, path: Path, work) -> None:
     """Run ``work`` and give up if it does not return.
 
     A grant that walks every child of a tool-cache directory does not return
     before the test is killed. Stopping here leaves that directory unchanged.
+    The thread is told to stop, and it does not write the access entry after that.
     """
 
     box: dict[str, Exception] = {}
+    stop = threading.Event()
 
     def run() -> None:
+        _grant_stop.event = stop
         try:
             work()
+        except _GrantStopped:
+            return
         except Exception as exc:
             box["error"] = exc
+        finally:
+            _grant_stop.event = None
 
     thread = threading.Thread(target=run, name="aicad-grant", daemon=True)
     thread.start()
     thread.join(seconds)
     if thread.is_alive():
+        stop.set()
+        _stop_grant_thread(thread)
         raise GrantTimeout(
             f"Granting traverse did not finish within {seconds:g} seconds for {path}. "
             "The sandbox stopped waiting, and that folder was not changed."
@@ -865,6 +902,8 @@ def _write_traverse_ace(path: Path, sid: str) -> None:
             raise _acl_error(f"Could not grant traverse on {path}")
         if not advapi32.SetSecurityDescriptorDacl(security, True, new_dacl, False):
             raise _acl_error(f"Could not grant traverse on {path}")
+        if _grant_was_stopped():
+            raise _GrantStopped()
         if not advapi32.SetKernelObjectSecurity(handle, _DACL_SECURITY_INFORMATION, security):
             raise _acl_error(f"Could not grant traverse on {path}")
     finally:
@@ -877,6 +916,8 @@ def _write_traverse_ace(path: Path, sid: str) -> None:
 
 
 def _grant_traverse_one(path: Path, sid: str, package_sid: str) -> None:
+    if _grant_was_stopped():
+        raise _GrantStopped()
     if _parent_allows_traverse(path, sid, package_sid):
         return
     _write_traverse_ace(path, sid)
