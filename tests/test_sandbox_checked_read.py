@@ -220,6 +220,16 @@ def test_a_swapped_record_is_not_read(tmp_path, monkeypatch):
     _assert_canary(canary, str(caught.value))
 
 
+def test_a_note_with_windows_newlines_is_read_as_lf(tmp_path):
+    project = tmp_path / "project"
+    workspace = Workspace(project)
+    note = project / "documents" / "notes.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_bytes(b"# Note\r\n\r\nKeep this text as data.\r")
+    read = workspace.execute("read_document", {"name": "notes.md"}, source="ui")
+    assert read["markdown"] == "# Note\n\nKeep this text as data.\n"
+
+
 def test_a_note_directory_swapped_for_a_link_is_not_read(tmp_path, monkeypatch):
     from aicad import paths
 

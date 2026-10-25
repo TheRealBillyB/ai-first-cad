@@ -1155,12 +1155,17 @@ def read_checked_text(
     label: str,
     error: type[Exception],
 ) -> str:
-    """UTF-8 text from :func:`read_checked_bytes`."""
+    """UTF-8 text from :func:`read_checked_bytes`.
+
+    Newlines match :meth:`pathlib.Path.read_text`: ``\\r\\n`` and a lone ``\\r``
+    become ``\\n``.
+    """
     data = read_checked_bytes(root, path, maximum=maximum, label=label, error=error)
     try:
-        return data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeError as exc:
         raise error(f"Could not read {label}.") from exc
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def read_nofollow_bytes(path: str | Path, *, maximum: int, label: str, error: type[Exception]) -> bytes:
