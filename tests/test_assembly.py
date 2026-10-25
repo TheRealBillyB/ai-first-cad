@@ -585,6 +585,225 @@ def test_electric_current_from_joint_torque(tmp_path):
     assert report["battery"]["energy_wh"] > 0
 
 
+def _geared_holding(document: Document, name: str, payloads: dict[str, float], relations: list[dict]) -> dict:
+    _box(document, "base", [10, 10, 10], [0, 0, 0])
+    _box(document, "link", [10, 10, 10], [0, 0, 0])
+    instances: list[dict] = [{"name": "base", "part": "base", "material": "aluminum"}]
+    joints = []
+    for joint, payload in payloads.items():
+        instances.append(
+            {
+                "name": f"c_{joint}",
+                "part": "link",
+                "material": "aluminum",
+                "payload_kg": payload,
+                "payload_at": [100, 0, 0],
+            }
+        )
+        joints.append(
+            {"name": joint, "type": "revolute", "parent": "base", "child": f"c_{joint}", "axis": [0, 1, 0]}
+        )
+    document.create_assembly(
+        {
+            "name": name,
+            "instances": instances,
+            "joints": joints,
+            "relations": relations,
+            "actuators": [
+                {
+                    "name": "motor",
+                    "kind": "electric",
+                    "joint": "drive",
+                    "gear_ratio": 1,
+                    "torque_constant_nm_per_a": 1,
+                    "efficiency": 1,
+                }
+            ],
+        }
+    )
+    report = document.estimate_power(name)
+    return report["frames"][0]["joints"]
+
+
+def test_a_reversing_gear_cancels_equal_arm_moments(tmp_path):
+    """10 kg at 100 mm on each arm. Ratio −1, so the moments cancel on the driver."""
+    moment = 10 * 9.81 * 0.1
+    joints = _geared_holding(
+        Document(tmp_path),
+        "rev",
+        {"drive": 10, "last": 10},
+        [{"type": "gear", "driver": "drive", "driven": "last", "ratio": -1}],
+    )
+    assert joints["drive"]["torque_nm"] == pytest.approx(0, abs=1e-3)
+    assert joints["last"]["torque_nm"] == pytest.approx(moment, abs=1e-3)
+
+
+def test_a_same_direction_gear_adds_the_arm_moments(tmp_path):
+    moment = 10 * 9.81 * 0.1
+    joints = _geared_holding(
+        Document(tmp_path),
+        "belt",
+        {"drive": 10, "last": 10},
+        [{"type": "gear", "driver": "drive", "driven": "last", "ratio": 1}],
+    )
+    assert joints["drive"]["torque_nm"] == pytest.approx(2 * moment, abs=1e-3)
+
+
+def test_a_reduction_scales_the_driven_moment(tmp_path):
+    driven = 4 * 9.81 * 0.1
+    driver = 10 * 9.81 * 0.1
+    joints = _geared_holding(
+        Document(tmp_path),
+        "red",
+        {"drive": 10, "last": 4},
+        [{"type": "gear", "driver": "drive", "driven": "last", "ratio": -0.5}],
+    )
+    assert joints["drive"]["torque_nm"] == pytest.approx(driver + (-0.5) * driven, abs=1e-3)
+
+
+def test_a_two_stage_gear_chain_does_not_depend_on_relation_order(tmp_path):
+    """Ratio −1 then −1 is an overall ratio of +1. Each arm moment is 9.81 N·m."""
+    moment = 10 * 9.81 * 0.1
+    orders = (
+        ("input_first", [
+            {"type": "gear", "driver": "drive", "driven": "mid", "ratio": -1},
+            {"type": "gear", "driver": "mid", "driven": "last", "ratio": -1},
+        ]),
+        ("downstream_first", [
+            {"type": "gear", "driver": "mid", "driven": "last", "ratio": -1},
+            {"type": "gear", "driver": "drive", "driven": "mid", "ratio": -1},
+        ]),
+    )
+    for name, relations in orders:
+        joints = _geared_holding(
+            Document(tmp_path / name),
+            name,
+            {"drive": 10, "mid": 10, "last": 10},
+            relations,
+        )
+        assert joints["last"]["torque_nm"] == pytest.approx(moment, abs=1e-3)
+        assert joints["mid"]["torque_nm"] == pytest.approx(0, abs=1e-3)
+        assert joints["drive"]["torque_nm"] == pytest.approx(moment, abs=1e-3)
+
+
+def test_shared_and_mixed_relations_add_the_driven_loads():
+    from aicad.kinematics import normalize
+    from aicad.power import _instant_ratio, reflect
+
+    def row(name, kind, torque, force):
+        return {
+            "joint": name,
+            "type": kind,
+            "value": 0,
+            "slide": 0,
+            "torque_nm": torque,
+            "force_n": force,
+            "supported": [],
+        }
+
+    def apply(loads, relations, actuators):
+        solved = {"joints": [{"name": item["joint"], "value": 0, "slide": 0} for item in loads]}
+        spec = {"relations": relations}
+        return {item["joint"]: item for item in reflect(loads, solved, spec, actuators)}
+
+    shared = apply(
+        [row("drive", "revolute", 5, 0), row("left", "revolute", 3, 0), row("right", "revolute", 4, 0)],
+        [
+            {"type": "gear", "driver": "drive", "driven": "left", "ratio": -1},
+            {"type": "gear", "driver": "drive", "driven": "right", "ratio": 2},
+        ],
+        [{"joint": "drive"}],
+    )
+    assert shared["drive"]["torque_nm"] == pytest.approx(5 + (-1) * 3 + 2 * 4, abs=1e-4)
+
+    belt = apply(
+        [row("drive", "prismatic", 0, 10), row("last", "prismatic", 0, 4)],
+        [{"type": "gear", "driver": "drive", "driven": "last", "ratio": 1}],
+        [{"joint": "drive"}],
+    )
+    assert belt["drive"]["force_n"] == pytest.approx(14, abs=1e-4)
+    reverse = apply(
+        [row("drive", "prismatic", 0, 10), row("last", "prismatic", 0, 4)],
+        [{"type": "gear", "driver": "drive", "driven": "last", "ratio": -1}],
+        [{"joint": "drive"}],
+    )
+    assert reverse["drive"]["force_n"] == pytest.approx(6, abs=1e-4)
+
+    rack = apply(
+        [row("drive", "revolute", 3, 0), row("last", "prismatic", 0, 20)],
+        [{"type": "gear", "driver": "drive", "driven": "last", "ratio": 2}],
+        [{"joint": "drive"}],
+    )
+    expected_torque = 3 - 20 * 2 / 1000.0 * (180.0 / math.pi)
+    assert rack["drive"]["torque_nm"] == pytest.approx(expected_torque, abs=1e-4)
+
+    pinion = apply(
+        [row("drive", "prismatic", 0, 10), row("last", "revolute", 2, 0)],
+        [{"type": "gear", "driver": "drive", "driven": "last", "ratio": 0.5}],
+        [{"joint": "drive"}],
+    )
+    expected_force = 10 - 2 * 0.5 * (math.pi / 180.0) * 1000.0
+    assert pinion["drive"]["force_n"] == pytest.approx(expected_force, abs=1e-4)
+
+    held = apply(
+        [row("drive", "revolute", 5, 0), row("last", "revolute", 9, 0)],
+        [{"type": "gear", "driver": "drive", "driven": "last", "ratio": -1}],
+        [{"joint": "drive"}, {"joint": "last"}],
+    )
+    assert held["drive"]["torque_nm"] == pytest.approx(5, abs=1e-4)
+
+    loop = apply(
+        [row("drive", "revolute", 4, 0), row("last", "revolute", 6, 0)],
+        [
+            {"type": "gear", "driver": "drive", "driven": "last", "ratio": -1},
+            {"type": "gear", "driver": "last", "driven": "drive", "ratio": -1},
+        ],
+        [],
+    )
+    assert loop["drive"]["torque_nm"] == pytest.approx(4, abs=1e-4)
+    assert loop["last"]["torque_nm"] == pytest.approx(6, abs=1e-4)
+
+    linkage = {
+        "name": "bar",
+        "instances": [
+            {"name": "ground", "part": "ground"},
+            {"name": "crank", "part": "link"},
+            {"name": "rocker", "part": "link"},
+        ],
+        "joints": [
+            {"name": "crank", "type": "revolute", "parent": "ground", "child": "crank", "axis": [0, 0, 1]},
+            {"name": "rocker", "type": "revolute", "parent": "ground", "child": "rocker", "axis": [0, 0, 1]},
+        ],
+        "relations": [
+            {
+                "name": "loop",
+                "type": "linkage",
+                "driver": "crank",
+                "driven": "rocker",
+                "ground_mm": 100,
+                "crank_mm": 40,
+                "coupler_mm": 80,
+                "rocker_mm": 60,
+                "branch": "open",
+            }
+        ],
+    }
+    spec = normalize(linkage)
+    solved = solve(spec)
+    ratio = _instant_ratio(spec["relations"][0], solved, spec)
+    reflected = {
+        item["joint"]: item
+        for item in reflect(
+            [row("crank", "revolute", 4, 0), row("rocker", "revolute", 6, 0)],
+            solved,
+            spec,
+            [{"joint": "crank"}],
+        )
+    }
+    assert ratio != 0
+    assert reflected["crank"]["torque_nm"] == pytest.approx(4 + ratio * 6, abs=1e-4)
+
+
 def test_workspace_undo_restores_a_joint(tmp_path):
     workspace = Workspace(tmp_path)
     _box(workspace.document, "base", [10, 10, 10], [0, 0, 0])
