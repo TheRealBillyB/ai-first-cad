@@ -1778,13 +1778,17 @@ def _matrix4(value, label) -> list[list[float]]:
 
 
 def _euler_from(rotation) -> list[float]:
-    sine = max(-1.0, min(1.0, -rotation[2][0]))
+    """Angles whose ``_euler`` rebuilds this matrix: X, then Y, then Z."""
+    sine = max(-1.0, min(1.0, rotation[0][2]))
     pitch = math.asin(sine)
     if abs(math.cos(pitch)) > 1e-8:
-        roll = math.atan2(rotation[2][1], rotation[2][2])
-        yaw = math.atan2(rotation[1][0], rotation[0][0])
+        roll = math.atan2(-rotation[1][2], rotation[2][2])
+        yaw = math.atan2(-rotation[0][1], rotation[0][0])
+    elif sine > 0.0:
+        roll = math.atan2(-rotation[1][0], rotation[1][1])
+        yaw = 0.0
     else:
-        roll = math.atan2(-rotation[0][1], rotation[1][1])
+        roll = math.atan2(rotation[1][0], rotation[1][1])
         yaw = 0.0
     return [math.degrees(roll), math.degrees(pitch), math.degrees(yaw)]
 
