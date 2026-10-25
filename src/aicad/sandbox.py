@@ -1834,14 +1834,20 @@ _OS_ENV = ("COMSPEC", "PATHEXT", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "WI
 
 
 def _restore_os_environment(env: dict[str, str]) -> None:
-    """Put back the variables Windows needs to start a process."""
+    """Put back the variables Windows needs to start a process.
 
-    found = {key.upper() for key in env}
+    Windows stores these names in uppercase. A mixed-case copy is the same
+    variable, so the child keeps the canonical name.
+    """
+
     parent = {key.upper(): value for key, value in os.environ.items()}
+    carried = {key.upper(): value for key, value in env.items()}
+    for key in [key for key in env if key.upper() in _OS_ENV and key not in _OS_ENV]:
+        del env[key]
     for name in _OS_ENV:
-        if name in found:
+        if env.get(name):
             continue
-        value = parent.get(name)
+        value = carried.get(name) or parent.get(name)
         if value:
             env[name] = value
 

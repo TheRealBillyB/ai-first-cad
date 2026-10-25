@@ -170,7 +170,7 @@ def test_the_network_block_uses_system_powershell(monkeypatch, tmp_path):
     assert seen["command"][0] == expected
     assert str(outside) not in seen["command"][0]
     env = _child_env(project, project / "job", network=False)
-    assert env.get("SystemRoot") == r"C:\Windows"
+    assert env.get("SYSTEMROOT") == r"C:\Windows"
     assert str(outside) not in env.get("PATH", "")
 
 
