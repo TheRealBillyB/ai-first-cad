@@ -41,7 +41,7 @@ A URDF or MJCF export escapes a part or joint name. A quote in that name stays i
 
 ffmpeg, CalculiX, and a slicer are started from PATH outside the project. A copy in the project is not started, and the current directory is not searched.
 
-The sandbox process uses the project folder as its working directory. That folder is not placed on Python's import path. An import path entry that is the project, or a directory inside it, is removed before the process starts. A relative entry is made absolute from the program that launched the script, so it is not read from the project. A module or package shipped in the project cannot run in place of the sandbox. The same rule applies when the project is built again. The limits are applied before the script runs.
+The sandbox process uses the project folder as its working directory. That folder is not placed on Python's import path. An import path entry that is the project, or a directory inside it, is removed before the process starts. A relative entry is made absolute from the program that launched the script, so it is not read from the project. A module or package shipped in the project cannot run in place of the sandbox. The same rule applies when the project is built again. The limits are applied before the script runs. A failure while the sandbox is starting is reported without a traceback.
 
 Files in the project, including `.aicad` and `.env`, do not turn the network on or raise those limits. A link that points outside the project is not written. A session, a note, a requirements file, a blueprint, and a STEP file are read from the project directory without following a link. A session larger than 32 MiB, or nested more than 48 levels, is not read. Saving a project as a new folder does not copy a session past that cap. A STEP file larger than 64 MiB is not read, and the text scan of that file uses the same cap. If a file in the project has more than one name, the script is not run, because writing that file would change every name. The script log is not read when that file has another name. A plan file is not opened when it is a link or has another name, and a plan folder that is a link is not listed.
 
@@ -60,6 +60,7 @@ These checks use a marker file outside the project. A project file is data. The 
 - **V.** A STEP, STL, URDF, or MJCF export, and a session record, do not contain an environment value, a token, or the account name unless that text is part of the model.
 - **W.** Opening a project and exporting a part do not run git, a hook, a filter, or `core.fsmonitor`.
 - **X.** A project `.env`, pip or uv configuration, `pyproject.toml`, or `requirements.txt` does not change the process environment. A module in the project does not replace the standard library, and `sitecustomize` there does not run.
+- **AB.** A STEP file that is exported and imported again stays geometry. A session replay does not run the recorded commands, and opening a project does not run a script stored in the session.
 - **AD.** Solver text and errors shown to the assistant are marked as data. Tessellation and meshing stay inside the triangle budget.
 
 Master documents are generated from the entry files in the repository. A symlink or junction on that path is not followed, and a file with another name is not read or written. Generating the masters does not run an entry as code.
