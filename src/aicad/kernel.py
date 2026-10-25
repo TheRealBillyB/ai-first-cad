@@ -1625,7 +1625,14 @@ _STEP_EXTERNAL_MARKERS = (
 )
 
 
+# A shared STEP file is read on the host, outside the script file cap.
 MAX_STEP_BYTES = 64 * 1024 * 1024
+_MAX_TRIANGLES = 1_000_000
+
+
+def _refuse_large_mesh(count: int) -> None:
+    if count > _MAX_TRIANGLES:
+        raise GeometryError(f"That mesh has too many triangles. The limit is {_MAX_TRIANGLES}.")
 
 
 def read_step_bytes(path: Path) -> bytes:
@@ -1640,7 +1647,7 @@ def import_step_file(path: Path) -> Shape:
 
     Only this file is opened. A name inside it that points at another file is
     not followed, so a shared part cannot read or write outside the project
-    by naming some other path.
+    by naming some other path. A file past the size cap is not read.
     """
     if not path.is_file():
         raise GeometryError(f"STEP file not found: {path}")
@@ -1716,7 +1723,7 @@ def _refuse_step_file_outside_folder(path: Path, data: bytes) -> None:
     An assembly file can name another STEP file. A name with a drive, a
     leading slash, a backslash, or ``..`` would leave the folder, so the
     file is not read at all. A name that stays in the folder is not opened
-    either: only this file is read.
+    either: only this file is read. ``data`` is the capped read of this file.
     """
     text = data.decode("latin-1")
     try:
@@ -1926,6 +1933,7 @@ def tessellate(shape: Shape) -> TriangleMesh:
     )
     if not triangles:
         raise GeometryError("The solid produced an empty mesh and cannot be rendered.")
+    _refuse_large_mesh(len(triangles))
 
     points = np.array([(v.X, v.Y, v.Z) for v in vertices], dtype=np.float64)
     norms = np.array([(v.X, v.Y, v.Z) for v in normals], dtype=np.float64)
@@ -2043,6 +2051,8 @@ def viewport_mesh(shape: Shape) -> dict:
                 positions.extend(round(component, 4) for component in corner)
                 normals.extend((round(nx, 4), round(ny, 4), round(nz, 4)))
             triangle_face.append(index)
+            if len(triangle_face) > _MAX_TRIANGLES:
+                _refuse_large_mesh(len(triangle_face))
     edge_payload = []
     for edge, record in zip(impl.edges(), edges):
         samples = edge.positions(deflection=tolerance)
