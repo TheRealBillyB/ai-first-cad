@@ -2195,13 +2195,14 @@ class Document:
                     stored = geometry.replace("\\", "/") if isinstance(geometry, str) else ""
                     prefix = stored_hash[:16] if isinstance(stored_hash, str) else ""
                     expected = f".aicad/geometry/{name}-{prefix}.step" if prefix else ""
-                    # Only the file named for this script's stored hash is that build.
-                    # Another path is not opened, even when the hash matches.
-                    if stored and expected and stored == expected:
+                    # Every recorded path still goes through the project guard, so a
+                    # link that leaves the project is refused. Only the file named
+                    # for this script's stored hash is imported.
+                    if stored:
                         geometry_path = _session_project_file(
                             self.workspace, geometry, f"Part {name!r} geometry file"
                         )
-                        if geometry_path.is_file():
+                        if stored == expected and geometry_path.is_file():
                             base = kernel.import_step_file(geometry_path)
                             base.features = feature_report_from_dict(record.get("features"))
                         else:
