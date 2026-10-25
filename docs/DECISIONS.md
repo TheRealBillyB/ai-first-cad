@@ -20,6 +20,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A shared STEP file and a served project file have a size cap | The host returns an error past that cap. A mesh stops at a fixed triangle count, and the macOS file helper uses the same cap as the script. |
 | A STEP file with another name is not imported | A STEP file in the project that has another name is not opened. A file the person named by an absolute path is still read. |
 | A trimmed Windows path is refused before a record, a STEP name, or a workspace file is opened | ``....\....\hidden`` is ``..\..\hidden`` after Win32 removes trailing dots. Those readers now use the same check as a session path. |
+| A workspace command response stops at 32 MiB | The assistant's command client does not keep a response larger than that. |
 | A workspace file with another name is not shown | The workspace file view does not open a file that is a link or that has another name. |
 | An existing virtual environment older than Python 3.11 is not reused | The installer requires Python 3.11. An existing `.venv` on an older interpreter is reported, and it is not used for the install. |
 | An installer package command stops if it does not finish | apt, pip, and the virtual-environment command wait at most 30 minutes. A lock that never clears does not hold the installer open. |
