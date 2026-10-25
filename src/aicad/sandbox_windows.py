@@ -1364,6 +1364,33 @@ def _read_text(path: Path) -> str:
         return ""
 
 
+class _JobBasicAndIo(ctypes.Structure):
+    """JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION."""
+
+    _fields_ = [
+        ("BasicInfo", _JobBasicAccounting),
+        ("IoInfo", _IoCounters),
+    ]
+
+
+# JobObjectBasicAndIoAccountingInformation. WriteTransferCount is the job's writes.
+_JobObjectBasicAndIoAccountingInformation = 8
+
+
+def _job_bytes_written(job: wintypes.HANDLE) -> int | None:
+    info = _JobBasicAndIo()
+    returned = wintypes.DWORD(0)
+    if not _kernel32().QueryInformationJobObject(
+        job,
+        _JobObjectBasicAndIoAccountingInformation,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+        ctypes.byref(returned),
+    ):
+        return None
+    return int(info.IoInfo.WriteTransferCount)
+
+
 def _job_memory_killed(job: wintypes.HANDLE, memory_bytes: int) -> bool:
     info = _JobExtendedLimit()
     returned = wintypes.DWORD(0)
@@ -2094,6 +2121,7 @@ def spawn(
     timeout_seconds: float,
     stdout_path: Path,
     stderr_path: Path,
+    disk=None,
 ) -> tuple[int, str, str, bool, bool, str]:
     """Start one confined process. Returns code, stdout, stderr, timed_out, memory_killed, mechanism."""
 
@@ -2129,8 +2157,26 @@ def spawn(
             stderr_path=stderr_path,
         )
         wait_ms = max(1, int(timeout_seconds * 1000))
-        waited = _kernel32().WaitForSingleObject(process.hProcess, wait_ms)
-        timed_out = waited == _WAIT_TIMEOUT
+        spent = 0
+        finished = False
+        io_base = _job_bytes_written(job)
+        while spent < wait_ms:
+            step = min(100, wait_ms - spent)
+            waited = _kernel32().WaitForSingleObject(process.hProcess, step)
+            if waited != _WAIT_TIMEOUT:
+                finished = True
+                break
+            spent += step
+            written = _job_bytes_written(job)
+            if disk is not None and written is not None:
+                disk.note_job_io(written, io_base)
+            if disk is not None and disk.hit.is_set():
+                _kernel32().TerminateJobObject(job, 1)
+                _kernel32().WaitForSingleObject(process.hProcess, 5000)
+                break
+        else:
+            finished = False
+        timed_out = not finished and not (disk is not None and disk.hit.is_set())
         if timed_out:
             _kernel32().TerminateJobObject(job, 1)
             _kernel32().WaitForSingleObject(process.hProcess, 5000)
