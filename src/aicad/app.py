@@ -422,11 +422,25 @@ def _handler(session: Workspace):
                 unsubscribe()
 
         def _workspace_file(self, rel: str) -> None:
+            from aicad.paths import is_reparse, shared_file
+
             if not rel or ".." in Path(rel).parts:
                 raise GeometryError("That file is outside the project.")
             candidate = Path(rel)
-            path = candidate.resolve() if candidate.is_absolute() else (self.workspace.root / rel).resolve()
+            if candidate.is_absolute():
+                raise GeometryError("That file is outside the project.")
             root = self.workspace.root.resolve()
+            current = root
+            for part in candidate.parts:
+                current = current / part
+                if is_reparse(current):
+                    raise GeometryError("That file is a link and was not opened.")
+            if shared_file(current):
+                raise GeometryError("That file has another name and was not opened.")
+            try:
+                path = current.resolve()
+            except OSError as exc:
+                raise GeometryError("That file is outside the project.") from exc
             if path != root and root not in path.parents:
                 raise GeometryError("That file is outside the project.")
             if path.suffix.lower() not in _FILE_SUFFIXES or not path.is_file():
