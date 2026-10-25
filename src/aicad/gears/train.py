@@ -14,7 +14,8 @@ A planetary mesh names the carrier shaft. With the ring held, the carrier
 turns at ``z_sun / (z_sun + z_ring)`` of the sun. Several planets leave the
 split of tooth force free. The shaft torques are still reported when they
 do not depend on that split. A mesh efficiency is applied only when every
-tooth force is determined.
+tooth force is determined. A gear on the carrier is that shaft's load. The
+carrier is not a second external torque unless the drive lists it as an output.
 
 An open differential is its own element, not two ordinary meshes. The two
 output speeds average to the carrier speed, so in a turn one speeds up as
@@ -418,7 +419,9 @@ def _roles(train, drive, gear_shaft) -> dict[str, str]:
         elif name in diff_sides:
             roles[name] = "output"
         elif name in mesh_carriers and name not in diff_carriers:
-            roles[name] = "output"
+            # A gear on the carrier already applies its torque. An extra
+            # external load would leave the following shaft's torque free.
+            roles[name] = "idle" if incidence[name] else "output"
         elif name in diff_carriers and incidence[name] == 0:
             roles[name] = "output"
         elif name in diff_carriers:
@@ -865,6 +868,7 @@ def _limits() -> list[str]:
         "An efficiency other than 1 is a factor you supply.",
         "An internal gear is a tooth count. The gear generator builds external teeth only.",
         "One planet stands for a set of equal planets. They share one speed, and the torque is the total. Naming every planet leaves the tooth-force split free. Shaft torques that do not depend on that split are still reported. A mesh efficiency is applied only when every tooth force is determined.",
+        "A gear fixed on a planetary carrier is that shaft's load. The carrier is not a second external torque unless the drive lists it as an output.",
         "Two ordinary meshes do not make an open differential. Use the differential element so one output can speed up as the other slows down.",
     ]
 

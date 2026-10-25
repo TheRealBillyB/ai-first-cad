@@ -67,7 +67,7 @@ A plan can hold research, assumptions, open questions, and rough blueprint sheet
 
 ### Assemblies and motion
 
-Parts join with fixed, revolute, prismatic, and cylindrical joints. A gear relation is a linear map between joint values. A linkage is a planar four-bar and does not close a spatial loop. A cylinder relation writes the barrel angle and the rod extension so the rod eye meets the moving clevis in the barrel plane. A side offset is the distance the eye misses, and the stroke uses that in-plane length. The joint tree stays a tree.
+Parts join with fixed, revolute, prismatic, and cylindrical joints. A gear relation is a linear map between joint values. A linkage is a planar four-bar between revolute or cylindrical joints and does not close a spatial loop. One relation drives a joint, and a cycle is refused. A cylinder relation writes the barrel angle and the rod extension so the rod eye meets the moving clevis in the barrel plane. A side offset is the distance the eye misses, and the stroke uses that in-plane length. The joint tree stays a tree.
 
 Named poses and motions sweep that range and report collisions and joint-limit stops. A motion study drives joints by an expression or by keyframes over time. The examples include a lift and a short walk cycle that collides when the foot is planted. There is no standing controller.
 
