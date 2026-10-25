@@ -189,7 +189,7 @@ aicad app --workspace ./aicad_workspace
 
 ![Mass checks against the current solid: 68.65 g passes 100 g and fails 20 g](examples/renders/workspace_checks.png)
 
-That starts a local server and opens the browser. `--no-browser` leaves the tab to you, and `--host` / `--port` change the bind address (the default is `http://127.0.0.1:8765`). The page is static HTML, CSS, and JavaScript. The Python process owns the document, so the same server can later sit behind a desktop shell such as Tauri. This version does not package that shell.
+That starts a local server and opens the browser. `--no-browser` leaves the tab to you, and `--port` changes the port. `--host` has to be this computer's loopback address (the default is `http://127.0.0.1:8765`). The page is static HTML, CSS, and JavaScript. The Python process owns the document, so the same server can later sit behind a desktop shell such as Tauri. This version does not package that shell.
 
 Open, Save, and Save As use the project folder. Save writes the folder that is open. Save As copies it. Recent projects are remembered on this computer, next to the assistant settings. Undo and Redo remain the history of the open folder.
 
