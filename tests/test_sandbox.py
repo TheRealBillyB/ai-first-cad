@@ -134,6 +134,34 @@ def test_a_slow_traverse_grant_fails_fast(monkeypatch):
     assert "not changed" in message
 
 
+def test_a_traverse_grant_does_not_write_after_its_timeout(tmp_path, monkeypatch):
+    import time
+
+    from aicad import sandbox_windows as win
+
+    monkeypatch.setattr(win, "_GRANT_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(win, "_parent_allows_traverse", lambda path, sid, package_sid: False)
+    marker = tmp_path / "wrote"
+
+    def slow_write(path, sid):
+        time.sleep(1.0)
+        try:
+            stopped = win._grant_was_stopped()
+        except AttributeError:
+            stopped = False
+        if not stopped:
+            marker.write_text("wrote", encoding="utf-8")
+
+    win._granted_traverse.clear()
+    monkeypatch.setattr(win, "_write_traverse_ace", slow_write)
+    started = time.monotonic()
+    with pytest.raises(win.GrantTimeout, match="did not finish"):
+        win._grant_traverse(Path(r"C:\hostedtoolcache\windows"), "S-1-2-3", "S-1-15-2-2")
+    assert time.monotonic() - started < 3
+    time.sleep(1.2)
+    assert not marker.exists()
+
+
 def test_availability_probe_runs_once_per_process(monkeypatch):
     from aicad import sandbox_windows as win
 
