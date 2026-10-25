@@ -1070,6 +1070,71 @@ def test_opening_a_session_does_not_run_its_script(tmp_path, config_home):
         document.measure("evil")
 
 
+def test_a_script_does_not_open_geometry_from_another_file(tmp_path, config_home):
+    import hashlib
+
+    from aicad.kernel import export_step_file, make_from_ops
+
+    script = "part = Box(1, 1, 1)\n"
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    decoy = tmp_path / "imports" / "other.step"
+    decoy.parent.mkdir(parents=True)
+    export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10]}]), decoy)
+    payload = {
+        "units": "mm",
+        "sketches": [],
+        "assemblies": [],
+        "parts": [
+            {
+                "name": "small",
+                "source": "script",
+                "script": script,
+                "script_sha256": digest,
+                "geometry_file": "imports/other.step",
+            }
+        ],
+    }
+    (tmp_path / "session.json").write_text(json.dumps(payload), encoding="utf-8")
+    document = Document(tmp_path)
+    info = document.list_parts()[0]
+    assert info.built is False
+    assert info.volume_mm3 == 0
+    assert document.get_source("small")["script_pending"] is True
+    assert decoy.is_file()
+
+
+def test_script_geometry_at_its_own_path_reopens(tmp_path, config_home):
+    import hashlib
+
+    from aicad.kernel import export_step_file, make_from_ops
+
+    script = "part = Box(2, 2, 2)\n"
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    relative = f".aicad/geometry/block-{digest[:16]}.step"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [2, 2, 2]}]), path)
+    payload = {
+        "units": "mm",
+        "sketches": [],
+        "assemblies": [],
+        "parts": [
+            {
+                "name": "block",
+                "source": "script",
+                "script": script,
+                "script_sha256": digest,
+                "geometry_file": relative,
+            }
+        ],
+    }
+    (tmp_path / "session.json").write_text(json.dumps(payload), encoding="utf-8")
+    document = Document(tmp_path)
+    assert document.get_source("block")["script_pending"] is False
+    assert document.list_parts()[0].built is True
+    assert document.measure("block").volume_mm3 == pytest.approx(8)
+
+
 def test_script_geometry_reopens_without_running_again(tmp_path, config_home):
     document = Document(tmp_path)
     script = 'block = feature.add("base", Box(4, 4, 4))\npart = block\n'
@@ -1396,6 +1461,56 @@ def test_windows_script_cannot_open_its_parent(tmp_path, config_home):
     )
     run_part_script(script, tmp_path)
     assert (tmp_path / "open.txt").read_text(encoding="utf-8").startswith("denied")
+
+
+def test_join_pids_cgroup_refuses_a_failed_move(monkeypatch):
+    """A prepared cgroup that the process cannot enter does not run the script."""
+    from aicad import sandbox as sandbox_mod
+
+    monkeypatch.setenv("AICAD_PIDS_CGROUP", "/tmp/not-a-cgroup")
+    monkeypatch.setattr(sandbox_mod, "_move_into_pids_cgroup", lambda path, pid: False)
+    with pytest.raises(ScriptError, match="process limit could not be applied"):
+        sandbox_mod._join_pids_cgroup()
+
+
+def test_join_pids_cgroup_does_nothing_without_a_cgroup(monkeypatch):
+    from aicad import sandbox as sandbox_mod
+
+    monkeypatch.delenv("AICAD_PIDS_CGROUP", raising=False)
+    called = []
+    monkeypatch.setattr(
+        sandbox_mod,
+        "_move_into_pids_cgroup",
+        lambda path, pid: called.append(pid) or False,
+    )
+    sandbox_mod._join_pids_cgroup()
+    assert called == []
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux cgroup pids controller")
+def test_a_plain_directory_is_not_a_process_cgroup(tmp_path):
+    """Writing the pid into an ordinary file does not put the process in that cgroup."""
+    import os
+
+    from aicad.sandbox import _move_into_pids_cgroup
+
+    assert _move_into_pids_cgroup(tmp_path, os.getpid()) is False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux cgroup pids controller")
+def test_script_is_not_run_when_it_cannot_enter_the_process_cgroup(tmp_path, monkeypatch):
+    from aicad import sandbox as sandbox_mod
+
+    supported, reason = sandbox_mod.sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+    fake = tmp_path / "not-a-cgroup"
+    fake.mkdir()
+    monkeypatch.setattr(sandbox_mod, "_prepare_pids_cgroup", lambda: fake)
+    monkeypatch.setattr(sandbox_mod, "_release_pids_cgroup", lambda path: None)
+    with pytest.raises(ScriptError, match="process limit could not be applied"):
+        run_part_script("open('ran.txt', 'w').write('yes')\npart = Box(1, 1, 1)\n", tmp_path)
+    assert not (tmp_path / "ran.txt").exists()
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux cgroup pids controller")

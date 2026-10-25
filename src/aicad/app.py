@@ -9,9 +9,10 @@ A command has to name that origin. A read that names some other origin is
 refused; the page's own reads often send no origin at all. Every API call
 carries the session for this launch. The token in the page is the person
 (``ui``). The token written for the assistant is MCP (``agent``). The request
-body cannot choose ``source``. A program with a shell on this computer can
-still read those tokens. This check stops another website. It is not a
-boundary against that program.
+body cannot choose ``source``. Allowing design scripts, granting the network
+for one script, saving settings, and starting a chat require the page token.
+A program with a shell on this computer can still read those tokens. This
+check stops another website. It is not a boundary against that program.
 """
 
 from __future__ import annotations
@@ -36,8 +37,20 @@ from aicad.workspace import Workspace
 
 _STATIC = Path(__file__).resolve().parent / "app_static"
 _FILE_SUFFIXES = {".png", ".gif", ".svg", ".json", ".md", ".txt"}
+# A project file shown in the workspace is read on the host. Past this it is refused.
+_MAX_SERVED_BYTES = 32 * 1024 * 1024
 _TOKEN_HEADER = "X-Aicad-Token"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1"}
+# These change who may run code, who may use the network, or where a chat is sent.
+# The page token is the person. The assistant token cannot call them.
+_PERSON_POSTS = frozenset(
+    {
+        "/api/allow-scripts",
+        "/api/script-network-once",
+        "/api/settings",
+        "/api/chat",
+    }
+)
 
 
 class RequestRejected(Exception):
@@ -278,6 +291,8 @@ def _handler(session: Workspace):
             parsed = urlparse(self.path)
             try:
                 self._guard()
+                if parsed.path in _PERSON_POSTS:
+                    self._require_person()
                 body = self._read_json()
                 if parsed.path == "/api/command":
                     # ``source`` in the body is ignored. The token says who called.
@@ -303,8 +318,10 @@ def _handler(session: Workspace):
                 self._discard_unread_body()
                 self._error(403, exc.message)
             except AICADError as exc:
+                self._discard_unread_body()
                 self._error(400, str(exc))
             except Exception as exc:
+                self._discard_unread_body()
                 self._error(500, str(exc))
 
         def _guard(self) -> None:
@@ -355,6 +372,10 @@ def _handler(session: Workspace):
 
         def _check_token(self) -> None:
             self._caller()
+
+        def _require_person(self) -> None:
+            if self._caller() != "ui":
+                raise RequestRejected("Only the person at this workspace can do that.")
 
         def _page(self) -> None:
             text = (_STATIC / "index.html").read_text(encoding="utf-8")
@@ -446,6 +467,16 @@ def _handler(session: Workspace):
                 raise GeometryError("That file has another name and was not opened.")
             if path.suffix.lower() not in _FILE_SUFFIXES or not path.is_file():
                 raise GeometryError("That file is not available to the workspace view.")
+            normalized = os.path.realpath(path)
+            root_name = os.path.realpath(root)
+            if not normalized.startswith(root_name + os.sep):
+                raise GeometryError("That file is outside the project.")
+            try:
+                size = os.stat(normalized).st_size
+            except OSError as exc:
+                raise GeometryError("That file could not be read.") from exc
+            if size > _MAX_SERVED_BYTES:
+                raise GeometryError("That file is too large.")
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             if path.suffix.lower() in {".md", ".txt"} and self._caller() not in {"ui", "cli", "api"}:
                 self._marked_note(path, mime)
@@ -509,30 +540,73 @@ def _handler(session: Workspace):
             self.end_headers()
             self.wfile.write(data)
 
+        def _content_length(self) -> int | None:
+            """How many body bytes the client declared.
+
+            A missing header is an empty body. A negative number, or a value
+            that is not an integer, is not a size: ``read(-1)`` would read
+            until the client closes and ignore the 2 MB cap.
+            """
+            raw = self.headers.get("Content-Length")
+            if raw is None:
+                return 0
+            try:
+                length = int(raw)
+            except (TypeError, ValueError):
+                return None
+            if length < 0:
+                return None
+            return length
+
         def _discard_unread_body(self) -> None:
             """Read a POST body that a refusal did not use.
 
             A refusal runs before the body is read. Leaving those bytes unread
             makes Windows reset the socket, so the client never sees the status.
+            A length that is not a size is drained only from bytes already
+            received, so a client that never closes cannot hold this thread.
             """
             if getattr(self, "_body_taken", False):
                 return
             self._body_taken = True
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except (TypeError, ValueError):
+            length = self._content_length()
+            if length is None:
+                self._drain_already_received(2_000_000)
                 return
-            remaining = min(max(length, 0), 2_000_000)
+            remaining = min(length, 2_000_000)
             while remaining:
                 chunk = self.rfile.read(min(remaining, 65536))
                 if not chunk:
                     break
                 remaining -= len(chunk)
 
+        def _drain_already_received(self, limit: int) -> None:
+            remaining = limit
+            sock = self.connection
+            try:
+                sock.setblocking(False)
+            except OSError:
+                return
+            try:
+                while remaining:
+                    try:
+                        chunk = self.rfile.read(min(remaining, 65536))
+                    except (BlockingIOError, InterruptedError):
+                        break
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            finally:
+                try:
+                    sock.setblocking(True)
+                except OSError:
+                    pass
+
         def _read_json(self) -> dict:
-            length = int(self.headers.get("Content-Length") or 0)
+            length = self._content_length()
+            if length is None:
+                raise GeometryError("Content-Length is not a size.")
             if length > 2_000_000:
-                self._body_taken = True
                 raise GeometryError("Request is too large.")
             self._body_taken = True
             raw = self.rfile.read(length) if length else b"{}"
