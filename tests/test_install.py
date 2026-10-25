@@ -135,6 +135,34 @@ def test_ccx_status_runs_when_the_package_is_not_imported():
     assert completed.returncode == 0, completed.stderr
 
 
+def test_package_commands_stop_if_they_do_not_finish(monkeypatch):
+    """A hung apt or pip command has to end. The installer used to wait forever."""
+
+    module = _load_install()
+    timeouts: list[float | None] = []
+
+    def record(command, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+
+        class Done:
+            returncode = 0
+            stdout = "aicad 0.9.0\n"
+            stderr = ""
+
+        return Done()
+
+    monkeypatch.setattr(module.subprocess, "run", record)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.setattr(module, "_passwordless_sudo", lambda: True)
+    python = module._venv_python()
+    module._pip_install(python)
+    module._install_linux_packages()
+    module._check(module._hints(), require_ccx=False)
+    assert timeouts
+    assert all(timeout == module._INSTALL_TIMEOUT_SECONDS for timeout in timeouts)
+
+
 def test_install_script_help_runs_without_installing():
     completed = subprocess.run(
         [sys.executable, str(ROOT / "install.py"), "--help"],
