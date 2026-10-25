@@ -502,15 +502,7 @@ class PlanStore:
         return self._read(path)
 
     def _read(self, path: Path) -> dict:
-        _refuse_plan_link(self.root, path)
-        if path.stat().st_size > _MAX_BYTES:
-            raise PlanError(f"{path.name} is larger than a plan file should be. It was not opened.")
-        from aicad.labels import plain_title
-
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except UnicodeError as exc:
-            raise PlanError(f"Could not read {path.name}: the file is not UTF-8.") from exc
+        raw = _plan_text(self.root, path)
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -523,6 +515,8 @@ class PlanStore:
             raise PlanError(f"{path.name} has a status this version does not use.")
         if not isinstance(payload.get("title"), str) or not payload["title"].strip():
             raise PlanError(f"{path.name} has no title.")
+        from aicad.labels import plain_title
+
         payload["title"] = plain_title(payload["title"], "title", PlanError)
         revisions = payload.get("revisions")
         if not isinstance(revisions, list) or not revisions:
@@ -637,7 +631,8 @@ def plan_files(root: str | Path) -> dict[str, str]:
     """JSON text of every plan, for undo. Sheet PNGs are redrawn on restore.
 
     A plan folder that is a link is skipped. A plan file that is a link, or
-    that has another name, is not copied.
+    that has another name, is not copied. A plan past the size cap is not
+    copied, and restoring an older copy does not delete that file.
     """
     root_path = Path(root)
     directory = _plan_directory(root_path)
@@ -646,10 +641,9 @@ def plan_files(root: str | Path) -> dict[str, str]:
     files = {}
     for path in sorted(directory.glob("*.json")):
         try:
-            _refuse_plan_link(root_path, path)
+            files[path.name] = _plan_text(root_path, path)
         except PlanError:
             continue
-        files[path.name] = path.read_text(encoding="utf-8")
     return files
 
 
@@ -673,6 +667,34 @@ def _plan_directory(root: Path) -> Path | None:
     if resolved != root_resolved and root_resolved not in resolved.parents:
         return None
     return directory
+
+
+def _plan_text(root: Path, path: Path) -> str:
+    """UTF-8 text of one plan file, read from the project directory.
+
+    A link is not followed. A file with another name is not opened. More than
+    the plan cap is refused before the bytes are kept.
+    """
+    from aicad.paths import read_checked_text
+
+    _refuse_plan_link(root, path)
+    try:
+        return read_checked_text(root, path, maximum=_MAX_BYTES, label=path.name, error=PlanError)
+    except PlanError as exc:
+        if "too large" in str(exc):
+            raise PlanError(f"{path.name} is larger than a plan file should be. It was not opened.") from exc
+        if str(exc) == f"Could not read {path.name}." and isinstance(exc.__cause__, UnicodeError):
+            raise PlanError(f"Could not read {path.name}: the file is not UTF-8.") from exc
+        raise
+
+
+def _plan_over_cap(root: Path, path: Path) -> bool:
+    """True when ``path`` is a plan file the undo copy left out for size."""
+    try:
+        _plan_text(root, path)
+    except PlanError as exc:
+        return "larger than a plan file" in str(exc)
+    return False
 
 
 def _refuse_plan_link(root: Path, path: Path) -> None:
@@ -705,6 +727,8 @@ def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
     keep = set(files)
     for path in directory.glob("*.json"):
         if path.name not in keep:
+            if _plan_over_cap(root_path, path):
+                continue
             folder = directory / path.stem
             path.unlink()
             if folder.is_dir():
