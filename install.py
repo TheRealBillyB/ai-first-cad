@@ -25,6 +25,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MIN_PYTHON = (3, 11)
+# apt and pip can sit on a lock. A hung command has to end.
+_INSTALL_TIMEOUT_SECONDS = 30 * 60
 
 # Runtime libraries the OpenCascade wheel loads on Debian and Ubuntu, plus the
 # CalculiX solver. build-essential and python3-dev are there so python-solvespace
@@ -123,6 +125,7 @@ def _python_is_new_enough(python: Path) -> bool:
         ],
         check=False,
         capture_output=True,
+        timeout=_INSTALL_TIMEOUT_SECONDS,
     )
     return completed.returncode == 0
 
@@ -139,24 +142,40 @@ def _ensure_venv() -> Path:
         print(f"Using the existing virtual environment at {python.parent.parent}")
         return python
     print("Creating .venv")
-    subprocess.run([sys.executable, "-m", "venv", str(ROOT / ".venv")], cwd=ROOT, check=True)
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(ROOT / ".venv")],
+        cwd=ROOT,
+        check=True,
+        timeout=_INSTALL_TIMEOUT_SECONDS,
+    )
     if not python.is_file():
         raise SystemExit(f"The virtual environment was created, but {python} is missing.")
     return python
 
 
 def _pip_install(python: Path) -> None:
-    subprocess.run([str(python), "-m", "pip", "install", "--upgrade", "pip"], cwd=ROOT, check=True)
+    subprocess.run(
+        [str(python), "-m", "pip", "install", "--upgrade", "pip"],
+        cwd=ROOT,
+        check=True,
+        timeout=_INSTALL_TIMEOUT_SECONDS,
+    )
     if (ROOT / "pyproject.toml").is_file():
         print("Installing aicad and the development tools into .venv")
         subprocess.run(
             [str(python), "-m", "pip", "install", "-e", ".[dev,robot]"],
             cwd=ROOT,
             check=True,
+            timeout=_INSTALL_TIMEOUT_SECONDS,
         )
         return
     print("Installing aicad into .venv")
-    subprocess.run([str(python), "-m", "pip", "install", "aicad"], cwd=ROOT, check=True)
+    subprocess.run(
+        [str(python), "-m", "pip", "install", "aicad"],
+        cwd=ROOT,
+        check=True,
+        timeout=_INSTALL_TIMEOUT_SECONDS,
+    )
 
 
 def _install_linux_packages() -> None:
@@ -172,19 +191,31 @@ def _install_linux_packages() -> None:
     print("Installing system libraries and CalculiX (sudo apt-get).")
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
-    subprocess.run(["sudo", "-n", "apt-get", "update"], cwd=ROOT, check=True, env=env)
+    subprocess.run(
+        ["sudo", "-n", "apt-get", "update"],
+        cwd=ROOT,
+        check=True,
+        env=env,
+        timeout=_INSTALL_TIMEOUT_SECONDS,
+    )
     subprocess.run(
         ["sudo", "-n", "apt-get", "install", "-y", "--no-install-recommends", *APT_PACKAGES],
         cwd=ROOT,
         check=True,
         env=env,
+        timeout=_INSTALL_TIMEOUT_SECONDS,
     )
 
 
 def _passwordless_sudo() -> bool:
     if shutil.which("sudo") is None:
         return False
-    completed = subprocess.run(["sudo", "-n", "true"], check=False, capture_output=True)
+    completed = subprocess.run(
+        ["sudo", "-n", "true"],
+        check=False,
+        capture_output=True,
+        timeout=_INSTALL_TIMEOUT_SECONDS,
+    )
     return completed.returncode == 0
 
 
@@ -226,6 +257,7 @@ def _check(hints, *, require_ccx: bool) -> int:
         check=False,
         capture_output=True,
         text=True,
+        timeout=_INSTALL_TIMEOUT_SECONDS,
     )
     if imported.returncode != 0:
         print(imported.stdout, end="")
