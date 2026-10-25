@@ -1643,6 +1643,46 @@ def test_windows_cpu_stop_is_user_time_at_the_cap():
     )
 
 
+def test_a_bad_result_removes_the_job_directory(tmp_path):
+    from aicad.sandbox import _payload_from_result
+
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "script.py").write_text("part = Box(1, 1, 1)\n", encoding="utf-8")
+    (job / "result.json").write_text("not-json\n", encoding="utf-8")
+    with pytest.raises(ScriptError, match="could not be read"):
+        _payload_from_result(job, 0, "", "", memory_killed=False)
+    assert not job.exists()
+
+    other = tmp_path / "list-job"
+    other.mkdir()
+    (other / "result.json").write_text("[]\n", encoding="utf-8")
+    with pytest.raises(ScriptError, match="not a report"):
+        _payload_from_result(other, 0, "", "", memory_killed=False)
+    assert not other.exists()
+
+
+def test_a_failed_spawn_removes_the_job_directory(tmp_path, monkeypatch):
+    from aicad import sandbox as sandbox_mod
+
+    supported, reason = sandbox_mod.sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("spawn failed")
+
+    if sys.platform == "win32":
+        monkeypatch.setattr("aicad.sandbox_windows.spawn", boom)
+    else:
+        monkeypatch.setattr(sandbox_mod.subprocess, "Popen", boom)
+    with pytest.raises(OSError, match="spawn failed"):
+        sandbox_mod._spawn(tmp_path, "part", "part = Box(1, 1, 1)\n", False)
+    jobs = tmp_path / ".aicad" / "jobs"
+    assert jobs.is_dir()
+    assert list(jobs.iterdir()) == []
+
+
 def test_a_crash_without_a_result_does_not_need_sigkill(tmp_path):
     import signal
 

@@ -730,6 +730,7 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
             cwd=directory,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
         )

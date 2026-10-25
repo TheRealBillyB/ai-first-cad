@@ -2820,6 +2820,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     account: _Account | None = None
     sentinel_fd: int | None = None
     sentinel_path: str | None = None
+    keep_job = False
     try:
         if kind == "design":
             design_record = _DesignRecord(workspace, job)
@@ -2852,6 +2853,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             payload = _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
             if design_record is not None:
                 payload = design_record.merge(payload)
+            keep_job = True
             return payload
         if sys.platform.startswith("linux"):
             pids_cgroup = _prepare_pids_cgroup()
@@ -2952,6 +2954,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         )
         if design_record is not None:
             payload = design_record.merge(payload)
+        keep_job = True
         return payload
     finally:
         if stop_watch is not None:
@@ -2969,6 +2972,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             shutil.rmtree(probe_root, ignore_errors=True)
         if design_record is not None:
             design_record.close()
+        if not keep_job:
+            shutil.rmtree(job, ignore_errors=True)
 
 
 def _died_from_limit_signal(code: int) -> bool:
@@ -3133,8 +3138,10 @@ def _payload_from_result(
     try:
         payload = json.loads(result_text)
     except json.JSONDecodeError as exc:
+        shutil.rmtree(job, ignore_errors=True)
         raise ScriptError(f"The script's result could not be read: {exc}") from exc
     if not isinstance(payload, dict):
+        shutil.rmtree(job, ignore_errors=True)
         raise ScriptError("The script's result was not a report.")
     payload["_job"] = str(job)
     return payload

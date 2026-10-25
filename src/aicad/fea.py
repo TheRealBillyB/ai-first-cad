@@ -994,6 +994,7 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
             cwd=directory,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
             timeout=180,
             check=False,
         )
