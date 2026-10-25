@@ -4,7 +4,7 @@
 forwards MCP tools to that same command layer, so an external assistant and
 the person edit one document and the viewport updates either way.
 
-The server answers only ``localhost`` and ``127.0.0.1`` on the port it bound.
+The server listens only on loopback. It answers ``localhost`` and ``127.0.0.1`` on the port it bound. A peer that is not loopback is refused.
 A command has to name that origin. A read that names some other origin is
 refused; the page's own reads often send no origin at all. Every API call
 carries the session for this launch. The token in the page is the person
@@ -20,6 +20,7 @@ against that program.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import mimetypes
 import os
@@ -54,6 +55,32 @@ _PERSON_POSTS = frozenset(
         "/api/chat",
     }
 )
+
+
+def _bind_host_is_loopback(host: str) -> bool:
+    """True when ``host`` is this computer's loopback, not a public interface."""
+    text = host.strip().lower()
+    if text == "localhost":
+        return True
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
+
+
+def _peer_is_loopback(host: str) -> bool:
+    """True when the TCP peer is loopback, including an IPv4 address mapped in IPv6."""
+    text = host.strip().lower()
+    if text.startswith("::ffff:"):
+        text = text[len("::ffff:") :]
+    if text == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
 
 
 class RequestRejected(Exception):
@@ -226,6 +253,10 @@ def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, 
 
 
 def make_server(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765) -> _WorkspaceServer:
+    if not _bind_host_is_loopback(host):
+        raise GeometryError(
+            "The workspace app only listens on this computer. Use 127.0.0.1, localhost, or ::1."
+        )
     from aicad.thread_stack import prepare_geometry_thread_stack
 
     prepare_geometry_thread_stack()
@@ -339,6 +370,9 @@ def _handler(session: Workspace):
                 self._check_origin(required=False)
 
         def _check_host(self) -> None:
+            peer = self.client_address[0] if self.client_address else ""
+            if not _peer_is_loopback(str(peer)):
+                raise RequestRejected("This workspace only answers to localhost.")
             port = int(self.server.server_address[1])
             host, host_port = _split_host(self.headers.get("Host") or "")
             if host not in _LOCAL_HOSTS or host_port != port:
@@ -455,7 +489,9 @@ def _handler(session: Workspace):
                 unsubscribe()
 
         def _workspace_file(self, rel: str) -> None:
-            if not rel or ".." in Path(rel).parts:
+            from aicad.paths import windows_trim_escapes
+
+            if not rel or ".." in Path(rel).parts or windows_trim_escapes(rel):
                 raise GeometryError("That file is outside the project.")
             candidate = Path(rel)
             path = candidate.resolve() if candidate.is_absolute() else (self.workspace.root / rel).resolve()

@@ -185,8 +185,8 @@ def write_csv(report: dict, path: Path) -> None:
     writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
     writer.writeheader()
     for row in report["rows"]:
-        written = dict(row)
-        written["instances"] = ";".join(row.get("instances") or [])
+        written = {key: _csv_cell(value) for key, value in row.items()}
+        written["instances"] = _csv_cell(";".join(str(item) for item in (row.get("instances") or [])))
         writer.writerow(written)
     from aicad.paths import publish_bytes
 
@@ -496,6 +496,15 @@ def _covers(font, text: str) -> bool:
         if same_box and same_len:
             return False
     return True
+
+
+def _csv_cell(value: object) -> object:
+    """A text cell stays text. A number stays a number."""
+    if not isinstance(value, str) or value == "":
+        return value
+    if value.lstrip(" \t\r\n")[:1] in "=+-@":
+        return "'" + value
+    return value
 
 
 def _prepare(path: Path) -> None:

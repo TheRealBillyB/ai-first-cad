@@ -144,6 +144,95 @@ def test_planetary_with_a_fixed_ring():
     _balanced(report)
 
 
+def _planets(count: int) -> tuple[list[dict], list[dict]]:
+    shafts = [_shaft("sun", [_gear("sun", 24)]), _shaft("ring", [_gear("ring", 60)]), _shaft("carrier", [])]
+    meshes = []
+    for index in range(count):
+        name = f"p{index + 1}"
+        shafts.insert(1 + index, _shaft(name, [_gear(name, 18)]))
+        meshes.append({"a": "sun", "b": name, "carrier": "carrier"})
+        meshes.append({"a": name, "b": "ring", "kind": "internal", "carrier": "carrier"})
+    return shafts, meshes
+
+
+def test_three_planets_report_the_same_shaft_torques_as_one():
+    """Sun 24, planet 18, ring 60 fixed. The tooth-force split is free. The shaft torques are not."""
+    shafts, meshes = _planets(3)
+    report = _solve(
+        {"shafts": shafts, "meshes": meshes, "fixed": ["ring"]},
+        {"inputs": [{"shaft": "sun", "speed_rpm": 700, "torque_nm": 2}]},
+    )
+    rows = _by_name(report)
+    assert report["status"] == "determined"
+    assert report["torque_status"] == "determined"
+    assert "tooth forces are not unique" in report["note"]
+    assert rows["carrier"]["speed_ratio_exact"] == "2/7"
+    assert rows["carrier"]["speed_rpm"] == pytest.approx(200)
+    assert rows["p1"]["speed_ratio_exact"] == "-2/3"
+    assert rows["p2"]["speed_rpm"] == pytest.approx(rows["p1"]["speed_rpm"])
+    assert rows["p3"]["speed_rpm"] == pytest.approx(rows["p1"]["speed_rpm"])
+    assert rows["sun"]["torque_nm"] == pytest.approx(2)
+    assert rows["ring"]["torque_nm"] == pytest.approx(5)
+    assert rows["carrier"]["torque_nm"] == pytest.approx(-7)
+    assert rows["p1"]["torque_nm"] == pytest.approx(0)
+    assert rows["p2"]["torque_nm"] == pytest.approx(0)
+    assert rows["p3"]["torque_nm"] == pytest.approx(0)
+    assert report["housing_torque_nm"] == pytest.approx(0)
+    _balanced(report)
+
+
+def test_three_planets_with_the_carrier_fixed_drive_the_ring():
+    """Carrier fixed. The ring turns at −z_sun/z_ring of the sun, and the shaft torques match one planet."""
+    shafts, meshes = _planets(3)
+    report = _solve(
+        {"shafts": shafts, "meshes": meshes, "fixed": ["carrier"]},
+        {"inputs": [{"shaft": "sun", "speed_rpm": 1000, "torque_nm": 2}]},
+    )
+    rows = _by_name(report)
+    assert report["torque_status"] == "determined"
+    assert rows["ring"]["role"] == "output"
+    assert rows["ring"]["speed_ratio_exact"] == "-2/5"
+    assert rows["ring"]["speed_rpm"] == pytest.approx(-400)
+    assert rows["p1"]["speed_ratio_exact"] == "-4/3"
+    assert rows["carrier"]["speed_rpm"] == pytest.approx(0)
+    assert rows["ring"]["torque_nm"] == pytest.approx(5)
+    assert rows["carrier"]["torque_nm"] == pytest.approx(-7)
+    assert rows["p1"]["torque_nm"] == pytest.approx(0)
+    assert report["housing_torque_nm"] == pytest.approx(0)
+    _balanced(report)
+
+
+def test_mesh_efficiency_is_not_applied_when_the_tooth_forces_are_free():
+    shafts, meshes = _planets(3)
+    for mesh in meshes:
+        mesh["efficiency"] = 0.9
+    report = _solve(
+        {"shafts": shafts, "meshes": meshes, "fixed": ["ring"]},
+        {"inputs": [{"shaft": "sun", "speed_rpm": 700, "torque_nm": 2}]},
+    )
+    rows = _by_name(report)
+    assert report["status"] == "determined"
+    assert report["torque_status"] == "under_constrained"
+    assert "mesh efficiency is not applied" in report["note"]
+    assert rows["carrier"]["speed_rpm"] == pytest.approx(200)
+    assert rows["carrier"]["torque_nm"] is None
+    assert rows["ring"]["torque_nm"] is None
+    assert report["housing_torque_nm"] is None
+    assert report["power_balance_w"] is None
+
+
+def test_an_explicitly_idle_ring_is_not_treated_as_an_output():
+    shafts, meshes = _planets(3)
+    report = _solve(
+        {"shafts": shafts, "meshes": meshes, "fixed": ["carrier"]},
+        {"inputs": [{"shaft": "sun", "speed_rpm": 1000, "torque_nm": 2}], "idle": ["ring"]},
+    )
+    rows = _by_name(report)
+    assert rows["ring"]["role"] == "idle"
+    assert report["torque_status"] == "over_constrained"
+    assert rows["ring"]["torque_nm"] is None
+
+
 def test_open_differential_straight_ahead_and_in_a_turn():
     train = {
         "shafts": [
