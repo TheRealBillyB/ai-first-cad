@@ -14,6 +14,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A cylinder stroke uses the in-plane length | The barrel joint cannot tilt, so the stroke is the pin distance in the barrel plane. A side offset is how far the eye misses the clevis. |
 | A gear or linkage adds the driven load | The driver load gains ratio times the driven load, with ratio d(driven)/d(driver), so a reversing pair cancels equal moments and a chain is followed to its end. |
 | A plan file that is a link is not opened | Listing a plan and the undo copy do not open a plan folder that is a link, or a plan file that has another name. |
+| A project copy does not follow a link | Saving a copy reads each project file from the directory that was checked, and a link or a second name is left behind. |
 | A project file is opened from the checked directory | The read uses the same directory descriptor as a write, so a link swapped in after the check is not followed. A session also stops at a fixed size and nesting depth. |
 | A script is not run when it cannot enter its process cgroup | A failed move would leave the script outside `pids.max`, so the script is not run. |
 | A script solid is read only from the file named for that script | The file is `.aicad/geometry/<name>-<script hash>.step`. Another path is not the solid that script built, so it is not opened. |
@@ -26,6 +27,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | Several planets still report shaft torque | The tooth-force split among equal planets is free, and the shaft torques are reported when they do not depend on that split. Mesh efficiency waits until every tooth force is determined. |
 | The assistant cannot allow scripts, grant network, or save settings | Those switches and the chat request belong to the person at the page. The assistant token stays on project commands. |
 | The workspace app does not listen on a public address | A Host header can say localhost while the connection comes from another machine, so the bind address and the peer both have to be loopback. |
+| Workspace responses deny framing and omit the referrer | The page is not embedded in another site, and a picture address that carries the session is not sent onward or stored. |
 
 ## 2026-10-24
 
