@@ -11,6 +11,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | Decision | Rationale |
 | --- | --- |
 | A bill of materials keeps text as text | A route name and a material are written as text in the bill of materials. A plain part name is unchanged. |
+| A busy process cgroup is removed on a later stop | A directory that is still busy after the script stops is remembered and removed the next time a cgroup is prepared or released. |
 | A cylinder stroke uses the in-plane length | The barrel joint cannot tilt, so the stroke is the pin distance in the barrel plane. A side offset is how far the eye misses the clevis. |
 | A gear or linkage adds the driven load | The driver load gains ratio times the driven load, with ratio d(driven)/d(driver), so a reversing pair cancels equal moments and a chain is followed to its end. |
 | A plan file that is a link is not opened | Listing a plan and the undo copy do not open a plan folder that is a link, or a plan file that has another name. |
