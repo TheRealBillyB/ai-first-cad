@@ -14,6 +14,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A busy process cgroup is removed on a later stop | A directory that is still busy after the script stops is remembered and removed the next time a cgroup is prepared or released. |
 | A cylinder stroke uses the in-plane length | The barrel joint cannot tilt, so the stroke is the pin distance in the barrel plane. A side offset is how far the eye misses the clevis. |
 | A gear or linkage adds the driven load | The driver load gains ratio times the driven load, with ratio d(driven)/d(driver), so a reversing pair cancels equal moments and a chain is followed to its end. |
+| A plan file is opened from the checked directory | A plan is read from the project directory without following a link, and a plan past the size cap is not copied into undo. |
 | A plan file that is a link is not opened | Listing a plan and the undo copy do not open a plan folder that is a link, or a plan file that has another name. |
 | A project file is opened from the checked directory | The read uses the same directory descriptor as a write, so a link swapped in after the check is not followed. A session also stops at a fixed size and nesting depth. |
 | A sandbox setup failure has no traceback | A failure while the sandbox is starting is one error line in the job result. The traceback stays out of that result and out of the child's error stream. |
