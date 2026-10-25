@@ -9,9 +9,11 @@ A command has to name that origin. A read that names some other origin is
 refused; the page's own reads often send no origin at all. Every API call
 carries the session for this launch. The token in the page is the person
 (``ui``). The token written for the assistant is MCP (``agent``). The request
-body cannot choose ``source``. A program with a shell on this computer can
-still read those tokens. This check stops another website. It is not a
-boundary against that program.
+body cannot choose ``source``. Responses refuse to be framed and ask the
+browser not to send the address of a request onward. A picture response,
+whose address carries the session, is not stored. A program with a shell on
+this computer can still read those tokens. This check stops another website.
+It is not a boundary against that program.
 """
 
 from __future__ import annotations
@@ -366,8 +368,15 @@ def _handler(session: Workspace):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self._security_headers()
             self.end_headers()
             self.wfile.write(data)
+
+        def _security_headers(self) -> None:
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
 
         def _chat(self, body: dict) -> None:
             messages = body.get("messages")
@@ -377,6 +386,7 @@ def _handler(session: Workspace):
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
+            self._security_headers()
             self.end_headers()
 
             def emit(kind: str, payload: dict) -> None:
@@ -403,6 +413,7 @@ def _handler(session: Workspace):
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
+            self._security_headers()
             self.end_headers()
             try:
                 self.wfile.write(b": ok\n\n")
@@ -435,7 +446,7 @@ def _handler(session: Workspace):
             if path.suffix.lower() in {".md", ".txt"} and self._caller() not in {"ui", "cli", "api"}:
                 self._marked_note(path, mime)
                 return
-            self._bytes(path, mime)
+            self._bytes(path, mime, cache="no-store")
 
         def _marked_note(self, path: Path, mime: str) -> None:
             from aicad.workspace import _fence_note
@@ -454,7 +465,8 @@ def _handler(session: Workspace):
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(marked)))
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
             self.end_headers()
             self.wfile.write(marked)
 
@@ -469,12 +481,13 @@ def _handler(session: Workspace):
             mime = "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8"
             self._bytes(path, mime)
 
-        def _bytes(self, path: Path, mime: str) -> None:
+        def _bytes(self, path: Path, mime: str, *, cache: str = "no-cache") -> None:
             data = path.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Cache-Control", cache)
+            self._security_headers()
             self.end_headers()
             self.wfile.write(data)
 
@@ -483,6 +496,8 @@ def _handler(session: Workspace):
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
             self.end_headers()
             self.wfile.write(data)
 
@@ -491,6 +506,8 @@ def _handler(session: Workspace):
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
             self.end_headers()
             self.wfile.write(data)
 
