@@ -106,6 +106,37 @@ def test_the_child_environment_is_scrubbed(tmp_path, monkeypatch):
     assert str(marker_bin) not in program.get("PATH", "")
 
 
+def test_the_network_block_uses_system_powershell(monkeypatch, tmp_path):
+    from aicad import sandbox_windows as win
+
+    outside = tmp_path / "outside-bin"
+    outside.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("PATH", str(outside))
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    seen: dict[str, list[str]] = {}
+
+    def run(command, **_kwargs):
+        seen["command"] = list(command)
+
+        class Done:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Done()
+
+    monkeypatch.setattr(win.subprocess, "run", run)
+    win._run_firewall_script("exit 0\n")
+    expected = str(Path(r"C:\Windows") / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    assert seen["command"][0] == expected
+    assert str(outside) not in seen["command"][0]
+    env = _child_env(project, project / "job", network=False)
+    assert env.get("SystemRoot") == r"C:\Windows"
+    assert str(outside) not in env.get("PATH", "")
+
+
 def test_calculix_and_ffmpeg_receive_the_scrubbed_environment(monkeypatch):
     from aicad import fea, modal
 
