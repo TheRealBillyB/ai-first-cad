@@ -49,6 +49,18 @@ Plugins are separate. Installed packs are listed from entry points without impor
 
 A one-shot network grant is used up only when the design script finishes without an error. If the script fails, the next run still has the grant.
 
+## Security tests
+
+These checks use a marker file outside the project. A project file is data. The tests do not run it as a program.
+
+- **R.** Text in a note, a part name, a blueprint, or a session does not start a script, open a socket, or write outside the project. A design script stays off until it is allowed.
+- **S.** The workspace server rejects a foreign host and a foreign origin. A command with no origin is refused. Responses do not offer cross-origin access. A WebSocket upgrade is not accepted. The session token is not written to the server log.
+- **T.** A setting cannot raise a script's time or memory cap. A blueprint past 20 MB is not opened. A PNG header with a huge dimension is not opened. A zip or 3MF in the project is not extracted on open. A script past the character cap is not run.
+- **U.** A session, a note, a requirements file, or a blueprint that is a link to a file outside the project is not read.
+- **V.** A STEP, STL, URDF, or MJCF export, and a session record, do not contain an environment value, a token, or the account name unless that text is part of the model.
+- **W.** Opening a project and exporting a part do not run git, a hook, a filter, or `core.fsmonitor`.
+- **X.** A project `.env`, pip or uv configuration, `pyproject.toml`, or `requirements.txt` does not change the process environment. A module in the project does not replace the standard library, and `sitecustomize` there does not run.
+
 Master documents are generated from the entry files in the repository. A symlink or junction on that path is not followed, and a file with another name is not read or written. Generating the masters does not run an entry as code.
 
 This sandbox is for one person on their own machine. It is not a boundary between tenants. The choices are recorded in [docs/DECISIONS.md](docs/DECISIONS.md).
