@@ -108,5 +108,27 @@ def test_a_workspace_file_through_a_linked_folder_is_not_shown(project, tmp_path
         server.shutdown()
         server.server_close()
     assert status == 400
+    assert b"outside the project" in body
     assert _CANARY not in body
     assert secret.read_bytes() == _CANARY
+
+
+def test_a_workspace_file_through_an_inside_link_is_not_shown(project, tmp_path):
+    kept = project / "kept"
+    kept.mkdir()
+    secret = kept / "secret.txt"
+    secret.write_bytes(_CANARY)
+    _link_dir(project / "notes", kept)
+    server = _serve(project)
+    try:
+        host, port = server.server_address
+        status, body = _get(host, port, "/api/file?path=notes/secret.txt", server.page_token)
+        direct_status, direct_body = _get(host, port, "/api/file?path=kept/secret.txt", server.page_token)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 400
+    assert b"is a link" in body
+    assert _CANARY not in body
+    assert direct_status == 200
+    assert direct_body == _CANARY

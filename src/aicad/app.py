@@ -430,19 +430,20 @@ def _handler(session: Workspace):
             if candidate.is_absolute():
                 raise GeometryError("That file is outside the project.")
             root = self.workspace.root.resolve()
+            lexical = root / rel
+            try:
+                path = lexical.resolve()
+            except OSError as exc:
+                raise GeometryError("That file is outside the project.") from exc
+            if path != root and root not in path.parents:
+                raise GeometryError("That file is outside the project.")
             current = root
             for part in candidate.parts:
                 current = current / part
                 if is_reparse(current):
                     raise GeometryError("That file is a link and was not opened.")
-            if shared_file(current):
+            if shared_file(lexical):
                 raise GeometryError("That file has another name and was not opened.")
-            try:
-                path = current.resolve()
-            except OSError as exc:
-                raise GeometryError("That file is outside the project.") from exc
-            if path != root and root not in path.parents:
-                raise GeometryError("That file is outside the project.")
             if path.suffix.lower() not in _FILE_SUFFIXES or not path.is_file():
                 raise GeometryError("That file is not available to the workspace view.")
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
