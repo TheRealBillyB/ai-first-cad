@@ -664,7 +664,10 @@ def _copy_project(source: Path, destination: Path) -> None:
             target = destination / name
             if target.exists() or target.is_symlink():
                 refuse_outward(target, destination)
-            shutil.copy2(file, target)
+            if name == "session.json":
+                _copy_session(source, file, target)
+            else:
+                shutil.copy2(file, target)
     for folder in ("documents", "imports"):
         origin = source / folder
         if origin.is_dir() or origin.is_symlink():
@@ -696,6 +699,21 @@ def _copy_project(source: Path, destination: Path) -> None:
             refuse_outward(target, destination)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(log, target)
+
+
+def _copy_session(source: Path, file: Path, target: Path) -> None:
+    """Copy ``session.json`` and stop at the same cap as opening a session."""
+    from aicad.document import _MAX_SESSION_BYTES
+    from aicad.paths import read_checked_bytes
+
+    data = read_checked_bytes(
+        source,
+        file,
+        maximum=_MAX_SESSION_BYTES,
+        label="Session file",
+        error=GeometryError,
+    )
+    target.write_bytes(data)
 
 
 def reject_placement(position, rotation_deg=None) -> None:
