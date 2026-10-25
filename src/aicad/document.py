@@ -59,6 +59,8 @@ from aicad.sketch import Sketch, set_spec_dimension, solve_sketch
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _INTERFERENCE_VOLUME = 1e-4
+_MAX_SESSION_BYTES = 32 * 1024 * 1024
+_MAX_SESSION_DEPTH = 48
 
 _UNBUILDABLE = {"over_constrained", "didnt_converge", "too_many_unknowns"}
 
@@ -194,11 +196,14 @@ class Document:
 
             require_in_project(path, self.workspace, writing=False)
             source = _step_import_source(self.workspace, path)
-            shape = kernel.import_step_file(source)
+            if not source.is_file():
+                raise GeometryError(f"STEP file not found: {source}")
+            data = kernel.read_step_bytes(source)
+            shape = kernel.import_step_bytes(source, data)
             relative = f"imports/{name}.step"
             refuse_reserved_device(relative, None, "Import copy", GeometryError)
             destination = _project_file(self.workspace, self.workspace / relative, "Imported STEP")
-            publish_bytes(destination, kernel.read_step_bytes(source))
+            publish_bytes(destination, data)
             note = f"# Imported STEP, copied to {relative}\n"
             self._parts[name] = _Part(name, "step", shape, script=note, step_file=relative, base=shape)
             self._save()
@@ -2129,13 +2134,27 @@ class Document:
         path = self._session_path()
         if not path.exists() and not path.is_symlink():
             return
-        path = _project_resolved(self.workspace, path, "Session file", DocumentError)
-        if not path.is_file():
+        if path.is_dir() and not path.is_symlink():
             return
+        from aicad.paths import read_checked_text
+
+        text = read_checked_text(
+            self.workspace,
+            path,
+            maximum=_MAX_SESSION_BYTES,
+            label="Session file",
+            error=DocumentError,
+        )
+        if _json_nesting(text) > _MAX_SESSION_DEPTH:
+            raise DocumentError("The session is nested too deeply, so it was not read.")
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(text)
         except json.JSONDecodeError as exc:
             raise DocumentError(f"Could not read {path}: {exc}") from exc
+        except RecursionError as exc:
+            raise DocumentError("The session is nested too deeply, so it was not read.") from exc
+        if not isinstance(payload, dict):
+            raise DocumentError(f"Could not read {path}: the session is not an object.")
         self._apply_payload(payload)
 
     def _apply_payload(self, payload: dict) -> None:
@@ -2471,6 +2490,33 @@ def _project_directory(root: Path, path: Path, label: str) -> Path:
     from aicad.paths import output_dir
 
     return output_dir(root, path, label, GeometryError)
+
+
+def _json_nesting(text: str) -> int:
+    """Deepest object or array in ``text``, ignoring braces inside strings."""
+    depth = 0
+    deepest = 0
+    in_string = False
+    escape = False
+    for char in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+            if depth > deepest:
+                deepest = depth
+        elif char in "}]":
+            if depth:
+                depth -= 1
+    return deepest
 
 
 def _project_resolved(root: Path, path: Path, label: str, error: type[Exception] = GeometryError) -> Path:

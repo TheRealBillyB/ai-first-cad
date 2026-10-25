@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-25
+
+| Decision | Rationale |
+| --- | --- |
+| A project file is opened from the checked directory | The read uses the same directory descriptor as a write, so a link swapped in after the check is not followed. A session also stops at a fixed size and nesting depth. |
+
 ## 2026-10-24
 
 | Decision | Rationale |
