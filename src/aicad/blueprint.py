@@ -138,16 +138,23 @@ def open_blueprint(path: Path | str, root: Path | str) -> dict:
 
     if shared_file(resolved):
         raise BlueprintError("That blueprint has another name and was not opened.")
+    from aicad.paths import read_checked_bytes
+
     try:
-        size = resolved.stat().st_size
-    except OSError as exc:
-        raise BlueprintError(f"Could not read that blueprint. {exc.strerror or exc}.") from exc
-    if size > _MAX_BYTES:
-        raise BlueprintError("That blueprint is too large. It was not opened.")
-    try:
-        data = resolved.read_bytes()
-    except OSError as exc:
-        raise BlueprintError(f"Could not read that blueprint. {exc.strerror or exc}.") from exc
+        data = read_checked_bytes(
+            project,
+            resolved,
+            maximum=_MAX_BYTES,
+            label="Blueprint",
+            error=BlueprintError,
+        )
+    except BlueprintError as exc:
+        message = str(exc)
+        if "too large" in message:
+            raise BlueprintError("That blueprint is too large. It was not opened.") from exc
+        if message.startswith("Could not read"):
+            raise BlueprintError("Could not read that blueprint.") from exc
+        raise
     kind, parts, width, height = _extract(data)
     text = "\n".join(part for part in parts if part)
     return {

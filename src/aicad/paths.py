@@ -1135,6 +1135,243 @@ def replace_file(root: Path, relative: str | Path, write) -> None:
         os.close(dirfd)
 
 
+class _TooLarge(Exception):
+    """The opened file is larger than the caller's cap. Its bytes are not returned."""
+
+
+def read_checked_bytes(
+    root: Path,
+    path: str | Path,
+    *,
+    maximum: int,
+    label: str,
+    error: type[Exception],
+) -> bytes:
+    """Read a regular file inside ``root``.
+
+    The path is checked, then opened from ``root`` one component at a time.
+    A link at that name is not followed. More than ``maximum`` bytes is refused.
+    """
+    root_resolved = Path(root).resolve()
+    resolved = resolve_in_project(root_resolved, path, label, error)
+    if not resolved.is_file():
+        raise error(f"Could not read {label}.")
+    relative = _relative_within(root_resolved, resolved)
+    _before_nofollow(root_resolved, relative)
+    return _finish_read(root_resolved, relative, maximum, label, error)
+
+
+def read_checked_text(
+    root: Path,
+    path: str | Path,
+    *,
+    maximum: int,
+    label: str,
+    error: type[Exception],
+) -> str:
+    """UTF-8 text from :func:`read_checked_bytes`.
+
+    Newlines match :meth:`pathlib.Path.read_text`: ``\\r\\n`` and a lone ``\\r``
+    become ``\\n``.
+    """
+    data = read_checked_bytes(root, path, maximum=maximum, label=label, error=error)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeError as exc:
+        raise error(f"Could not read {label}.") from exc
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def read_nofollow_bytes(path: str | Path, *, maximum: int, label: str, error: type[Exception]) -> bytes:
+    """Read ``path`` without following a link at that name.
+
+    A file inside a project this process has opened is read from that project's
+    directory. Any other file is read from its parent directory.
+    """
+    file = Path(path)
+    if not file.is_absolute():
+        file = Path.cwd() / file
+    holder = _project_containing(file)
+    if holder is not None and _lexical_inside(file, holder):
+        return read_checked_bytes(holder, file, maximum=maximum, label=label, error=error)
+    parent = file.parent
+    _before_nofollow(parent, Path(file.name))
+    return _finish_read(parent, Path(file.name), maximum, label, error)
+
+
+def _finish_read(root: Path, relative: Path, maximum: int, label: str, error: type[Exception]) -> bytes:
+    try:
+        return _read_from_root(root, relative, maximum)
+    except _TooLarge:
+        raise error(f"{label} is too large.") from None
+    except OSError as exc:
+        raise _read_error(label, error, exc) from exc
+
+
+def _read_error(label: str, error: type[Exception], exc: OSError) -> Exception:
+    if exc.errno in _LINK_ERRNOS:
+        if exc.strerror == "has another name":
+            return error(f"{label} has another name and was not opened.")
+        return error(f"{label} is a link and was not followed.")
+    if exc.errno == errno.EINVAL and exc.strerror == "not an ordinary file":
+        return error(f"{label} is not an ordinary file.")
+    return error(f"Could not read {label}.")
+
+
+def _read_from_root(root: Path, relative: Path, maximum: int) -> bytes:
+    if nofollow_writes():
+        descriptor = _open_file_relative(root, relative)
+    elif os.name == "nt":
+        descriptor = _open_file_windows(root, relative)
+    else:
+        descriptor = _open_file_fallback(root, relative)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "not an ordinary file")
+        if info.st_nlink > 1:
+            raise OSError(errno.ELOOP, "has another name")
+        if info.st_size > maximum:
+            raise _TooLarge()
+        chunks: list[bytes] = []
+        remaining = maximum + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > maximum:
+            raise _TooLarge()
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def _open_file_relative(root: Path, relative: Path) -> int:
+    """Open a file from ``root``. Does not follow a link. The caller closes it."""
+    parts = _relative_parts(relative)
+    if not parts:
+        raise OSError(errno.EINVAL, "path is empty")
+    parent = Path(*parts[:-1]) if len(parts) > 1 else Path()
+    dirfd = open_relative(root, parent, create=False)
+    try:
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        return _call(_libc().openat(dirfd, os.fsencode(parts[-1]), flags, 0), parts[-1])
+    finally:
+        os.close(dirfd)
+
+
+def _open_file_fallback(root: Path, relative: Path) -> int:
+    """Open ``root / relative`` when a directory descriptor is not available."""
+    raw = root.joinpath(*relative.parts)
+    current = Path(root)
+    for part in relative.parts:
+        current = current / part
+        if is_reparse(current):
+            raise OSError(errno.ELOOP, "is a link")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return os.open(os.fspath(raw), flags)
+
+
+def _open_file_windows(root: Path, relative: Path) -> int:
+    """Open a file on Windows and refuse a link before reading it."""
+    import msvcrt
+    from ctypes import wintypes
+
+    raw = root.joinpath(*relative.parts)
+    current = Path(root)
+    for part in relative.parts:
+        current = current / part
+        if is_reparse(current):
+            raise OSError(errno.ELOOP, "is a link")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    create.restype = wintypes.HANDLE
+    handle = create(os.fspath(raw), 0x80000000, 0x1 | 0x2 | 0x4, None, 3, 0x00200000, None)
+    value = ctypes.cast(handle, ctypes.c_void_p).value
+    invalid = ctypes.c_void_p(-1).value
+    if not value or value == invalid:
+        raise OSError(errno.ENOENT, "could not open")
+    try:
+        attributes, links = _windows_file_facts(kernel32, handle)
+        if attributes & _FILE_ATTRIBUTE_REPARSE_POINT or attributes & 0x10:
+            raise OSError(errno.ELOOP, "is a link")
+        if links > 1:
+            raise OSError(errno.ELOOP, "has another name")
+        final = _windows_final_path(kernel32, handle)
+        expected = os.path.normcase(os.path.normpath(os.path.abspath(raw)))
+        if final != expected:
+            raise OSError(errno.ELOOP, "is a link")
+        return msvcrt.open_osfhandle(int(value), os.O_BINARY)
+    except Exception:
+        close = kernel32.CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        close.restype = wintypes.BOOL
+        close(handle)
+        raise
+
+
+def _windows_file_facts(kernel32, handle) -> tuple[int, int]:
+    from ctypes import wintypes
+
+    class _Info(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    info = _Info()
+    get = kernel32.GetFileInformationByHandle
+    get.argtypes = [wintypes.HANDLE, ctypes.POINTER(_Info)]
+    get.restype = wintypes.BOOL
+    if not get(handle, ctypes.byref(info)):
+        raise OSError(errno.EIO, "could not read file information")
+    return int(info.dwFileAttributes), int(info.nNumberOfLinks)
+
+
+def _windows_final_path(kernel32, handle) -> str:
+    from ctypes import wintypes
+
+    query = kernel32.GetFinalPathNameByHandleW
+    query.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    query.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = int(query(handle, buffer, len(buffer), 0))
+    if length <= 0 or length >= len(buffer):
+        raise OSError(errno.EIO, "could not read the file path")
+    text = buffer.value
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[8:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    return os.path.normcase(os.path.normpath(text))
+
+
 def _accept_project_file(root: Path, path: Path) -> Path:
     """A relative file whose parent is inside ``root`` before it is opened."""
     raw = path if path.is_absolute() else root / path
