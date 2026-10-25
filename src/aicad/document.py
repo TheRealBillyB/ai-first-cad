@@ -2188,9 +2188,16 @@ class Document:
                     base = kernel.solid_from_sketch(solved.geometry, record.get("steps") or [])
                 else:
                     source = "script"
-                    script_pending = _script_hash(script_text) != record.get("script_sha256")
+                    script_hash = _script_hash(script_text)
+                    stored_hash = record.get("script_sha256")
+                    script_pending = not isinstance(stored_hash, str) or script_hash != stored_hash
                     geometry = record.get("geometry_file")
-                    if geometry:
+                    stored = geometry.replace("\\", "/") if isinstance(geometry, str) else ""
+                    prefix = stored_hash[:16] if isinstance(stored_hash, str) else ""
+                    expected = f".aicad/geometry/{name}-{prefix}.step" if prefix else ""
+                    # Only the file named for this script's stored hash is that build.
+                    # Another path is not opened, even when the hash matches.
+                    if stored and expected and stored == expected:
                         geometry_path = _session_project_file(
                             self.workspace, geometry, f"Part {name!r} geometry file"
                         )
