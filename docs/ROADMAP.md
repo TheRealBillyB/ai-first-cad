@@ -106,7 +106,7 @@ Natural frequencies come from a CalculiX frequency solve, for one solid or for a
 
 ### Robot export
 
-An assembly can be written as URDF (`robot.urdf`), MJCF (`robot.xml`), and STL meshes. Meshes stay in millimeters and the robot file scales them to meters. Mass and inertia use the model volume and a handbook density, plus a payload point mass when one is set. Joint limits are written. A cylindrical joint becomes a revolute plus a prismatic. Gear, linkage, and cylinder relations are comments, so a simulator does not enforce them. Effort and velocity in the file are placeholders, not the power estimate. When MuJoCo or PyBullet is installed, the export loads the file and steps it. A missing install still writes the files and says they were not stepped.
+An assembly can be written as URDF (`robot.urdf`), MJCF (`robot.xml`), and STL meshes. Meshes stay in millimeters and the robot file scales them to meters. MJCF body euler is degrees, the same unit as that file's compiler. URDF joint origins stay in radians. Mass and inertia use the model volume and a handbook density, plus a payload point mass when one is set. Joint limits are written. A cylindrical joint becomes a revolute plus a prismatic. Gear, linkage, and cylinder relations are comments, so a simulator does not enforce them. Effort and velocity in the file are placeholders, not the power estimate. When MuJoCo or PyBullet is installed, the export loads the file and steps it. A missing install still writes the files and says they were not stepped.
 
 ### Layout drawings, parts lists, and exploded views
 

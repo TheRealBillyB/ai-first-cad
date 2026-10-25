@@ -66,6 +66,78 @@ def test_a_tilted_base_keeps_the_placed_orientation(tmp_path):
     assert unplaced == pytest.approx([4, 1, 2], abs=1e-6)
 
 
+def test_mjcf_body_euler_is_degrees_and_mujoco_matches_the_arm(tmp_path):
+    """A 15° base pitch must be 15 degrees in the MJCF, and a posed child must land with the solver."""
+    document = Document(tmp_path)
+    _box(document, "base", [20, 20, 10], [0, 0, 5])
+    _box(document, "upper", [80, 12, 12], [40, 0, 0])
+    _box(document, "fore", [50, 10, 10], [25, 0, 0])
+    document.create_assembly(
+        {
+            "name": "tilted_arm",
+            "instances": [
+                {
+                    "name": "base",
+                    "part": "base",
+                    "material": "aluminum",
+                    "placement": {"position": [0, 0, 0], "rotation_deg": [0, 15, 0]},
+                },
+                {"name": "upper", "part": "upper", "material": "aluminum"},
+                {"name": "fore", "part": "fore", "material": "steel"},
+            ],
+            "joints": [
+                {
+                    "name": "shoulder",
+                    "type": "revolute",
+                    "parent": "base",
+                    "child": "upper",
+                    "parent_anchor": [0, 0, 20],
+                    "axis": [0, 1, 0],
+                    "min": -90,
+                    "max": 90,
+                },
+                {
+                    "name": "elbow",
+                    "type": "revolute",
+                    "parent": "upper",
+                    "child": "fore",
+                    "parent_anchor": [80, 0, 0],
+                    "axis": [0, 1, 0],
+                    "min": -120,
+                    "max": 120,
+                },
+            ],
+        }
+    )
+    report = document.export_robot("tilted_arm", tmp_path / "robot")
+    urdf = ET.parse(report["urdf"]).getroot()
+    rpy = [float(value) for value in urdf.find("joint[@name='world_to_base']/origin").get("rpy").split()]
+    assert rpy[1] == pytest.approx(math.radians(15), abs=1e-6)
+    mjcf = ET.parse(report["mjcf"]).getroot()
+    euler = [float(value) for value in mjcf.find(".//body[@name='base']").get("euler").split()]
+    # eulerseq zyx is yaw, pitch, roll, in degrees.
+    assert euler == pytest.approx([math.degrees(rpy[2]), math.degrees(rpy[1]), math.degrees(rpy[0])], abs=1e-4)
+    assert euler[1] == pytest.approx(15.0, abs=1e-4)
+
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_path(report["mjcf"])
+    data = mujoco.MjData(model)
+    data.qpos[model.joint("shoulder").qposadr[0]] = math.radians(30)
+    data.qpos[model.joint("elbow").qposadr[0]] = math.radians(-20)
+    mujoco.mj_kinematics(model, data)
+    from aicad.kinematics import solve, transform_point
+
+    solved = solve(document.get_assembly("tilted_arm")["assembly"], {"shoulder": 30, "elbow": -20})
+    frames = {item["name"]: item for item in solved["instances"]}
+    for name, point in (("upper", [80, 0, 0]), ("fore", [50, 0, 0])):
+        xpos = [float(data.body(name).xpos[index]) * 1000.0 for index in range(3)]
+        rotation = data.body(name).xmat.reshape(3, 3)
+        world = [
+            sum(float(rotation[row, col]) * point[col] for col in range(3)) + xpos[row] for row in range(3)
+        ]
+        assert world == pytest.approx(transform_point(frames[name]["matrix"], point), abs=0.05)
+
+
 def test_box_inertia_matches_the_handbook(tmp_path):
     document = Document(tmp_path)
     _box(document, "block", [10, 20, 30], [0, 0, 0])
