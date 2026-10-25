@@ -23,9 +23,9 @@ Discussion and review follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Documentation entries
 
-`docs/DECISIONS.md` is generated from one file per decision in `docs/decisions/`. The tool table in `README.md` is generated from one file per tool in `docs/tools/`. Add a file in the entry folder. Do not edit those generated documents by hand.
+`docs/DECISIONS.md`, `SECURITY.md`, and the tool table in `README.md` are generated. Add a file in the entry folder. Do not edit those generated documents by hand.
 
-`docs/ROADMAP.md` and `SECURITY.md` stay hand-written prose. Edit those files directly. They are not lists of independent rows, so splitting them into entry files would pull the sentences apart.
+`docs/ROADMAP.md` stays hand-written prose. Edit that file directly.
 
 ### Decision file
 
@@ -51,11 +51,25 @@ Name it `docs/tools/short-slug.md`. Leave `order` unset. The new row is listed a
 What the tool does, in one line. No line break and no HTML comment.
 ```
 
+### Security file
+
+Name it `docs/security/short-slug.md`. Set `order` to a positive integer. The master lists the lowest order first. When two files share an order, the file name breaks the tie, so two branches do not edit one list. A new guarantee uses an order after the last one, or an order between two neighbors. `separator: blank` (the default) leaves a blank line before the next guarantee. Items of one list use `separator: line`. The body is copied into `SECURITY.md`. No HTML comment.
+
+```markdown
+---
+order: 500
+---
+
+The new guarantee, in one paragraph.
+```
+
 ### A branch that already edited a generated document
 
-Merge `main`. Keep the generated `docs/DECISIONS.md` from `main`. Keep the generated tool table in `README.md` from `main`, along with any other edits your branch made in that file. Move the decision row your branch added into a new file under `docs/decisions/`. Move a tool-table row your branch added into a new file under `docs/tools/`. Leave the generated masters as `main` has them.
+Merge `main`. Keep `docs/DECISIONS.md`, `SECURITY.md`, and the generated tool table in `README.md` from `main`. Move a decision into `docs/decisions/`, a tool row into `docs/tools/`, and a security guarantee into `docs/security/`. Leave the generated masters as `main` has them.
 
-`tools/build_docs.py` rebuilds the masters from the entry folders. It does not follow a symlink or a junction, and it does not read or write a file that has another name. `tools/build_docs.py --check` checks the new file. The documentation check fails for a bad entry or a forbidden word. It does not fail because a master document is behind the entry files. A push to `main` rebuilds the masters and opens one pull request when they changed. That job runs `python tools/check_docs.py`, `python tools/build_docs.py --check`, and `pytest tests/test_build_docs.py tests/test_docs_allowlist.py` before it opens the pull request, and the pull request links that workflow run. Opening the pull request needs the repository setting **Allow GitHub Actions to create and approve pull requests** (Settings, Actions, General, Workflow permissions). If that setting is off, the job fails and names the setting. A feature pull request does not edit the masters.
+`tools/build_docs.py` rebuilds the masters from the entry folders. It does not follow a symlink or a junction, and it does not read or write a file that has another name. `tools/build_docs.py --check` checks the new file. The documentation check fails for a bad entry or a forbidden word. It does not fail because a master document is behind the entry files. It does fail when a pull request edits `docs/DECISIONS.md`, `SECURITY.md`, or the generated tool table. The one exception is the rebuild pull request on `chore/regenerate-master-docs`.
+
+A push to `main` rebuilds the masters and opens or updates one pull request on that branch when they changed. The commit is unsigned and carries a `Signed-off-by` line. The workflow does not merge the pull request. That job runs `python tools/check_docs.py`, `python tools/build_docs.py --check`, and `pytest tests/test_build_docs.py tests/test_docs_allowlist.py` before it opens the pull request, and the pull request links that workflow run. Opening the pull request needs the repository setting **Allow GitHub Actions to create and approve pull requests** (Settings, Actions, General, Workflow permissions). If that setting is off, the job fails and names the setting. A feature pull request adds entry files and does not edit the masters.
 
 ## Plugins
 

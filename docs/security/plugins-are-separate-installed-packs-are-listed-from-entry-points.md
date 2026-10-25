@@ -1,0 +1,5 @@
+---
+order: 200
+---
+
+Plugins are separate. Installed packs are listed from entry points without importing them. A third-party pack runs only after you allow the publisher, the version, and the permissions it declared. A pack ships with aicad only when its metadata directory is the one next to this copy. The package name is not used for that, so another package with the same name still needs an allow. An entry-point file that cannot be read skips that package and lists a warning; the other packages are still listed. Opening a design does not allow or load a plugin. A design script cannot allow or load a plugin either. That refusal is a flag in the running script process, not an environment variable the script can clear. The consent path it reports is the home config, not a cache folder inside the project. The warning is written by aicad, and the permission list is a declaration, not a sandbox. A plugin export is written inside the project. A path outside that folder is refused. See [docs/plugins.md](docs/plugins.md).

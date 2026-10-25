@@ -1,0 +1,5 @@
+---
+order: 140
+---
+
+A shared STEP file larger than 64 MiB is not read, and a project file served to the workspace stops at 32 MiB. The assistant's command client stops reading a response past 32 MiB. A mesh stops at one million triangles. A script's file-size cap stays at 512 MiB, and a setting cannot raise it. Opening a project does not run Python stored in it. A script part shows its text and, when you have built it before, the solid from that build. STEP files, operation lists, and sketches are data. Importing a STEP file reads that file and does not open another path named inside it. A STEP file in the project that has another name is not opened. A script result that is a link is not read. A geometry file or a picture named by that result is opened only when it is a regular file inside the project. A font configuration file shipped in the project is not read when the geometry libraries are imported. Those libraries use a configuration file packaged with aicad. The process working directory is not changed. An entry title and rationale are one line, with no line break and no comment, so a generated master stays one section.

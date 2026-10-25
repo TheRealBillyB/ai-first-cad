@@ -4,6 +4,10 @@ name: regenerate docs
 # repository's generator. It does not run on pull_request_target, and it
 # does not execute code from a pull request head.
 #
+# The commit is unsigned. git commit -s adds the Developer Certificate of
+# Origin trailer, and the author is the same identity as that trailer.
+# The workflow never merges the pull request.
+#
 # Opening the pull request needs the repository setting
 # "Allow GitHub Actions to create and approve pull requests"
 # (Settings, Actions, General, Workflow permissions).
@@ -26,19 +30,40 @@ jobs:
       pull-requests: write
     steps:
       - name: Check out main
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+
+      - name: Update the docs branch from main
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git config tag.gpgsign false
+          git fetch origin main
+          branch=chore/regenerate-master-docs
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            git fetch origin "$branch"
+            git checkout -B "$branch" "origin/$branch"
+            git merge --no-gpg-sign origin/main -m "Merge branch 'main' into chore/regenerate-master-docs
+
+          Signed-off-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>" || {
+              echo '::error::Merging main into chore/regenerate-master-docs hit a conflict. Resolve it on that branch. The workflow does not rewrite history.'
+              exit 1
+            }
+          else
+            git checkout -B "$branch" origin/main
+          fi
 
       - name: Regenerate master documents
         run: python tools/build_docs.py
 
-      # A pull request opened with the workflow token does not start
-      # pull_request workflows, so the same checks run here. A failure
-      # stops the job before a pull request is opened.
       - name: Check documentation words
         run: python tools/check_docs.py
 
@@ -50,38 +75,39 @@ jobs:
           python -m pip install pytest
           pytest tests/test_build_docs.py tests/test_docs_allowlist.py
 
-      # The commit stays unsigned. signoff adds the Developer Certificate of
-      # Origin trailer, and the author is the same identity as that trailer.
       - name: Open or update one pull request
-        id: open-pr
-        uses: peter-evans/create-pull-request@v8.1.1
-        with:
-          sign-commits: false
-          signoff: true
-          author: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
-          committer: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
-          commit-message: "Regenerate master docs from entry files."
-          branch: chore/regenerate-master-docs
-          base: main
-          delete-branch: true
-          title: Regenerate master docs from entry files
-          add-paths: |
-            docs/DECISIONS.md
-            README.md
-          body: |
-            The master documents are generated from the entry folders.
-
-            `tools/build_docs.py` rewrote them after entries landed on main.
-            This is the one pull request for that update.
-
-            `python tools/check_docs.py`, `python tools/build_docs.py --check`, and `pytest tests/test_build_docs.py tests/test_docs_allowlist.py` ran in this workflow run before this pull request was opened:
-
-            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-      # The action fails the step when the API rejects pull request
-      # creation. This step keeps that failure and names the setting.
-      - name: Name the pull request permission
-        if: failure() && steps.open-pr.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo '::error::Could not open the pull request. When the API error is "GitHub Actions is not permitted to create or approve pull requests", turn on "Allow GitHub Actions to create and approve pull requests" under Settings, Actions, General, Workflow permissions, then re-run this workflow.'
-          exit 1
+          set -eu
+          branch=chore/regenerate-master-docs
+          masters="docs/DECISIONS.md README.md SECURITY.md"
+          if ! git diff --quiet -- $masters; then
+            git add -- $masters
+            git commit -s --no-gpg-sign -m "Regenerate master docs from entry files."
+          fi
+          if git diff --quiet origin/main -- $masters; then
+            echo "master documents match main"
+            exit 0
+          fi
+          git push origin "HEAD:${branch}"
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${GITHUB_REPOSITORY%%/*}:${branch}" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "updated pull request #${existing}"
+            exit 0
+          fi
+          body=$(cat <<'EOF'
+          The master documents are generated from the entry folders.
+
+          `tools/build_docs.py` rewrote `docs/DECISIONS.md`, the tool table in `README.md`, and `SECURITY.md` after entries landed on main. This is the one pull request for that update. It is not merged by the workflow.
+
+          `python tools/check_docs.py`, `python tools/build_docs.py --check`, and `pytest tests/test_build_docs.py tests/test_docs_allowlist.py` ran in this workflow run before this pull request was opened:
+
+          RUN_URL
+          EOF
+          )
+          body=${body//RUN_URL/${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}}
+          if ! gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" --title "Regenerate master docs from entry files" --body "$body"; then
+            echo '::error::Could not open the pull request. When the API error is "GitHub Actions is not permitted to create or approve pull requests", turn on "Allow GitHub Actions to create and approve pull requests" under Settings, Actions, General, Workflow permissions, then re-run this workflow.'
+            exit 1
+          fi
