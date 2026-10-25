@@ -18,6 +18,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A plan, a plugin manifest, and a command-line file are read without following a link | The read uses the checked directory, so a link at that name is not opened. |
 | A plan file is opened from the checked directory | A plan is read from the project directory without following a link, and a plan past the size cap is not copied into undo. |
 | A plan file that is a link is not opened | Listing a plan and the undo copy do not open a plan folder that is a link, or a plan file that has another name. |
+| A project copy does not follow a link | Saving a copy reads each project file from the directory that was checked, and a link or a second name is left behind. |
 | A project file is opened from the checked directory | The read uses the same directory descriptor as a write, so a link swapped in after the check is not followed. A session also stops at a fixed size and nesting depth. |
 | A sandbox setup failure has no traceback | A failure while the sandbox is starting is one error line in the job result. The traceback stays out of that result and out of the child's error stream. |
 | A script is not run when it cannot enter its process cgroup | A failed move would leave the script outside `pids.max`, so the script is not run. |
@@ -28,6 +29,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A traverse grant does not change the folder after the wait | The grant thread is told to stop when the wait ends, and it does not write the access entry after that. |
 | A trimmed Windows path is refused before a record, a STEP name, or a workspace file is opened | ``....\....\hidden`` is ``..\..\hidden`` after Win32 removes trailing dots. Those readers now use the same check as a session path. |
 | A workspace command response stops at 32 MiB | The assistant's command client does not keep a response larger than that. |
+| A workspace file is read from the checked directory and is not run | A project file shown in the workspace is opened from the directory that was checked, and the response tells the browser not to run it. |
 | A workspace file with another name is not shown | The workspace file view does not open a file that is a link or that has another name. |
 | An existing virtual environment older than Python 3.11 is not reused | The installer requires Python 3.11. An existing `.venv` on an older interpreter is reported, and it is not used for the install. |
 | An installer package command stops if it does not finish | apt, pip, and the virtual-environment command wait at most 30 minutes. A lock that never clears does not hold the installer open. |

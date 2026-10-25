@@ -66,6 +66,18 @@ def _assert_isolated(headers: dict, token: str) -> None:
     assert token not in blob
 
 
+def _assert_file_isolated(headers: dict, token: str) -> None:
+    assert headers.get("x-frame-options") == "DENY"
+    assert headers.get("content-security-policy") == (
+        "default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'"
+    )
+    assert headers.get("referrer-policy") == "no-referrer"
+    assert headers.get("x-content-type-options") == "nosniff"
+    assert "access-control-allow-origin" not in headers
+    blob = json.dumps(headers)
+    assert token not in blob
+
+
 def test_page_and_errors_deny_framing_and_referrers(server):
     status, payload, headers = _exchange(server, "GET", "/", token=None, origin=False)
     assert status == 200
@@ -92,7 +104,7 @@ def test_picture_address_is_not_stored_or_echoed(server, capsys):
     status, payload, headers = _exchange(server, "GET", path, token=None, origin=False)
     assert status == 200
     assert payload.startswith(b"\x89PNG")
-    _assert_isolated(headers, server.page_token)
+    _assert_file_isolated(headers, server.page_token)
     assert headers.get("cache-control") == "no-store"
     captured = capsys.readouterr()
     assert server.page_token not in captured.out
