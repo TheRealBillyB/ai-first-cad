@@ -433,8 +433,12 @@ def _handler(session: Workspace):
                 raise GeometryError("That file is outside the project.")
             if path.suffix.lower() not in _FILE_SUFFIXES or not path.is_file():
                 raise GeometryError("That file is not available to the workspace view.")
+            normalized = os.path.realpath(path)
+            root_name = os.path.realpath(root)
+            if not normalized.startswith(root_name + os.sep):
+                raise GeometryError("That file is outside the project.")
             try:
-                size = path.stat().st_size
+                size = os.stat(normalized).st_size
             except OSError as exc:
                 raise GeometryError("That file could not be read.") from exc
             if size > _MAX_SERVED_BYTES:
