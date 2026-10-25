@@ -87,7 +87,7 @@ The line does not sag, and clips do not slip. A flexible-body rod is not in the 
 
 Quasi-static loads from gravity, part mass, and payload, over the stored pose or a named motion:
 
-- force and torque at each actuator, with a gear, linkage, or cylinder reflecting the driven load onto the driver when the driven joint has no actuator of its own
+- force and torque at each actuator. A gear or linkage adds ratio times the driven load to the driver when that joint has no actuator, including a chain, and relations that share a driver add. A cylinder reflects the driver moment onto an actuator on the stroke
 - hydraulic pressure, flow, displaced volume, and pump power
 - motor current, electrical power, and battery energy and charge
 
