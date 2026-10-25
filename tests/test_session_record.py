@@ -344,6 +344,21 @@ def test_replay_does_not_execute_a_record_or_follow_a_path_out(tmp_path, config_
     assert workspace.document.list_parts() == []
 
 
+def test_a_record_path_that_windows_trims_to_a_parent_is_refused(tmp_path):
+    from aicad.session_record import _project_file
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "notes.txt").write_text("ok\n", encoding="utf-8")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("hidden\n", encoding="utf-8")
+    for relative in ("..../..../secret.txt", "records/.. ./secret.txt", "....\\....\\secret.txt"):
+        with pytest.raises(RecordRefused):
+            _project_file(project, relative)
+    assert outside.read_text(encoding="utf-8") == "hidden\n"
+    assert _project_file(project, "notes.txt").read_text(encoding="utf-8") == "ok\n"
+
+
 def test_a_linked_record_is_not_read(tmp_path, config_home):
     project = tmp_path / "project"
     outside = tmp_path / "outside"

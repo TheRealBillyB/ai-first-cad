@@ -30,7 +30,6 @@ from aicad.errors import GeometryError
 from aicad.kernel import TriangleMesh
 from aicad.paths import (
     _export_blocked,
-    _path_after_windows_trim,
     is_reparse,
     is_reserved_device_name,
     output_path,
@@ -38,6 +37,7 @@ from aicad.paths import (
     session_path_escapes,
     shared_file,
     stays_inside,
+    windows_trim_escapes,
 )
 
 FORMAT = "session_record.v1"
@@ -707,6 +707,8 @@ def _project_file(root: Path, relative: str) -> Path:
         or re.match(r"^[A-Za-z]:", text)
         or "://" in text
         or "\x00" in text
+        or session_path_escapes(text)
+        or windows_trim_escapes(text)
     ):
         raise RecordRefused("A session record path has to stay inside the project.")
     parts: list[str] = []
@@ -972,11 +974,7 @@ def _trimmed_path_escapes(text: str) -> bool:
     A drive-relative path such as ``C:secret.txt`` is already an escape before
     that trim.
     """
-    normalized = text.replace("\\", "/")
-    trimmed = _path_after_windows_trim(text)
-    if trimmed == normalized:
-        return False
-    return session_path_escapes(trimmed)
+    return windows_trim_escapes(text)
 
 
 def _relative_or_outside(text: str, root: Path) -> str:
