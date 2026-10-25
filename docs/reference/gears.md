@@ -144,7 +144,7 @@ A planetary mesh names the carrier. With the ring fixed,
 
 ω_carrier / ω_sun = z_sun / (z_sun + z_ring)
 
-One planet stands for a set of equal planets. Naming every planet leaves the split of tooth force free. The shaft torques are still reported when they do not depend on that split, and they match the one-planet totals. A mesh efficiency is applied only when every tooth force is determined. A sun or a ring on the same side of several planetary meshes is one external member, not an idler.
+One planet stands for a set of equal planets. Naming every planet leaves the split of tooth force free. The shaft torques are still reported when they do not depend on that split, and they match the one-planet totals. A mesh efficiency is applied only when every tooth force is determined. A sun or a ring on the same side of several planetary meshes is one external member, not an idler. A gear fixed on the carrier is that shaft's load. The carrier is not a second external torque unless the drive lists it as an output.
 
 An open differential is `{carrier, left, right}`, not two ordinary meshes. The constraint is
 
