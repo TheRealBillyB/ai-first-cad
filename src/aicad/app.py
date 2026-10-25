@@ -303,8 +303,10 @@ def _handler(session: Workspace):
                 self._discard_unread_body()
                 self._error(403, exc.message)
             except AICADError as exc:
+                self._discard_unread_body()
                 self._error(400, str(exc))
             except Exception as exc:
+                self._discard_unread_body()
                 self._error(500, str(exc))
 
         def _guard(self) -> None:
@@ -496,30 +498,73 @@ def _handler(session: Workspace):
             self.end_headers()
             self.wfile.write(data)
 
+        def _content_length(self) -> int | None:
+            """How many body bytes the client declared.
+
+            A missing header is an empty body. A negative number, or a value
+            that is not an integer, is not a size: ``read(-1)`` would read
+            until the client closes and ignore the 2 MB cap.
+            """
+            raw = self.headers.get("Content-Length")
+            if raw is None:
+                return 0
+            try:
+                length = int(raw)
+            except (TypeError, ValueError):
+                return None
+            if length < 0:
+                return None
+            return length
+
         def _discard_unread_body(self) -> None:
             """Read a POST body that a refusal did not use.
 
             A refusal runs before the body is read. Leaving those bytes unread
             makes Windows reset the socket, so the client never sees the status.
+            A length that is not a size is drained only from bytes already
+            received, so a client that never closes cannot hold this thread.
             """
             if getattr(self, "_body_taken", False):
                 return
             self._body_taken = True
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except (TypeError, ValueError):
+            length = self._content_length()
+            if length is None:
+                self._drain_already_received(2_000_000)
                 return
-            remaining = min(max(length, 0), 2_000_000)
+            remaining = min(length, 2_000_000)
             while remaining:
                 chunk = self.rfile.read(min(remaining, 65536))
                 if not chunk:
                     break
                 remaining -= len(chunk)
 
+        def _drain_already_received(self, limit: int) -> None:
+            remaining = limit
+            sock = self.connection
+            try:
+                sock.setblocking(False)
+            except OSError:
+                return
+            try:
+                while remaining:
+                    try:
+                        chunk = self.rfile.read(min(remaining, 65536))
+                    except (BlockingIOError, InterruptedError):
+                        break
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            finally:
+                try:
+                    sock.setblocking(True)
+                except OSError:
+                    pass
+
         def _read_json(self) -> dict:
-            length = int(self.headers.get("Content-Length") or 0)
+            length = self._content_length()
+            if length is None:
+                raise GeometryError("Content-Length is not a size.")
             if length > 2_000_000:
-                self._body_taken = True
                 raise GeometryError("Request is too large.")
             self._body_taken = True
             raw = self.rfile.read(length) if length else b"{}"

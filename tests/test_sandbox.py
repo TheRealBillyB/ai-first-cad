@@ -1398,6 +1398,56 @@ def test_windows_script_cannot_open_its_parent(tmp_path, config_home):
     assert (tmp_path / "open.txt").read_text(encoding="utf-8").startswith("denied")
 
 
+def test_join_pids_cgroup_refuses_a_failed_move(monkeypatch):
+    """A prepared cgroup that the process cannot enter does not run the script."""
+    from aicad import sandbox as sandbox_mod
+
+    monkeypatch.setenv("AICAD_PIDS_CGROUP", "/tmp/not-a-cgroup")
+    monkeypatch.setattr(sandbox_mod, "_move_into_pids_cgroup", lambda path, pid: False)
+    with pytest.raises(ScriptError, match="process limit could not be applied"):
+        sandbox_mod._join_pids_cgroup()
+
+
+def test_join_pids_cgroup_does_nothing_without_a_cgroup(monkeypatch):
+    from aicad import sandbox as sandbox_mod
+
+    monkeypatch.delenv("AICAD_PIDS_CGROUP", raising=False)
+    called = []
+    monkeypatch.setattr(
+        sandbox_mod,
+        "_move_into_pids_cgroup",
+        lambda path, pid: called.append(pid) or False,
+    )
+    sandbox_mod._join_pids_cgroup()
+    assert called == []
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux cgroup pids controller")
+def test_a_plain_directory_is_not_a_process_cgroup(tmp_path):
+    """Writing the pid into an ordinary file does not put the process in that cgroup."""
+    import os
+
+    from aicad.sandbox import _move_into_pids_cgroup
+
+    assert _move_into_pids_cgroup(tmp_path, os.getpid()) is False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux cgroup pids controller")
+def test_script_is_not_run_when_it_cannot_enter_the_process_cgroup(tmp_path, monkeypatch):
+    from aicad import sandbox as sandbox_mod
+
+    supported, reason = sandbox_mod.sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+    fake = tmp_path / "not-a-cgroup"
+    fake.mkdir()
+    monkeypatch.setattr(sandbox_mod, "_prepare_pids_cgroup", lambda: fake)
+    monkeypatch.setattr(sandbox_mod, "_release_pids_cgroup", lambda path: None)
+    with pytest.raises(ScriptError, match="process limit could not be applied"):
+        run_part_script("open('ran.txt', 'w').write('yes')\npart = Box(1, 1, 1)\n", tmp_path)
+    assert not (tmp_path / "ran.txt").exists()
+
+
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux cgroup pids controller")
 def test_linux_process_cap_is_a_cgroup_when_this_user_can_make_one():
     """The cap has to be a sibling cgroup. The user-wide limit counts other programs."""

@@ -268,7 +268,6 @@ def test_a_note_outside_the_project_is_refused(server, tmp_path):
         assert b"outside the project" in payload
         assert b"secret-note" not in payload
         assert b"sibling-note" not in payload
-
     status, payload, _headers = _exchange(
         server, "GET", "/api/file?path=" + quote("..../..../secret.txt"), token="page"
     )
@@ -281,3 +280,42 @@ def test_a_note_outside_the_project_is_refused(server, tmp_path):
     assert status == 400
     assert b"outside the project" in payload
     assert payload != b"hello\n"
+
+
+def test_a_negative_content_length_is_refused(server):
+    """``read(-1)`` would ignore the size cap and wait until the client closes."""
+    status, payload, _headers = _exchange(
+        server,
+        "POST",
+        "/api/command",
+        body=b'{"name":"list_parts","arguments":{}}',
+        headers={"Content-Length": "-1"},
+    )
+    assert status == 400
+    assert b"Content-Length" in payload
+    assert _parts(server) == []
+
+    status, payload, _headers = _exchange(
+        server,
+        "POST",
+        "/api/command",
+        body=b'{"name":"list_parts","arguments":{}}',
+        headers={"Content-Length": "nope"},
+    )
+    assert status == 400
+    assert b"Content-Length" in payload
+    assert _parts(server) == []
+
+
+def test_a_request_over_the_size_cap_is_refused(server):
+    body = b'{"name":"list_parts"}' + b" " * 2_000_000
+    status, payload, _headers = _exchange(
+        server,
+        "POST",
+        "/api/command",
+        body=body,
+        headers={"Content-Length": str(len(body))},
+    )
+    assert status == 400
+    assert b"too large" in payload
+    assert _parts(server) == []
