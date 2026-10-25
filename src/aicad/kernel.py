@@ -95,7 +95,7 @@ from OCP.TopoDS import TopoDS
 from OCP.gp import gp_Ax2, gp_Dir, gp_Lin, gp_Pnt, gp_Trsf
 
 from aicad.errors import GeometryError, ScriptError
-from aicad.paths import session_path_escapes
+from aicad.paths import session_path_escapes, windows_trim_escapes
 from aicad.refs import edge_ref, face_ref
 from aicad.models import (
     BoundingBox,
@@ -1866,7 +1866,7 @@ def _step_string_leaves_folder(folder: Path, value: str) -> bool:
     normalized = value.replace("\\", "/").replace("\n", "").replace("\r", "")
     if normalized == "":
         return False
-    if session_path_escapes(normalized):
+    if session_path_escapes(normalized) or windows_trim_escapes(normalized):
         return True
     candidate = (folder / normalized).resolve()
     try:

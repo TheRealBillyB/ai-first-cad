@@ -269,6 +269,20 @@ def _path_after_windows_trim(text: str) -> str:
     return "/".join(_windows_trimmed_part(part) for part in text.replace("\\", "/").split("/"))
 
 
+def windows_trim_escapes(text: str) -> bool:
+    """True when Win32's trimmed form of ``text`` leaves a directory.
+
+    ``..../..../hidden`` is ``../../hidden`` after trailing dots and spaces
+    are removed. The untrimmed text can still look like a relative name.
+    """
+
+    normalized = text.replace("\\", "/")
+    trimmed = _path_after_windows_trim(text)
+    if trimmed == normalized:
+        return False
+    return session_path_escapes(trimmed)
+
+
 def _export_blocked(text: str, root: Path) -> bool:
     """Windows forms that must not be resolved or joined onto the project."""
     windows = PureWindowsPath(text)

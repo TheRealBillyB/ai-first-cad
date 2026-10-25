@@ -147,6 +147,21 @@ def test_step_oversized_header_does_not_write_outside_the_project(layout):
     assert list(scratch.iterdir()) == []
 
 
+def test_step_external_name_that_windows_trims_to_a_parent_is_not_opened(layout):
+    project, outside, scratch, secret = layout
+    before = _digest(secret)
+    step = project / "trimmed.step"
+    _assembly_step(step, "..../..../secret.step", "missing-local.step")
+    with pytest.raises(GeometryError, match="outside its folder"):
+        import_step_file(step)
+    dotted = project / "dotted.step"
+    _assembly_step(dotted, "nest/.. ./secret.step", "missing-local.step")
+    with pytest.raises(GeometryError, match="outside its folder"):
+        import_step_file(dotted)
+    assert _digest(secret) == before
+    _assert_canary_absent(outside, scratch)
+
+
 def test_step_external_file_outside_the_folder_is_not_opened(layout):
     project, outside, scratch, secret = layout
     canary = _canary(outside)

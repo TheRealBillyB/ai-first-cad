@@ -268,3 +268,16 @@ def test_a_note_outside_the_project_is_refused(server, tmp_path):
         assert b"outside the project" in payload
         assert b"secret-note" not in payload
         assert b"sibling-note" not in payload
+
+    status, payload, _headers = _exchange(
+        server, "GET", "/api/file?path=" + quote("..../..../secret.txt"), token="page"
+    )
+    assert status == 400
+    assert b"outside the project" in payload
+    assert b"secret-note" not in payload
+    status, payload, _headers = _exchange(
+        server, "GET", "/api/file?path=" + quote("notes/.. ./notes.txt"), token="page"
+    )
+    assert status == 400
+    assert b"outside the project" in payload
+    assert payload != b"hello\n"
