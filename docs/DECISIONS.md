@@ -27,6 +27,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A workspace file with another name is not shown | The workspace file view does not open a file that is a link or that has another name. |
 | An existing virtual environment older than Python 3.11 is not reused | The installer requires Python 3.11. An existing `.venv` on an older interpreter is reported, and it is not used for the install. |
 | An installer package command stops if it does not finish | apt, pip, and the virtual-environment command wait at most 30 minutes. A lock that never clears does not hold the installer open. |
+| An MCP resource returns a project error as that error | A resource read reports the project error in its message. It does not replace that message with a generic failure or a traceback. |
 | Robot meshes are not written through a link | A robot export creates the mesh folder in the export folder, so a mesh folder that is a link is not followed. |
 | Several planets still report shaft torque | The tooth-force split among equal planets is free, and the shaft torques are reported when they do not depend on that split. Mesh efficiency waits until every tooth force is determined. |
 | The assistant cannot allow scripts, grant network, or save settings | Those switches and the chat request belong to the person at the page. The assistant token stays on project commands. |
