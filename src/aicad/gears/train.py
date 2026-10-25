@@ -15,7 +15,9 @@ turns at ``z_sun / (z_sun + z_ring)`` of the sun.
 
 An open differential is its own element, not two ordinary meshes. The two
 output speeds average to the carrier speed, so in a turn one speeds up as
-much as the other slows down. The outputs share the carrier torque.
+much as the other slows down. The outputs share the carrier torque. A mesh
+that drives the carrier supplies that torque, so the carrier is not a second
+external load unless the drive lists it as an output.
 
 The speed solve is a set of linear equations on the shaft speeds. One answer
 is determined. A free shaft is under-constrained. Speeds that disagree are
@@ -410,8 +412,16 @@ def _roles(train, drive, gear_shaft) -> dict[str, str]:
             roles[name] = "output"
         elif name in drive["idle"]:
             roles[name] = "idle"
-        elif name in diff_sides or name in diff_carriers or name in mesh_carriers:
+        elif name in diff_sides:
             roles[name] = "output"
+        elif name in mesh_carriers and name not in diff_carriers:
+            roles[name] = "output"
+        elif name in diff_carriers and incidence[name] == 0:
+            roles[name] = "output"
+        elif name in diff_carriers:
+            # A mesh on the carrier already applies its torque. An extra
+            # external load would leave the axle torques free.
+            roles[name] = "idle"
         elif incidence[name] == 1:
             roles[name] = "output"
         else:
