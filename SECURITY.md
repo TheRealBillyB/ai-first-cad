@@ -60,6 +60,7 @@ These checks use a marker file outside the project. A project file is data. The 
 - **V.** A STEP, STL, URDF, or MJCF export, and a session record, do not contain an environment value, a token, or the account name unless that text is part of the model.
 - **W.** Opening a project and exporting a part do not run git, a hook, a filter, or `core.fsmonitor`.
 - **X.** A project `.env`, pip or uv configuration, `pyproject.toml`, or `requirements.txt` does not change the process environment. A module in the project does not replace the standard library, and `sitecustomize` there does not run.
+- **AB.** A STEP file that is exported and imported again stays geometry. A session replay does not run the recorded commands, and opening a project does not run a script stored in the session.
 
 Master documents are generated from the entry files in the repository. A symlink or junction on that path is not followed, and a file with another name is not read or written. Generating the masters does not run an entry as code.
 
