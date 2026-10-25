@@ -2,10 +2,11 @@
 
 Gravity and payloads are applied at each instance. A revolute joint sees the
 moment of the supported weight about its axis. A prismatic joint sees the
-component of that weight along its slide. Gear and linkage relations reflect
-the driven load onto the driver when the driven joint has no actuator of its
-own. Nothing here integrates dynamics: inertia, friction, and pressure drop
-are omitted, and the report says so.
+component of that weight along its slide. A gear or linkage adds ratio times
+the driven load to the driver when the driven joint has no actuator. Ratio
+is d(driven)/d(driver). A chain is followed to the driven end, and relations
+that share a driver add. Nothing here integrates dynamics: inertia, friction,
+and pressure drop are omitted, and the report says so.
 """
 
 from __future__ import annotations
@@ -61,37 +62,65 @@ def joint_loads(solved: dict, bodies: dict[str, dict]) -> list[dict]:
 
 
 def reflect(loads: list[dict], solved: dict, spec: dict, actuators: list[dict]) -> list[dict]:
-    """Add driven-joint load onto a driver that is the one with an actuator."""
+    """Add driven-joint load onto a driver that is the one with an actuator.
+
+    Virtual work with ``driven = ratio * driver``. The equivalent load on the
+    driver is its own load plus ratio times the driven load. Joints of the
+    same type add. A revolute and a prismatic convert millimetres and degrees.
+    A chain is applied from the driven end so each driver sees the load behind
+    it, and several relations that share a driver add. A loop has no driven
+    end, so those relations are left as each joint's own load.
+    """
     by_name = {row["joint"]: dict(row) for row in loads}
     actuated = {item["joint"] for item in actuators}
+    torque = {name: float(row["torque_nm"]) for name, row in by_name.items()}
+    force = {name: float(row["force_n"]) for name, row in by_name.items()}
+    reflected_from: dict[str, str] = {}
+    pending = []
     for relation in spec.get("relations") or []:
-        driven = relation["driven"]
-        driver = relation["driver"]
+        driven = relation.get("driven")
+        driver = relation.get("driver")
         if driven not in by_name or driver not in by_name:
             continue
         if driven in actuated:
             continue
-        ratio = _instant_ratio(relation, solved, spec)
-        driven_row = by_name[driven]
-        driver_row = by_name[driver]
-        # Virtual work with driven = ratio * driver. Mixed units convert mm and degrees.
-        driven_slide = driven_row["type"] == "prismatic"
-        driver_slide = driver_row["type"] == "prismatic"
-        if driven_slide and not driver_slide:
-            driver_row["torque_nm"] = round(
-                driver_row["torque_nm"] - driven_row["force_n"] * ratio / 1000.0 * (180.0 / math.pi),
-                4,
+        pending.append(relation)
+    while pending:
+        ready = [
+            relation
+            for relation in pending
+            if not any(other.get("driver") == relation.get("driven") for other in pending)
+        ]
+        if not ready:
+            break
+        ready_ids = {id(relation) for relation in ready}
+        delta_torque: dict[str, float] = {}
+        delta_force: dict[str, float] = {}
+        source: dict[str, str] = {}
+        for relation in ready:
+            driver = relation["driver"]
+            driven = relation["driven"]
+            ratio = _instant_ratio(relation, solved, spec)
+            shift_torque, shift_force = _load_shift(
+                by_name[driver],
+                by_name[driven],
+                torque[driven],
+                force[driven],
+                ratio,
             )
-        elif driver_slide and not driven_slide:
-            driver_row["force_n"] = round(
-                driver_row["force_n"] - driven_row["torque_nm"] * ratio * (math.pi / 180.0) * 1000.0,
-                4,
-            )
-        elif driven_slide:
-            driver_row["force_n"] = round(driver_row["force_n"] - ratio * driven_row["force_n"], 4)
-        else:
-            driver_row["torque_nm"] = round(driver_row["torque_nm"] - ratio * driven_row["torque_nm"], 4)
-        driver_row["reflected_from"] = driven
+            delta_torque[driver] = delta_torque.get(driver, 0.0) + shift_torque
+            delta_force[driver] = delta_force.get(driver, 0.0) + shift_force
+            source[driver] = driven
+        for name, shift in delta_torque.items():
+            torque[name] += shift
+            force[name] += delta_force.get(name, 0.0)
+            reflected_from[name] = source[name]
+        pending = [relation for relation in pending if id(relation) not in ready_ids]
+    for name, row in by_name.items():
+        row["torque_nm"] = round(torque[name], 4)
+        row["force_n"] = round(force[name], 4)
+        if name in reflected_from:
+            row["reflected_from"] = reflected_from[name]
     for relation in spec.get("relations") or []:
         if relation.get("type") != "cylinder":
             continue
@@ -113,6 +142,25 @@ def reflect(loads: list[dict], solved: dict, spec: dict, actuators: list[dict]) 
         stroke_row["force_n"] = round(stroke_row["force_n"] - extra, 4)
         stroke_row["reflected_from"] = driver
     return list(by_name.values())
+
+
+def _load_shift(
+    driver_row: dict,
+    driven_row: dict,
+    driven_torque: float,
+    driven_force: float,
+    ratio: float,
+) -> tuple[float, float]:
+    """Torque and force to add to the driver. Prismatic is a slide; other joints use the moment."""
+    driven_slide = driven_row["type"] == "prismatic"
+    driver_slide = driver_row["type"] == "prismatic"
+    if driven_slide and not driver_slide:
+        return (-driven_force * ratio / 1000.0 * (180.0 / math.pi), 0.0)
+    if driver_slide and not driven_slide:
+        return (0.0, -driven_torque * ratio * (math.pi / 180.0) * 1000.0)
+    if driven_slide:
+        return (0.0, ratio * driven_force)
+    return (ratio * driven_torque, 0.0)
 
 
 def actuators_for(spec: dict, supplied: list[dict] | None = None) -> list[dict]:
@@ -363,7 +411,7 @@ def _assumptions() -> list[str]:
         "Loads are quasi-static. Inertia, friction, seal drag, and line pressure drop are not included.",
         f"Gravity is {GRAVITY} m/s² along −Z. Mass is volume times the material density, plus payload_kg at payload_at or at the center of mass.",
         "A revolute torque is the moment of supported weight about the joint axis, in N·m. A prismatic force is the opposing component of that weight along the slide.",
-        "A gear or linkage reflects the driven load onto the driver when the driven joint has no actuator. Ratio is d(driven)/d(driver).",
+        "A gear or linkage adds ratio times the driven load to the driver when the driven joint has no actuator. Ratio is d(driven)/d(driver). Joints of the same type add. A revolute and a prismatic convert millimetres and degrees. A chain is followed to its driven end, and relations that share a driver add. A loop that remains after that has no driven end, so each joint keeps its own load.",
         "A cylinder relation reflects the driver moment onto an actuator on the stroke joint, using millimetres of stroke per degree of the driver. It does this only when the driver joint has no actuator of its own.",
         "A hydraulic cylinder on a revolute joint turns torque into force with moment_arm_mm. Pressure is force over piston area. Extend uses the bore; retract uses bore minus rod.",
         "Flow is area times the speed of the piston. Power is pressure times flow divided by efficiency. 1 MPa · mm³/s = 0.001 W.",
