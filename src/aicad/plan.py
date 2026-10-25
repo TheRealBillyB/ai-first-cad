@@ -1,8 +1,9 @@
 """Plan & Sketch. Research, blueprint sheets, and a review stop before modeling.
 
 A plan is data in the project folder: one JSON file and the PNG sheets it
-describes. Opening a project reads that JSON only when a plan command asks
-for it, and nothing in the file is executed.
+describes. A plan folder that is a link is not listed. A plan file that is
+a link, or that has another name, is not opened. Nothing in the file is
+executed.
 
 The person approves a plan. The agent does not. That approval is recorded on
 this computer, outside the project. A plan file that says approved, including
@@ -164,10 +165,11 @@ class PlanStore:
         return self._public(plan)
 
     def summaries(self) -> list[dict]:
-        if not self.directory.is_dir():
+        directory = _plan_directory(self.root)
+        if directory is None:
             return []
         found = []
-        for path in sorted(self.directory.glob("*.json")):
+        for path in sorted(directory.glob("*.json")):
             try:
                 plan = self._read(path)
                 revision = _current(plan)
@@ -500,10 +502,7 @@ class PlanStore:
         return self._read(path)
 
     def _read(self, path: Path) -> dict:
-        from aicad.paths import shared_file
-
-        if shared_file(path):
-            raise PlanError(f"{path.name} has another name and was not opened.")
+        _refuse_plan_link(self.root, path)
         if path.stat().st_size > _MAX_BYTES:
             raise PlanError(f"{path.name} is larger than a plan file should be. It was not opened.")
         try:
@@ -632,14 +631,63 @@ class PlanStore:
 
 
 def plan_files(root: str | Path) -> dict[str, str]:
-    """JSON text of every plan, for undo. Sheet PNGs are redrawn on restore."""
-    directory = Path(root) / "plans"
-    if not directory.is_dir():
+    """JSON text of every plan, for undo. Sheet PNGs are redrawn on restore.
+
+    A plan folder that is a link is skipped. A plan file that is a link, or
+    that has another name, is not copied.
+    """
+    root_path = Path(root)
+    directory = _plan_directory(root_path)
+    if directory is None:
         return {}
     files = {}
     for path in sorted(directory.glob("*.json")):
+        try:
+            _refuse_plan_link(root_path, path)
+        except PlanError:
+            continue
         files[path.name] = path.read_text(encoding="utf-8")
     return files
+
+
+def _plan_directory(root: Path) -> Path | None:
+    """The plans folder when it is a real directory inside the project.
+
+    A symlink or junction is not listed. A missing folder is not an error.
+    """
+    from aicad.paths import is_reparse
+
+    root_resolved = Path(root).resolve()
+    directory = root_resolved / "plans"
+    if is_reparse(directory):
+        return None
+    try:
+        if not directory.is_dir():
+            return None
+        resolved = directory.resolve()
+    except OSError:
+        return None
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        return None
+    return directory
+
+
+def _refuse_plan_link(root: Path, path: Path) -> None:
+    """Refuse a plan file that is a link, leaves the project, or has another name."""
+    from aicad.paths import is_reparse, shared_file
+
+    name = path.name
+    if is_reparse(path):
+        raise PlanError(f"{name} is a link and was not opened.")
+    root_resolved = Path(root).resolve()
+    try:
+        resolved = path.resolve()
+    except OSError as exc:
+        raise PlanError(f"{name} is a link and was not opened.") from exc
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise PlanError(f"{name} is outside the project and was not opened.")
+    if shared_file(path):
+        raise PlanError(f"{name} has another name and was not opened.")
 
 
 def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
