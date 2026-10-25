@@ -198,7 +198,7 @@ class Document:
             relative = f"imports/{name}.step"
             refuse_reserved_device(relative, None, "Import copy", GeometryError)
             destination = _project_file(self.workspace, self.workspace / relative, "Imported STEP")
-            publish_bytes(destination, source.read_bytes())
+            publish_bytes(destination, kernel.read_step_bytes(source))
             note = f"# Imported STEP, copied to {relative}\n"
             self._parts[name] = _Part(name, "step", shape, script=note, step_file=relative, base=shape)
             self._save()

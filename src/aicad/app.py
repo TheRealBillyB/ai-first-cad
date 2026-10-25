@@ -37,6 +37,8 @@ from aicad.workspace import Workspace
 
 _STATIC = Path(__file__).resolve().parent / "app_static"
 _FILE_SUFFIXES = {".png", ".gif", ".svg", ".json", ".md", ".txt"}
+# A project file shown in the workspace is read on the host. Past this it is refused.
+_MAX_SERVED_BYTES = 32 * 1024 * 1024
 _TOKEN_HEADER = "X-Aicad-Token"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1"}
 # These change who may run code, who may use the network, or where a chat is sent.
@@ -450,6 +452,16 @@ def _handler(session: Workspace):
                 raise GeometryError("That file is outside the project.")
             if path.suffix.lower() not in _FILE_SUFFIXES or not path.is_file():
                 raise GeometryError("That file is not available to the workspace view.")
+            normalized = os.path.realpath(path)
+            root_name = os.path.realpath(root)
+            if not normalized.startswith(root_name + os.sep):
+                raise GeometryError("That file is outside the project.")
+            try:
+                size = os.stat(normalized).st_size
+            except OSError as exc:
+                raise GeometryError("That file could not be read.") from exc
+            if size > _MAX_SERVED_BYTES:
+                raise GeometryError("That file is too large.")
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             if path.suffix.lower() in {".md", ".txt"} and self._caller() not in {"ui", "cli", "api"}:
                 self._marked_note(path, mime)

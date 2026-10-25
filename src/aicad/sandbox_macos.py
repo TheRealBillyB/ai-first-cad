@@ -125,11 +125,19 @@ def apply_limits(*, cpu_seconds: int, memory_bytes: int) -> None:
     except (OSError, ValueError) as exc:
         os.write(2, f"Could not set CPU or memory limits: {exc}\n".encode())
         os._exit(127)
-    file_cap = 8 * 1024 * 1024 * 1024
+    from aicad.sandbox import file_bytes
+
+    # The same cap the script sets for itself. A failure here is not ignored:
+    # an unlimited file size would let one script fill the disk.
+    try:
+        cap = file_bytes()
+        resource.setrlimit(resource.RLIMIT_FSIZE, (cap, cap))
+    except (OSError, ValueError) as exc:
+        os.write(2, f"Could not set the file limit: {exc}\n".encode())
+        os._exit(127)
     for resource_limit, value in (
         (resource.RLIMIT_DATA, memory_bytes),
         (resource.RLIMIT_CORE, 0),
-        (resource.RLIMIT_FSIZE, file_cap),
     ):
         try:
             resource.setrlimit(resource_limit, (value, value))

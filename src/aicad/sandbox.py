@@ -418,6 +418,11 @@ def memory_bytes() -> int:
     return megabytes * 1024 * 1024
 
 
+def file_bytes() -> int:
+    """File-size cap for one script. An environment value cannot raise it."""
+    return _capped("AICAD_SCRIPT_FILE_BYTES", FILE_BYTES, FILE_BYTES)
+
+
 def config_dir() -> Path:
     override = os.environ.get("AICAD_CONFIG")
     if override:
@@ -908,7 +913,8 @@ def _set_limits() -> None:
             raise ScriptError("Could not set the memory limit, so the script was not run.") from exc
     try:
         resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (FILE_BYTES, FILE_BYTES))
+        file_cap = file_bytes()
+        resource.setrlimit(resource.RLIMIT_FSIZE, (file_cap, file_cap))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (OSError, ValueError) as exc:
         raise ScriptError("Could not set the CPU or file limit, so the script was not run.") from exc
