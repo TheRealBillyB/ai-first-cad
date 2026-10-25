@@ -209,6 +209,8 @@ def require_session_file(root: Path, raw: object, label: str, error: type[Except
     full = (root_resolved / text).resolve()
     if not _is_inside(full, root_resolved):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
+    if shared_file(full):
+        raise error(f"{label} {raw!r} has another name and was not opened.")
     return full
 
 
@@ -827,7 +829,8 @@ def resolve_in_project(root: Path, path: str | Path, label: str, error: type[Exc
     """Resolved path that stays inside ``root``. Does not create it.
 
     A symlink or Windows junction is followed. A link that leaves the project
-    is refused before the file is opened.
+    is refused before the file is opened. A regular file with another name is
+    refused too, so the other name is not what gets read.
     """
     root_resolved = Path(root).resolve()
     raw = Path(path)
@@ -841,6 +844,8 @@ def resolve_in_project(root: Path, path: str | Path, label: str, error: type[Exc
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.") from exc
     if not _is_inside(resolved, root_resolved):
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+    if shared_file(resolved):
+        raise error(f"{label} {raw} has another name and was not opened.")
     return resolved
 
 

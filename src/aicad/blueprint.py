@@ -134,6 +134,10 @@ def open_blueprint(path: Path | str, root: Path | str) -> dict:
         raise BlueprintError("That blueprint is outside the project. It was not opened.")
     if not resolved.is_file():
         raise BlueprintError("That blueprint is not a file. It was not opened.")
+    from aicad.paths import shared_file
+
+    if shared_file(resolved):
+        raise BlueprintError("That blueprint has another name and was not opened.")
     try:
         size = resolved.stat().st_size
     except OSError as exc:
