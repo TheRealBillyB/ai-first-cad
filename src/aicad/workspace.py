@@ -96,7 +96,11 @@ class Workspace:
             arguments = {}
         if not isinstance(arguments, dict):
             raise GeometryError(f"Arguments for {name} must be an object.")
-        missing = [key for key in command.parameters.get("required") or [] if key not in arguments]
+        missing = [
+            key
+            for key in command.parameters.get("required") or []
+            if key not in arguments or arguments[key] is None
+        ]
         if missing:
             raise GeometryError(f"{name} needs {', '.join(missing)}.")
         with self._lock:
@@ -934,7 +938,10 @@ def _cmd_get_requirements(workspace: Workspace, _arguments: dict) -> dict:
 
 
 def _cmd_set_requirements(workspace: Workspace, arguments: dict) -> dict:
-    workspace._requirements = normalize(arguments.get("requirements", arguments))
+    raw = arguments.get("requirements", arguments)
+    if raw is None:
+        raise GeometryError("set_requirements needs requirements.")
+    workspace._requirements = normalize(raw)
     workspace._write_requirements()
     workspace._requirement_cache.clear()
     checks = evaluate(workspace.document, workspace._requirements, cache=workspace._requirement_cache, run=False)

@@ -21,6 +21,25 @@ def _plate(workspace: Workspace) -> None:
     )
 
 
+def test_null_requirements_do_not_clear_the_list(tmp_path):
+    workspace = Workspace(tmp_path)
+    _plate(workspace)
+    workspace.execute(
+        "set_requirements",
+        {"requirements": [{"id": "light", "kind": "max_mass", "part": "plate", "material": "pla", "max_grams": 10}]},
+    )
+    with pytest.raises(GeometryError, match="needs requirements"):
+        workspace.execute("set_requirements", {"requirements": None})
+    assert [item["id"] for item in workspace.execute("get_requirements")["requirements"]] == ["light"]
+    with pytest.raises(GeometryError, match="needs name"):
+        workspace.execute(
+            "create_part_from_ops",
+            {"name": None, "ops": [{"op": "add", "shape": "box", "size": [1, 1, 1]}]},
+        )
+    workspace.execute("set_requirements", {"requirements": []})
+    assert workspace.execute("get_requirements")["requirements"] == []
+
+
 def test_mass_and_build_volume_pass_and_fail(tmp_path):
     workspace = Workspace(tmp_path)
     _plate(workspace)
