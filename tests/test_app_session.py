@@ -297,3 +297,42 @@ def test_a_public_bind_is_refused(tmp_path, monkeypatch):
     for host in ("0.0.0.0", "192.168.1.5", ""):
         with pytest.raises(GeometryError, match="only listens on this computer"):
             make_server(project, host, 0)
+
+
+def test_a_negative_content_length_is_refused(server):
+    """``read(-1)`` would ignore the size cap and wait until the client closes."""
+    status, payload, _headers = _exchange(
+        server,
+        "POST",
+        "/api/command",
+        body=b'{"name":"list_parts","arguments":{}}',
+        headers={"Content-Length": "-1"},
+    )
+    assert status == 400
+    assert b"Content-Length" in payload
+    assert _parts(server) == []
+
+    status, payload, _headers = _exchange(
+        server,
+        "POST",
+        "/api/command",
+        body=b'{"name":"list_parts","arguments":{}}',
+        headers={"Content-Length": "nope"},
+    )
+    assert status == 400
+    assert b"Content-Length" in payload
+    assert _parts(server) == []
+
+
+def test_a_request_over_the_size_cap_is_refused(server):
+    body = b'{"name":"list_parts"}' + b" " * 2_000_000
+    status, payload, _headers = _exchange(
+        server,
+        "POST",
+        "/api/command",
+        body=body,
+        headers={"Content-Length": str(len(body))},
+    )
+    assert status == 400
+    assert b"too large" in payload
+    assert _parts(server) == []
