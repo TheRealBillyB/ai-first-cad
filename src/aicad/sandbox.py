@@ -70,7 +70,7 @@ WARNING = (
 # limit. The runner file is an argument, so the project folder is not where
 # that import starts.
 _WINDOWS_CHILD_BOOT = r"""
-import importlib.util, json, os, sys, traceback
+import importlib.util, json, os, sys
 from pathlib import Path
 job = Path(sys.argv[1])
 runner = Path(sys.argv[2])
@@ -82,14 +82,14 @@ try:
     spec.loader.exec_module(module)
     main = module.main
 except Exception as exc:
+    detail = f"{type(exc).__name__}: {exc}"
     try:
-        detail = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
         (job / "result.json").write_text(
             json.dumps({"ok": False, "error": detail}) + "\n",
             encoding="utf-8",
         )
     except Exception:
-        traceback.print_exc()
+        print(detail, file=sys.stderr)
     os._exit(1)
 raise SystemExit(main([str(job)]))
 """
