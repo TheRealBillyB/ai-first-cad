@@ -443,7 +443,9 @@ def _handler(session: Workspace):
                 unsubscribe()
 
         def _workspace_file(self, rel: str) -> None:
-            if not rel or ".." in Path(rel).parts:
+            from aicad.paths import windows_trim_escapes
+
+            if not rel or ".." in Path(rel).parts or windows_trim_escapes(rel):
                 raise GeometryError("That file is outside the project.")
             candidate = Path(rel)
             path = candidate.resolve() if candidate.is_absolute() else (self.workspace.root / rel).resolve()
