@@ -112,9 +112,30 @@ def _venv_python() -> Path:
     return ROOT / ".venv" / "bin" / "python"
 
 
+def _python_is_new_enough(python: Path) -> bool:
+    major, minor = MIN_PYTHON
+    completed = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "import sys; raise SystemExit(0 if sys.version_info >= "
+            f"({major}, {minor}) else 1)",
+        ],
+        check=False,
+        capture_output=True,
+    )
+    return completed.returncode == 0
+
+
 def _ensure_venv() -> Path:
     python = _venv_python()
     if python.is_file():
+        if not _python_is_new_enough(python):
+            major, minor = MIN_PYTHON
+            raise SystemExit(
+                f"The virtual environment at {python.parent.parent} is older than Python "
+                f"{major}.{minor}. Remove .venv and run this installer again."
+            )
         print(f"Using the existing virtual environment at {python.parent.parent}")
         return python
     print("Creating .venv")
