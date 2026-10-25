@@ -6,12 +6,25 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-25
+
+| Decision | Rationale |
+| --- | --- |
+| A gear or linkage adds the driven load | The driver load gains ratio times the driven load, with ratio d(driven)/d(driver), so a reversing pair cancels equal moments and a chain is followed to its end. |
+| A plan file that is a link is not opened | Listing a plan and the undo copy do not open a plan folder that is a link, or a plan file that has another name. |
+| A script is not run when it cannot enter its process cgroup | A failed move would leave the script outside `pids.max`, so the script is not run. |
+| A script solid is read only from the file named for that script | The file is `.aicad/geometry/<name>-<script hash>.step`. Another path is not the solid that script built, so it is not opened. |
+| A shared STEP file and a served project file have a size cap | The host returns an error past that cap. A mesh stops at a fixed triangle count, and the macOS file helper uses the same cap as the script. |
+| A STEP file with another name is not imported | A STEP file in the project that has another name is not opened. A file the person named by an absolute path is still read. |
+| The assistant cannot allow scripts, grant network, or save settings | Those switches and the chat request belong to the person at the page. The assistant token stays on project commands. |
+
 ## 2026-10-24
 
 | Decision | Rationale |
 | --- | --- |
 | A cable collision reports the closest sample | The first sample inside the pinch limit is not the clearance. The report keeps the smallest gap of that kind, and a centerline inside a solid beats a rub. |
 | A cylinder on a cylindrical joint follows the slide | The moving clevis is on the driver child, so the pin-to-pin length includes travel along that joint as well as its angle. |
+| A cylinder stroke actuator carries the driver moment | The rod force is the driver torque divided by the pin-to-pin rate. A moment arm on the driver joint is still a number you supply. |
 | A design script cannot record a check it did not run | The check report lists only public document calls the script made. |
 | A design-script check that ran is returned and recorded | A result that cannot be stored is still the value the script called. The report names that result, and the script receives it. |
 | A design session record is opt-in and replay does not run it | Recording stays off until it is turned on. A record from a shared project is data for a picture, and playing it does not run commands or leave the project. |
@@ -21,13 +34,27 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A hypoid mesh sweep follows the placed gears | One pinion tooth is the engagement that can interfere, and a mounted pair sits where the assembly puts it. |
 | A hypoid pinion is cut when the pitch point exists | A roll pose that does not leave one solid is recut with a small tolerance or left out, and a shaft angle, offset, diameter, and spiral with no cuttable pitch point is refused before that roll. |
 | A hypoid shaft angle is the angle between the two axes | An angle past 90 degrees stays that angle. Folding it to the acute side reports a pair that was generated correctly as misaligned. |
+| A macOS script returns only after its descendants have exited | Every descendant is stopped, the list is read again for a child created in that gap, and the call waits until those processes have exited. It returns only when a second look is empty. A listing that fails is not a clean run. |
+| A meshed differential carrier is not a second load | The mesh already applies the carrier torque. Treating that shaft as another external load leaves the wheel torques free. |
+| A power estimate follows a motion study | A named study moves the joints the same way a motion does, so pressure, flow, and displaced volume use that stroke. |
 | A repeated waypoint is not a sharp bend | A zero-length span has no corner. The bend radius stays unlimited, the same as a straight run. |
 | A resource limit cannot signal another process | The process filter refuses a resource limit aimed at another process, and a file-owner or terminal notice that can deliver a signal. |
+| A robot export keeps a name inside its XML attribute | A quote in a part or joint name stays inside that attribute, so the URDF and MJCF parse as one document. |
 | A script cannot signal another process | Landlock can scope signals only on a newer kernel. The process filter blocks a signal call unless it names the script process that installed it, including from a child of that script, and the Landlock scope is used as well when the kernel has it. A project file, configuration, environment variable, plugin, or tool argument cannot turn that scope off. |
 | A script is not run when another thread already exists | The process filter is installed on every thread that already exists. Geometry libraries are imported after that, and if a thread was already running the script is not run. |
+| An assembly mesh check uses the gear train when one is stored | A compound shaft carries two gears, and a gear relation names the shaft joints, so the joint children are not the meshing solids. |
 | An entry line cannot break the generated master | A title and a rationale stay one line, so they cannot end the generated section or start another line. |
+| An external program is not taken from the project | ffmpeg, CalculiX, and a slicer are started by a path outside the project, so a copy in the project is not the program that runs. |
+| An MJCF body rotation is in degrees | The file says angle is degree. A grounded part turned 90 degrees was written as 1.57, so the simulator barely turned it. |
+| Assembly placement uses the same rotation as a placed part | rotation_deg is degrees about X, then Y, then Z. An assembly instance and a placed part with those numbers share one pose, so a hypoid pinion seated from mesh_placement meshes. |
 | CI installs a pinned CalculiX on macOS and Windows | Strength checks have to run on every runner, and the Python installer still does not download CalculiX. |
+| macOS geometry stays on the calling thread | OpenCascade worker threads get a 512 KiB stack on macOS, so geometry stays on the caller and a Python caller gets at least 8 MiB. |
+| Project text in the workspace is shown as text | Names and notes from a project are text, so the page does not treat them as markup. |
+| A strength-check picture stays inside the project | The position-error picture folder is an output path, so an instance name cannot place it outside the project. |
+| The CalculiX CI install keeps its files inside the work directory | A lock path that leaves that directory is refused before anything is written. |
 | The doc generator does not follow links | A symlink, junction, or second file name would read or write a different file when the masters are generated. |
+| The macOS test job uses the same clock as Windows | The suite on that runner already takes most of 25 minutes, and one test is still stopped at its own limit. |
+| The next release is v1.0 for the feature set already in the tree | No new feature track starts before that release. It is a stability and safety release for what is already here. |
 | The process that runs a call records the check | A design script does not supply the check report, and earlier calls stay in it. |
 | Tip error is the positional Jacobian times each stated bound | A factor on the reach would hide which joint, which source, and which pose moves the tool. |
 | Workspace buttons call the same commands as the assistant | Library, gears, mesh, train, motion study, kinematics, packaging, drawing, bill of materials, exploded view, and animation are panels on commands that already exist. |

@@ -198,7 +198,7 @@ class Document:
             relative = f"imports/{name}.step"
             refuse_reserved_device(relative, None, "Import copy", GeometryError)
             destination = _project_file(self.workspace, self.workspace / relative, "Imported STEP")
-            publish_bytes(destination, source.read_bytes())
+            publish_bytes(destination, kernel.read_step_bytes(source))
             note = f"# Imported STEP, copied to {relative}\n"
             self._parts[name] = _Part(name, "step", shape, script=note, step_file=relative, base=shape)
             self._save()
@@ -2188,13 +2188,21 @@ class Document:
                     base = kernel.solid_from_sketch(solved.geometry, record.get("steps") or [])
                 else:
                     source = "script"
-                    script_pending = _script_hash(script_text) != record.get("script_sha256")
+                    script_hash = _script_hash(script_text)
+                    stored_hash = record.get("script_sha256")
+                    script_pending = not isinstance(stored_hash, str) or script_hash != stored_hash
                     geometry = record.get("geometry_file")
-                    if geometry:
+                    stored = geometry.replace("\\", "/") if isinstance(geometry, str) else ""
+                    prefix = stored_hash[:16] if isinstance(stored_hash, str) else ""
+                    expected = f".aicad/geometry/{name}-{prefix}.step" if prefix else ""
+                    # Every recorded path still goes through the project guard, so a
+                    # link that leaves the project is refused. Only the file named
+                    # for this script's stored hash is imported.
+                    if stored:
                         geometry_path = _session_project_file(
                             self.workspace, geometry, f"Part {name!r} geometry file"
                         )
-                        if geometry_path.is_file():
+                        if stored == expected and geometry_path.is_file():
                             base = kernel.import_step_file(geometry_path)
                             base.features = feature_report_from_dict(record.get("features"))
                         else:
