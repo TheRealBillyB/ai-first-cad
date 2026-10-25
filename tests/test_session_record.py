@@ -199,6 +199,39 @@ def test_recording_drops_secrets_paths_and_outside_file_contents(tmp_path, confi
     assert secret_file.read_text(encoding="utf-8") == "UNIQUE_OUTSIDE_FILE_BODY\n"
 
 
+def test_recording_redacts_a_whole_path_that_contains_spaces(tmp_path, config_home):
+    outside = tmp_path / "My Documents"
+    outside.mkdir()
+    secret = outside / "api token.txt"
+    secret.write_text("UNIQUE_SPACED_PATH_BODY\n", encoding="utf-8")
+    project = tmp_path / "project"
+    workspace = Workspace(project)
+    workspace.execute("session_record", {"action": "start"}, source="ui")
+    inside = project / "my notes" / "kept file.md"
+    note = (
+        f"see {secret} and keep {inside} "
+        r"plus C:\Program Files\secret.txt "
+        f'and "{secret}" and exports/kept.step'
+    )
+    workspace.execute(
+        "write_document",
+        {"name": "notes.md", "markdown": note},
+        source="agent",
+    )
+    text = (project / "records" / "session.json").read_text(encoding="utf-8")
+    assert "UNIQUE_SPACED_PATH_BODY" not in text
+    assert "My Documents" not in text
+    assert "api token" not in text
+    assert "Program Files" not in text
+    assert "secret.txt" not in text
+    assert str(secret) not in text
+    assert str(inside) not in text
+    assert "<outside-project>" in text
+    assert "my notes/kept file.md" in text
+    assert "exports/kept.step" in text
+    assert secret.read_text(encoding="utf-8") == "UNIQUE_SPACED_PATH_BODY\n"
+
+
 def test_recording_marks_a_drive_relative_path_outside(tmp_path, config_home):
     project = tmp_path / "project"
     workspace = Workspace(project)

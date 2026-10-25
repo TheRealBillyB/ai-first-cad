@@ -834,16 +834,109 @@ def _redact_text(text: str, root: Path, env_values: list[str]) -> str:
             cleaned = cleaned.replace(secret, "<redacted>")
     cleaned = _TOKEN.sub("<redacted>", cleaned)
     cleaned = _URL.sub("<link>", cleaned)
-    pieces = []
-    for token in re.split(r"(\s+)", cleaned):
-        if token == "" or token.isspace():
-            pieces.append(token)
-        else:
-            pieces.append(_rewrite_token(token, root))
-    cleaned = "".join(pieces)
+    cleaned = _rewrite_paths(cleaned, root)
     if len(cleaned) > _MAX_TEXT:
         cleaned = cleaned[:_MAX_TEXT] + "<truncated>"
     return cleaned
+
+
+# Characters that wrap a path in prose. A space is not one of them: a path
+# such as ``C:\Program Files\secret.txt`` is one path, not three words.
+_PATH_EDGE = "\"'()[]{}<>,;"
+
+
+def _rewrite_paths(text: str, root: Path) -> str:
+    """Rewrite each path, including one that contains spaces."""
+    pieces: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index].isspace():
+            end = index + 1
+            while end < length and text[end].isspace():
+                end += 1
+            pieces.append(text[index:end])
+            index = end
+            continue
+        if text[index] in "\"'":
+            quote = text[index]
+            end = text.find(quote, index + 1)
+            if end != -1:
+                inner = text[index + 1 : end]
+                if inner.strip() and _looks_like_path(_path_core(inner.split()[0])):
+                    pieces.append(quote + _relative_or_outside(inner.strip(), root) + quote)
+                    index = end + 1
+                    continue
+        end = _path_span_end(text, index)
+        if end is None:
+            end = index + 1
+            while end < length and not text[end].isspace():
+                end += 1
+            pieces.append(_rewrite_token(text[index:end], root))
+        else:
+            span = text[index:end]
+            if any(character.isspace() for character in span):
+                pieces.append(_rewrite_span(span, root))
+            else:
+                pieces.append(_rewrite_token(span, root))
+        index = end
+    return "".join(pieces)
+
+
+def _path_core(token: str) -> str:
+    return token.strip(_PATH_EDGE)
+
+
+def _path_span_end(text: str, start: int) -> int | None:
+    """End of one path that begins at ``start``, or None when it is not a path.
+
+    Later words stay in the path while they continue it: a backslash or
+    slash, or a file name after a directory word that has no extension yet.
+    """
+    length = len(text)
+    end = start
+    while end < length and not text[end].isspace():
+        end += 1
+    if not _looks_like_path(_path_core(text[start:end])):
+        return None
+    while True:
+        cursor = end
+        while cursor < length and text[cursor] in " \t":
+            cursor += 1
+        if cursor == end or cursor >= length:
+            break
+        word_end = cursor
+        while word_end < length and not text[word_end].isspace():
+            word_end += 1
+        word = text[cursor:word_end]
+        if not _path_continues(text[start:end], word):
+            break
+        end = word_end
+    return end
+
+
+def _path_continues(current: str, word: str) -> bool:
+    core = _path_core(word)
+    if not core or word[:1] in "\"'":
+        return False
+    if "/" in core or "\\" in core:
+        return True
+    tail = current.rstrip(_PATH_EDGE).replace("\\", "/").rsplit("/", 1)[-1]
+    return "." not in tail and "." in core and not core.startswith(".")
+
+
+def _rewrite_span(token: str, root: Path) -> str:
+    core = token.strip(_PATH_EDGE)
+    if not core:
+        return token
+    if core == token:
+        prefix, suffix = "", ""
+    else:
+        start = token.find(core)
+        prefix, suffix = token[:start], token[start + len(core) :]
+    if not _looks_like_path(_path_core(core.split()[0])):
+        return token
+    return prefix + _relative_or_outside(core, root) + suffix
 
 
 def _rewrite_token(token: str, root: Path) -> str:
