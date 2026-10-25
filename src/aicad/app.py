@@ -9,9 +9,10 @@ A command has to name that origin. A read that names some other origin is
 refused; the page's own reads often send no origin at all. Every API call
 carries the session for this launch. The token in the page is the person
 (``ui``). The token written for the assistant is MCP (``agent``). The request
-body cannot choose ``source``. A program with a shell on this computer can
-still read those tokens. This check stops another website. It is not a
-boundary against that program.
+body cannot choose ``source``. Allowing design scripts, granting the network
+for one script, saving settings, and starting a chat require the page token.
+A program with a shell on this computer can still read those tokens. This
+check stops another website. It is not a boundary against that program.
 """
 
 from __future__ import annotations
@@ -39,6 +40,16 @@ _STATIC = Path(__file__).resolve().parent / "app_static"
 _FILE_SUFFIXES = {".png", ".gif", ".svg", ".json", ".md", ".txt"}
 _TOKEN_HEADER = "X-Aicad-Token"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1"}
+# These change who may run code, who may use the network, or where a chat is sent.
+# The page token is the person. The assistant token cannot call them.
+_PERSON_POSTS = frozenset(
+    {
+        "/api/allow-scripts",
+        "/api/script-network-once",
+        "/api/settings",
+        "/api/chat",
+    }
+)
 
 
 def _bind_host_is_loopback(host: str) -> bool:
@@ -309,6 +320,8 @@ def _handler(session: Workspace):
             parsed = urlparse(self.path)
             try:
                 self._guard()
+                if parsed.path in _PERSON_POSTS:
+                    self._require_person()
                 body = self._read_json()
                 if parsed.path == "/api/command":
                     # ``source`` in the body is ignored. The token says who called.
@@ -391,6 +404,10 @@ def _handler(session: Workspace):
 
         def _check_token(self) -> None:
             self._caller()
+
+        def _require_person(self) -> None:
+            if self._caller() != "ui":
+                raise RequestRejected("Only the person at this workspace can do that.")
 
         def _page(self) -> None:
             text = (_STATIC / "index.html").read_text(encoding="utf-8")

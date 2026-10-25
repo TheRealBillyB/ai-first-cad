@@ -1070,6 +1070,71 @@ def test_opening_a_session_does_not_run_its_script(tmp_path, config_home):
         document.measure("evil")
 
 
+def test_a_script_does_not_open_geometry_from_another_file(tmp_path, config_home):
+    import hashlib
+
+    from aicad.kernel import export_step_file, make_from_ops
+
+    script = "part = Box(1, 1, 1)\n"
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    decoy = tmp_path / "imports" / "other.step"
+    decoy.parent.mkdir(parents=True)
+    export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10]}]), decoy)
+    payload = {
+        "units": "mm",
+        "sketches": [],
+        "assemblies": [],
+        "parts": [
+            {
+                "name": "small",
+                "source": "script",
+                "script": script,
+                "script_sha256": digest,
+                "geometry_file": "imports/other.step",
+            }
+        ],
+    }
+    (tmp_path / "session.json").write_text(json.dumps(payload), encoding="utf-8")
+    document = Document(tmp_path)
+    info = document.list_parts()[0]
+    assert info.built is False
+    assert info.volume_mm3 == 0
+    assert document.get_source("small")["script_pending"] is True
+    assert decoy.is_file()
+
+
+def test_script_geometry_at_its_own_path_reopens(tmp_path, config_home):
+    import hashlib
+
+    from aicad.kernel import export_step_file, make_from_ops
+
+    script = "part = Box(2, 2, 2)\n"
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    relative = f".aicad/geometry/block-{digest[:16]}.step"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [2, 2, 2]}]), path)
+    payload = {
+        "units": "mm",
+        "sketches": [],
+        "assemblies": [],
+        "parts": [
+            {
+                "name": "block",
+                "source": "script",
+                "script": script,
+                "script_sha256": digest,
+                "geometry_file": relative,
+            }
+        ],
+    }
+    (tmp_path / "session.json").write_text(json.dumps(payload), encoding="utf-8")
+    document = Document(tmp_path)
+    assert document.get_source("block")["script_pending"] is False
+    assert document.list_parts()[0].built is True
+    assert document.measure("block").volume_mm3 == pytest.approx(8)
+
+
 def test_script_geometry_reopens_without_running_again(tmp_path, config_home):
     document = Document(tmp_path)
     script = 'block = feature.add("base", Box(4, 4, 4))\npart = block\n'
