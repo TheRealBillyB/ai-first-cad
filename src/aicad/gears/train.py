@@ -11,7 +11,10 @@ speed. An idler is one gear on its own shaft between two meshes, so its tooth
 count drops out of the overall ratio.
 
 A planetary mesh names the carrier shaft. With the ring held, the carrier
-turns at ``z_sun / (z_sun + z_ring)`` of the sun.
+turns at ``z_sun / (z_sun + z_ring)`` of the sun. Several planets leave the
+split of tooth force free. The shaft torques are still reported when they
+do not depend on that split. A mesh efficiency is applied only when every
+tooth force is determined.
 
 An open differential is its own element, not two ordinary meshes. The two
 output speeds average to the carrier speed, so in a turn one speeds up as
@@ -426,7 +429,31 @@ def _roles(train, drive, gear_shaft) -> dict[str, str]:
             roles[name] = "output"
         else:
             roles[name] = "idle"
+    _promote_central_members(roles, train, gear_shaft, drive)
     return roles
+
+
+def _promote_central_members(roles, train, gear_shaft, drive) -> None:
+    """A sun or a ring that meshes with several planets is one external member.
+
+    A single mesh on one side already marks that member as an output. Several
+    planets repeat that same side, and the member would otherwise be idle with
+    its torque forced to zero.
+    """
+    counts: dict[tuple, int] = {}
+    for mesh in train["meshes"]:
+        if not mesh["carrier"]:
+            continue
+        for side, gear_name in (("a", mesh["a"]), ("b", mesh["b"])):
+            shaft = gear_shaft[gear_name]
+            key = (shaft, mesh["carrier"], side, mesh["kind"])
+            counts[key] = counts.get(key, 0) + 1
+    central = {shaft for (shaft, _carrier, _side, _kind), count in counts.items() if count >= 2}
+    for shaft in central:
+        if shaft in drive["idle"]:
+            continue
+        if roles.get(shaft) == "idle":
+            roles[shaft] = "output"
 
 
 def _torques(train, drive, teeth, gear_shaft, roles, speeds, determined, speed_status):
@@ -458,6 +485,16 @@ def _torques(train, drive, teeth, gear_shaft, roles, speeds, determined, speed_s
     ideal = _torque_system(elements, train, roles, drive, speed_of, factors=None)
     if ideal["status"] != "determined" or not _lossy(train):
         return ideal
+    if not ideal.get("mesh_forces_determined", False):
+        return {
+            "status": "under_constrained",
+            "note": "The tooth forces are not unique, so a mesh efficiency is not applied.",
+            "shafts": {},
+            "housing": None,
+            "balance": None,
+            "power": None,
+            "lambda": {},
+        }
     factors = _receiver_factors(elements, ideal["lambda"], speed_of)
     lossy = _torque_system(elements, train, roles, drive, speed_of, factors)
     lossy["note"] = "Mesh efficiency scales the delivered torque. Power that does not reach the outputs is heat."
@@ -532,9 +569,12 @@ def _torque_system(elements, train, roles, drive, speed_of, factors):
             "balance": None,
             "power": None,
             "lambda": {},
+            "mesh_forces_determined": False,
         }
-    if any(not flag for flag in flags):
-        free = [variables[i] for i, flag in enumerate(flags) if not flag]
+    torque_columns = [index for index, name in enumerate(variables) if name.startswith("torque:")]
+    mesh_columns = [index for index, name in enumerate(variables) if not name.startswith("torque:")]
+    if any(not flags[index] for index in torque_columns):
+        free = [variables[index] for index, flag in enumerate(flags) if not flag]
         return {
             "status": "under_constrained",
             "note": "The torques are under-constrained. " + f"These are still free: {', '.join(free)}.",
@@ -543,9 +583,33 @@ def _torque_system(elements, train, roles, drive, speed_of, factors):
             "balance": None,
             "power": None,
             "lambda": {},
+            "mesh_forces_determined": False,
         }
-    solved = {variables[i]: values[i] for i in range(len(variables))}
+    solved = {variables[index]: values[index] for index, flag in enumerate(flags) if flag}
     torques = {name: known[name] if name in known else solved[f"torque:{name}"] for name in shaft_names}
+    if any(not flags[index] for index in mesh_columns):
+        if factors is not None:
+            return {
+                "status": "under_constrained",
+                "note": "The tooth forces are not unique, so a mesh efficiency is not applied.",
+                "shafts": {},
+                "housing": None,
+                "balance": None,
+                "power": None,
+                "lambda": {},
+                "mesh_forces_determined": False,
+            }
+        housing = -sum(torques.values(), Fraction(0))
+        return {
+            "status": "determined",
+            "note": "The tooth forces are not unique. The shaft torques do not depend on that split.",
+            "shafts": torques,
+            "housing": housing,
+            "balance": sum(torques.values(), Fraction(0)) + housing,
+            "power": sum((torques[name] * speed_of[name] for name in shaft_names), Fraction(0)),
+            "lambda": {element["id"]: solved[element["id"]] for element in elements if element["id"] in solved},
+            "mesh_forces_determined": False,
+        }
     housing = Fraction(0)
     for element in elements:
         for term in element["terms"]:
@@ -565,6 +629,7 @@ def _torque_system(elements, train, roles, drive, speed_of, factors):
         "balance": balance,
         "power": power,
         "lambda": {element["id"]: solved[element["id"]] for element in elements},
+        "mesh_forces_determined": True,
     }
 
 
@@ -799,7 +864,7 @@ def _limits() -> list[str]:
         "Backlash is not in the speed.",
         "An efficiency other than 1 is a factor you supply.",
         "An internal gear is a tooth count. The gear generator builds external teeth only.",
-        "One planet stands for a set of equal planets. They share one speed, and the torque is the total.",
+        "One planet stands for a set of equal planets. They share one speed, and the torque is the total. Naming every planet leaves the tooth-force split free. Shaft torques that do not depend on that split are still reported. A mesh efficiency is applied only when every tooth force is determined.",
         "Two ordinary meshes do not make an open differential. Use the differential element so one output can speed up as the other slows down.",
     ]
 
