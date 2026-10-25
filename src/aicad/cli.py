@@ -653,11 +653,11 @@ def _dispatch(args: argparse.Namespace) -> int:
         return emit(run_action(document, _record_arguments(args)))
 
     if args.command == "run":
-        script = args.script.read_text(encoding="utf-8")
+        script = _read_named_file(args.script)
         info = _create_or_update_script(document, args.name, script)
         return emit(info.to_dict())
     if args.command == "ops":
-        ops = json.loads(args.file.read_text(encoding="utf-8"))
+        ops = json.loads(_read_named_file(args.file))
         info = _create_or_update_ops(document, args.name, ops)
         return emit(info.to_dict())
     if args.command == "list":
@@ -770,7 +770,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         return emit(document.check_gears(spec))
     if args.command == "gear-train":
         if args.file is not None:
-            drive = json.loads(args.file.read_text(encoding="utf-8"))
+            drive = json.loads(_read_named_file(args.file))
         else:
             if args.shaft is None or args.speed is None or args.torque is None:
                 raise AICADError("Pass --file, or --shaft, --speed, and --torque.")
@@ -781,7 +781,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         return emit(info.to_dict())
     if args.command == "sketch":
         if args.file is not None:
-            spec = json.loads(args.file.read_text(encoding="utf-8"))
+            spec = json.loads(_read_named_file(args.file))
             if args.name in document.list_sketches():
                 report = document.update_sketch(args.name, spec)
             else:
@@ -799,7 +799,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         ]
         return emit(payload)
     if args.command == "sketch-part":
-        steps = json.loads(args.steps.read_text(encoding="utf-8"))
+        steps = json.loads(_read_named_file(args.steps))
         info = _create_or_update_sketch_part(document, args.name, args.sketch, steps)
         return emit(info.to_dict())
     if args.command == "materials":
@@ -807,7 +807,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "faces":
         return emit(document.describe_faces(args.name))
     if args.command == "assemble":
-        spec = json.loads(args.file.read_text(encoding="utf-8"))
+        spec = json.loads(_read_named_file(args.file))
         spec["name"] = args.name
         names = {item["name"] for item in document.list_assemblies()}
         if args.name in names:
@@ -818,10 +818,10 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "pose":
         return emit(document.set_pose(args.name, args.pose))
     if args.command == "motion":
-        inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
+        inline = json.loads(_read_named_file(args.file)) if args.file else None
         return emit(document.run_motion(args.name, sequence=args.sequence, motion=inline))
     if args.command == "motion-study":
-        inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
+        inline = json.loads(_read_named_file(args.file)) if args.file else None
         return emit(
             document.run_motion_study(
                 args.name,
@@ -832,7 +832,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         )
     if args.command == "kinematics":
-        request = json.loads(args.file.read_text(encoding="utf-8"))
+        request = json.loads(_read_named_file(args.file))
         if not isinstance(request, dict):
             raise GeometryError("Kinematics request must be an object.")
         unknown = set(request) - {"tool", "at", "rotation_deg", "joints", "slides", "target", "path"}
@@ -855,7 +855,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "cables":
         if args.file and args.study:
             raise GeometryError("Pass --study or --file, not both.")
-        inline = json.loads(args.file.read_text(encoding="utf-8")) if args.file else None
+        inline = json.loads(_read_named_file(args.file)) if args.file else None
         return emit(
             document.check_cables(
                 args.name,
@@ -867,21 +867,21 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "power":
         return emit(document.estimate_power(args.name, sequence=args.sequence))
     if args.command == "fea":
-        setup = json.loads(args.file.read_text(encoding="utf-8"))
+        setup = json.loads(_read_named_file(args.file))
         return emit(document.solve_mechanics(args.name, setup).to_dict())
     if args.command == "modal":
-        setup = json.loads(args.file.read_text(encoding="utf-8"))
+        setup = json.loads(_read_named_file(args.file))
         return emit(document.solve_modal(args.name, setup))
     if args.command == "modal-assembly":
-        setup = json.loads(args.file.read_text(encoding="utf-8")) if args.file else {}
+        setup = json.loads(_read_named_file(args.file)) if args.file else {}
         return emit(document.solve_assembly_modal(args.name, setup))
     if args.command == "bolts":
-        spec = json.loads(args.file.read_text(encoding="utf-8"))
+        spec = json.loads(_read_named_file(args.file))
         if args.name:
             spec["part"] = args.name
         return emit(document.check_bolts(spec))
     if args.command == "fatigue":
-        return emit(document.check_fatigue(json.loads(args.file.read_text(encoding="utf-8"))))
+        return emit(document.check_fatigue(json.loads(_read_named_file(args.file))))
     if args.command == "print":
         setup = {
             "orientation": args.orientation,
@@ -960,7 +960,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "put-plan-sheet":
         return emit(document.put_plan_sheet(args.name, _json_object(args.file)))
     if args.command == "set-plan-dimensions":
-        payload = json.loads(args.file.read_text(encoding="utf-8"))
+        payload = json.loads(_read_named_file(args.file))
         rows = payload.get("dimensions") if isinstance(payload, dict) else payload
         if not isinstance(rows, list):
             raise AICADError("The dimensions file must be a list, or an object with a dimensions list.")
@@ -1060,9 +1060,29 @@ def _plane_from_args(args) -> dict:
     return {"axis": args.axis, "offset": args.offset}
 
 
+def _read_named_file(path: Path) -> str:
+    """Read a file named on the command line. A link at that name is not followed."""
+
+    from aicad.paths import read_nofollow_bytes
+
+    try:
+        data = read_nofollow_bytes(
+            path,
+            maximum=32 * 1024 * 1024,
+            label="Command file",
+            error=AICADError,
+        )
+    except OSError as exc:
+        raise AICADError(f"Could not read {path}: {exc}") from exc
+    try:
+        return data.decode("utf-8")
+    except UnicodeError as exc:
+        raise AICADError(f"Could not read {path}.") from exc
+
+
 def _camera_path_file(path: Path) -> list:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_named_file(path))
     except json.JSONDecodeError as exc:
         raise AICADError(f"Could not read {path}: {exc}") from exc
     except OSError as exc:
@@ -1078,7 +1098,7 @@ def _camera_path_file(path: Path) -> list:
 
 def _json_object(path: Path) -> dict:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_named_file(path))
     except json.JSONDecodeError as exc:
         raise AICADError(f"Could not read {path}: {exc}") from exc
     except OSError as exc:

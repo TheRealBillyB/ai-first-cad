@@ -1023,6 +1023,23 @@ def _distribution_key(entry) -> str:
         return f"{getattr(entry, 'name', '')}:{getattr(entry, 'value', '')}"
 
 
+def _read_manifest_bytes(path: Path) -> str:
+    """Read a manifest without following a link at that name."""
+
+    from aicad.paths import read_nofollow_bytes
+
+    data = read_nofollow_bytes(
+        path,
+        maximum=1_000_000,
+        label="Plugin manifest",
+        error=PluginError,
+    )
+    try:
+        return data.decode("utf-8")
+    except UnicodeError as exc:
+        raise PluginError(f"Could not read {MANIFEST_NAME}. The plugin was not imported.") from exc
+
+
 def _read_manifest_text(entry) -> str:
     """Read ``aicad.plugin.json`` as data. This does not import the plugin.
 
@@ -1040,7 +1057,7 @@ def _read_manifest_text(entry) -> str:
         if len(matches) == 1:
             path = Path(matches[0].locate())
             try:
-                return path.read_text(encoding="utf-8")
+                return _read_manifest_bytes(path)
             except OSError as exc:
                 raise PluginError(
                     f"Could not read {MANIFEST_NAME}: {exc}. The plugin was not imported."
@@ -1059,7 +1076,7 @@ def _manifest_beside_module(entry) -> str:
             "aicad will not import a plugin to find out what it wants."
         )
     try:
-        return path.read_text(encoding="utf-8")
+        return _read_manifest_bytes(path)
     except OSError as exc:
         raise PluginError(f"Could not read {MANIFEST_NAME}: {exc}. The plugin was not imported.") from exc
 

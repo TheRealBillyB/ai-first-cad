@@ -502,11 +502,22 @@ class PlanStore:
         return self._read(path)
 
     def _read(self, path: Path) -> dict:
-        _refuse_plan_link(self.root, path)
-        if path.stat().st_size > _MAX_BYTES:
-            raise PlanError(f"{path.name} is larger than a plan file should be. It was not opened.")
+        from aicad.paths import read_checked_text
+
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = read_checked_text(
+                self.root,
+                path,
+                maximum=_MAX_BYTES,
+                label=path.name,
+                error=PlanError,
+            )
+        except PlanError as exc:
+            if "too large" in str(exc):
+                raise PlanError(
+                    f"{path.name} is larger than a plan file should be. It was not opened."
+                ) from exc
+            raise
         except UnicodeError as exc:
             raise PlanError(f"Could not read {path.name}: the file is not UTF-8.") from exc
         try:
@@ -640,13 +651,20 @@ def plan_files(root: str | Path) -> dict[str, str]:
     directory = _plan_directory(root_path)
     if directory is None:
         return {}
+    from aicad.paths import read_checked_text
+
     files = {}
     for path in sorted(directory.glob("*.json")):
         try:
-            _refuse_plan_link(root_path, path)
+            files[path.name] = read_checked_text(
+                root_path,
+                path,
+                maximum=_MAX_BYTES,
+                label=path.name,
+                error=PlanError,
+            )
         except PlanError:
             continue
-        files[path.name] = path.read_text(encoding="utf-8")
     return files
 
 
