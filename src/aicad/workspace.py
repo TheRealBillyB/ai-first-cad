@@ -26,6 +26,7 @@ from aicad.requirements import evaluate, normalize
 
 _DOC_NAME = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}\.md$")
 _UNDO_LIMIT = 40
+_MAX_TEXT_FILE = 8 * 1024 * 1024
 # ui, cli, and api read a note as the file. Other sources, including agent
 # and chat, get the same project-text marker.
 _PERSON_SOURCES = frozenset({"ui", "cli", "api"})
@@ -501,10 +502,15 @@ class Workspace:
         return self._notes_dir() / name
 
     def _read_note(self, name: str) -> str:
-        from aicad.paths import resolve_in_project
+        from aicad.paths import read_checked_text
 
-        path = resolve_in_project(self.root, self._document_path(name), "Note", GeometryError)
-        return path.read_text(encoding="utf-8")
+        return read_checked_text(
+            self.root,
+            self._document_path(name),
+            maximum=_MAX_TEXT_FILE,
+            label="Note",
+            error=GeometryError,
+        )
 
     def _remember_panel(self, key: str, payload: dict) -> dict:
         from aicad.honesty import attach_sheet
@@ -904,8 +910,17 @@ def _read_requirements_file(path: Path) -> list:
             raise GeometryError(f"{path} is outside the project folder {path.parent}.")
     if not path.is_file():
         return []
+    from aicad.paths import read_checked_text
+
+    text = read_checked_text(
+        path.parent,
+        path,
+        maximum=_MAX_TEXT_FILE,
+        label="Requirements",
+        error=GeometryError,
+    )
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(text)
     except json.JSONDecodeError as exc:
         raise GeometryError(f"Could not read {path}: {exc}") from exc
     return normalize(loaded)
