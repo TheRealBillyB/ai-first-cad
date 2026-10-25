@@ -202,6 +202,10 @@ def require_session_file(root: Path, raw: object, label: str, error: type[Except
     text = raw.strip()
     if "\x00" in text or session_path_escapes(text):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
+    from aicad.labels import misleading_path
+
+    if misleading_path(text):
+        raise error(f"{label} {raw!r} is outside the project. It was not read.")
     trimmed = _path_after_windows_trim(text)
     if trimmed != text.replace("\\", "/") and session_path_escapes(trimmed):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
@@ -226,6 +230,10 @@ def require_export_path(root: Path, raw: str | Path, label: str, error: type[Exc
     text = raw if isinstance(raw, str) else os.fspath(raw)
     root_resolved = Path(root).resolve()
     if not isinstance(text, str) or not text.strip() or "\x00" in text:
+        raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+    from aicad.labels import misleading_path
+
+    if misleading_path(text):
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
     expanded = str(Path(text.strip()).expanduser())
     trimmed = _path_after_windows_trim(expanded)
@@ -1486,6 +1494,16 @@ def output_path(
         raw = root_resolved / raw
     if "\x00" in os.fspath(raw):
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    if _lexical_inside(raw, root_resolved):
+        try:
+            relative = Path(os.path.normpath(raw)).resolve().relative_to(root_resolved).as_posix()
+        except (OSError, ValueError):
+            relative = None
+        if relative is not None:
+            from aicad.labels import misleading_path
+
+            if misleading_path(relative):
+                raise error(f"{label} {path} is outside the project folder {root_resolved}.")
     if not _lexical_inside(raw, root_resolved):
         if absolute and allow_absolute_outside:
             return Path(os.path.abspath(raw))

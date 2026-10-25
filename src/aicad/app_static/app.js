@@ -1498,7 +1498,8 @@ function markdown(text) {
 }
 
 function escapeHtml(text) {
-  return String(text == null ? "" : text).replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]));
+  const plain = String(text == null ? "" : text).replace(/\p{Cf}/gu, "");
+  return plain.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char]));
 }
 
 function claimText(value) {
