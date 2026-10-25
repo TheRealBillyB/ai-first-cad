@@ -202,6 +202,49 @@ def test_three_planets_with_the_carrier_fixed_drive_the_ring():
     _balanced(report)
 
 
+def test_a_planetary_carrier_with_a_following_gear_reports_the_output_torque():
+    """Sun 20, three planets of 20, ring 60 fixed, then an external 20/40 on the carrier.
+
+    The carrier turns at 1/4 of the sun. The following mesh reverses that and halves it,
+    so the output turns at -1/8. For 2 N·m at the sun the output torque is +16 N·m.
+    """
+    shafts = [
+        _shaft("sun", [_gear("sun", 20)]),
+        _shaft("ring", [_gear("ring", 60)]),
+        _shaft("carrier", [_gear("pinion", 20)]),
+        _shaft("output", [_gear("wheel", 40)]),
+    ]
+    meshes = []
+    for index in range(3):
+        name = f"p{index + 1}"
+        shafts.insert(1, _shaft(name, [_gear(name, 20)]))
+        meshes.append({"a": "sun", "b": name, "carrier": "carrier"})
+        meshes.append({"a": name, "b": "ring", "kind": "internal", "carrier": "carrier"})
+    meshes.append({"a": "pinion", "b": "wheel"})
+    report = _solve(
+        {"shafts": shafts, "meshes": meshes, "fixed": ["ring"]},
+        {"inputs": [{"shaft": "sun", "speed_rpm": 1000, "torque_nm": 2}]},
+    )
+    rows = _by_name(report)
+    assert report["torque_status"] == "determined"
+    assert "tooth forces are not unique" in report["note"]
+    assert rows["carrier"]["role"] == "idle"
+    assert rows["carrier"]["speed_rpm"] == pytest.approx(250)
+    assert rows["output"]["speed_rpm"] == pytest.approx(-125)
+    assert rows["output"]["torque_nm"] == pytest.approx(16)
+    assert rows["carrier"]["torque_nm"] == pytest.approx(0)
+    assert rows["ring"]["torque_nm"] == pytest.approx(6)
+    assert rows["p1"]["torque_nm"] == pytest.approx(0)
+    _balanced(report)
+
+    listed = _solve(
+        {"shafts": shafts, "meshes": meshes, "fixed": ["ring"]},
+        {"inputs": [{"shaft": "sun", "speed_rpm": 1000, "torque_nm": 2}], "outputs": ["carrier"]},
+    )
+    assert listed["torque_status"] == "under_constrained"
+    assert _by_name(listed)["output"]["torque_nm"] is None
+
+
 def test_mesh_efficiency_is_not_applied_when_the_tooth_forces_are_free():
     shafts, meshes = _planets(3)
     for mesh in meshes:
