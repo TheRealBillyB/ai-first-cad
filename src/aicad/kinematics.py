@@ -7,8 +7,10 @@ the in-plane pin distance of a revolute or cylindrical driver. A cylindrical
 driver includes its slide. The barrel joint cannot tilt, so a side offset is
 how far the eye misses the clevis and the stroke does not include it. That
 keeps a hydraulic cylinder on its clevises without a spatial loop. A linkage
-here is a planar four-bar
-map, and a gear is a linear map between joint values.
+here is a planar four-bar map between revolute or cylindrical joints, and a
+gear is a linear map between joint values. One relation drives a joint. A
+cycle is refused. Relations run in dependency order, so a long chain reaches
+the last joint.
 
 Serial-chain inverse kinematics and a tool path are solved in ``aicad.chain``.
 """
@@ -126,6 +128,7 @@ def normalize(spec: dict) -> dict:
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
             raise GeometryError("ignore_collisions entries are [instance, instance].")
         ignore.append([str(pair[0]), str(pair[1])])
+    _ordered_relations(relations)
     studies = _studies(spec.get("studies"), joints, relations)
     cleaned = {
         "name": str(name),
@@ -206,32 +209,31 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
             continue
         active[joint["name"]], _which = _clamp(commanded[joint["name"]], joint)
     warnings = []
-    for _ in range(8):
-        for relation in spec["relations"]:
-            driver = active[relation["driver"]]
-            if relation["type"] == "gear":
-                raw_value = relation["ratio"] * driver + relation["offset"]
-                commanded[relation["driven"]] = raw_value
-                active[relation["driven"]], _which = _clamp(raw_value, joint_index[relation["driven"]])
-            elif relation["type"] == "linkage":
-                raw_value = _four_bar(relation, driver)
-                commanded[relation["driven"]] = raw_value
-                active[relation["driven"]], _which = _clamp(raw_value, joint_index[relation["driven"]])
-            else:
-                angle, extension, offset_mm = _cylinder(
-                    relation, joint_index, driver, slides[relation["driver"]]
+    for relation in _ordered_relations(spec["relations"]):
+        driver = active[relation["driver"]]
+        if relation["type"] == "gear":
+            raw_value = relation["ratio"] * driver + relation["offset"]
+            commanded[relation["driven"]] = raw_value
+            active[relation["driven"]], _which = _clamp(raw_value, joint_index[relation["driven"]])
+        elif relation["type"] == "linkage":
+            raw_value = _four_bar(relation, driver)
+            commanded[relation["driven"]] = raw_value
+            active[relation["driven"]], _which = _clamp(raw_value, joint_index[relation["driven"]])
+        else:
+            angle, extension, offset_mm = _cylinder(
+                relation, joint_index, driver, slides[relation["driver"]]
+            )
+            commanded[relation["driven"]] = angle
+            active[relation["driven"]], _which = _clamp(angle, joint_index[relation["driven"]])
+            commanded[relation["stroke"]] = extension
+            active[relation["stroke"]], _which = _clamp(extension, joint_index[relation["stroke"]])
+            if offset_mm > 2.0:
+                note = (
+                    f"{relation['name']} is {offset_mm:.1f} mm out of the plane of its pin. "
+                    "The stroke is the in-plane length. The eye misses the clevis by that offset."
                 )
-                commanded[relation["driven"]] = angle
-                active[relation["driven"]], _which = _clamp(angle, joint_index[relation["driven"]])
-                commanded[relation["stroke"]] = extension
-                active[relation["stroke"]], _which = _clamp(extension, joint_index[relation["stroke"]])
-                if offset_mm > 2.0:
-                    note = (
-                        f"{relation['name']} is {offset_mm:.1f} mm out of the plane of its pin. "
-                        "The stroke is the in-plane length. The eye misses the clevis by that offset."
-                    )
-                    if note not in warnings:
-                        warnings.append(note)
+                if note not in warnings:
+                    warnings.append(note)
     limit_notes = []
     limited: dict[str, float] = {}
     for joint in spec["joints"]:
@@ -372,6 +374,47 @@ def transform_point(matrix: list[list[float]], point: list[float]) -> list[float
     return _transform_point(matrix, point)
 
 
+def _ordered_relations(relations: list[dict]) -> list[dict]:
+    """Drivers before the joints they drive. A joint has one relation, and a cycle is refused."""
+    produced: dict[str, int] = {}
+    for index, relation in enumerate(relations):
+        written = [relation["driven"]]
+        if relation["type"] == "cylinder":
+            written.append(relation["stroke"])
+        for joint_name in written:
+            previous = produced.get(joint_name)
+            if previous is not None:
+                other = relations[previous]["name"]
+                raise GeometryError(
+                    f"Relation {relation['name']!r} drives {joint_name!r}, which {other!r} already drives."
+                )
+            produced[joint_name] = index
+    followers: dict[int, list[int]] = {index: [] for index in range(len(relations))}
+    incoming = [0] * len(relations)
+    for index, relation in enumerate(relations):
+        source = produced.get(relation["driver"])
+        if source is None:
+            continue
+        followers[source].append(index)
+        incoming[index] += 1
+    queue = [index for index, count in enumerate(incoming) if count == 0]
+    ordered: list[int] = []
+    while queue:
+        index = queue.pop(0)
+        ordered.append(index)
+        for follower in followers[index]:
+            incoming[follower] -= 1
+            if incoming[follower] == 0:
+                queue.append(follower)
+    if len(ordered) != len(relations):
+        names = [relations[index]["name"] for index in range(len(relations)) if index not in set(ordered)]
+        raise GeometryError(
+            f"Relations cycle through {', '.join(names)}. "
+            "A joint cannot drive itself through other relations."
+        )
+    return [relations[index] for index in ordered]
+
+
 def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
     if not isinstance(relation, dict):
         raise GeometryError(f"Relation {index} must be an object.")
@@ -389,9 +432,18 @@ def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
         raise GeometryError(f"Relation {name!r} cannot drive itself.")
     record = {"name": name, "type": kind, "driver": driver, "driven": driven}
     if kind == "gear":
+        for joint_name in (driver, driven):
+            if joints[joint_name]["type"] == "fixed":
+                raise GeometryError(f"Gear {name!r} cannot turn fixed joint {joint_name!r}.")
         record["ratio"] = float(relation.get("ratio", 1.0))
         record["offset"] = float(relation.get("offset", 0.0))
     elif kind == "linkage":
+        for joint_name in (driver, driven):
+            if joints[joint_name]["type"] not in ("revolute", "cylindrical"):
+                raise GeometryError(
+                    f"Linkage {name!r} maps an angle in degrees. "
+                    f"{joint_name!r} is {joints[joint_name]['type']}."
+                )
         for key in ("ground_mm", "crank_mm", "coupler_mm", "rocker_mm"):
             if relation.get(key) is None:
                 raise GeometryError(f"Linkage {name!r} needs {key}.")
