@@ -28,6 +28,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A traverse grant does not change the folder after the wait | The grant thread is told to stop when the wait ends, and it does not write the access entry after that. |
 | A trimmed Windows path is refused before a record, a STEP name, or a workspace file is opened | ``....\....\hidden`` is ``..\..\hidden`` after Win32 removes trailing dots. Those readers now use the same check as a session path. |
 | A workspace command response stops at 32 MiB | The assistant's command client does not keep a response larger than that. |
+| A workspace file is read from the checked directory and is not run | A project file shown in the workspace is opened from the directory that was checked, and the response tells the browser not to run it. |
 | A workspace file with another name is not shown | The workspace file view does not open a file that is a link or that has another name. |
 | An existing virtual environment older than Python 3.11 is not reused | The installer requires Python 3.11. An existing `.venv` on an older interpreter is reported, and it is not used for the install. |
 | An installer package command stops if it does not finish | apt, pip, and the virtual-environment command wait at most 30 minutes. A lock that never clears does not hold the installer open. |

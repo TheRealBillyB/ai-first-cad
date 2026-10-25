@@ -10,8 +10,9 @@ refused; the page's own reads often send no origin at all. Every API call
 carries the session for this launch. The token in the page is the person
 (``ui``). The token written for the assistant is MCP (``agent``). The request
 body cannot choose ``source``. Responses refuse to be framed and ask the
-browser not to send the address of a request onward. A picture response,
-whose address carries the session, is not stored. Allowing design scripts,
+browser not to send the address of a request onward. A project file is read from the
+project directory, and that response tells the browser not to run the file.
+A picture response, whose address carries the session, is not stored. Allowing design scripts,
 granting the network for one script, saving settings, and starting a chat
 require the page token. A program with a shell on this computer can still
 read those tokens. This check stops another website. It is not a boundary
@@ -454,9 +455,13 @@ def _handler(session: Workspace):
             self.end_headers()
             self.wfile.write(data)
 
-        def _security_headers(self) -> None:
+        def _security_headers(self, *, isolate: bool = False) -> None:
             self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            if isolate:
+                policy = "default-src 'none'; script-src 'none'; object-src 'none'; frame-ancestors 'none'"
+            else:
+                policy = "frame-ancestors 'none'"
+            self.send_header("Content-Security-Policy", policy)
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Content-Type-Options", "nosniff")
 
@@ -515,7 +520,7 @@ def _handler(session: Workspace):
                 unsubscribe()
 
         def _workspace_file(self, rel: str) -> None:
-            from aicad.paths import is_reparse, shared_file, windows_trim_escapes
+            from aicad.paths import is_reparse, read_checked_bytes, shared_file, windows_trim_escapes
 
             if not rel or ".." in Path(rel).parts or windows_trim_escapes(rel):
                 raise GeometryError("That file is outside the project.")
@@ -544,38 +549,49 @@ def _handler(session: Workspace):
             if not normalized.startswith(root_name + os.sep):
                 raise GeometryError("That file is outside the project.")
             try:
-                size = os.stat(normalized).st_size
-            except OSError as exc:
-                raise GeometryError("That file could not be read.") from exc
-            if size > _MAX_SERVED_BYTES:
-                raise GeometryError("That file is too large.")
+                data = read_checked_bytes(
+                    root,
+                    candidate,
+                    maximum=_MAX_SERVED_BYTES,
+                    label="That file",
+                    error=GeometryError,
+                )
+            except GeometryError as exc:
+                message = str(exc)
+                if "too large" in message:
+                    raise GeometryError("That file is too large.") from exc
+                if "another name" in message:
+                    raise GeometryError("That file has another name and was not opened.") from exc
+                if "link" in message:
+                    raise GeometryError("That file is a link and was not opened.") from exc
+                if "outside" in message:
+                    raise GeometryError("That file is outside the project.") from exc
+                raise GeometryError("That file is not available to the workspace view.") from exc
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             if path.suffix.lower() in {".md", ".txt"} and self._caller() not in {"ui", "cli", "api"}:
-                self._marked_note(path, mime)
+                self._marked_note(data, mime)
                 return
-            self._bytes(path, mime, cache="no-store")
+            self._send_file(data, mime)
 
-        def _marked_note(self, path: Path, mime: str) -> None:
+        def _marked_note(self, data: bytes, mime: str) -> None:
             from aicad.workspace import _fence_note
 
-            root = os.path.realpath(self.workspace.root)
-            resolved = os.path.realpath(path)
-            if resolved.startswith(root + os.sep):
-                try:
-                    text = Path(resolved).read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    self._bytes(Path(resolved), mime)
-                    return
-            else:
-                raise GeometryError("That file is outside the project.")
+            try:
+                text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            except UnicodeDecodeError:
+                self._send_file(data, mime)
+                return
             marked = _fence_note({"markdown": text})["markdown"].encode("utf-8")
+            self._send_file(marked, "text/plain; charset=utf-8")
+
+        def _send_file(self, data: bytes, mime: str) -> None:
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(marked)))
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
-            self._security_headers()
+            self._security_headers(isolate=True)
             self.end_headers()
-            self.wfile.write(marked)
+            self.wfile.write(data)
 
         def _static(self, name: str) -> None:
             if not name or "/" in name or ".." in name:
