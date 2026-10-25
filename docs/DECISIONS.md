@@ -18,6 +18,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A script is not run when it cannot enter its process cgroup | A failed move would leave the script outside `pids.max`, so the script is not run. |
 | A script solid is read only from the file named for that script | The file is `.aicad/geometry/<name>-<script hash>.step`. Another path is not the solid that script built, so it is not opened. |
 | A shared STEP file and a served project file have a size cap | The host returns an error past that cap. A mesh stops at a fixed triangle count, and the macOS file helper uses the same cap as the script. |
+| A STEP file with another name is not imported | A STEP file in the project that has another name is not opened. A file the person named by an absolute path is still read. |
 | A trimmed Windows path is refused before a record, a STEP name, or a workspace file is opened | ``....\....\hidden`` is ``..\..\hidden`` after Win32 removes trailing dots. Those readers now use the same check as a session path. |
 | A workspace file with another name is not shown | The workspace file view does not open a file that is a link or that has another name. |
 | An existing virtual environment older than Python 3.11 is not reused | The installer requires Python 3.11. An existing `.venv` on an older interpreter is reported, and it is not used for the install. |

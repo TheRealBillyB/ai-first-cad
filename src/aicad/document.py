@@ -2452,9 +2452,10 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
     """The file ``import_step`` reads.
 
     An absolute path is a file the person chose. A relative path stays inside
-    the project after the link is followed.
+    the project after the link is followed. A file in the project that has
+    another name is not opened.
     """
-    from aicad.paths import stays_inside
+    from aicad.paths import shared_file, stays_inside
 
     original = Path(raw)
     given = original if original.is_absolute() else root / original
@@ -2468,6 +2469,8 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
     if not original.is_absolute() or lexical_inside:
         if not stays_inside(root_resolved, source):
             raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
+        if shared_file(source):
+            raise DocumentError(f"STEP file {raw} has another name and was not opened.")
     return source
 
 
