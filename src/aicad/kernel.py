@@ -1625,6 +1625,16 @@ _STEP_EXTERNAL_MARKERS = (
 )
 
 
+MAX_STEP_BYTES = 64 * 1024 * 1024
+
+
+def read_step_bytes(path: Path) -> bytes:
+    """Read one STEP file. A link is not followed, and a file past the cap is not read."""
+    from aicad.paths import read_nofollow_bytes
+
+    return read_nofollow_bytes(path, maximum=MAX_STEP_BYTES, label="STEP file", error=GeometryError)
+
+
 def import_step_file(path: Path) -> Shape:
     """Read one STEP file into a solid.
 
@@ -1634,21 +1644,54 @@ def import_step_file(path: Path) -> Shape:
     """
     if not path.is_file():
         raise GeometryError(f"STEP file not found: {path}")
-    _refuse_step_file_outside_folder(path)
+    return import_step_bytes(path, read_step_bytes(path))
+
+
+def import_step_bytes(path: Path, data: bytes) -> Shape:
+    """Build a solid from STEP bytes already read from ``path``.
+
+    The reader is given a private copy of those bytes. ``path`` is not opened again.
+    """
+    if len(data) > MAX_STEP_BYTES:
+        raise GeometryError(f"STEP file {path} is too large.")
+    _refuse_step_file_outside_folder(path, data)
+    temporary = _private_step(data)
     try:
-        # The STEP parser logs through C stdout. That descriptor is the MCP
-        # stream when `aicad serve` is running, so the bytes never reach it.
-        with divert_native_stdio(stderr=True):
-            imported = _read_step_shape(path)
-    except GeometryError:
+        try:
+            # The STEP parser logs through C stdout. That descriptor is the MCP
+            # stream when `aicad serve` is running, so the bytes never reach it.
+            with divert_native_stdio(stderr=True):
+                imported = _read_step_shape(temporary)
+        except GeometryError:
+            raise
+        except Exception as exc:
+            raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
+        try:
+            solid = _require_solid(imported)
+        except GeometryError as exc:
+            raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
+        return Shape(solid)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _private_step(data: bytes) -> Path:
+    """A temporary STEP file that is not the project path."""
+    import tempfile
+
+    handle = tempfile.NamedTemporaryFile(prefix="aicad-step-", suffix=".step", delete=False)
+    try:
+        handle.write(data)
+    except Exception:
+        name = handle.name
+        handle.close()
+        Path(name).unlink(missing_ok=True)
         raise
-    except Exception as exc:
-        raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
-    try:
-        solid = _require_solid(imported)
-    except GeometryError as exc:
-        raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
-    return Shape(solid)
+    handle.close()
+    return Path(handle.name)
 
 
 def _read_step_shape(path: Path):
@@ -1667,7 +1710,7 @@ def _read_step_shape(path: Path):
     return BuildShape.cast(shape)
 
 
-def _refuse_step_file_outside_folder(path: Path) -> None:
+def _refuse_step_file_outside_folder(path: Path, data: bytes) -> None:
     """Refuse a STEP file that names a path outside the file's own folder.
 
     An assembly file can name another STEP file. A name with a drive, a
@@ -1675,10 +1718,7 @@ def _refuse_step_file_outside_folder(path: Path) -> None:
     file is not read at all. A name that stays in the folder is not opened
     either: only this file is read.
     """
-    try:
-        text = path.read_text(encoding="latin-1")
-    except OSError as exc:
-        raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
+    text = data.decode("latin-1")
     try:
         code, values = _step_code_and_strings(text)
     except ValueError as exc:

@@ -13,7 +13,6 @@ not read.
 
 from __future__ import annotations
 
-import errno
 import json
 import math
 import os
@@ -493,7 +492,7 @@ def _load_mesh(root: Path, relative: str) -> TriangleMesh:
 
 def _load_png(root: Path, relative: str) -> Image.Image:
     path = _project_file(root, relative)
-    raw = _read_bytes(path, _MAX_PICTURE_BYTES)
+    raw = _read_bytes(root, path, _MAX_PICTURE_BYTES)
     with Image.open(BytesIO(raw)) as picture:
         if picture.format != "PNG":
             raise GeometryError("A session picture has to be a PNG.")
@@ -690,7 +689,7 @@ def _write_text(root: Path, relative: str, text: str) -> None:
 
 def _read_json_file(root: Path, relative: str, limit: int):
     path = _project_file(root, relative)
-    raw = _read_bytes(path, limit)
+    raw = _read_bytes(root, path, limit)
     try:
         text = raw.decode("utf-8")
     except UnicodeError as exc:
@@ -737,21 +736,18 @@ def _project_file(root: Path, relative: str) -> Path:
     return current
 
 
-def _read_bytes(path: Path, limit: int) -> bytes:
-    info = path.lstat()
-    if info.st_size > limit:
-        raise GeometryError("This session record is too large.")
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+def _read_bytes(root: Path, path: Path, limit: int) -> bytes:
+    from aicad.paths import read_checked_bytes
+
     try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        if exc.errno in {errno.ELOOP, getattr(errno, "EMLINK", -1)}:
+        return read_checked_bytes(root, path, maximum=limit, label="Session record", error=GeometryError)
+    except GeometryError as exc:
+        message = str(exc)
+        if "too large" in message:
+            raise GeometryError("This session record is too large.") from exc
+        if "link" in message or "another name" in message or "ordinary" in message:
             raise RecordRefused("A session record file is a link and was not followed.") from exc
         raise GeometryError("A session record file could not be read.") from exc
-    with os.fdopen(descriptor, "rb") as handle:
-        return handle.read(limit + 1)
 
 
 def _public_path(root: Path, path: Path) -> str:
