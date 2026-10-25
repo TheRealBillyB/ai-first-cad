@@ -392,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             if str(exc) == _THREAD_CONFINE_ERROR:
                 return _leave(0)
-            _write(job, {"ok": False, "error": f"{exc}\n{traceback.format_exc()}"})
+            _write(job, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
             return _leave(0)
         _import_package(preloaded)
         if sys.platform.startswith("linux"):
@@ -417,13 +417,11 @@ def main(argv: list[str] | None = None) -> int:
         # Importing the geometry stack can fail before the handlers above run.
         # A partial native import then hangs while the process shuts down, and
         # the parent waits out the wall-clock limit. Record the error and leave.
+        detail = f"{type(exc).__name__}: {exc}"
         try:
-            _write(
-                job,
-                {"ok": False, "error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"},
-            )
+            _write(job, {"ok": False, "error": detail})
         except Exception:
-            traceback.print_exc()
+            print(detail, file=sys.stderr)
         os._exit(1)
 
 

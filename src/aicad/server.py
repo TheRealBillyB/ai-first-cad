@@ -16,11 +16,17 @@ from aicad.models import InspectReport
 
 try:
     from mcp.server.mcpserver import Image, MCPServer
-    from mcp.server.mcpserver.exceptions import ToolError
+    from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer
     from mcp.server.fastmcp import Image
     from mcp.server.fastmcp.exceptions import ToolError
+
+    try:
+        from mcp.server.fastmcp.exceptions import ResourceError
+    except ImportError:
+        class ResourceError(Exception):
+            """A resource failure the client should see."""
 
 _INSTRUCTIONS = """
 aicad is a CAD session for hard-body mechanical parts. Units are millimeters.
@@ -412,6 +418,16 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
             raise ToolError(str(exc)) from exc
         except Exception as exc:
             raise ToolError(f"{type(exc).__name__}: {exc}") from exc
+
+    def resource_guard(fn):
+        try:
+            return fn()
+        except ResourceError:
+            raise
+        except AICADError as exc:
+            raise ResourceError(str(exc)) from exc
+        except Exception as exc:
+            raise ResourceError(f"{type(exc).__name__}: {exc}") from exc
 
     @mcp.tool()
     def list_parts() -> dict:
@@ -845,7 +861,8 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         (degrees in value, millimeters in slide). relations are gear {driver, driven, ratio, offset},
         linkage {driver, driven, ground_mm, crank_mm, coupler_mm, rocker_mm, branch},
         or cylinder {driver, driven, stroke, moving_anchor, retracted_mm}.
-        A linkage is a planar four-bar map, not a closed spatial loop. A cylinder
+        A linkage is a planar four-bar map between revolute or cylindrical joints, not a closed spatial loop.
+        One relation drives a joint. A cycle is refused. A cylinder
         keeps the rod eye on the moving clevis without adding a joint cycle.
         When the driver is cylindrical, its slide moves that clevis along the joint axis.
         poses, motions, studies, cables, and actuators live on the same spec.
@@ -1552,38 +1569,45 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     @mcp.resource("aicad://parts", mime_type="application/json")
     def parts_resource() -> str:
         """Parts in the open project, with volume and bounding box."""
-        return json.dumps(client.execute("list_parts", {}, source="agent"), indent=2)
+        return resource_guard(lambda: json.dumps(client.execute("list_parts", {}, source="agent"), indent=2))
 
     @mcp.resource("aicad://assemblies", mime_type="application/json")
     def assemblies_resource() -> str:
         """Assemblies in the open project."""
-        return json.dumps(client.execute("list_assemblies", {}, source="agent"), indent=2)
+        return resource_guard(lambda: json.dumps(client.execute("list_assemblies", {}, source="agent"), indent=2))
 
     @mcp.resource("aicad://sketches", mime_type="application/json")
     def sketches_resource() -> str:
         """Sketch names in the open project."""
-        return json.dumps(client.execute("list_sketches", {}, source="agent"), indent=2)
+        return resource_guard(lambda: json.dumps(client.execute("list_sketches", {}, source="agent"), indent=2))
 
     @mcp.resource("aicad://results", mime_type="application/json")
     def results_resource() -> str:
         """Requirement checks and the latest panel reports."""
-        state = client.execute("get_state", {}, source="agent")
-        return json.dumps({"requirements": state.get("requirements"), "panels": state.get("panels")}, indent=2)
+        def go() -> str:
+            state = client.execute("get_state", {}, source="agent")
+            return json.dumps({"requirements": state.get("requirements"), "panels": state.get("panels")}, indent=2)
+
+        return resource_guard(go)
 
     @mcp.resource("aicad://session", mime_type="application/json")
     def session_resource() -> str:
         """The saved document. Reading it does not run scripts."""
-        return json.dumps(client.execute("session_payload", {}, source="agent"), indent=2)
+        return resource_guard(lambda: json.dumps(client.execute("session_payload", {}, source="agent"), indent=2))
 
     @mcp.resource("aicad://parts/{name}", mime_type="application/json")
     def part_resource(name: str) -> str:
         """One part's source: script, operations, sketch, or STEP note."""
-        return json.dumps(client.execute("get_part_source", {"name": name}, source="agent"), indent=2)
+        return resource_guard(
+            lambda: json.dumps(client.execute("get_part_source", {"name": name}, source="agent"), indent=2)
+        )
 
     @mcp.resource("aicad://assemblies/{name}", mime_type="application/json")
     def assembly_resource(name: str) -> str:
         """One assembly spec and its solved joint values."""
-        return json.dumps(client.execute("get_assembly", {"name": name}, source="agent"), indent=2)
+        return resource_guard(
+            lambda: json.dumps(client.execute("get_assembly", {"name": name}, source="agent"), indent=2)
+        )
 
     from aicad.studio import register_mcp
 
