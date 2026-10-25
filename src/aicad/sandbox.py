@@ -765,6 +765,11 @@ def _delegate_pids(parent: Path) -> bool:
     return "pids" in _cgroup_words(parent / "cgroup.subtree_control")
 
 
+# A stop that cannot remove its cgroup keeps the path and tries again later.
+_leftover_cgroups: set[str] = set()
+_leftover_cgroup_lock = threading.Lock()
+
+
 def _prepare_pids_cgroup() -> Path | None:
     """A sibling cgroup with ``pids.max``, or None when that needs root.
 
@@ -772,6 +777,7 @@ def _prepare_pids_cgroup() -> Path | None:
     would cap the whole program, and a child of a cgroup that still holds
     processes cannot take the pids controller.
     """
+    _retry_leftover_cgroups()
     if not sys.platform.startswith("linux"):
         return None
     own = _own_cgroup()
@@ -856,24 +862,56 @@ def _join_pids_cgroup() -> None:
 
 
 def _release_pids_cgroup(path: Path | None) -> None:
+    """Remove a script cgroup. A directory that stays busy is tried again later."""
+    _retry_leftover_cgroups()
     if path is None:
         return
+    if _remove_pids_cgroup(path):
+        with _leftover_cgroup_lock:
+            _leftover_cgroups.discard(str(path))
+        return
+    with _leftover_cgroup_lock:
+        _leftover_cgroups.add(str(path))
+
+
+def _retry_leftover_cgroups() -> None:
+    with _leftover_cgroup_lock:
+        pending = list(_leftover_cgroups)
+    for raw in pending:
+        if _remove_pids_cgroup(Path(raw), attempts=1):
+            with _leftover_cgroup_lock:
+                _leftover_cgroups.discard(raw)
+
+
+def _remove_pids_cgroup(path: Path, attempts: int = 25) -> bool:
+    """Empty ``path`` and remove it. False when it is still there."""
     procs = path / "cgroup.procs"
-    for _ in range(25):
+    parent_procs = path.parent / "cgroup.procs"
+    for _ in range(attempts):
         try:
             text = procs.read_text(encoding="utf-8")
         except OSError:
             text = ""
         for line in text.split():
             try:
-                _kill_pid(int(line))
+                pid = int(line)
             except ValueError:
                 continue
+            _kill_pid(pid)
+            if parent_procs.is_file():
+                try:
+                    parent_procs.write_text(f"{pid}\n", encoding="utf-8")
+                except OSError:
+                    pass
         try:
             path.rmdir()
-            return
+            return True
         except OSError:
-            time.sleep(0.04)
+            if not path.exists():
+                return True
+            if attempts > 1:
+                time.sleep(0.04)
+    return not path.exists()
 
 
 def _adopt_orphans() -> None:
