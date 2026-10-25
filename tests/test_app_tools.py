@@ -140,6 +140,8 @@ def test_the_page_wires_each_new_button_to_the_existing_command(server):
     assert 'command("run_motion_study"' in tools
     assert "data-study" in app_js
     assert "runMotionStudy" in app_js
+    power_button = app_js.split("assembly-power")[1].split("assembly-modes")[0]
+    assert "current.studies" in power_button
     assert "http://" not in tools
     assert "https://" not in tools
     assert "hypoid" in tools

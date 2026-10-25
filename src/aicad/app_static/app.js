@@ -2054,7 +2054,7 @@ async function boot() {
   $("assembly-power").onclick = async () => {
     if (!ui.assembly) return;
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
-    const sequence = current && current.motions[0];
+    const sequence = current && (current.motions[0] || (current.studies || [])[0]);
     const report = await command("estimate_power", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
     await refresh();
     showPowerReport(report);

@@ -470,6 +470,80 @@ def test_holding_torque_and_hydraulic_pressure(tmp_path):
     assert any("quasi-static" in line.lower() or "Quasi-static" in line for line in report["assumptions"])
 
 
+def test_a_motion_study_strokes_the_hydraulic_cylinder(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "frame", [40, 40, 20], [0, 0, 10])
+    _box(document, "ram", [30, 30, 40], [0, 0, 20])
+    spec = {
+        "name": "press",
+        "instances": [
+            {"name": "frame", "part": "frame", "material": "steel"},
+            {"name": "ram", "part": "ram", "material": "steel", "payload_kg": 50, "payload_at": [0, 0, 40]},
+        ],
+        "joints": [
+            {
+                "name": "stroke",
+                "type": "prismatic",
+                "parent": "frame",
+                "child": "ram",
+                "axis": [0, 0, 1],
+                "value": 0,
+            }
+        ],
+        "actuators": [
+            {
+                "name": "pump",
+                "kind": "hydraulic_cylinder",
+                "joint": "stroke",
+                "bore_mm": 40,
+                "rod_mm": 20,
+                "efficiency": 1,
+            }
+        ],
+        "studies": {
+            "lift": {
+                "duration_s": 2,
+                "steps": 2,
+                "drivers": [
+                    {
+                        "joint": "stroke",
+                        "keyframes": [{"time_s": 0, "value": 0}, {"time_s": 2, "value": 80}],
+                    }
+                ],
+            }
+        },
+    }
+    document.create_assembly(spec)
+    held = document.estimate_power("press")
+    assert held["duration_s"] == pytest.approx(1)
+    assert held["pump"]["displaced_volume_mm3"] == pytest.approx(0)
+
+    report = document.estimate_power("press", sequence="lift")
+    weight = (36000 * 7.85e-6 + 50) * 9.81
+    area = math.pi / 4 * 40**2
+    actuator = report["actuators"][0]
+    assert report["study"] == "lift"
+    assert report["duration_s"] == pytest.approx(2)
+    assert [frame["joints"]["stroke"]["value"] for frame in report["frames"]] == pytest.approx([0, 80])
+    assert actuator["peak_force_n"] == pytest.approx(weight, abs=0.05)
+    assert actuator["peak_pressure_mpa"] == pytest.approx(weight / area, abs=1e-4)
+    assert actuator["displaced_volume_mm3"] == pytest.approx(area * 80, rel=1e-4)
+    assert report["pump"]["displaced_volume_mm3"] == pytest.approx(area * 80, rel=1e-4)
+
+    workspace = Workspace(tmp_path / "app")
+    _box(workspace.document, "frame", [40, 40, 20], [0, 0, 10])
+    _box(workspace.document, "ram", [30, 30, 40], [0, 0, 20])
+    workspace.execute("create_assembly", {"spec": spec})
+    panel = workspace.execute("estimate_power", {"name": "press", "sequence": "lift"})
+    assert panel["pump"]["displaced_volume_mm3"] == pytest.approx(area * 80, rel=1e-4)
+
+    stored = document.get_assembly("press")["assembly"]
+    stored["motions"] = {"lift": {"keyframes": [{"stroke": 0}, {"stroke": 10}], "samples": 2, "duration_s": 1}}
+    document.update_assembly(stored)
+    with pytest.raises(GeometryError, match="both a motion and a motion study"):
+        document.estimate_power("press", sequence="lift")
+
+
 def test_electric_current_from_joint_torque(tmp_path):
     document = Document(tmp_path)
     _box(document, "base", [10, 10, 10], [0, 0, 0])

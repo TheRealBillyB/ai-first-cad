@@ -315,24 +315,28 @@ def estimate_power(
     shapes: dict[str, kernel.Shape],
     motion: dict | None = None,
     actuators: list[dict] | None = None,
+    study: dict | None = None,
 ) -> dict:
     normalized = normalize(spec)
     chosen = actuators_for(normalized, actuators)
     if not chosen:
         raise GeometryError(f"Assembly {normalized['name']!r} has no actuators.")
-    samples = expand_motion(normalized, motion) if motion else [
-        {"index": 0, "time_s": 0.0, "duration_s": 1.0, "joints": {}, "duration_assumed": True}
-    ]
+    if study is not None and motion is not None:
+        raise GeometryError("Pass a motion or a motion study, not both.")
+    samples = _power_samples(normalized, motion, study)
     frame_loads = []
     for sample in samples:
-        solved = solve(normalized, sample["joints"] or None)
+        frame_spec = sample.get("spec") or normalized
+        solved = solve(frame_spec, sample["joints"] or None)
         bodies = _bodies(solved, shapes)
         local = joint_loads(solved, bodies)
-        reflected = reflect(local, solved, normalized, chosen)
+        reflected = reflect(local, solved, frame_spec, chosen)
         by_joint = {row["joint"]: row for row in reflected}
         frame_loads.append({"time_s": sample["time_s"], "joints": by_joint, "warnings": solved["warnings"]})
     report = estimate_sequence(frame_loads, chosen, samples[0]["duration_s"])
     report["motion"] = None if motion is None else motion.get("name")
+    if study is not None:
+        report["study"] = study.get("name")
     report["frames"] = [
         {
             "time_s": frame["time_s"],
@@ -359,6 +363,31 @@ def estimate_power(
             "Electric braking energy is counted as spent.",
         ],
     )
+
+
+def _power_samples(spec: dict, motion: dict | None, study: dict | None) -> list[dict]:
+    """Joint samples for a stored motion, a motion study, or the pose held for one second."""
+    if study is not None:
+        from aicad.motion_study import _commands, _sample_times, _with_couplings, normalize_study
+
+        chosen = normalize_study(study, spec["joints"], spec["relations"], name=study.get("name"))
+        posed = _with_couplings(spec, chosen)
+        samples = []
+        for index, time_s in enumerate(_sample_times(chosen["duration_s"], chosen["steps"])):
+            samples.append(
+                {
+                    "index": index,
+                    "time_s": round(float(time_s), 6),
+                    "duration_s": chosen["duration_s"],
+                    "joints": _commands(chosen, time_s),
+                    "duration_assumed": chosen["duration_assumed"],
+                    "spec": posed,
+                }
+            )
+        return samples
+    if motion is not None:
+        return expand_motion(spec, motion)
+    return [{"index": 0, "time_s": 0.0, "duration_s": 1.0, "joints": {}, "duration_assumed": True}]
 
 
 def preview_mesh(spec: dict, shapes: dict[str, kernel.Shape], overrides: dict | None = None) -> dict:
