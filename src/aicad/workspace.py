@@ -1089,6 +1089,7 @@ def _cmd_estimate_power(workspace: Workspace, arguments: dict) -> dict:
         sequence=arguments.get("sequence"),
         motion=arguments.get("motion"),
         actuators=arguments.get("actuators"),
+        study=arguments.get("study"),
     )
     report["assembly"] = arguments["name"]
     return workspace._remember_panel("power", report)  # noqa: SLF001
@@ -1781,12 +1782,14 @@ _add(Command(
 ))
 _add(Command(
     "estimate_power",
-    "Quasi-static joint torque or force, then hydraulic pressure and flow or electric current and battery energy.",
+    "Quasi-static joint torque or force, then hydraulic pressure and flow or electric current and battery energy. "
+    "sequence names a motion, or a study when no motion has that name. study is an inline motion study.",
     _obj(
         {
             "name": _string("Assembly name."),
-            "sequence": _string("Named motion. Omit to estimate the stored pose over one second."),
+            "sequence": _string("Named motion, or a named study when no motion has that name. Omit to estimate the stored pose over one second."),
             "motion": {"type": "object"},
+            "study": {"type": "object", "description": "Inline motion study. Not together with motion."},
             "actuators": {"type": "array", "description": "Optional actuator list. The assembly's actuators are used when this is omitted."},
         },
         ["name"],

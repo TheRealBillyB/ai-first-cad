@@ -3,7 +3,9 @@
 Meshes stay in millimeters and are scaled by 0.001 in the robot file, so a
 simulator sees meters. Mass is kilograms and inertia is about the center of
 mass in kg·m². A joint's origin is the pose at value 0. Gear, linkage, and
-cylinder relations are comments: a URDF tree cannot enforce them.
+cylinder relations are comments: a URDF tree cannot enforce them. A name is
+escaped so a quote stays inside its attribute and both files stay one XML
+document.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ _EFFORT = 10.0
 _VELOCITY = 1.0
 _TINY_MASS = 1e-4
 _TINY_INERTIA = 1e-9
+_XML_QUOTES = {'"': "&quot;", "'": "&apos;"}
 
 
 def export_robot(spec: dict, shapes: dict, out_dir: Path) -> dict:
@@ -234,7 +237,7 @@ def _row(name, urdf_type, parent, child, xyz, rpy, axis, lower, upper, assumed, 
 def _urdf(name: str, links: list[dict], joints: list[dict], spec: dict) -> str:
     lines = [
         '<?xml version="1.0"?>',
-        f'<robot name="{escape(name)}">',
+        f'<robot name="{_xml_attr(name)}">',
         "  <link name=\"world\"/>",
     ]
     spin_links = {joint["child"] for joint in joints if joint["kind"] == "cylindrical" and joint["urdf_type"] == "revolute"}
@@ -254,7 +257,7 @@ def _urdf(name: str, links: list[dict], joints: list[dict], spec: dict) -> str:
     for joint in joints:
         lines.append(_urdf_joint(joint))
     for relation in spec.get("relations") or []:
-        lines.append(f"  <!-- relation {escape(str(relation.get('type')))}: {escape(_relation_text(relation))} -->")
+        lines.append(f"  <!-- {_xml_comment('relation ' + str(relation.get('type')) + ': ' + _relation_text(relation))} -->")
     lines.append("</robot>")
     lines.append("")
     return "\n".join(lines)
@@ -270,18 +273,18 @@ def _inertial_link(name: str, mass: float, center, inertia, mesh: str | None, vi
             "    <visual>\n"
             f"      <origin xyz=\"{offset}\" rpy=\"0 0 0\"/>\n"
             "      <geometry><mesh filename=\"meshes/"
-            + escape(mesh)
+            + _xml_attr(mesh)
             + "\" scale=\"0.001 0.001 0.001\"/></geometry>\n"
             "    </visual>\n"
             "    <collision>\n"
             f"      <origin xyz=\"{offset}\" rpy=\"0 0 0\"/>\n"
             "      <geometry><mesh filename=\"meshes/"
-            + escape(mesh)
+            + _xml_attr(mesh)
             + "\" scale=\"0.001 0.001 0.001\"/></geometry>\n"
             "    </collision>\n"
         )
     return (
-        f"  <link name=\"{escape(name)}\">\n"
+        f"  <link name=\"{_xml_attr(name)}\">\n"
         "    <inertial>\n"
         f"      <origin xyz=\"{_xyz(center)}\" rpy=\"0 0 0\"/>\n"
         f"      <mass value=\"{_num(mass)}\"/>\n"
@@ -304,9 +307,9 @@ def _urdf_joint(joint: dict) -> str:
     if joint["urdf_type"] != "fixed":
         axis = f"    <axis xyz=\"{_xyz(joint['axis'])}\"/>\n"
     return (
-        f"  <joint name=\"{escape(joint['name'])}\" type=\"{joint['urdf_type']}\">\n"
-        f"    <parent link=\"{escape(joint['parent'])}\"/>\n"
-        f"    <child link=\"{escape(joint['child'])}\"/>\n"
+        f"  <joint name=\"{_xml_attr(joint['name'])}\" type=\"{joint['urdf_type']}\">\n"
+        f"    <parent link=\"{_xml_attr(joint['parent'])}\"/>\n"
+        f"    <child link=\"{_xml_attr(joint['child'])}\"/>\n"
         f"    <origin xyz=\"{_xyz(joint['xyz'])}\" rpy=\"{_xyz(joint['rpy'])}\"/>\n"
         + axis
         + limit
@@ -321,7 +324,7 @@ def _mjcf(name: str, links: list[dict], joints: list[dict], spec: dict) -> str:
     link_by_name = {link["name"]: link for link in links}
     lines = [
         '<?xml version="1.0"?>',
-        f'<mujoco model="{escape(name)}">',
+        f'<mujoco model="{_xml_attr(name)}">',
         '  <compiler angle="degree" eulerseq="zyx" meshdir="meshes"/>',
         '  <option gravity="0 0 -9.81" timestep="0.002"/>',
         "  <asset>",
@@ -332,7 +335,7 @@ def _mjcf(name: str, links: list[dict], joints: list[dict], spec: dict) -> str:
             continue
         seen.add(link["mesh"])
         lines.append(
-            f'    <mesh name="{escape(_safe(link["part"]))}" file="{escape(link["mesh"])}" scale="0.001 0.001 0.001"/>'
+            f'    <mesh name="{_xml_attr(_safe(link["part"]))}" file="{_xml_attr(link["mesh"])}" scale="0.001 0.001 0.001"/>'
         )
     lines.append("  </asset>")
     lines.append("  <worldbody>")
@@ -340,7 +343,7 @@ def _mjcf(name: str, links: list[dict], joints: list[dict], spec: dict) -> str:
         lines.extend(_mjcf_body(joint, by_parent, link_by_name, 2))
     lines.append("  </worldbody>")
     for relation in spec.get("relations") or []:
-        lines.append(f"  <!-- relation {escape(str(relation.get('type')))}: {escape(_relation_text(relation))} -->")
+        lines.append(f"  <!-- {_xml_comment('relation ' + str(relation.get('type')) + ': ' + _relation_text(relation))} -->")
     lines.append("</mujoco>")
     lines.append("")
     return "\n".join(lines)
@@ -354,7 +357,7 @@ def _mjcf_body(joint: dict, by_parent: dict, links: dict, indent: int) -> list[s
     # eulerseq zyx consumes yaw, pitch, roll, in degrees. URDF rpy is radians.
     roll, pitch, yaw = (math.degrees(angle) for angle in joint["rpy"])
     euler = _xyz([yaw, pitch, roll])
-    lines = [f'{pad}<body name="{escape(child)}" pos="{pos}" euler="{euler}">']
+    lines = [f'{pad}<body name="{_xml_attr(child)}" pos="{pos}" euler="{euler}">']
     if link:
         inertia = link["inertia"]
         full = _xyz(
@@ -364,7 +367,7 @@ def _mjcf_body(joint: dict, by_parent: dict, links: dict, indent: int) -> list[s
             f'{pad}  <inertial pos="{_xyz(_add_vec(link["center_m"], link["offset_m"]))}" mass="{_num(link["mass_kg"])}" fullinertia="{full}"/>'
         )
         lines.append(
-            f'{pad}  <geom type="mesh" mesh="{escape(_safe(link["part"]))}" pos="{_xyz(link["offset_m"])}"/>'
+            f'{pad}  <geom type="mesh" mesh="{_xml_attr(_safe(link["part"]))}" pos="{_xyz(link["offset_m"])}"/>'
         )
     else:
         lines.append(
@@ -373,12 +376,12 @@ def _mjcf_body(joint: dict, by_parent: dict, links: dict, indent: int) -> list[s
         )
     if joint["urdf_type"] == "revolute":
         lines.append(
-            f'{pad}  <joint name="{escape(joint["name"])}" type="hinge" axis="{_xyz(joint["axis"])}" '
+            f'{pad}  <joint name="{_xml_attr(joint["name"])}" type="hinge" axis="{_xyz(joint["axis"])}" '
             f'range="{_num(math.degrees(joint["lower"]))} {_num(math.degrees(joint["upper"]))}" limited="true"/>'
         )
     elif joint["urdf_type"] == "prismatic":
         lines.append(
-            f'{pad}  <joint name="{escape(joint["name"])}" type="slide" axis="{_xyz(joint["axis"])}" '
+            f'{pad}  <joint name="{_xml_attr(joint["name"])}" type="slide" axis="{_xyz(joint["axis"])}" '
             f'range="{_num(joint["lower"])} {_num(joint["upper"])}" limited="true"/>'
         )
     for child_joint in by_parent.get(child, []):
@@ -545,6 +548,35 @@ def _note(name, links, joints, validation, loaded) -> str:
     return (
         f"Exported {name}: {len(links)} links, {len(moving)} moving joints. {check}"
     )
+
+
+def _xml_chars(value: object) -> str:
+    """Characters XML 1.0 can store. Anything else stops the export."""
+
+    text = str(value)
+    for char in text:
+        code = ord(char)
+        if code in (0x9, 0xA, 0xD) or 0x20 <= code <= 0xD7FF or 0xE000 <= code <= 0xFFFD or 0x10000 <= code <= 0x10FFFF:
+            continue
+        raise GeometryError("A robot export name contains a character XML cannot store.")
+    return text
+
+
+def _xml_attr(value: object) -> str:
+    """An attribute value. A quote stays inside the attribute."""
+
+    return escape(_xml_chars(value), _XML_QUOTES)
+
+
+def _xml_comment(value: object) -> str:
+    """Comment text. ``--`` cannot appear, and the text cannot end with ``-``."""
+
+    text = _xml_chars(value)
+    while "--" in text:
+        text = text.replace("--", "- -")
+    if text.endswith("-"):
+        text += " "
+    return text
 
 
 def _safe(name: str) -> str:

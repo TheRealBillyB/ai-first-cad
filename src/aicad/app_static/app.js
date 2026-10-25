@@ -219,20 +219,20 @@ function renderTree() {
   $("part-list").innerHTML = state.parts
     .map((part) => {
       const size = part.bounding_box.size;
-      return `<li data-part="${part.name}" class="${part.name === ui.part ? "on" : ""}">
-        <span>${part.name}</span><span class="meta">${size.x.toFixed(0)}×${size.y.toFixed(0)}×${size.z.toFixed(0)}</span></li>`;
+      return `<li data-part="${escapeAttr(part.name)}" class="${part.name === ui.part ? "on" : ""}">
+        <span>${escapeHtml(part.name)}</span><span class="meta">${size.x.toFixed(0)}×${size.y.toFixed(0)}×${size.z.toFixed(0)}</span></li>`;
     })
     .join("") || `<li class="meta">No parts yet</li>`;
   $("sketch-list").innerHTML = state.sketches
-    .map((sketch) => `<li data-sketch="${sketch.name}" class="${sketch.name === ui.sketchName ? "on" : ""}">
-      <span>${sketch.name}</span><span class="meta">${sketch.status.replaceAll("_", " ")}</span></li>`)
+    .map((sketch) => `<li data-sketch="${escapeAttr(sketch.name)}" class="${sketch.name === ui.sketchName ? "on" : ""}">
+      <span>${escapeHtml(sketch.name)}</span><span class="meta">${escapeHtml(String(sketch.status || "").replaceAll("_", " "))}</span></li>`)
     .join("") || `<li class="meta">No sketches yet</li>`;
   const features = state.panels.features;
   const stale = state.panel_revision.features !== state.revision;
   if (!features || features.part && false) return;
   const steps = features && features.steps ? features.steps : [];
   $("feature-list").innerHTML = steps.length
-    ? steps.map((step) => `<li><span>${step.name}</span>${step.redundant ? `<span class="flag">buried</span>` : `<span class="meta">${step.op}</span>`}</li>`).join("")
+    ? steps.map((step) => `<li><span>${escapeHtml(step.name)}</span>${step.redundant ? `<span class="flag">buried</span>` : `<span class="meta">${escapeHtml(step.op)}</span>`}</li>`).join("")
         + (stale ? `<li class="meta">Feature list is from an older revision.</li>` : "")
     : `<li class="meta">${features && features.tracked === false ? "Not tracked" : "Run Inspect or Features"}</li>`;
   $("part-list").querySelectorAll("[data-part]").forEach((node) => {
@@ -270,7 +270,7 @@ function renderPanel() {
     const report = state.panels.inspect;
     const stale = state.panel_revision.inspect !== state.revision;
     root.innerHTML = `
-      <h3>Inspect ${part || ""}</h3>
+      <h3>Inspect ${escapeHtml(part || "")}</h3>
       <div class="row"><label>Min wall <input id="min-wall" type="number" value="1.2" step="0.1" /></label>
       <button type="button" id="run-inspect" class="primary">Inspect</button></div>
       ${report ? inspectHtml(report, stale) : `<p class="muted">Measure the part, estimate wall thickness, and show the pictures.</p>`}`;
@@ -289,7 +289,7 @@ function renderPanel() {
       ${report ? `<p>Area ${report.area_mm2} mm². Thickness ${report.min_thickness_mm ?? "n/a"} mm.</p>
         ${claimBlock(report)}
         ${report.view ? `<img alt="section" src="${fileUrl(report.view.path)}" />` : ""}
-        <p class="muted">${report.note || ""}</p>` : `<p class="muted">A cut through the solid. Use it to see a rib inside a boss.</p>`}`;
+        <p class="muted">${escapeHtml(report.note || "")}</p>` : `<p class="muted">A cut through the solid. Use it to see a rib inside a boss.</p>`}`;
     $("run-section").onclick = () => runSection();
     return;
   }
@@ -308,7 +308,7 @@ function renderPanel() {
   }
   if (ui.tab === "fea") {
     const report = state.panels.fea;
-    const materials = (state.materials.materials || []).map((item) => `<option value="${item.id}">${item.name}</option>`).join("");
+    const materials = (state.materials.materials || []).map((item) => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.name)}</option>`).join("");
     root.innerHTML = `
       <h3>Strength</h3>
       <div class="row"><select id="fea-material">${materials}</select>
@@ -329,7 +329,7 @@ function renderPanel() {
   }
   if (ui.tab === "vibration") {
     const report = state.panels.vibration;
-    const materials = (state.materials.materials || []).map((item) => `<option value="${item.id}" ${item.id === "steel" ? "selected" : ""}>${item.name}</option>`).join("");
+    const materials = (state.materials.materials || []).map((item) => `<option value="${escapeAttr(item.id)}" ${item.id === "steel" ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
     root.innerHTML = `
       <h3>Modes</h3>
       <div class="row"><select id="modal-material">${materials}</select>
@@ -790,7 +790,7 @@ function renderDimensions() {
   const dimensions = (ui.sketch && ui.sketch.dimensions) || [];
   root.innerHTML = dimensions
     .filter((dimension) => dimension.name)
-    .map((dimension) => `<button type="button" data-dimension="${dimension.name}" data-value="${dimension.value}">${dimension.name} ${dimension.value}</button>`)
+    .map((dimension) => `<button type="button" data-dimension="${escapeAttr(dimension.name)}" data-value="${escapeAttr(dimension.value)}">${escapeHtml(dimension.name)} ${escapeHtml(dimension.value)}</button>`)
     .join("");
   root.querySelectorAll("button").forEach((button) => {
     button.onclick = () => editDimension(button.dataset.dimension, button.dataset.value).catch(showError);
@@ -1463,7 +1463,7 @@ function intersect(origin, dir, a, b, c) {
 function renderDocs() {
   if (!$("page-docs") || $("page-docs").hidden) return;
   const docs = ui.state.documents || [];
-  $("doc-list").innerHTML = docs.map((name) => `<li data-doc="${name}" class="${name === ui.doc ? "on" : ""}">${name}</li>`).join("");
+  $("doc-list").innerHTML = docs.map((name) => `<li data-doc="${escapeAttr(name)}" class="${name === ui.doc ? "on" : ""}">${escapeHtml(name)}</li>`).join("");
   $("doc-list").querySelectorAll("[data-doc]").forEach((node) => {
     armRow(node);
     node.onclick = () => loadDoc(node.dataset.doc);
@@ -1542,7 +1542,7 @@ function escapeAttr(text) {
 function ask(title, fields) {
   const dialog = $("modal");
   $("modal-title").textContent = title;
-  $("modal-body").innerHTML = `<div class="stack">${fields.map((field) => `<label>${field.label}<input name="${field.name}" value="${field.value || ""}" /></label>`).join("")}</div>`;
+  $("modal-body").innerHTML = `<div class="stack">${fields.map((field) => `<label>${escapeHtml(field.label)}<input name="${escapeAttr(field.name)}" value="${escapeAttr(field.value || "")}" /></label>`).join("")}</div>`;
   dialog.showModal();
   return new Promise((resolve) => {
     const form = $("modal-form");
@@ -1564,7 +1564,7 @@ function renderAssemblies() {
   if (!ui.assembly && assemblies.length) ui.assembly = assemblies[0].name;
   if (ui.assembly && !assemblies.some((item) => item.name === ui.assembly)) ui.assembly = assemblies[0] ? assemblies[0].name : null;
   $("assembly-list").innerHTML = assemblies.map((item) =>
-    `<li data-assembly="${item.name}" class="${item.name === ui.assembly ? "on" : ""}"><span>${item.name}</span><span class="meta">${item.joints.length} joints</span></li>`
+    `<li data-assembly="${escapeAttr(item.name)}" class="${item.name === ui.assembly ? "on" : ""}"><span>${escapeHtml(item.name)}</span><span class="meta">${item.joints.length} joints</span></li>`
   ).join("") || `<li class="meta">No assemblies yet</li>`;
   $("assembly-list").querySelectorAll("[data-assembly]").forEach((node) => {
     armRow(node);
@@ -1585,13 +1585,13 @@ function renderAssemblies() {
     ui.assemblySignature = signature;
     const joints = current.joints.map((joint) => `
       <div class="joint-row">
-        <span style="width:92px">${joint.name}</span>
-        <span class="meta" style="width:72px">${joint.type}</span>
-        <input data-joint="${joint.name}" type="number" step="1" value="${joint.value}" ${joint.min != null ? `min="${joint.min}"` : ""} ${joint.max != null ? `max="${joint.max}"` : ""} />
-        <button type="button" data-apply="${joint.name}">Apply</button>
+        <span style="width:92px">${escapeHtml(joint.name)}</span>
+        <span class="meta" style="width:72px">${escapeHtml(joint.type)}</span>
+        <input data-joint="${escapeAttr(joint.name)}" type="number" step="1" value="${Number(joint.value)}" ${joint.min != null ? `min="${Number(joint.min)}"` : ""} ${joint.max != null ? `max="${Number(joint.max)}"` : ""} />
+        <button type="button" data-apply="${escapeAttr(joint.name)}">Apply</button>
       </div>`).join("");
-    const poses = current.poses.map((pose) => `<button type="button" data-pose="${pose}">${pose}</button>`).join(" ");
-    const motions = current.motions.map((motion) => `<button type="button" data-motion="${motion}">${motion}</button>`).join(" ");
+    const poses = current.poses.map((pose) => `<button type="button" data-pose="${escapeAttr(pose)}">${escapeHtml(pose)}</button>`).join(" ");
+    const motions = current.motions.map((motion) => `<button type="button" data-motion="${escapeAttr(motion)}">${escapeHtml(motion)}</button>`).join(" ");
     const studies = (current.studies || []).map((study) => `<button type="button" data-study="${escapeAttr(study)}">${escapeHtml(study)}</button>`).join(" ");
     $("assembly-controls").innerHTML = `
       <h3>Joints</h3>
@@ -1606,7 +1606,7 @@ function renderAssemblies() {
         <label>Steps <input id="study-steps" type="number" min="2" step="1" value="8" /></label>
         <label>Clearance <input id="study-clearance" type="number" min="0" step="0.1" value="0" /> mm</label>
       </div>
-      <p class="muted">${current.instances.map((item) => item.name).join(", ")}</p>`;
+      <p class="muted">${current.instances.map((item) => escapeHtml(item.name)).join(", ")}</p>`;
     $("assembly-controls").querySelectorAll("[data-apply]").forEach((button) => {
       button.onclick = async () => {
         const input = $("assembly-controls").querySelector(`[data-joint="${button.dataset.apply}"]`);
@@ -1680,7 +1680,7 @@ function showMotionReport() {
   const hits = motion.collision_count != null ? `${motion.status || ""} · ${motion.collision_count} collisions` : "preview";
   $("assembly-status").textContent = hits;
   const frames = (motion.frames || []).map((frame) => {
-    const pairs = (frame.collisions || []).map((hit) => `${hit.a} × ${hit.b}`).join(", ");
+    const pairs = (frame.collisions || []).map((hit) => `${escapeHtml(hit.a)} × ${escapeHtml(hit.b)}`).join(", ");
     return `<li>t=${Number(frame.time_s).toFixed(2)}s ${pairs || "clear"}</li>`;
   }).join("");
   $("assembly-report").innerHTML = `${claimBlock(motion)}<h3>${escapeHtml(motion.motion || motion.name || "Assembly")}</h3><ul>${frames}</ul>`;
@@ -2054,7 +2054,7 @@ async function boot() {
   $("assembly-power").onclick = async () => {
     if (!ui.assembly) return;
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
-    const sequence = current && current.motions[0];
+    const sequence = current && (current.motions[0] || (current.studies || [])[0]);
     const report = await command("estimate_power", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
     await refresh();
     showPowerReport(report);

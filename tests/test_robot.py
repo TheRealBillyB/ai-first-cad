@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from aicad.document import Document
-from aicad.kernel import solid_inertia
+from aicad.kernel import place, solid_inertia
 from aicad.robot import export_robot
 
 
@@ -15,6 +15,55 @@ def _box(document: Document, name: str, size: list[float], center: list[float]) 
         name,
         [{"op": "add", "shape": "box", "size": size, "center": center}],
     )
+
+
+def _urdf_rotation(roll: float, pitch: float, yaw: float) -> list[list[float]]:
+    """URDF rpy is radians: R = Rz(yaw) @ Ry(pitch) @ Rx(roll)."""
+    cx, sx = math.cos(roll), math.sin(roll)
+    cy, sy = math.cos(pitch), math.sin(pitch)
+    cz, sz = math.cos(yaw), math.sin(yaw)
+    rx = [[1, 0, 0], [0, cx, -sx], [0, sx, cx]]
+    ry = [[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]]
+    rz = [[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]]
+    ry_rx = [[sum(ry[row][k] * rx[k][col] for k in range(3)) for col in range(3)] for row in range(3)]
+    return [[sum(rz[row][k] * ry_rx[k][col] for k in range(3)) for col in range(3)] for row in range(3)]
+
+
+def test_a_tilted_base_keeps_the_placed_orientation(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [20, 10, 6], [4, 1, 2])
+    position = [12.0, -4.0, 8.0]
+    rotation = [30.0, 50.0, 70.0]
+    document.create_assembly(
+        {
+            "name": "tilted",
+            "instances": [
+                {
+                    "name": "base",
+                    "part": "base",
+                    "placement": {"position": position, "rotation_deg": rotation},
+                }
+            ],
+            "joints": [],
+        }
+    )
+    report = document.export_robot("tilted", tmp_path / "robot")
+    root = ET.parse(report["urdf"]).getroot()
+    origin = root.find("joint[@name='world_to_base']/origin")
+    xyz = [float(value) for value in origin.get("xyz").split()]
+    rpy = [float(value) for value in origin.get("rpy").split()]
+    assert xyz == pytest.approx([value / 1000.0 for value in position], abs=1e-9)
+    rotation_m = _urdf_rotation(*rpy)
+    shape = document._get("base").shape  # noqa: SLF001
+    placed = place(shape, tuple(position), tuple(rotation))
+    expect = solid_inertia(placed)["center_mm"]
+    unplaced = solid_inertia(shape)["center_mm"]
+    moved = [
+        sum(rotation_m[row][col] * unplaced[col] for col in range(3)) + position[row]
+        for row in range(3)
+    ]
+    assert moved == pytest.approx(expect, abs=1e-3)
+    assert unplaced == pytest.approx([4, 1, 2], abs=1e-6)
 
 
 def test_a_yawed_base_is_ninety_degrees_in_mjcf(tmp_path):

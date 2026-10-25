@@ -177,6 +177,55 @@ def _pe_forwarding_to(dll: str) -> bytes:
     return header + bytes(payload)
 
 
+def _pe_with_delay_imports(names: list[str]) -> bytes:
+    """A PE32+ image whose delay-load directory names ``names``."""
+
+    blobs = [name.encode("ascii") + b"\0" for name in names]
+    descriptors = (len(names) + 1) * 32
+    payload = bytearray(descriptors + sum(len(blob) for blob in blobs))
+    cursor = descriptors
+    rva_base = 0x1000
+    for index, blob in enumerate(blobs):
+        name_rva = rva_base + cursor
+        struct.pack_into("<IIIIIIII", payload, index * 32, 1, name_rva, 0, 0, 0, 0, 0, 0)
+        payload[cursor : cursor + len(blob)] = blob
+        cursor += len(blob)
+    raw = (len(payload) + 0x1FF) & ~0x1FF
+    payload.extend(b"\0" * (raw - len(payload)))
+    dos = bytearray(64)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 64)
+    size_opt = 240
+    pe = bytearray(b"PE\0\0")
+    pe += struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, size_opt, 0)
+    optional = bytearray(size_opt)
+    struct.pack_into("<H", optional, 0, 0x20B)
+    # Delay-load directory is data directory index 13, at offset 112 + 104.
+    struct.pack_into("<II", optional, 216, rva_base, descriptors)
+    section = bytearray(40)
+    section[0:6] = b".rdata"
+    struct.pack_into("<IIII", section, 8, len(payload), rva_base, len(payload), 0x200)
+    header = bytes(dos) + bytes(pe) + bytes(optional) + bytes(section)
+    header += b"\0" * (0x200 - len(header))
+    return header + bytes(payload)
+
+
+def test_a_delay_loaded_dll_and_its_imports_are_staged(tmp_path):
+    module = _installer()
+    library = tmp_path / "Library" / "bin"
+    library.mkdir(parents=True)
+    exe = library / "ccx.exe"
+    exe.write_bytes(_pe_with_delay_imports(["KERNEL32.dll", "libgomp-1.dll"]))
+    (library / "libgomp-1.dll").write_bytes(_pe_with_imports(["libgcc_s_seh-1.dll"]))
+    (library / "libgcc_s_seh-1.dll").write_bytes(_pe_with_imports(["KERNEL32.dll"]))
+    assert module.pe_delay_loaded_dlls(exe) == ["KERNEL32.dll", "libgomp-1.dll"]
+    assert module.pe_imported_dlls(exe) == []
+    destination = tmp_path / "solver-bin"
+    module.stage_solver_bin(exe, [library], destination)
+    names = sorted(path.name.lower() for path in destination.iterdir())
+    assert names == ["ccx.exe", "libgcc_s_seh-1.dll", "libgomp-1.dll"]
+
+
 def test_a_forwarded_export_names_the_real_blas_dll(tmp_path):
     module = _installer()
     library = tmp_path / "Library" / "bin"

@@ -730,7 +730,10 @@ def _eye() -> list[list[float]]:
 
 
 def _euler(rx: float, ry: float, rz: float) -> list[list[float]]:
-    """X, then Y, then Z, matching ``kernel.place``."""
+    """Degrees about X, then Y, then Z, matching ``kernel.place``.
+
+    The matrix is ``Rx @ Ry @ Rz``, the same composition as a placed part.
+    """
     ax, ay, az = math.radians(rx), math.radians(ry), math.radians(rz)
     cx, sx = math.cos(ax), math.sin(ax)
     cy, sy = math.cos(ay), math.sin(ay)
@@ -738,7 +741,7 @@ def _euler(rx: float, ry: float, rz: float) -> list[list[float]]:
     rx_m = [[1, 0, 0], [0, cx, -sx], [0, sx, cx]]
     ry_m = [[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]]
     rz_m = [[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]]
-    return _matmat(rz_m, _matmat(ry_m, rx_m))
+    return _matmat(rx_m, _matmat(ry_m, rz_m))
 
 
 def _rotation(axis: list[float], angle: float) -> list[list[float]]:

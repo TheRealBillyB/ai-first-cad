@@ -303,7 +303,11 @@ def build_parser() -> argparse.ArgumentParser:
         "power", parents=[common], help="Estimate joint loads and actuator power."
     )
     power.add_argument("name")
-    power.add_argument("--sequence", default=None)
+    power.add_argument(
+        "--sequence",
+        default=None,
+        help="Motion, or a motion study when no motion has this name.",
+    )
 
     mechanics = commands.add_parser(
         "fea", parents=[common], help="Run a linear static solve from a JSON setup."

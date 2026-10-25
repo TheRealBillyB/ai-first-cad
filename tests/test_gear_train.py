@@ -187,6 +187,65 @@ def test_open_differential_straight_ahead_and_in_a_turn():
     _balanced(turn)
 
 
+def test_a_reduction_into_an_open_differential_splits_the_torque():
+    """20/40 into the carrier. Straight ahead the wheels match the carrier and share its torque."""
+    train = {
+        "shafts": [
+            _shaft("input", [_gear("pinion", 20)]),
+            _shaft("carrier", [_gear("ring", 40)]),
+            _shaft("left", []),
+            _shaft("right", []),
+        ],
+        "meshes": [{"name": "final", "a": "pinion", "b": "ring"}],
+        "differentials": [{"name": "axle", "carrier": "carrier", "left": "left", "right": "right"}],
+    }
+    straight = _solve(
+        train,
+        {
+            "inputs": [{"shaft": "input", "speed_rpm": 1000, "torque_nm": 10}],
+            "speeds": [{"shaft": "left", "speed_rpm": -500}],
+        },
+    )
+    shafts = _by_name(straight)
+    assert straight["status"] == "determined"
+    assert straight["torque_status"] == "determined"
+    assert shafts["carrier"]["role"] == "idle"
+    assert shafts["carrier"]["speed_rpm"] == pytest.approx(-500)
+    assert shafts["left"]["speed_rpm"] == pytest.approx(-500)
+    assert shafts["right"]["speed_rpm"] == pytest.approx(-500)
+    assert shafts["carrier"]["torque_nm"] == pytest.approx(0, abs=1e-9)
+    assert shafts["left"]["torque_nm"] == pytest.approx(10)
+    assert shafts["right"]["torque_nm"] == pytest.approx(10)
+    assert shafts["input"]["torque_nm"] == pytest.approx(10)
+    _balanced(straight)
+
+    turn = _solve(
+        train,
+        {
+            "inputs": [{"shaft": "input", "speed_rpm": 1000, "torque_nm": 10}],
+            "speeds": [{"shaft": "left", "speed_rpm": -400}],
+        },
+    )
+    turned = _by_name(turn)
+    assert turned["carrier"]["speed_rpm"] == pytest.approx(-500)
+    assert turned["left"]["speed_rpm"] == pytest.approx(-400)
+    assert turned["right"]["speed_rpm"] == pytest.approx(-600)
+    assert turned["left"]["torque_nm"] == pytest.approx(turned["right"]["torque_nm"])
+    assert turned["left"]["torque_nm"] == pytest.approx(10)
+    _balanced(turn)
+
+    braked = _solve(
+        train,
+        {
+            "inputs": [{"shaft": "input", "speed_rpm": 1000, "torque_nm": 10}],
+            "speeds": [{"shaft": "left", "speed_rpm": -500}],
+            "outputs": ["carrier"],
+        },
+    )
+    assert braked["status"] == "determined"
+    assert braked["torque_status"] == "under_constrained"
+
+
 def test_open_differential_is_under_constrained_until_one_output_is_known():
     report = _solve(
         {

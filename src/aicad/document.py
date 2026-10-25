@@ -1290,11 +1290,23 @@ class Document:
         sequence: str | None = None,
         motion: dict | None = None,
         actuators: list[dict] | None = None,
+        study: dict | str | None = None,
     ) -> dict:
+        """Quasi-static actuator power through a pose, a motion, or a motion study.
+
+        ``sequence`` is a motion, or a motion study when no motion has that name.
+        ``study`` is a study name or an inline study.
+        """
         with self._lock:
             spec = self._get_assembly(name)
-            chosen = assembly.motion_by_name(spec, sequence, motion) if (sequence or motion) else None
-            return assembly.estimate_power(spec, self._assembly_shapes(spec), chosen, actuators)
+            chosen_motion, chosen_study = _cable_timeline(spec, sequence, motion, study)
+            return assembly.estimate_power(
+                spec,
+                self._assembly_shapes(spec),
+                chosen_motion,
+                actuators,
+                study=chosen_study,
+            )
 
     def solve_modal(self, name: str, setup: dict) -> dict:
         """Natural frequencies of one part. Pictures land next to the other renders."""

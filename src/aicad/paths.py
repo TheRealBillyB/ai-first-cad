@@ -209,6 +209,8 @@ def require_session_file(root: Path, raw: object, label: str, error: type[Except
     full = (root_resolved / text).resolve()
     if not _is_inside(full, root_resolved):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
+    if shared_file(full):
+        raise error(f"{label} {raw!r} has another name and was not opened.")
     return full
 
 
@@ -827,7 +829,8 @@ def resolve_in_project(root: Path, path: str | Path, label: str, error: type[Exc
     """Resolved path that stays inside ``root``. Does not create it.
 
     A symlink or Windows junction is followed. A link that leaves the project
-    is refused before the file is opened.
+    is refused before the file is opened. A regular file with another name is
+    refused too, so the other name is not what gets read.
     """
     root_resolved = Path(root).resolve()
     raw = Path(path)
@@ -841,6 +844,8 @@ def resolve_in_project(root: Path, path: str | Path, label: str, error: type[Exc
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.") from exc
     if not _is_inside(resolved, root_resolved):
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+    if shared_file(resolved):
+        raise error(f"{label} {raw} has another name and was not opened.")
     return resolved
 
 
@@ -1132,11 +1137,38 @@ def _accept_project_file(root: Path, path: Path) -> Path:
     return _relative_within(root, raw)
 
 
+def _reparse_between(root: Path, raw: Path) -> bool:
+    """True when an existing component of ``raw`` under ``root`` is a link.
+
+    Creating a directory through that component would follow it. A junction or
+    symlink that stays inside the project is still a link.
+    """
+    try:
+        relative = Path(os.path.normpath(os.fspath(raw))).relative_to(Path(os.path.normpath(os.fspath(root))))
+    except ValueError:
+        return False
+    current = Path(root)
+    for part in relative.parts:
+        current = current / part
+        if is_reparse(current):
+            return True
+        try:
+            exists = current.exists()
+        except OSError:
+            return True
+        if not exists:
+            return False
+    return False
+
+
 def output_dir(root: Path, path: str | Path, label: str, error: type[Exception]) -> Path:
     """A real directory inside ``root``.
 
     Nothing is created when the path resolves outside the project. Missing
-    directories inside the project are created.
+    directories inside the project are created. A symlink or junction in the
+    path is not followed when this system cannot open directories without
+    following links, including a link whose target stays inside the project.
+    A link that leaves the project is still reported as outside the project.
     """
     root_resolved = Path(root).resolve()
     raw = Path(path)
@@ -1150,6 +1182,8 @@ def output_dir(root: Path, path: str | Path, label: str, error: type[Exception])
         raise error(f"{label} {path} is outside the project folder {root_resolved}.") from exc
     if not _is_inside(resolved, root_resolved):
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    if not nofollow_writes() and _reparse_between(root_resolved, raw):
+        raise error(f"Could not create {label} {path}. {path} is a link and was not followed.")
     remember_project(root_resolved)
     if nofollow_writes():
         try:
@@ -1211,6 +1245,8 @@ def output_path(
         raise error(f"{label} {path} is outside the project folder {root_resolved}.") from exc
     if not _is_inside(resolved, root_resolved):
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    if not nofollow_writes() and _reparse_between(root_resolved, raw):
+        raise error(f"Could not create {label} {path}. {path} is a link and was not followed.")
     parent = output_dir(root_resolved, resolved.parent, label, error)
     name = resolved.name
     if _refused_file_name(name) or _windows_reserved_punctuation(name):
