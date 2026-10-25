@@ -828,12 +828,15 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
             str(temporary),
         ]
         try:
+            from aicad.sandbox import program_environment
+
             completed = subprocess.run(
                 command,
                 cwd=str(Path(executable).resolve().parent),
                 capture_output=True,
                 timeout=90,
                 check=False,
+                env=program_environment(),
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("ffmpeg did not finish") from exc

@@ -1667,6 +1667,130 @@ def _pythonpath_for_child(workspace: Path, raw: str | None) -> str | None:
     return os.pathsep.join(kept)
 
 
+# A parent can be started with a loader or interpreter variable. Those must
+# not reach a script or another program this process starts.
+_DROPPED_ENV = frozenset(
+    {
+        "BASH_ENV",
+        "ENV",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_PAGER",
+        "GIT_SSH_COMMAND",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "PERL5LIB",
+        "PERL5OPT",
+        "PS4",
+        "PYTHONEXECUTABLE",
+        "PYTHONHOME",
+        "PYTHONINSPECT",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONUSERBASE",
+        "PYTHONWARNINGS",
+        "RUBYLIB",
+        "RUBYOPT",
+        "SHELLOPTS",
+    }
+)
+
+
+def _system_path() -> str:
+    """Directories the operating system uses, not the parent's PATH."""
+
+    parts = [str(Path(sys.executable).resolve().parent)]
+    if os.name == "nt":
+        root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+        parts.append(str(Path(root) / "System32"))
+        parts.append(root)
+    else:
+        parts.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+    kept: list[str] = []
+    for part in parts:
+        if part and part not in kept:
+            kept.append(part)
+    return os.pathsep.join(kept)
+
+
+def _trusted_pythonpath(workspace: Path | None) -> str:
+    """Import roots for a child: this install, not the parent's PYTHONPATH."""
+
+    install = Path(__file__).resolve().parent.parent
+    prefixes: list[Path] = [install]
+    for item in (sys.prefix, getattr(sys, "base_prefix", sys.prefix)):
+        try:
+            prefixes.append(Path(item).resolve())
+        except OSError:
+            continue
+    workspace_resolved = None
+    if workspace is not None:
+        try:
+            workspace_resolved = workspace.resolve()
+        except OSError:
+            workspace_resolved = None
+    roots: list[str] = []
+    candidates = [install]
+    for entry in sys.path:
+        if not entry:
+            continue
+        try:
+            candidates.append(Path(entry).resolve())
+        except OSError:
+            continue
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if workspace_resolved is not None and (
+            resolved == workspace_resolved or _under_directory(resolved, workspace_resolved)
+        ):
+            continue
+        trusted = resolved == install or any(
+            resolved == prefix or prefix in resolved.parents for prefix in prefixes
+        )
+        if not trusted:
+            continue
+        text = str(resolved)
+        if text not in roots:
+            roots.append(text)
+    return os.pathsep.join(roots)
+
+
+def scrubbed_environment(workspace: Path | None = None) -> dict[str, str]:
+    """An environment for a child. Loader and startup variables are omitted."""
+
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper.startswith("LD_") or upper.startswith("DYLD_") or upper == "PATH":
+            continue
+        if upper in _DROPPED_ENV:
+            continue
+        if any(part in upper for part in _SECRET_PARTS):
+            continue
+        if key in ("AICAD_CONFIG", "AICAD_SETTINGS", "AICAD_PLUGIN_CONSENT", "XDG_CONFIG_HOME"):
+            continue
+        env[key] = value
+    env["PATH"] = _system_path()
+    env["PYTHONSAFEPATH"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    pythonpath = _trusted_pythonpath(workspace)
+    if pythonpath:
+        env["PYTHONPATH"] = pythonpath
+    return env
+
+
+def program_environment() -> dict[str, str]:
+    """Environment for CalculiX, ffmpeg, a slicer, and other helper programs."""
+
+    env = scrubbed_environment(None)
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONSTARTUP", None)
+    return env
+
+
 def _child_env(
     workspace: Path,
     job: Path,
@@ -1674,19 +1798,7 @@ def _child_env(
     tmp: Path | None = None,
     cache: Path | None = None,
 ) -> dict[str, str]:
-    env: dict[str, str] = {}
-    for key, value in os.environ.items():
-        upper = key.upper()
-        if any(part in upper for part in _SECRET_PARTS):
-            continue
-        if key in ("AICAD_CONFIG", "AICAD_SETTINGS", "AICAD_PLUGIN_CONSENT", "XDG_CONFIG_HOME"):
-            continue
-        env[key] = value
-    safe_path = _pythonpath_for_child(workspace, env.get("PYTHONPATH"))
-    if safe_path is None:
-        env.pop("PYTHONPATH", None)
-    else:
-        env["PYTHONPATH"] = safe_path
+    env = scrubbed_environment(workspace)
     # Do not prepend the working directory to sys.path. The working directory
     # is the project, and a module there would run before the sandbox.
     env["PYTHONSAFEPATH"] = "1"
@@ -1861,6 +1973,7 @@ def _descendants(leader: int) -> set[int]:
                 text=True,
                 check=False,
                 timeout=2,
+                env=program_environment(),
             )
         except (OSError, subprocess.TimeoutExpired):
             return set()
@@ -1918,6 +2031,7 @@ def _ps_descendants(leader: int) -> set[int] | None:
             text=True,
             check=False,
             timeout=2,
+            env=program_environment(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -2596,29 +2710,13 @@ class _DesignRecord:
         self._log = Path(name + ".log")
         env = _child_env(self.workspace, self.job, network=False)
         # This process runs the calls. It is not the confined script.
+        # It still does not inherit loader variables or the parent PYTHONPATH.
         env.pop("AICAD_SANDBOX_CHILD", None)
-        # Use the libraries this process already loaded. A redirected home
-        # must not hide that install, and the project is not an import root.
-        roots: list[str] = []
-        for entry in sys.path:
-            if not entry:
-                continue
-            try:
-                resolved = Path(entry).resolve()
-            except OSError:
-                continue
-            if _inside(resolved, self.workspace):
-                continue
-            text = str(resolved)
-            if text not in roots:
-                roots.append(text)
-        current = env.get("PYTHONPATH")
-        if current:
-            for entry in current.split(os.pathsep):
-                if entry and entry not in roots:
-                    roots.append(entry)
-        if roots:
-            env["PYTHONPATH"] = os.pathsep.join(roots)
+        trusted = _trusted_pythonpath(self.workspace)
+        if trusted:
+            env["PYTHONPATH"] = trusted
+        else:
+            env.pop("PYTHONPATH", None)
         from aicad.thread_stack import child_inherits_geometry_stack
 
         try:

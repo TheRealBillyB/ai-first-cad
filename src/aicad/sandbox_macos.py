@@ -245,11 +245,14 @@ def _resident_via_proc_pidinfo(pid: int) -> int | None:
 
 def _resident_via_ps(pid: int) -> int | None:
     try:
+        from aicad.sandbox import program_environment
+
         completed = subprocess.run(
             ["ps", "-o", "rss=", "-p", str(pid)],
             capture_output=True,
             text=True,
             check=False,
+            env=program_environment(),
         )
     except OSError:
         return None
