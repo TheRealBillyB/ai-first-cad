@@ -1923,11 +1923,26 @@ def _step_string_leaves_folder(folder: Path, value: str) -> bool:
     return False
 
 
+def tessellation_linear(size_x: float, size_y: float, size_z: float, diagonal: float) -> float:
+    """A deflection that stays inside the triangle cap before tessellation runs."""
+
+    linear = min(0.12, max(0.04, diagonal * 0.0015))
+    area = 2.0 * (
+        abs(size_x * size_y) + abs(size_y * size_z) + abs(size_z * size_x)
+    )
+    if linear > 0 and area > 0 and (2.0 * area) / (linear * linear) > _MAX_TRIANGLES:
+        # A little coarser than the exact cap, so rounding cannot go over it.
+        linear = math.sqrt((2.0 * area) / (_MAX_TRIANGLES * 0.99))
+    return linear
+
+
 def tessellate(shape: Shape) -> TriangleMesh:
     """Mesh the solid and discretize its edges for rendering."""
     impl = shape.impl
-    diagonal = float(impl.bounding_box().diagonal)
-    linear = min(0.12, max(0.04, diagonal * 0.0015))
+    box = impl.bounding_box()
+    diagonal = float(box.diagonal)
+    size = box.size
+    linear = tessellation_linear(float(size.X), float(size.Y), float(size.Z), diagonal)
     vertices, triangles, normals, _uvs = impl.tessellate_with_uvs(
         linear, angular_tolerance=0.18
     )
@@ -1938,7 +1953,7 @@ def tessellate(shape: Shape) -> TriangleMesh:
     points = np.array([(v.X, v.Y, v.Z) for v in vertices], dtype=np.float64)
     norms = np.array([(v.X, v.Y, v.Z) for v in normals], dtype=np.float64)
     faces = np.array(triangles, dtype=np.int32)
-    deflection = min(0.2, max(0.04, diagonal * 0.0015))
+    deflection = max(linear, min(0.2, max(0.04, diagonal * 0.0015)))
     edges: list[np.ndarray] = []
     for edge in impl.edges():
         samples = edge.positions(deflection=deflection)

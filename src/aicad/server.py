@@ -401,17 +401,22 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         # OpenCascade and Gmsh write to the C stdout. That descriptor is this
         # process's JSON-RPC stream, so it is pointed away for the call.
         with divert_native_stdio():
-            return client.execute(command, payload, source="agent")
+            result = client.execute(command, payload, source="agent")
+        from aicad.untrusted import mark_assistant_result
+
+        return mark_assistant_result(result)
 
     def guard(fn):
+        from aicad.untrusted import fence_external_text
+
         try:
             return fn()
         except ToolError:
             raise
         except AICADError as exc:
-            raise ToolError(str(exc)) from exc
+            raise ToolError(fence_external_text(str(exc))) from exc
         except Exception as exc:
-            raise ToolError(f"{type(exc).__name__}: {exc}") from exc
+            raise ToolError(fence_external_text(f"{type(exc).__name__}: {exc}")) from exc
 
     @mcp.tool()
     def list_parts() -> dict:
