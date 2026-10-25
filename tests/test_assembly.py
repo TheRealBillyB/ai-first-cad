@@ -1400,3 +1400,159 @@ def test_prismatic_limit_is_millimetres_and_a_hinge_can_pass_a_full_turn(tmp_pat
     moved = document.set_joint("hinge", "spin", 1_000_001)
     stored = next(joint for joint in moved["assembly"]["joints"] if joint["name"] == "spin")
     assert stored["value"] == pytest.approx(1_000_001)
+
+
+def _gear_chain(count: int, reverse: bool) -> dict:
+    instances = [{"name": "ground", "part": "ground"}]
+    joints = []
+    for index in range(count + 1):
+        instances.append({"name": f"p{index}", "part": "part"})
+        joints.append(
+            {
+                "name": f"j{index}",
+                "type": "revolute",
+                "parent": "ground",
+                "child": f"p{index}",
+                "axis": [0, 0, 1],
+            }
+        )
+    relations = [
+        {"name": f"r{index}", "type": "gear", "driver": f"j{index}", "driven": f"j{index + 1}", "ratio": -2}
+        for index in range(count)
+    ]
+    if reverse:
+        relations.reverse()
+    return {"name": "chain", "instances": instances, "joints": joints, "relations": relations}
+
+
+def test_a_reversed_gear_chain_reaches_the_last_shaft():
+    """Nine meshes listed from the output back still turn the last shaft."""
+    solved = solve(_gear_chain(9, True), {"j0": 1})
+    values = {joint["name"]: joint["value"] for joint in solved["joints"]}
+    assert values["j9"] == pytest.approx((-2) ** 9)
+    assert solved["warnings"] == []
+
+
+def test_a_clamped_idler_limits_the_next_gear():
+    spec = _gear_chain(2, True)
+    for joint in spec["joints"]:
+        if joint["name"] == "j1":
+            joint["min"] = -5
+            joint["max"] = 5
+    for relation in spec["relations"]:
+        if relation["driven"] == "j2":
+            relation["ratio"] = 3
+    solved = solve(spec, {"j0": 10})
+    values = {joint["name"]: joint for joint in solved["joints"]}
+    assert values["j1"]["value"] == pytest.approx(-5)
+    assert values["j2"]["value"] == pytest.approx(-15)
+
+
+def test_two_relations_cannot_drive_one_joint():
+    spec = {
+        "name": "fight",
+        "instances": [
+            {"name": "g", "part": "g"},
+            {"name": "a", "part": "a"},
+            {"name": "b", "part": "b"},
+            {"name": "c", "part": "c"},
+        ],
+        "joints": [
+            {"name": "a", "type": "revolute", "parent": "g", "child": "a", "axis": [0, 0, 1]},
+            {"name": "b", "type": "revolute", "parent": "g", "child": "b", "axis": [0, 0, 1]},
+            {"name": "c", "type": "revolute", "parent": "g", "child": "c", "axis": [0, 0, 1]},
+        ],
+        "relations": [
+            {"name": "ab", "type": "gear", "driver": "a", "driven": "b", "ratio": -2},
+            {"name": "cb", "type": "gear", "driver": "c", "driven": "b", "ratio": -3},
+        ],
+    }
+    with pytest.raises(GeometryError, match="already drives"):
+        solve(spec, {"a": 10, "c": 10})
+
+
+def test_a_relation_cycle_is_refused():
+    spec = {
+        "name": "cycle",
+        "instances": [
+            {"name": "g", "part": "g"},
+            {"name": "a", "part": "a"},
+            {"name": "b", "part": "b"},
+        ],
+        "joints": [
+            {"name": "a", "type": "revolute", "parent": "g", "child": "a", "axis": [0, 0, 1]},
+            {"name": "b", "type": "revolute", "parent": "g", "child": "b", "axis": [0, 0, 1]},
+        ],
+        "relations": [
+            {"name": "ab", "type": "gear", "driver": "a", "driven": "b", "ratio": -2},
+            {"name": "ba", "type": "gear", "driver": "b", "driven": "a", "ratio": -3},
+        ],
+    }
+    with pytest.raises(GeometryError, match="cycle"):
+        solve(spec, {"a": 10})
+
+
+def test_a_linkage_does_not_drive_a_slide():
+    spec = {
+        "name": "slidebar",
+        "instances": [
+            {"name": "g", "part": "g"},
+            {"name": "c", "part": "c"},
+            {"name": "r", "part": "r"},
+        ],
+        "joints": [
+            {"name": "crank", "type": "revolute", "parent": "g", "child": "c", "axis": [0, 0, 1]},
+            {"name": "rocker", "type": "prismatic", "parent": "g", "child": "r", "axis": [1, 0, 0]},
+        ],
+        "relations": [
+            {
+                "name": "loop",
+                "type": "linkage",
+                "driver": "crank",
+                "driven": "rocker",
+                "ground_mm": 80,
+                "crank_mm": 40,
+                "coupler_mm": 90,
+                "rocker_mm": 70,
+            }
+        ],
+    }
+    with pytest.raises(GeometryError, match="prismatic"):
+        solve(spec, {"crank": 90})
+
+
+def test_a_gear_does_not_turn_a_fixed_joint():
+    spec = {
+        "name": "fixedgear",
+        "instances": [
+            {"name": "g", "part": "g"},
+            {"name": "a", "part": "a"},
+            {"name": "b", "part": "b"},
+        ],
+        "joints": [
+            {"name": "a", "type": "revolute", "parent": "g", "child": "a", "axis": [0, 0, 1]},
+            {"name": "b", "type": "fixed", "parent": "g", "child": "b", "parent_anchor": [40, 0, 0]},
+        ],
+        "relations": [{"name": "mesh", "type": "gear", "driver": "a", "driven": "b", "ratio": -2}],
+    }
+    with pytest.raises(GeometryError, match="fixed"):
+        solve(spec, {"a": 30})
+
+
+def test_a_rack_maps_degrees_to_millimetres():
+    spec = {
+        "name": "rack",
+        "instances": [
+            {"name": "g", "part": "g"},
+            {"name": "pinion", "part": "pinion"},
+            {"name": "rack", "part": "rack"},
+        ],
+        "joints": [
+            {"name": "pinion", "type": "revolute", "parent": "g", "child": "pinion", "axis": [0, 1, 0]},
+            {"name": "rack", "type": "prismatic", "parent": "g", "child": "rack", "axis": [1, 0, 0]},
+        ],
+        "relations": [{"name": "mesh", "type": "gear", "driver": "pinion", "driven": "rack", "ratio": -2}],
+    }
+    solved = solve(spec, {"pinion": 10})
+    values = {joint["name"]: joint["value"] for joint in solved["joints"]}
+    assert values["rack"] == pytest.approx(-20)
