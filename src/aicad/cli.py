@@ -1075,9 +1075,11 @@ def _read_named_file(path: Path) -> str:
     except OSError as exc:
         raise AICADError(f"Could not read {path}: {exc}") from exc
     try:
-        return data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeError as exc:
         raise AICADError(f"Could not read {path}.") from exc
+    # Match Path.read_text: a Windows line ending arrives as a line feed.
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _camera_path_file(path: Path) -> list:

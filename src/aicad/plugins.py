@@ -1035,9 +1035,10 @@ def _read_manifest_bytes(path: Path) -> str:
         error=PluginError,
     )
     try:
-        return data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeError as exc:
         raise PluginError(f"Could not read {MANIFEST_NAME}. The plugin was not imported.") from exc
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _read_manifest_text(entry) -> str:

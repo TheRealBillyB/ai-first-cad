@@ -78,7 +78,7 @@ def test_a_command_line_file_link_is_not_opened(tmp_path):
 
 def test_a_regular_command_line_file_is_read(tmp_path):
     script = tmp_path / "script.py"
-    script.write_text("part = Box(1, 1, 1)\n", encoding="utf-8")
+    script.write_bytes(b"part = Box(1, 1, 1)\r\n")
     assert _read_named_file(script) == "part = Box(1, 1, 1)\n"
     payload = tmp_path / "ops.json"
     payload.write_text(json.dumps([{"op": "add"}]), encoding="utf-8")
