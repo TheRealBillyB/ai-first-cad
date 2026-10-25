@@ -19,6 +19,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A script solid is read only from the file named for that script | The file is `.aicad/geometry/<name>-<script hash>.step`. Another path is not the solid that script built, so it is not opened. |
 | A shared STEP file and a served project file have a size cap | The host returns an error past that cap. A mesh stops at a fixed triangle count, and the macOS file helper uses the same cap as the script. |
 | A STEP file with another name is not imported | A STEP file in the project that has another name is not opened. A file the person named by an absolute path is still read. |
+| A STEP text scan and a saved session stay inside their size caps | The scan refuses a buffer larger than the STEP read, and saving a project does not copy a session past 32 MiB. |
 | A trimmed Windows path is refused before a record, a STEP name, or a workspace file is opened | ``....\....\hidden`` is ``..\..\hidden`` after Win32 removes trailing dots. Those readers now use the same check as a session path. |
 | A workspace file with another name is not shown | The workspace file view does not open a file that is a link or that has another name. |
 | An existing virtual environment older than Python 3.11 is not reused | The installer requires Python 3.11. An existing `.venv` on an older interpreter is reported, and it is not used for the install. |
@@ -26,6 +27,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | Several planets still report shaft torque | The tooth-force split among equal planets is free, and the shaft torques are reported when they do not depend on that split. Mesh efficiency waits until every tooth force is determined. |
 | The assistant cannot allow scripts, grant network, or save settings | Those switches and the chat request belong to the person at the page. The assistant token stays on project commands. |
 | The workspace app does not listen on a public address | A Host header can say localhost while the connection comes from another machine, so the bind address and the peer both have to be loopback. |
+| Workspace responses deny framing and omit the referrer | The page is not embedded in another site, and a picture address that carries the session is not sent onward or stored. |
 
 ## 2026-10-24
 
