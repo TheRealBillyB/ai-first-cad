@@ -25,6 +25,9 @@ _INJECTION = (
     "PYTHONSTARTUP",
     "PYTHONHOME",
     "PYTHONINSPECT",
+    "GCONV_PATH",
+    "GLIBC_TUNABLES",
+    "LOCPATH",
 )
 
 
@@ -84,6 +87,9 @@ def test_the_child_environment_is_scrubbed(tmp_path, monkeypatch):
         "PYTHONHOME": str(outside / "pyhome"),
         "PYTHONPATH": str(pylib),
         "PATH": str(marker_bin),
+        "GCONV_PATH": str(outside),
+        "GLIBC_TUNABLES": "glibc.malloc.check=1",
+        "LOCPATH": str(outside),
     }.items():
         monkeypatch.setenv(name, value)
     env = _child_env(project, project / "job", network=False)
