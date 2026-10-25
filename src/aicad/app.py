@@ -583,6 +583,13 @@ def _handler(session: Workspace):
             self.wfile.write(data)
 
         def _error(self, status: int, message: str) -> None:
+            try:
+                if self._caller() == "agent":
+                    from aicad.paths import hide_project_path
+
+                    message = hide_project_path(message, self.workspace.root)
+            except Exception:
+                pass
             data = json.dumps({"ok": False, "error": message}).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
