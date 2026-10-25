@@ -239,6 +239,7 @@ _landlock_signal_scope = False
 _PROCESS_CAP = 256
 _PR_SET_CHILD_SUBREAPER = 36
 _PROCESS_LIMIT = "The script was stopped because it started too many processes."
+_CGROUP_MOVE_ERROR = "The process limit could not be applied, so the script was not run."
 
 _SECRET_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
 _SAFE_BUILTINS = (
@@ -790,20 +791,63 @@ def _prepare_pids_cgroup() -> Path | None:
     return target
 
 
+def _proc_cgroup_path(pid: int) -> Path | None:
+    """This process's cgroup v2 directory, from ``/proc``, or None."""
+    try:
+        text = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3 or parts[0] != "0" or parts[1] != "":
+            continue
+        relative = parts[2].strip()
+        if not relative.startswith("/"):
+            return None
+        if relative == "/":
+            return Path("/sys/fs/cgroup")
+        return Path("/sys/fs/cgroup") / relative.lstrip("/")
+    return None
+
+
+def _same_directory(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
 def _move_into_pids_cgroup(cgroup: Path, pid: int) -> bool:
+    """Move ``pid`` into ``cgroup``. False when the move did not stick.
+
+    Writing the pid is not enough. The process has to show up in that cgroup
+    afterwards, or ``pids.max`` does not apply to it.
+    """
     try:
         (cgroup / "cgroup.procs").write_text(f"{pid}\n", encoding="utf-8")
     except OSError:
         return False
-    return True
+    current = _proc_cgroup_path(pid)
+    if current is None:
+        return False
+    return _same_directory(current, cgroup)
+
+
+def _require_pids_cgroup(cgroup: Path, pid: int) -> None:
+    """Move ``pid`` into ``cgroup``, or refuse to run the script."""
+    if not _move_into_pids_cgroup(cgroup, pid):
+        raise ScriptError(_CGROUP_MOVE_ERROR)
 
 
 def _join_pids_cgroup() -> None:
-    """Move this process into the cgroup the parent prepared, before Landlock."""
+    """Move this process into the cgroup the parent prepared, before Landlock.
+
+    A failed move is not ignored. The script does not run without the cap.
+    """
     raw = os.environ.get("AICAD_PIDS_CGROUP")
     if not raw:
         return
-    _move_into_pids_cgroup(Path(raw), os.getpid())
+    _require_pids_cgroup(Path(raw), os.getpid())
 
 
 def _release_pids_cgroup(path: Path | None) -> None:
@@ -2837,7 +2881,12 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             if identity is not None:
                 account.add_ids({identity[0]})
         if pids_cgroup is not None:
-            _move_into_pids_cgroup(pids_cgroup, proc.pid)
+            try:
+                _require_pids_cgroup(pids_cgroup, proc.pid)
+            except ScriptError:
+                _stop_child(proc, seen, seen_lock)
+                shutil.rmtree(job, ignore_errors=True)
+                raise
         stop_watch = threading.Event()
         watcher = threading.Thread(
             target=_watch_descendants,
