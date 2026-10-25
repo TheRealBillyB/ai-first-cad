@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from aicad.errors import PlanError
-from aicad.plan import PlanStore, plan_files
+from aicad.plan import PlanStore, plan_files, restore_plan_files
 
 _CANARY = "CANARY_HIT"
 
@@ -147,3 +147,58 @@ def test_a_real_plan_is_still_listed_and_copied(tmp_path):
     assert listed[0]["title"] == "Bracket"
     copied = plan_files(project)
     assert "Bracket" in copied["shelf.json"]
+
+
+def test_a_swapped_plan_is_not_read(tmp_path, monkeypatch):
+    from aicad import paths
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = outside / "SANDBOX_CANARY.txt"
+    canary.write_text(_CANARY + "\n", encoding="utf-8")
+    project = tmp_path / "project"
+    plans = project / "plans"
+    plans.mkdir(parents=True)
+    (plans / "shelf.json").write_text(json.dumps(_plan("shelf", "Bracket")), encoding="utf-8")
+
+    def swap(root, relative) -> None:
+        if Path(relative).name != "shelf.json":
+            return
+        current = Path(root) / relative
+        if current.is_symlink() or not current.is_file():
+            return
+        current.unlink()
+        try:
+            current.symlink_to(canary)
+        except OSError:
+            pytest.skip("this machine cannot create a symlink")
+
+    monkeypatch.setattr(paths, "_before_nofollow", swap)
+    with pytest.raises(PlanError) as caught:
+        PlanStore(project).get("shelf")
+    assert _CANARY not in str(caught.value)
+    copied = plan_files(project)
+    listed = PlanStore(project).summaries()
+    assert _CANARY not in _dump(copied)
+    assert _CANARY not in _dump(listed)
+    assert "shelf.json" not in copied
+    assert canary.read_text(encoding="utf-8") == _CANARY + "\n"
+
+
+def test_a_plan_past_the_cap_is_not_copied_and_undo_leaves_it(tmp_path):
+    project = tmp_path / "project"
+    plans = project / "plans"
+    plans.mkdir(parents=True)
+    huge = plans / "huge.json"
+    huge.write_bytes(b"{" + b" " * 2_000_001)
+    before = huge.read_bytes()
+    (plans / "extra.json").write_text("{}\n", encoding="utf-8")
+    copied = plan_files(project)
+    assert "huge.json" not in copied
+    assert copied["extra.json"] == "{}\n"
+    listed = PlanStore(project).summaries()
+    assert any("larger than a plan file" in item.get("error", "") for item in listed)
+    assert _CANARY not in _dump(listed)
+    restore_plan_files(project, {})
+    assert huge.read_bytes() == before
+    assert not (plans / "extra.json").exists()
