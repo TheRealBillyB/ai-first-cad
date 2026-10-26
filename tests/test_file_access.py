@@ -6,6 +6,7 @@ under test. A link to it, a second name, and a file past the cap are refused.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 from pathlib import Path
@@ -42,6 +43,16 @@ def _link(path: Path, target: Path, *, directory: bool = False) -> None:
             if completed.returncode == 0:
                 return
         pytest.fail(f"this system cannot create a link ({exc})")
+
+
+def test_the_windows_file_record_keeps_the_link_count_in_place():
+    from aicad import file_access
+
+    info = file_access._FileInfo
+    assert ctypes.sizeof(info) == 52
+    assert info.dwFileAttributes.offset == 0
+    assert info.nFileSizeLow.offset == 36
+    assert info.nNumberOfLinks.offset == 40
 
 
 def test_a_regular_file_is_read_from_its_directory(tmp_path):

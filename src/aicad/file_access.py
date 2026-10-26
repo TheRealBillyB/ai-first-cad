@@ -511,12 +511,23 @@ class _IoStatus(ctypes.Structure):
     _fields_ = (("Status", ctypes.c_void_p), ("Information", ctypes.c_void_p))
 
 
+class _FileTime(ctypes.Structure):
+    """Two 32-bit fields. A 64-bit field would shift the link count."""
+
+    _fields_ = (
+        ("dwLowDateTime", ctypes.c_uint32),
+        ("dwHighDateTime", ctypes.c_uint32),
+    )
+
+
 class _FileInfo(ctypes.Structure):
+    """BY_HANDLE_FILE_INFORMATION. The link count is at byte 40."""
+
     _fields_ = (
         ("dwFileAttributes", ctypes.c_uint32),
-        ("ftCreationTime", ctypes.c_uint64),
-        ("ftLastAccessTime", ctypes.c_uint64),
-        ("ftLastWriteTime", ctypes.c_uint64),
+        ("ftCreationTime", _FileTime),
+        ("ftLastAccessTime", _FileTime),
+        ("ftLastWriteTime", _FileTime),
         ("dwVolumeSerialNumber", ctypes.c_uint32),
         ("nFileSizeHigh", ctypes.c_uint32),
         ("nFileSizeLow", ctypes.c_uint32),
