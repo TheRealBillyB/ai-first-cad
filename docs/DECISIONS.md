@@ -18,8 +18,11 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A gear or linkage adds the driven load | The driver load gains ratio times the driven load, with ratio d(driven)/d(driver), so a reversing pair cancels equal moments and a chain is followed to its end. |
 | A plan file is opened from the checked directory | A plan is read from the project directory without following a link, and a plan past the size cap is not copied into undo. |
 | A plan file that is a link is not opened | Listing a plan and the undo copy do not open a plan folder that is a link, or a plan file that has another name. |
+| A project copy does not follow a link | Saving a copy reads each project file from the directory that was checked, and a link or a second name is left behind. |
 | A project file is opened from the checked directory | The read uses the same directory descriptor as a write, so a link swapped in after the check is not followed. A session also stops at a fixed size and nesting depth. |
+| A project path that Windows would resolve to a different file is refused | Alternate data streams, short names, trailing dots and spaces, overlong paths, and a name that differs only by case are refused on every system. |
 | A sandbox setup failure has no traceback | A failure while the sandbox is starting is one error line in the job result. The traceback stays out of that result and out of the child's error stream. |
+| A script cannot write more than its disk quota | One run stops at 512 MiB of writes, and one file still stops at 512 MiB. The parent enforces both on every system, including Windows, where a file-size limit is not available. |
 | A script is not run when it cannot enter its process cgroup | A failed move would leave the script outside `pids.max`, so the script is not run. |
 | A script solid is read only from the file named for that script | The file is `.aicad/geometry/<name>-<script hash>.step`. Another path is not the solid that script built, so it is not opened. |
 | A shared STEP file and a served project file have a size cap | The host returns an error past that cap. A mesh stops at a fixed triangle count, and the macOS file helper uses the same cap as the script. |
@@ -28,6 +31,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A traverse grant does not change the folder after the wait | The grant thread is told to stop when the wait ends, and it does not write the access entry after that. |
 | A trimmed Windows path is refused before a record, a STEP name, or a workspace file is opened | ``....\....\hidden`` is ``..\..\hidden`` after Win32 removes trailing dots. Those readers now use the same check as a session path. |
 | A workspace command response stops at 32 MiB | The assistant's command client does not keep a response larger than that. |
+| A workspace file is read from the checked directory and is not run | A project file shown in the workspace is opened from the directory that was checked, and the response tells the browser not to run it. |
 | A workspace file with another name is not shown | The workspace file view does not open a file that is a link or that has another name. |
 | An existing virtual environment older than Python 3.11 is not reused | The installer requires Python 3.11. An existing `.venv` on an older interpreter is reported, and it is not used for the install. |
 | An installer package command stops if it does not finish | apt, pip, and the virtual-environment command wait at most 30 minutes. A lock that never clears does not hold the installer open. |

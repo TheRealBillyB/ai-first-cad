@@ -132,3 +132,37 @@ def test_a_workspace_file_through_an_inside_link_is_not_shown(project, tmp_path)
     assert _CANARY not in body
     assert direct_status == 200
     assert direct_body == _CANARY
+
+
+def test_a_workspace_file_swapped_for_a_link_is_not_shown(project, tmp_path, monkeypatch):
+    from aicad import paths
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = outside / "SANDBOX_CANARY.txt"
+    canary.write_bytes(_CANARY)
+
+    def swap(root, relative) -> None:
+        if Path(relative).name != "note.txt":
+            return
+        current = Path(root) / relative
+        if current.is_symlink() or not current.is_file():
+            return
+        current.unlink()
+        try:
+            current.symlink_to(canary)
+        except OSError:
+            pytest.skip("this machine cannot create a symlink")
+
+    monkeypatch.setattr(paths, "_before_nofollow", swap)
+    server = _serve(project)
+    try:
+        host, port = server.server_address
+        status, body = _get(host, port, "/api/file?path=note.txt", server.page_token)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 400
+    assert b"is a link" in body
+    assert _CANARY not in body
+    assert canary.read_bytes() == _CANARY

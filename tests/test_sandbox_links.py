@@ -595,6 +595,123 @@ def test_a_directory_is_not_created_through_a_link_that_stays_inside(tmp_path, m
     assert not (kept / "renders").exists()
 
 
+def _directory_link(link: Path, target: Path) -> None:
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            pytest.skip("this machine cannot create a junction")
+        return
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot create a directory symlink")
+
+
+def _hard_link(link: Path, target: Path) -> None:
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(target, link)
+    except OSError:
+        pytest.skip("this machine cannot create a hard link")
+
+
+def _regular_text(root: Path) -> str:
+    """Text of ordinary files under ``root``. A link is not read."""
+    if not root.exists() or root.is_symlink():
+        return ""
+    chunks: list[bytes] = []
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        chunks.append(path.read_bytes())
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def test_save_as_does_not_follow_a_link_that_stays_inside(tmp_path):
+    from aicad.errors import GeometryError
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = _canary(outside)
+    canary.write_text(_CANARY_TEXT, encoding="utf-8")
+    project = tmp_path / "project"
+    workspace = Workspace(project)
+    hold = project / "hold"
+    hold.mkdir()
+    _hard_link(hold / "alias.txt", canary)
+    _directory_link(project / "documents" / "pocket", hold)
+    copy = tmp_path / "copy"
+    with pytest.raises(GeometryError, match="link") as caught:
+        workspace.execute("save_project_as", {"path": str(copy)})
+    assert _CANARY_TEXT not in str(caught.value)
+    _assert_text(canary, _CANARY_TEXT)
+    assert _CANARY_TEXT not in _regular_text(copy)
+    assert list(outside.iterdir()) == [canary]
+    assert workspace.root == project.resolve()
+
+
+def test_save_as_does_not_copy_a_file_with_another_name(tmp_path):
+    from aicad.errors import GeometryError
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = _canary(outside)
+    canary.write_text(_CANARY_TEXT, encoding="utf-8")
+    project = tmp_path / "project"
+    workspace = Workspace(project)
+    _hard_link(project / "documents" / "alias.txt", canary)
+    copy = tmp_path / "copy"
+    with pytest.raises(GeometryError, match="another name") as caught:
+        workspace.execute("save_project_as", {"path": str(copy)})
+    assert _CANARY_TEXT not in str(caught.value)
+    _assert_text(canary, _CANARY_TEXT)
+    assert _CANARY_TEXT not in _regular_text(copy)
+    assert list(outside.iterdir()) == [canary]
+    assert workspace.root == project.resolve()
+
+
+def test_save_as_does_not_read_a_file_swapped_for_a_link(tmp_path, monkeypatch):
+    from aicad import paths
+    from aicad.errors import GeometryError
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = _canary(outside)
+    canary.write_text(_CANARY_TEXT, encoding="utf-8")
+    project = tmp_path / "project"
+    workspace = Workspace(project)
+    notes = project / "documents"
+    notes.mkdir(exist_ok=True)
+    (notes / "notes.md").write_text("keep\n", encoding="utf-8")
+
+    def swap(root, relative) -> None:
+        if Path(relative).name != "notes.md":
+            return
+        current = Path(root) / relative
+        if current.is_symlink() or not current.is_file():
+            return
+        current.unlink()
+        try:
+            current.symlink_to(canary)
+        except OSError:
+            pytest.skip("this machine cannot create a symlink")
+
+    monkeypatch.setattr(paths, "_before_nofollow", swap)
+    copy = tmp_path / "copy"
+    with pytest.raises(GeometryError) as caught:
+        workspace.execute("save_project_as", {"path": str(copy)})
+    assert _CANARY_TEXT not in str(caught.value)
+    _assert_text(canary, _CANARY_TEXT)
+    assert _CANARY_TEXT not in _regular_text(tmp_path / "copy")
+    assert workspace.root == project.resolve()
+
+
 def test_a_link_that_leaves_the_project_is_still_outside(tmp_path, monkeypatch):
     from aicad.errors import GeometryError
     from aicad.paths import output_dir, output_path
