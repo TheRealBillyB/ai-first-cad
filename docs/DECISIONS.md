@@ -15,6 +15,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A directory link is unlinked when a project folder is removed | The directory it points at is left in place on Windows, macOS, and Linux. |
 | A linked CI solver is copied into the prefix | The loader looks for libraries beside the file a link points at, so a solver that stays a link does not start. |
 | A picture and a robot mesh are read from the project | The bytes are read before a picture is attached or a simulator opens a mesh, so a link is not followed. |
+| A private file is created with its final access | A token, an opt-in record, and saved assistant settings are readable by this user only from the moment they are created, on Windows, macOS, and Linux. |
 | A project file is opened from a directory handle | The open, the size check, and the replacement all use that handle, so a link swapped in after the path was accepted is not followed on Windows, macOS, or Linux. |
 | A project file is read from the project directory | A directory link in the middle of the path is not followed on Windows, macOS, or Linux. |
 | A script job file is not opened when that name is a link | The child reads the job and the script, and writes the result, without following a link at that name, on Windows, macOS, and Linux. |

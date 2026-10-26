@@ -97,3 +97,5 @@ That stops another website, including one that tries to reach this computer by a
 - **E.** A directory link is unlinked when a project folder is removed, and the directory it points at is left in place.
 - A design script's job file, script file, and result are not opened when that name is a link.
 - **AL.** A slicer runs with the program directory as its working directory. An output folder that is a symlink or junction is not used.
+
+- A token, a design-script opt-in, a session record, and saved assistant settings are created readable by this user only.
