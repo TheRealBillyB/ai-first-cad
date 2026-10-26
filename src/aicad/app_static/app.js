@@ -2028,6 +2028,29 @@ function showDialogError(error) {
   slot.textContent = message;
 }
 
+const REQUIREMENT_ORIENTATIONS = ["best", "auto", "z_up", "z_down", "x_up", "x_down", "y_up", "y_down"];
+
+function requirementToken(value) {
+  return String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function retitleRequirementFields() {
+  const kind = $("req-kind").value;
+  const limit = $("req-limit");
+  const material = $("req-material");
+  if (kind === "fits_printer") {
+    $("req-limit-label").textContent = "Printer";
+    $("req-material-label").textContent = "Orientation";
+    if (!limit.value.trim() || Number.isFinite(Number(limit.value))) limit.value = "bambu_a1";
+    if (!REQUIREMENT_ORIENTATIONS.includes(requirementToken(material.value))) material.value = "best";
+    return;
+  }
+  $("req-limit-label").textContent = "Limit";
+  $("req-material-label").textContent = "Material";
+  if (REQUIREMENT_ORIENTATIONS.includes(requirementToken(material.value))) material.value = "pla";
+  if (kind === "max_mass" && !Number.isFinite(Number(limit.value))) limit.value = "20";
+}
+
 async function boot() {
   initView();
   $("nav-model").onclick = () => showPage("model");
@@ -2215,6 +2238,7 @@ async function boot() {
     await refresh();
   };
   $("doc-editor").addEventListener("input", () => { $("doc-preview").innerHTML = markdown($("doc-editor").value); });
+  $("req-kind").addEventListener("change", retitleRequirementFields);
   $("req-form").onsubmit = async (event) => {
     event.preventDefault();
     try {
@@ -2236,7 +2260,8 @@ async function boot() {
     if (kind === "min_wall") item.min_mm = requiredNumber(limitText, "Enter the minimum wall in millimeters.");
     if (kind === "fits_printer") {
       item.printer = limitText || "bambu_a1";
-      item.orientation = $("req-material").value || "best";
+      const orientation = requirementToken($("req-material").value);
+      item.orientation = REQUIREMENT_ORIENTATIONS.includes(orientation) ? orientation : "best";
     }
     if (kind === "min_safety_factor") {
       item.minimum = requiredNumber(limitText, "Enter the minimum safety factor.");
