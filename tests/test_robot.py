@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from aicad.document import Document
+from aicad.kinematics import solve
 from aicad.kernel import place, solid_inertia
 from aicad.robot import export_robot
 
@@ -167,6 +168,81 @@ def test_revolute_export_writes_limits_mass_and_meshes(tmp_path):
     assert report["validation"]["mujoco"]["status"] in ("loaded", "skipped")
     if report["validation"]["mujoco"]["status"] == "loaded":
         assert report["validation"]["mujoco"]["steps"] == 5
+
+
+def test_a_second_joint_keeps_the_span_between_pins(tmp_path):
+    """The parent link frame sits on the incoming pin, so the next origin includes that shift."""
+    document = Document(tmp_path)
+    _box(document, "base", [20, 20, 10], [0, 0, 5])
+    _box(document, "link1", [100, 10, 10], [0, 0, 0])
+    _box(document, "link2", [60, 10, 10], [0, 0, 0])
+    document.create_assembly(
+        {
+            "name": "arm",
+            "instances": [
+                {"name": "base", "part": "base", "material": "aluminum"},
+                {"name": "link1", "part": "link1", "material": "aluminum"},
+                {"name": "link2", "part": "link2", "material": "aluminum"},
+            ],
+            "joints": [
+                {
+                    "name": "shoulder",
+                    "type": "revolute",
+                    "parent": "base",
+                    "child": "link1",
+                    "parent_anchor": [0, 0, 10],
+                    "child_anchor": [-50, 0, 0],
+                    "axis": [0, 0, 1],
+                    "min": -180,
+                    "max": 180,
+                },
+                {
+                    "name": "elbow",
+                    "type": "revolute",
+                    "parent": "link1",
+                    "child": "link2",
+                    "parent_anchor": [50, 0, 0],
+                    "child_anchor": [-30, 0, 0],
+                    "axis": [0, 0, 1],
+                    "min": -180,
+                    "max": 180,
+                },
+            ],
+            "relations": [],
+        }
+    )
+    report = document.export_robot("arm", tmp_path / "robot")
+    root = ET.parse(report["urdf"]).getroot()
+    shoulder = [float(value) for value in root.find("joint[@name='shoulder']/origin").get("xyz").split()]
+    elbow = [float(value) for value in root.find("joint[@name='elbow']/origin").get("xyz").split()]
+    assert shoulder == pytest.approx([0.0, 0.0, 0.01], abs=1e-6)
+    assert elbow == pytest.approx([0.1, 0.0, 0.0], abs=1e-6)
+    mjcf = ET.parse(report["mjcf"]).getroot()
+    link2 = [float(value) for value in mjcf.find(".//body[@name='link2']").get("pos").split()]
+    assert link2 == pytest.approx([0.1, 0.0, 0.0], abs=1e-6)
+    turned = _urdf_rotation(0.0, 0.0, math.pi / 2)
+    world = [
+        shoulder[row] + sum(turned[row][col] * elbow[col] for col in range(3))
+        for row in range(3)
+    ]
+    pin = next(
+        joint["origin_mm"]
+        for joint in solve(document.get_assembly("arm")["assembly"], {"shoulder": 90})["joints"]
+        if joint["name"] == "elbow"
+    )
+    assert pin == pytest.approx([0.0, 100.0, 10.0], abs=0.05)
+    assert [value * 1000.0 for value in world] == pytest.approx(pin, abs=0.05)
+    if report["validation"]["mujoco"]["status"] != "loaded":
+        return
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_path(report["mjcf"])
+    data = mujoco.MjData(model)
+    joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "shoulder")
+    data.qpos[model.jnt_qposadr[joint_id]] = math.pi / 2
+    mujoco.mj_forward(model, data)
+    body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link2")
+    assert list(data.xpos[body]) == pytest.approx([0.0, 0.1, 0.01], abs=1e-4)
 
 
 def test_a_cylindrical_joint_becomes_two_joints(tmp_path):

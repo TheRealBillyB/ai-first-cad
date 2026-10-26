@@ -2,10 +2,11 @@
 
 Meshes stay in millimeters and are scaled by 0.001 in the robot file, so a
 simulator sees meters. Mass is kilograms and inertia is about the center of
-mass in kg·m². A joint's origin is the pose at value 0. Gear, linkage, and
-cylinder relations are comments: a URDF tree cannot enforce them. A name is
-escaped so a quote stays inside its attribute and both files stay one XML
-document.
+mass in kg·m². A joint's origin is the pose at value 0. A revolute, prismatic,
+or fixed child link frame sits on the incoming pin, so the next joint is the
+parent anchor measured in that frame. Gear, linkage, and cylinder relations
+are comments: a URDF tree cannot enforce them. A name is escaped so a quote
+stays inside its attribute and both files stay one XML document.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ def export_robot(spec: dict, shapes: dict, out_dir: Path) -> dict:
             written[part] = filename
         links.append(_link(instance, shapes[part], written[part]))
     _apply_child_offsets(spec, links)
-    joints = _joints(spec)
+    joints = _joints(spec, links)
     name = str(spec["name"])
     from aicad.paths import publish_text
 
@@ -164,8 +165,15 @@ def _apply_child_offsets(spec: dict, links: list[dict]) -> None:
         by_name[joint["child"]]["offset_m"] = [-anchor[0], -anchor[1], -anchor[2]]
 
 
-def _joints(spec: dict) -> list[dict]:
-    """Structural joints at value 0, plus a fixed joint from world to each grounded part."""
+def _joints(spec: dict, links: list[dict] | None = None) -> list[dict]:
+    """Structural joints at value 0, plus a fixed joint from world to each grounded part.
+
+    A child link frame sits on the incoming pin. The next joint's origin is the
+    parent anchor in that frame, so a pin away from the part origin does not
+    shorten the following link. A grounded part and a parent held by a
+    cylindrical joint keep the part frame, and that offset is zero.
+    """
+    offsets = {link["name"]: link["offset_m"] for link in (links or [])}
     children = {joint["child"] for joint in spec["joints"]}
     rows = []
     for instance in spec["instances"]:
@@ -188,13 +196,14 @@ def _joints(spec: dict) -> list[dict]:
             }
         )
     for joint in spec["joints"]:
-        rows.extend(_one_joint(joint))
+        rows.extend(_one_joint(joint, offsets.get(joint["parent"], [0.0, 0.0, 0.0])))
     return rows
 
 
-def _one_joint(joint: dict) -> list[dict]:
+def _one_joint(joint: dict, parent_offset: list[float] | None = None) -> list[dict]:
     axis = [float(value) for value in joint["axis"]]
-    anchor = [float(value) / 1000.0 for value in joint["parent_anchor"]]
+    shift = [float(value) for value in (parent_offset or (0.0, 0.0, 0.0))]
+    anchor = [float(joint["parent_anchor"][index]) / 1000.0 + shift[index] for index in range(3)]
     child_anchor = [float(value) / 1000.0 for value in joint["child_anchor"]]
     kind = joint["type"]
     if kind == "fixed":
