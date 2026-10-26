@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from aicad.sandbox_run import _JOB_MAX_BYTES, _read_job_text, _read_script, _write, main
+from aicad.sandbox_run import _JOB_MAX_BYTES, _read_job_text, _read_script, _write
 
 
 def test_a_job_file_is_read_and_the_result_is_written(tmp_path):
@@ -33,7 +35,17 @@ def test_a_job_link_is_not_followed(tmp_path):
         pytest.skip("symlinks are not available")
     with pytest.raises(OSError):
         _read_job_text(link, _JOB_MAX_BYTES)
-    assert main([str(job)]) == 0
+    # The child ends its own process on Windows. A separate process keeps this one.
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\nfrom aicad.sandbox_run import main\nraise SystemExit(main([sys.argv[1]]))\n",
+            str(job),
+        ],
+        check=False,
+    )
+    assert completed.returncode == 0
     assert outside.read_text(encoding="utf-8").startswith("{")
     result = json.loads((job / "result.json").read_text(encoding="utf-8"))
     assert result["ok"] is False
