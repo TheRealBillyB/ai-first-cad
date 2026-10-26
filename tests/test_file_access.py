@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from aicad.file_access import TooLarge, read_file, read_from_root, read_prefix
+from aicad.file_access import TooLarge, read_file, read_from_root, read_prefix, read_tail, read_text
 from aicad.paths import _TooLarge
 
 _CANARY_NAME = "SANDBOX_CANARY.txt"
@@ -223,3 +223,98 @@ def test_a_junction_and_an_alternate_stream_are_not_read(tmp_path):
     with pytest.raises(OSError):
         read_from_root(root, Path("note.txt:hidden"), 100)
     assert not stream.exists()
+
+
+def _project(tmp_path: Path) -> Path:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "session.json").write_text("{}\n", encoding="utf-8")
+    return project
+
+
+def test_a_nested_directory_link_is_not_read(tmp_path):
+    outside = tmp_path / "outside"
+    nested = outside / "sub"
+    nested.mkdir(parents=True)
+    canary = nested / "log.txt"
+    canary.write_text(_CANARY_TEXT, encoding="utf-8")
+    picture = nested / "sheet.png"
+    picture.write_bytes(b"\x89PNG\r\n\x1a\nOUTSIDE")
+    project = _project(tmp_path)
+    kept = project / "docs" / "sub"
+    kept.mkdir(parents=True)
+    (kept / "note.txt").write_text("keep\n", encoding="utf-8")
+    _link(project / "renders", outside, directory=True)
+    hidden = project / "renders" / "sub" / "log.txt"
+    with pytest.raises(OSError) as caught:
+        read_text(hidden, maximum=100)
+    assert _CANARY_TEXT not in str(caught.value)
+    with pytest.raises(OSError):
+        read_tail(hidden, 100)
+    with pytest.raises(OSError):
+        read_prefix(project / "renders" / "sub" / "sheet.png", 8, maximum=1000)
+    from aicad.blueprint import png_size
+    from aicad.errors import GeometryError
+
+    with pytest.raises(GeometryError) as picture_error:
+        png_size(project / "renders" / "sub" / "sheet.png")
+    assert _CANARY_TEXT not in str(picture_error.value)
+    assert read_text(kept / "note.txt", maximum=100) == "keep\n"
+    assert read_prefix(kept / "note.txt", 4, maximum=100) == b"keep"
+    assert read_tail(kept / "note.txt", 100) == b"keep\n"
+    assert canary.read_text(encoding="utf-8") == _CANARY_TEXT
+    assert picture.read_bytes().startswith(b"\x89PNG")
+
+
+def test_a_directory_link_inside_the_project_is_not_followed(tmp_path):
+    project = _project(tmp_path)
+    kept = project / "kept" / "sub"
+    kept.mkdir(parents=True)
+    (kept / "note.txt").write_text("keep\n", encoding="utf-8")
+    _link(project / "alias", project / "kept", directory=True)
+    with pytest.raises(OSError):
+        read_text(project / "alias" / "sub" / "note.txt", maximum=100)
+    assert (kept / "note.txt").read_text(encoding="utf-8") == "keep\n"
+
+
+def test_a_linked_session_file_still_anchors_the_project(tmp_path):
+    outside = tmp_path / "outside"
+    nested = outside / "sub"
+    nested.mkdir(parents=True)
+    canary = nested / "log.txt"
+    canary.write_text(_CANARY_TEXT, encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    marker = tmp_path / "marker.json"
+    marker.write_text("{}\n", encoding="utf-8")
+    _link(project / "session.json", marker)
+    _link(project / "renders", outside, directory=True)
+    with pytest.raises(OSError):
+        read_text(project / "renders" / "sub" / "log.txt", maximum=100)
+    assert canary.read_text(encoding="utf-8") == _CANARY_TEXT
+
+
+def test_a_remembered_project_does_not_follow_a_nested_directory_link(tmp_path):
+    from aicad.paths import remember_project
+
+    outside = tmp_path / "outside"
+    nested = outside / "sub"
+    nested.mkdir(parents=True)
+    canary = nested / "log.txt"
+    canary.write_text(_CANARY_TEXT, encoding="utf-8")
+    project = tmp_path / "remembered"
+    project.mkdir()
+    remember_project(project)
+    _link(project / "renders", outside, directory=True)
+    with pytest.raises(OSError):
+        read_file(project / "renders" / "sub" / "log.txt", maximum=100)
+    assert canary.read_text(encoding="utf-8") == _CANARY_TEXT
+
+
+def test_a_file_outside_a_project_is_read_from_its_parent(tmp_path):
+    real = tmp_path / "real" / "sub"
+    real.mkdir(parents=True)
+    (real / "note.txt").write_text("keep\n", encoding="utf-8")
+    link = tmp_path / "link"
+    _link(link, tmp_path / "real", directory=True)
+    assert read_text(link / "sub" / "note.txt", maximum=100) == "keep\n"
