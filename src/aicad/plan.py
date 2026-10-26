@@ -20,7 +20,6 @@ import json
 import math
 import os
 import re
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -717,7 +716,7 @@ def _refuse_plan_link(root: Path, path: Path) -> None:
 
 def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
     """Put plan JSON back and redraw the sheets those revisions name."""
-    from aicad.paths import output_dir, publish_text
+    from aicad.paths import is_reparse, output_dir, publish_text, remove_tree
 
     root_path = Path(root)
     directory = root_path / "plans"
@@ -731,8 +730,8 @@ def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
                 continue
             folder = directory / path.stem
             path.unlink()
-            if folder.is_dir():
-                shutil.rmtree(folder)
+            if folder.is_dir() or is_reparse(folder):
+                remove_tree(folder)
     for name, text in files.items():
         if Path(name).name != name or not name.endswith(".json"):
             continue
