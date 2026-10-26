@@ -1002,12 +1002,19 @@ def _current_user_sid() -> str | None:
     if _user_sid_checked:
         return _user_sid
     _user_sid_checked = True
-    completed = subprocess.run(
-        ["whoami", "/user", "/fo", "csv", "/nh"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+        "stdin": subprocess.DEVNULL,
+        "timeout": 10,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = _CREATE_NO_WINDOW
+    try:
+        completed = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], **kwargs)
+    except (OSError, subprocess.TimeoutExpired):
+        return _user_sid
     line = (completed.stdout or "").strip()
     if completed.returncode == 0 and "," in line:
         sid = line.rsplit(",", 1)[-1].strip().strip('"')
