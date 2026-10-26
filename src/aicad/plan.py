@@ -515,6 +515,9 @@ class PlanStore:
             raise PlanError(f"{path.name} has a status this version does not use.")
         if not isinstance(payload.get("title"), str) or not payload["title"].strip():
             raise PlanError(f"{path.name} has no title.")
+        from aicad.labels import plain_title
+
+        payload["title"] = plain_title(payload["title"], "title", PlanError)
         revisions = payload.get("revisions")
         if not isinstance(revisions, list) or not revisions:
             raise PlanError(f"{path.name} has no revisions to read.")
@@ -1503,7 +1506,12 @@ def _text(value: Any, label: str, required: bool = False, limit: int = _MAX_TEXT
         value = ""
     if not isinstance(value, str):
         raise PlanError(f"{label} has to be text.")
-    value = value.strip()
+    from aicad.labels import plain_title, strip_hidden
+
+    if label == "title":
+        value = plain_title(value, label, PlanError)
+    else:
+        value = strip_hidden(value).strip()
     if required and not value:
         raise PlanError(f"{label} is required.")
     if len(value) > limit:

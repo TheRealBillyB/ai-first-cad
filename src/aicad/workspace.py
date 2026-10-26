@@ -504,12 +504,16 @@ class Workspace:
     def _read_note(self, name: str) -> str:
         from aicad.paths import read_checked_text
 
-        return read_checked_text(
-            self.root,
-            self._document_path(name),
-            maximum=_MAX_TEXT_FILE,
-            label="Note",
-            error=GeometryError,
+        from aicad.labels import strip_hidden
+
+        return strip_hidden(
+            read_checked_text(
+                self.root,
+                self._document_path(name),
+                maximum=_MAX_TEXT_FILE,
+                label="Note",
+                error=GeometryError,
+            )
         )
 
     def _remember_panel(self, key: str, payload: dict) -> dict:
@@ -929,10 +933,13 @@ def _read_requirements_file(path: Path) -> list:
 def _cmd_write_doc(workspace: Workspace, arguments: dict) -> dict:
     from aicad.paths import publish_text
 
+    from aicad.labels import strip_hidden
+
     path = workspace._document_path(arguments["name"])
     text = arguments.get("markdown")
     if not isinstance(text, str):
         raise GeometryError("markdown must be a string.")
+    text = strip_hidden(text)
     publish_text(path, text)
     return {"name": arguments["name"], "bytes": path.stat().st_size}
 
