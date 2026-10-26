@@ -1602,11 +1602,15 @@ def export_stl_file(
     from aicad.paths import nofollow_writes, publish_file
 
     def write(temporary: Path) -> None:
+        area = _surface_area(shape.impl)
+        _refuse_face_count(len(list(shape.impl.faces())))
+        linear = linear_for_surface(area, linear_tolerance)
+        angular = _floor_angular(angular_tolerance)
         if not export_stl(
             shape.impl,
             temporary,
-            tolerance=linear_tolerance,
-            angular_tolerance=angular_tolerance,
+            tolerance=linear,
+            angular_tolerance=angular,
         ):
             raise GeometryError(f"Could not write STL file {path}.")
 
@@ -1630,6 +1634,8 @@ _STEP_EXTERNAL_MARKERS = (
 # A shared STEP file is read on the host, outside the script file cap.
 MAX_STEP_BYTES = 64 * 1024 * 1024
 _MAX_TRIANGLES = 1_000_000
+_MAX_FACES = 100_000
+_MIN_ANGULAR = 0.05
 
 
 def _refuse_large_mesh(count: int) -> None:
@@ -1929,6 +1935,53 @@ def _step_string_leaves_folder(folder: Path, value: str) -> bool:
     return False
 
 
+def _surface_area(impl) -> float:
+    try:
+        area = abs(float(impl.area))
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+    if not math.isfinite(area):
+        return 0.0
+    return area
+
+
+def _refuse_face_count(count: int) -> None:
+    if count > _MAX_FACES:
+        raise GeometryError(
+            f"That solid has too many faces to tessellate. The limit is {_MAX_FACES}."
+        )
+
+
+def linear_for_surface(area: float, linear: float) -> float:
+    """A deflection whose triangle estimate stays inside the cap for ``area``."""
+
+    if not math.isfinite(linear) or linear <= 0:
+        linear = 0.05
+    if not math.isfinite(area) or area <= 0:
+        return linear
+    if (2.0 * area) / (linear * linear) > _MAX_TRIANGLES * 0.99:
+        linear = math.sqrt((2.0 * area) / (_MAX_TRIANGLES * 0.99))
+    return linear
+
+
+def _floor_angular(angular: float) -> float:
+    if not math.isfinite(angular) or angular < _MIN_ANGULAR:
+        return _MIN_ANGULAR
+    return angular
+
+
+def face_linear(area: float, base: float, remaining: int) -> float:
+    """Deflection for one face, using the triangles still left in the budget."""
+
+    linear = linear_for_surface(area, base)
+    budget = max(int(remaining), 1)
+    if math.isfinite(area) and area > 0:
+        needed = math.sqrt((2.0 * area) / (budget * 0.99))
+        if needed > linear:
+            linear = needed
+    return linear
+
+
 def tessellation_linear(size_x: float, size_y: float, size_z: float, diagonal: float) -> float:
     """A deflection that stays inside the triangle cap before tessellation runs."""
 
@@ -1945,10 +1998,12 @@ def tessellation_linear(size_x: float, size_y: float, size_z: float, diagonal: f
 def tessellate(shape: Shape) -> TriangleMesh:
     """Mesh the solid and discretize its edges for rendering."""
     impl = shape.impl
+    _refuse_face_count(len(list(impl.faces())))
     box = impl.bounding_box()
     diagonal = float(box.diagonal)
     size = box.size
     linear = tessellation_linear(float(size.X), float(size.Y), float(size.Z), diagonal)
+    linear = linear_for_surface(_surface_area(impl), linear)
     vertices, triangles, normals, _uvs = impl.tessellate_with_uvs(
         linear, angular_tolerance=0.18
     )
@@ -2048,15 +2103,20 @@ def viewport_mesh(shape: Shape) -> dict:
     A face reference on each triangle is the same string ``describe_faces``
     publishes, so a click and an assistant name the same face.
     """
+    impl = shape.impl
+    face_list = list(impl.faces())
+    _refuse_face_count(len(face_list))
     faces = describe_faces(shape)
     edges = describe_edges(shape)
-    impl = shape.impl
     diagonal = float(impl.bounding_box().diagonal) or 1.0
-    tolerance = min(0.28, max(0.08, diagonal * 0.004))
+    base = min(0.28, max(0.08, diagonal * 0.004))
     positions: list[float] = []
     normals: list[float] = []
     triangle_face: list[int] = []
-    for index, face in enumerate(impl.faces()):
+    remaining = _MAX_TRIANGLES
+    tolerance = base
+    for index, face in enumerate(face_list):
+        tolerance = face_linear(_surface_area(face), base, remaining)
         vertices, triangles = face.tessellate(tolerance)
         if not triangles:
             continue
@@ -2072,11 +2132,12 @@ def viewport_mesh(shape: Shape) -> dict:
                 positions.extend(round(component, 4) for component in corner)
                 normals.extend((round(nx, 4), round(ny, 4), round(nz, 4)))
             triangle_face.append(index)
+            remaining = _MAX_TRIANGLES - len(triangle_face)
             if len(triangle_face) > _MAX_TRIANGLES:
                 _refuse_large_mesh(len(triangle_face))
     edge_payload = []
     for edge, record in zip(impl.edges(), edges):
-        samples = edge.positions(deflection=tolerance)
+        samples = edge.positions(deflection=base)
         edge_payload.append(
             {
                 "index": record["index"],

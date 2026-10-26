@@ -33,6 +33,7 @@ from aicad.paths import (
     is_reserved_device_name,
     output_path,
     publish_text,
+    refuse_windows_aliases,
     session_path_escapes,
     shared_file,
     stays_inside,
@@ -710,6 +711,11 @@ def _project_file(root: Path, relative: str) -> Path:
         or windows_trim_escapes(text)
     ):
         raise RecordRefused("A session record path has to stay inside the project.")
+    from aicad.labels import misleading_path
+
+    if misleading_path(text):
+        raise RecordRefused("A session record path has to stay inside the project.")
+    refuse_windows_aliases(root, text, "Session record", RecordRefused)
     parts: list[str] = []
     for part in text.split("/"):
         if part in ("", "."):

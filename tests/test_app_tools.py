@@ -6,6 +6,8 @@ files name the button and the command, and the server runs that command.
 
 import inspect
 import json
+import shutil
+import subprocess
 import threading
 from http.client import HTTPConnection
 from pathlib import Path
@@ -436,3 +438,125 @@ def test_a_command_missing_its_fields_names_them(tmp_path, server):
     assert body["ok"] is False
     assert "create_gear needs name, spec" in body["error"]
     assert "Traceback" not in payload.decode("utf-8")
+
+
+_REQUIREMENT_FORM = r"""
+const fs = require("fs");
+const vm = require("vm");
+const elements = {};
+function make(id, value) {
+  const node = {
+    id,
+    value: value || "",
+    textContent: "",
+    hidden: false,
+    innerHTML: "",
+    className: "",
+    style: {},
+    dataset: {},
+    classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } },
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    setAttribute() {},
+    getAttribute() { return ""; },
+    appendChild() {},
+    focus() {},
+    click() {},
+  };
+  elements[id] = node;
+  return node;
+}
+make("req-kind", "max_mass");
+make("req-limit", "20");
+make("req-material", "pla");
+make("req-limit-label");
+make("req-material-label");
+const sandbox = {
+  console,
+  document: {
+    getElementById(id) { return elements[id] || make(id); },
+    querySelector() { return { getAttribute() { return ""; } }; },
+    querySelectorAll() { return []; },
+    addEventListener() {},
+    createElement() { return make("el"); },
+  },
+  sessionStorage: { getItem() { return null; }, setItem() {} },
+  localStorage: { getItem() { return null; }, setItem() {} },
+  navigator: { userAgent: "test" },
+  location: { origin: "http://127.0.0.1:8765", href: "http://127.0.0.1:8765/" },
+  fetch: () => Promise.reject(new Error("no")),
+  WebSocket: function () {},
+  requestAnimationFrame() {},
+  cancelAnimationFrame() {},
+};
+sandbox.window = sandbox;
+sandbox.elements = elements;
+vm.createContext(sandbox);
+const driver = `
+elements["req-kind"].value = "fits_printer";
+retitleRequirementFields();
+const switched = {
+  limitLabel: elements["req-limit-label"].textContent,
+  materialLabel: elements["req-material-label"].textContent,
+  printer: elements["req-limit"].value,
+  orientation: elements["req-material"].value,
+};
+const raw = requirementToken(elements["req-material"].value);
+const stored = REQUIREMENT_ORIENTATIONS.includes(raw) ? raw : "best";
+elements["req-material"].value = "pla";
+const leftover = requirementToken("pla");
+const fromMaterial = REQUIREMENT_ORIENTATIONS.includes(leftover) ? leftover : "best";
+const typed = requirementToken("Z-up");
+const kept = REQUIREMENT_ORIENTATIONS.includes(typed) ? typed : "best";
+elements["req-kind"].value = "max_mass";
+elements["req-limit"].value = "ender_3";
+elements["req-material"].value = "best";
+retitleRequirementFields();
+const restored = {
+  limitLabel: elements["req-limit-label"].textContent,
+  materialLabel: elements["req-material-label"].textContent,
+  limit: elements["req-limit"].value,
+  material: elements["req-material"].value,
+};
+report = { switched, stored, fromMaterial, kept, restored };
+`;
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8") + "\n" + driver, sandbox, { filename: "app.js" });
+process.stdout.write(JSON.stringify(sandbox.report));
+"""
+
+
+def test_a_printer_requirement_does_not_store_the_material_as_the_orientation(tmp_path):
+    page = (ROOT / "src" / "aicad" / "app_static" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "src" / "aicad" / "app_static" / "app.js").read_text(encoding="utf-8")
+    assert 'id="req-limit-label"' in page
+    assert 'id="req-material-label"' in page
+    assert "orientation in Material" not in page
+    assert 'item.orientation = $("req-material").value' not in script
+    node = shutil.which("node")
+    assert node
+    probe = tmp_path / "requirement-form.js"
+    probe.write_text(_REQUIREMENT_FORM, encoding="utf-8")
+    result = subprocess.run(
+        [node, str(probe), str(ROOT / "src" / "aicad" / "app_static" / "app.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    report = json.loads(result.stdout)
+    assert report["switched"] == {
+        "limitLabel": "Printer",
+        "materialLabel": "Orientation",
+        "printer": "bambu_a1",
+        "orientation": "best",
+    }
+    assert report["stored"] == "best"
+    assert report["fromMaterial"] == "best"
+    assert report["kept"] == "z_up"
+    assert report["restored"] == {
+        "limitLabel": "Limit",
+        "materialLabel": "Material",
+        "limit": "20",
+        "material": "pla",
+    }

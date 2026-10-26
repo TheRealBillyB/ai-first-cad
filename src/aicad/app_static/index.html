@@ -206,9 +206,9 @@
           </select>
         </label>
         <label>Part <input id="req-part" placeholder="plate" /></label>
-        <label>Limit <input id="req-limit" value="20" /></label>
-        <label>Material <input id="req-material" value="pla" /></label>
-        <p class="muted">Mass is grams. A build volume is three millimeters, like 200,200,200. Wall is millimeters. Safety factor is a number, and the current FEA supports and loads are stored with it. Fits my printer uses a printer id in Limit, such as bambu_a1, prusa_mk4, or ender_3, and an orientation in Material, such as best or z_up.</p>
+        <label><span id="req-limit-label">Limit</span> <input id="req-limit" value="20" /></label>
+        <label><span id="req-material-label">Material</span> <input id="req-material" value="pla" /></label>
+        <p class="muted">Mass is grams. A build volume is three millimeters, like 200,200,200. Wall is millimeters. Safety factor is a number, and the current FEA supports and loads are stored with it. Fits my printer asks for a printer id, such as bambu_a1, prusa_mk4, or ender_3, and an orientation such as best or z_up.</p>
         <button type="submit" class="primary">Add requirement</button>
         <button type="button" id="req-run">Check now</button>
       </form>

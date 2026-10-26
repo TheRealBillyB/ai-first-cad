@@ -221,3 +221,91 @@ def test_the_macos_file_helper_uses_the_script_cap():
     source = inspect.getsource(sandbox_macos.apply_limits)
     assert "file_bytes" in source
     assert "8 * 1024 * 1024 * 1024" not in source
+
+
+def test_the_first_io_sample_counts_from_zero(tmp_path, monkeypatch):
+    monkeypatch.setattr("aicad.sandbox._process_write_bytes", lambda pid: 5000)
+    disk = _DiskWatch(tmp_path, {}, file_cap=10**9, disk_cap=1000)
+    disk.note_io({1})
+    assert disk.io_peak == 5000
+    assert disk.hit.is_set()
+
+
+def test_a_baseline_is_not_counted_as_a_script_write(tmp_path, monkeypatch):
+    values = {1: 10}
+    monkeypatch.setattr("aicad.sandbox._process_write_bytes", lambda pid: values[pid])
+    disk = _DiskWatch(tmp_path, {}, file_cap=10**9, disk_cap=1000)
+    disk.baseline(1)
+    values[1] = 5000
+    disk.note_io({1})
+    assert disk.io_peak == 4990
+    assert disk.hit.is_set()
+
+
+def test_linux_write_accounting_uses_logical_bytes(monkeypatch):
+    import sys
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux reports logical writes in /proc")
+    from aicad import sandbox
+
+    def fake_read(self, encoding=None, errors=None):
+        del self, encoding, errors
+        return "rchar: 9\nwchar: 1234\nread_bytes: 0\nwrite_bytes: 50\n"
+
+    monkeypatch.setattr(Path, "read_text", fake_read)
+    assert sandbox._process_write_bytes(1) == 1234
+
+
+def test_macos_write_accounting_asks_for_logical_writes():
+    from aicad import sandbox_macos
+
+    assert sandbox_macos._RUSAGE_INFO_V4 == 4
+    assert sandbox_macos._RUSAGE_INFO_V2 == 2
+    names = [name for name, _kind in sandbox_macos._RusageInfoV4._fields_]
+    assert "ri_logical_writes" in names
+    assert names.index("ri_logical_writes") > names.index("ri_diskio_byteswritten")
+
+
+def test_job_io_is_counted_from_the_baseline(tmp_path, monkeypatch):
+    from aicad import sandbox_windows
+
+    seen = {"calls": 0}
+
+    def fake(_job):
+        seen["calls"] += 1
+        return 1000 + seen["calls"] * 5000
+
+    monkeypatch.setattr(sandbox_windows, "_job_bytes_written", fake)
+    disk = _DiskWatch(tmp_path, {}, file_cap=10**9, disk_cap=1000)
+    sandbox_windows._account_job_io(disk, object(), 1000)
+    assert disk.io_peak == 5000
+    assert disk.hit.is_set()
+    quiet = _DiskWatch(tmp_path, {}, file_cap=10**9, disk_cap=10**9)
+    sandbox_windows._account_job_io(quiet, object(), None)
+    assert quiet.io_peak == 1000 + seen["calls"] * 5000
+    assert not quiet.hit.is_set()
+
+
+def test_a_removed_file_still_counts_toward_the_disk_quota(tmp_path, monkeypatch):
+    supported, reason = sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+    monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
+    monkeypatch.setenv("AICAD_SCRIPT_DISK_BYTES", "200000")
+    monkeypatch.setenv("AICAD_SCRIPT_FILE_BYTES", str(512 * 1024 * 1024))
+    monkeypatch.delenv("AICAD_SCRIPT_NETWORK", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    script = (
+        "from pathlib import Path\n"
+        "path = Path('gone.bin')\n"
+        "path.write_bytes(b'x' * 500000)\n"
+        "path.unlink()\n"
+        "n = 0\n"
+        "while n < 2000000:\n"
+        "    n += 1\n"
+        "part = Box(1, 1, 1)\n"
+    )
+    with pytest.raises(ScriptError, match="wrote more than"):
+        run_part_script(script, project)
