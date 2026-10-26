@@ -85,14 +85,14 @@ def open_relative(root: Path, relative: str | Path, *, create: bool = False) -> 
     return _posix_open_relative(root, relative, create=create)
 
 
-def replace_file(root: Path, relative: str | Path, write) -> None:
+def replace_file(root: Path, relative: str | Path, write, *, private: bool = False) -> None:
     """Replace ``root / relative`` without following a link in any component."""
     if sys.platform == "win32":
-        _windows_replace(Path(root), relative, write)
+        _windows_replace(Path(root), relative, write, private=private)
         return
     from aicad.paths import _posix_replace_file
 
-    _posix_replace_file(root, relative, write)
+    _posix_replace_file(root, relative, write, private=private)
 
 
 def read_from_root(root: Path, relative: Path, maximum: int) -> bytes:
@@ -322,7 +322,7 @@ def _windows_open_file(root: Path, relative: Path) -> int:
         os.close(directory)
 
 
-def _windows_replace(root: Path, relative: str | Path, write) -> None:
+def _windows_replace(root: Path, relative: str | Path, write, *, private: bool = False) -> None:
     from aicad import paths
 
     parts = paths._relative_parts(relative)
@@ -336,16 +336,28 @@ def _windows_replace(root: Path, relative: str | Path, write) -> None:
     descriptor = -1
     staged: Path | None = None
     placed = False
+    security = None
     try:
+        security_value = None
+        if private:
+            security, kernel32 = paths._owner_only_descriptor()
+            security_value = int(security.value)
         handle = _nt_open(
             _os_handle(directory),
             temporary,
             access=_FILE_WRITE_ACCESS,
             directory=False,
             create=True,
+            security=security_value,
         )
+        if security is not None:
+            held = security
+            security = None
+            kernel32.LocalFree(held)
         descriptor = _descriptor(handle, os.O_RDWR | getattr(os, "O_BINARY", 0))
         target, staged = paths._writer_target(descriptor, Path(name).suffix)
+        if private and staged is not None:
+            paths.restrict_private_file(staged)
         write(target)
         if staged is not None:
             paths._copy_into_descriptor(descriptor, staged)
@@ -360,6 +372,9 @@ def _windows_replace(root: Path, relative: str | Path, write) -> None:
         if descriptor >= 0:
             os.close(descriptor)
         os.close(directory)
+        if security is not None:
+            kernel32.LocalFree(security)
+            security = None
 
 
 def _rename_into(directory: int, descriptor: int, name: str) -> None:
@@ -438,7 +453,7 @@ def _create_file(path: str, access: int, flags: int):
     return handle
 
 
-def _nt_open(parent, name: str, *, access: int, directory: bool, create: bool):
+def _nt_open(parent, name: str, *, access: int, directory: bool, create: bool, security=None):
     ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
     ntdll.NtCreateFile.argtypes = [
         ctypes.POINTER(ctypes.c_void_p),
@@ -464,6 +479,8 @@ def _nt_open(parent, name: str, *, access: int, directory: bool, create: bool):
     attributes.RootDirectory = parent
     attributes.ObjectName = ctypes.pointer(unicode)
     attributes.Attributes = _OBJ_CASE_INSENSITIVE
+    if security:
+        attributes.SecurityDescriptor = int(security)
     status_block = _IoStatus()
     handle = ctypes.c_void_p()
     options = _FILE_OPEN_REPARSE_POINT | _FILE_SYNCHRONOUS_IO_NONALERT

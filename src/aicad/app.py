@@ -110,7 +110,7 @@ def write_agent_token(port: int, token: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     from aicad.paths import publish_text, restrict_private_file
 
-    publish_text(path, token, root=path.parent)
+    publish_text(path, token, root=path.parent, private=True)
     restrict_private_file(path)
 
 

@@ -1109,6 +1109,7 @@ def _write_opt(data: dict) -> None:
         path,
         json.dumps({"projects": data.get("projects", {})}, indent=2) + "\n",
         root=path.parent,
+        private=True,
     )
     try:
         path.chmod(0o600)

@@ -426,6 +426,24 @@ def refuse_reserved_device(path: str | Path, root: Path | None, label: str, erro
             raise error(f"{label} {part!r} is reserved on Windows.")
 
 
+# Owner Rights only. The same list is applied when the file is created.
+_OWNER_ONLY_SDDL = "D:P(A;;FA;;;OW)"
+
+
+def _owner_only_descriptor():
+    """A security descriptor for this user only. The caller frees it with LocalFree."""
+
+    import ctypes
+
+    advapi32, kernel32 = _windows_security()
+    descriptor = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        _OWNER_ONLY_SDDL, 1, ctypes.byref(descriptor), None
+    ):
+        raise OSError("Could not build the file access list.")
+    return descriptor, kernel32
+
+
 def restrict_private_file(path: Path) -> None:
     """Leave a secret file readable by this user only.
 
@@ -437,7 +455,7 @@ def restrict_private_file(path: Path) -> None:
     if os.name != "nt":
         os.chmod(path, 0o600)
         return
-    _windows_set_dacl(path, "D:P(A;;FA;;;OW)")
+    _windows_set_dacl(path, _OWNER_ONLY_SDDL)
 
 
 def file_is_user_private(path: Path) -> bool:
@@ -1170,19 +1188,20 @@ def _posix_open_relative(root: Path, relative: str | Path, *, create: bool = Fal
     return current
 
 
-def replace_file(root: Path, relative: str | Path, write) -> None:
+def replace_file(root: Path, relative: str | Path, write, *, private: bool = False) -> None:
     """Replace ``root / relative`` without following a link in any component.
 
     The project directory is opened once. Each directory component is opened
     from the previous descriptor. The new bytes go to a new file in the parent
-    directory, and that name then replaces ``relative``.
+    directory, and that name then replaces ``relative``. ``private`` creates
+    that file readable by this user only, before any bytes are written.
     """
     from aicad.file_access import replace_file as replaced
 
-    replaced(root, relative, write)
+    replaced(root, relative, write, private=private)
 
 
-def _posix_replace_file(root: Path, relative: str | Path, write) -> None:
+def _posix_replace_file(root: Path, relative: str | Path, write, *, private: bool = False) -> None:
     """Replace ``root / relative`` with ``renameat``. A symlink is not followed."""
     parts = _relative_parts(relative)
     if not parts:
@@ -1198,10 +1217,14 @@ def _posix_replace_file(root: Path, relative: str | Path, write) -> None:
     staged: Path | None = None
     placed = False
     try:
-        descriptor = _call(_libc().openat(dirfd, os.fsencode(temporary), flags, 0o644), temporary)
-        # openat's mode is not applied on every system, so set it on the descriptor.
-        os.fchmod(descriptor, 0o644)
+        mode = 0o600 if private else 0o644
+        descriptor = _call(_libc().openat(dirfd, os.fsencode(temporary), flags, mode), temporary)
+        # openat's mode is not applied on every system, so set it on the descriptor
+        # before any bytes are written.
+        os.fchmod(descriptor, mode)
         target, staged = _writer_target(descriptor, Path(name).suffix)
+        if private and staged is not None:
+            os.chmod(staged, 0o600)
         write(target)
         if staged is not None:
             _copy_into_descriptor(descriptor, staged)
@@ -1521,7 +1544,7 @@ def shared_file(path: Path) -> bool:
     return stat.S_ISREG(info.st_mode) and info.st_nlink > 1
 
 
-def publish_file(path: Path, write, *, root: Path | None = None) -> Path:
+def publish_file(path: Path, write, *, root: Path | None = None, private: bool = False) -> Path:
     """Write a temp file beside ``path``, then replace ``path``.
 
     Replacement does not follow a symlink and does not change a hard link's
@@ -1541,7 +1564,7 @@ def publish_file(path: Path, write, *, root: Path | None = None) -> Path:
         relative = _accept_project_file(chosen, lexical)
         _before_nofollow(chosen, relative)
         try:
-            replace_file(chosen, relative, write)
+            replace_file(chosen, relative, write, private=private)
         except OSError as exc:
             if exc.errno in _LINK_ERRNOS:
                 raise OSError(exc.errno, f"{path} is a link and was not followed.") from exc
@@ -1549,6 +1572,11 @@ def publish_file(path: Path, write, *, root: Path | None = None) -> Path:
         return path
     temporary = _create_beside(path.parent, path.suffix)
     try:
+        if private:
+            if os.name == "nt":
+                restrict_private_file(temporary)
+            else:
+                os.chmod(temporary, 0o600)
         write(temporary)
         os.replace(temporary, path)
     except Exception:
@@ -1584,18 +1612,18 @@ def _create_beside(directory: Path, suffix: str) -> Path:
     raise OSError(errno.EEXIST, "could not create a temporary file")
 
 
-def publish_bytes(path: Path, data: bytes, *, root: Path | None = None) -> Path:
+def publish_bytes(path: Path, data: bytes, *, root: Path | None = None, private: bool = False) -> Path:
     """Replace ``path`` with ``data`` without following a link at that name."""
 
     def write(temporary: Path) -> None:
         temporary.write_bytes(data)
 
-    return publish_file(path, write, root=root)
+    return publish_file(path, write, root=root, private=private)
 
 
-def publish_text(path: Path, text: str, *, root: Path | None = None) -> Path:
+def publish_text(path: Path, text: str, *, root: Path | None = None, private: bool = False) -> Path:
     """Replace ``path`` with UTF-8 text without following a link at that name."""
-    return publish_bytes(path, text.encode("utf-8"), root=root)
+    return publish_bytes(path, text.encode("utf-8"), root=root, private=private)
 
 
 def hide_project_path(text: str, root: str | Path) -> str:
