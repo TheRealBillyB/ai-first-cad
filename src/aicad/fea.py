@@ -550,8 +550,24 @@ def _allow_gmsh_from_worker() -> None:
     signal._aicad_worker = True  # type: ignore[attr-defined]
 
 
+def _refuse_dense_mesh(shape: kernel.Shape, mesh_size: float) -> None:
+    """Stop a mesh that would run far past the triangle budget.
+
+    Meshing happens in this process, so the script wall clock does not cover it.
+    """
+
+    if mesh_size < 0.4:
+        raise GeometryError("mesh_size_mm is finer than 0.4 mm. Use a coarser mesh.")
+    measurement = kernel.measure(shape)
+    size = measurement.bounding_box.size
+    volume = abs(float(size.x) * float(size.y) * float(size.z))
+    if volume / (mesh_size**3) > 2_000_000:
+        raise GeometryError("That mesh would be too large. Use a larger mesh_size_mm.")
+
+
 def _mesh_solid(shape: kernel.Shape, mesh_size: float, order: int) -> dict:
     """Mesh the solid. A Gmsh failure is retried, not raised raw."""
+    _refuse_dense_mesh(shape, mesh_size)
     prepared, mesh = _mesh_ladder(shape, mesh_size, order)
     if mesh.get("points") is None:
         return mesh
