@@ -36,7 +36,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from aicad.errors import AICADError, GeometryError
-from aicad.llm import load_settings, public_settings, run_turn, save_settings
+from aicad.llm import load_settings, open_assistant_url, public_settings, run_turn, save_settings
 from aicad.studio import remember_project
 from aicad.workspace import Workspace
 
@@ -218,7 +218,7 @@ class HttpCommandClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=300) as response:
+            with open_assistant_url(request, timeout=300) as response:
                 payload = json.loads(_bounded_body(response, _MAX_COMMAND_BYTES).decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = _bounded_body(exc, _MAX_COMMAND_BYTES).decode("utf-8", errors="replace")
