@@ -427,14 +427,23 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
             raise ToolError(fence_external_text(message)) from exc
 
     def resource_guard(fn):
+        from aicad.untrusted import fence_resource_text
+
         try:
-            return fn()
+            result = fn()
         except ResourceError:
             raise
         except AICADError as exc:
-            raise ResourceError(_hide_client_path(client, str(exc))) from exc
+            message = fence_resource_text(_hide_client_path(client, str(exc)))
+            raise ResourceError(message) from exc
         except Exception as exc:
-            raise ResourceError(_hide_client_path(client, f"{type(exc).__name__}: {exc}")) from exc
+            message = fence_resource_text(
+                _hide_client_path(client, f"{type(exc).__name__}: {exc}")
+            )
+            raise ResourceError(message) from exc
+        if isinstance(result, str):
+            return fence_resource_text(result)
+        return result
 
     @mcp.tool()
     def list_parts() -> dict:
