@@ -2682,14 +2682,19 @@ def _snapshot_files(root: Path) -> dict[str, int]:
 
 
 def _process_write_bytes(pid: int) -> int | None:
-    """Bytes this process has written, or None when the system will not say."""
+    """Logical bytes this process has written, or None when the system will not say.
+
+    On Linux this is ``wchar``, the bytes passed to write. A file removed
+    before the next directory look is still included. ``write_bytes`` is only
+    what has reached storage, so it misses that file.
+    """
     if sys.platform.startswith("linux"):
         try:
             text = Path(f"/proc/{pid}/io").read_text(encoding="utf-8")
         except OSError:
             return None
         for line in text.splitlines():
-            if line.startswith("write_bytes:"):
+            if line.startswith("wchar:"):
                 try:
                     return int(line.split(":", 1)[1].strip())
                 except ValueError:
@@ -2719,6 +2724,17 @@ class _DiskWatch:
         self.io_peak = 0
         self._lock = threading.Lock()
 
+    def baseline(self, pid: int) -> None:
+        """Remember bytes already written, so only later writes count.
+
+        A process that was not seen here counts from zero on the first sample.
+        That sample is not itself a baseline.
+        """
+        current = _process_write_bytes(pid)
+        with self._lock:
+            if pid not in self._io_base:
+                self._io_base[pid] = 0 if current is None else current
+
     def note_io(self, pids: set[int]) -> None:
         total = 0
         for pid in pids:
@@ -2728,8 +2744,8 @@ class _DiskWatch:
             with self._lock:
                 base = self._io_base.get(pid)
                 if base is None:
-                    self._io_base[pid] = current
-                    base = current
+                    base = 0
+                    self._io_base[pid] = 0
             total += max(0, current - base)
         with self._lock:
             self.io_peak = max(self.io_peak, total)
@@ -2865,14 +2881,14 @@ def _watch_descendants(
                 process_hit.set()
             _kill_process_tree(leader, seen, lock, extra=found)
             return
+        if disk is not None:
+            disk.note_io({leader, *found})
+            disk.note_files()
+            if disk.hit.is_set():
+                _kill_process_tree(leader, seen, lock, extra=found)
+                return
         if time.monotonic() >= next_sample:
             next_sample = time.monotonic() + _MEMORY_POLL_SECONDS
-            if disk is not None:
-                disk.note_io({leader, *found})
-                disk.note_files()
-                if disk.hit.is_set():
-                    _kill_process_tree(leader, seen, lock, extra=found)
-                    return
             if memory_cap is not None:
                 used = _tree_resident_bytes(leader, found)
                 if used is not None and used > memory_cap:
@@ -3300,6 +3316,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
 
         with child_inherits_geometry_stack():
             proc = subprocess.Popen(command, **popen_kwargs)
+        disk.baseline(proc.pid)
         if account is not None and sentinel_path is not None:
             identity = process_identity(proc.pid)
             if identity is not None:

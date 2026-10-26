@@ -423,6 +423,15 @@ def test_windows_suspended_process_is_resumed_only_in_the_job_and_container():
         win._commit_suspended(stuck, stuck, 0x55, process)
     assert stuck.calls.index("ResumeThread") < stuck.calls.index("TerminateProcess")
 
+    class Counting(Api):
+        def QueryInformationJobObject(self, job, klass, info, size, returned):
+            self.calls.append("QueryInformationJobObject")
+            return 0
+
+    counting = Counting()
+    assert win._commit_suspended(counting, counting, 0x55, process) is None
+    assert counting.calls.index("QueryInformationJobObject") < counting.calls.index("ResumeThread")
+
     class Creator:
         def __init__(self, codes):
             self.codes = list(codes)
