@@ -22,6 +22,7 @@ from aicad import explode, kernel
 from aicad.blueprint import png_size
 from aicad.errors import GeometryError
 from aicad.honesty import VERIFIED_CHECK, finish
+from aicad.paths import published_path
 OMITS = [
     "GD&T and feature-control frames",
     "tolerances of any kind",
@@ -236,9 +237,9 @@ def make_drawing(
         ],
         "curves": {"visible": visible_count, "hidden": hidden_count},
         "files": {
-            "pdf": str(pdf_path.resolve()),
-            "dxf": str(dxf_path.resolve()),
-            "png": str(png_path.resolve()),
+            "pdf": published_path(pdf_path),
+            "dxf": published_path(dxf_path),
+            "png": published_path(png_path),
         },
         "views": [_png_view(png_path)],
         "assumptions": list(ASSUMPTIONS),
@@ -286,7 +287,7 @@ def parse_scale(text: str) -> tuple[int, int]:
 
 def _png_view(path: Path) -> dict:
     width, height = png_size(path)
-    return {"name": "drawing", "path": str(path.resolve()), "width": width, "height": height}
+    return {"name": "drawing", "path": published_path(path), "width": width, "height": height}
 
 
 def _size(shape: kernel.Shape) -> tuple[float, float, float]:
@@ -854,8 +855,10 @@ def _font(size: int):
 
 
 def _prepare(path: Path) -> None:
+    from aicad.paths import ensure_real_directory
+
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_real_directory(path.parent)
     except OSError as exc:
         raise GeometryError(
             f"Could not create the folder for {path}. {exc.strerror or exc}."

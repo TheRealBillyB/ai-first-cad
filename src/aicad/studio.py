@@ -178,15 +178,17 @@ def save_project(workspace) -> dict:
 
 
 def save_project_as(workspace, path: str, name: str | None = None) -> dict:
+    from aicad.paths import ensure_real_directory, is_reserved_device_name, refuse_link_ancestors
+
     parent = Path(path).expanduser()
     if name is not None:
-        destination = (parent / _folder_name(name)).resolve()
+        requested = parent / _folder_name(name)
     else:
-        from aicad.paths import is_reserved_device_name
-
         if is_reserved_device_name(parent.name):
             raise GeometryError(f"{parent.name} is reserved on Windows. Pick another folder name.")
-        destination = parent.resolve()
+        requested = parent
+    refuse_link_ancestors(requested, "Save as", GeometryError)
+    destination = requested.resolve()
     source = workspace.root.resolve()
     if _same_folder(destination, source):
         raise GeometryError("Save as needs a different folder.")
@@ -197,7 +199,7 @@ def save_project_as(workspace, path: str, name: str | None = None) -> dict:
     if (destination / "session.json").is_file():
         raise GeometryError(f"{destination} already has a project. Pick a new folder.")
     try:
-        destination.mkdir(parents=True, exist_ok=True)
+        ensure_real_directory(destination)
         _copy_project(source, destination)
     except OSError as exc:
         reason = exc.strerror or str(exc)
@@ -692,7 +694,9 @@ def _copy_project(source: Path, destination: Path) -> None:
         if dest.exists() or dest.is_symlink():
             refuse(dest, destination)
         if src.is_dir():
-            dest.mkdir(parents=True, exist_ok=True)
+            from aicad.paths import ensure_real_directory
+
+            ensure_real_directory(dest)
             for child in src.iterdir():
                 copy_tree(child, dest / child.name, root)
             return
