@@ -232,11 +232,13 @@ def _proc_pidinfo():
     return lib
 
 
-# rusage_info_v0. The last field is bytes written to disk.
-_RUSAGE_INFO_V0 = 0
+# rusage_info_v2. Flavor 2 fills bytes that reached storage.
+_RUSAGE_INFO_V2 = 2
+# rusage_info_v4. Flavor 4 fills logical writes, including a file that was removed.
+_RUSAGE_INFO_V4 = 4
 
 
-class _RusageInfoV0(ctypes.Structure):
+class _RusageInfoV2(ctypes.Structure):
     _fields_ = [
         ("ri_uuid", ctypes.c_uint8 * 16),
         ("ri_user_time", ctypes.c_uint64),
@@ -260,11 +262,40 @@ class _RusageInfoV0(ctypes.Structure):
     ]
 
 
+class _RusageInfoV4(ctypes.Structure):
+    """rusage_info_v4. The size has to match, or proc_pid_rusage refuses the call."""
+
+    _fields_ = [
+        *_RusageInfoV2._fields_,
+        ("ri_cpu_time_qos_default", ctypes.c_uint64),
+        ("ri_cpu_time_qos_maintenance", ctypes.c_uint64),
+        ("ri_cpu_time_qos_background", ctypes.c_uint64),
+        ("ri_cpu_time_qos_utility", ctypes.c_uint64),
+        ("ri_cpu_time_qos_legacy", ctypes.c_uint64),
+        ("ri_cpu_time_qos_user_initiated", ctypes.c_uint64),
+        ("ri_cpu_time_qos_user_interactive", ctypes.c_uint64),
+        ("ri_billed_system_time", ctypes.c_uint64),
+        ("ri_serviced_system_time", ctypes.c_uint64),
+        ("ri_logical_writes", ctypes.c_uint64),
+        ("ri_lifetime_max_phys_footprint", ctypes.c_uint64),
+        ("ri_instructions", ctypes.c_uint64),
+        ("ri_cycles", ctypes.c_uint64),
+        ("ri_billed_energy", ctypes.c_uint64),
+        ("ri_serviced_energy", ctypes.c_uint64),
+        ("ri_interval_max_phys_footprint", ctypes.c_uint64),
+        ("ri_runnable_time", ctypes.c_uint64),
+    ]
+
+
 _rusage_ready = False
 
 
 def bytes_written(pid: int) -> int | None:
-    """Bytes ``pid`` has written, from ``proc_pid_rusage``, or None."""
+    """Logical bytes ``pid`` has written, or None when the system will not say.
+
+    Logical writes include a file removed before it reaches storage. When that
+    counter is unavailable, bytes that reached storage are used instead.
+    """
     global _rusage_ready
     lib = _proc_pidinfo()
     if lib is None:
@@ -276,8 +307,11 @@ def bytes_written(pid: int) -> int | None:
         except AttributeError:
             return None
         _rusage_ready = True
-    info = _RusageInfoV0()
-    if lib.proc_pid_rusage(int(pid), _RUSAGE_INFO_V0, ctypes.byref(info)) != 0:
+    logical = _RusageInfoV4()
+    if lib.proc_pid_rusage(int(pid), _RUSAGE_INFO_V4, ctypes.byref(logical)) == 0:
+        return int(logical.ri_logical_writes)
+    info = _RusageInfoV2()
+    if lib.proc_pid_rusage(int(pid), _RUSAGE_INFO_V2, ctypes.byref(info)) != 0:
         return None
     return int(info.ri_diskio_byteswritten)
 
