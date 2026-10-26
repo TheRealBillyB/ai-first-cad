@@ -228,7 +228,16 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
             _slice_command(executable, gcode, stl, price_per_kg, export=False),
         ]
         for command in commands:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
+            from aicad.sandbox import program_environment
+
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+                env=program_environment(),
+            )
             last = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
             if gcode.is_file() and gcode.stat().st_size > 0:
                 parsed = parse_gcode(gcode.read_text(encoding="utf-8", errors="replace"))

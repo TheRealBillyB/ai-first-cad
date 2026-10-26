@@ -989,6 +989,8 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
         solver = find_program("ccx")
         if solver is None:
             return None, None, "CalculiX (ccx) is not on PATH."
+        from aicad.sandbox import program_environment
+
         completed = subprocess.run(
             [solver, "-i", "job"],
             cwd=directory,
@@ -997,6 +999,7 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
             stdin=subprocess.DEVNULL,
             timeout=180,
             check=False,
+            env=program_environment(),
         )
         frd = path / "job.frd"
         if completed.returncode != 0 or not frd.is_file():

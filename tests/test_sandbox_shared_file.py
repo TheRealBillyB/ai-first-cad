@@ -122,7 +122,9 @@ def test_child_env_does_not_put_the_project_on_the_import_path(tmp_path, monkeyp
     )
     env = _child_env(tmp_path, tmp_path / "job", False)
     assert env["PYTHONSAFEPATH"] == "1"
-    assert env["PYTHONPATH"] == str(outside.resolve())
+    pythonpath = env.get("PYTHONPATH", "").split(os.pathsep)
+    for entry in (outside, tmp_path, inside):
+        assert str(entry.resolve()) not in pythonpath
     named = tmp_path / "aicad"
     named.mkdir()
     assert _pythonpath_for_child(named, str(tmp_path)) is None
