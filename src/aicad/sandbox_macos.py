@@ -232,6 +232,56 @@ def _proc_pidinfo():
     return lib
 
 
+# rusage_info_v0. The last field is bytes written to disk.
+_RUSAGE_INFO_V0 = 0
+
+
+class _RusageInfoV0(ctypes.Structure):
+    _fields_ = [
+        ("ri_uuid", ctypes.c_uint8 * 16),
+        ("ri_user_time", ctypes.c_uint64),
+        ("ri_system_time", ctypes.c_uint64),
+        ("ri_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_interrupt_wkups", ctypes.c_uint64),
+        ("ri_pageins", ctypes.c_uint64),
+        ("ri_wired_size", ctypes.c_uint64),
+        ("ri_resident_size", ctypes.c_uint64),
+        ("ri_phys_footprint", ctypes.c_uint64),
+        ("ri_proc_start_abstime", ctypes.c_uint64),
+        ("ri_proc_exit_abstime", ctypes.c_uint64),
+        ("ri_child_user_time", ctypes.c_uint64),
+        ("ri_child_system_time", ctypes.c_uint64),
+        ("ri_child_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_child_interrupt_wkups", ctypes.c_uint64),
+        ("ri_child_pageins", ctypes.c_uint64),
+        ("ri_child_elapsed_abstime", ctypes.c_uint64),
+        ("ri_diskio_bytesread", ctypes.c_uint64),
+        ("ri_diskio_byteswritten", ctypes.c_uint64),
+    ]
+
+
+_rusage_ready = False
+
+
+def bytes_written(pid: int) -> int | None:
+    """Bytes ``pid`` has written, from ``proc_pid_rusage``, or None."""
+    global _rusage_ready
+    lib = _proc_pidinfo()
+    if lib is None:
+        return None
+    if not _rusage_ready:
+        try:
+            lib.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+            lib.proc_pid_rusage.restype = ctypes.c_int
+        except AttributeError:
+            return None
+        _rusage_ready = True
+    info = _RusageInfoV0()
+    if lib.proc_pid_rusage(int(pid), _RUSAGE_INFO_V0, ctypes.byref(info)) != 0:
+        return None
+    return int(info.ri_diskio_byteswritten)
+
+
 def _resident_via_proc_pidinfo(pid: int) -> int | None:
     lib = _proc_pidinfo()
     if lib is None:
