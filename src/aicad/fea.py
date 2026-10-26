@@ -800,7 +800,10 @@ def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorith
     with tempfile.TemporaryDirectory() as directory:
         step_path = Path(directory) / "part.step"
         kernel.export_step_file(shape, step_path)
-        gmsh.initialize()
+        from aicad.sandbox import scrub_library_environment
+
+        scrub_library_environment()
+        gmsh.initialize(readConfigFiles=False)
         try:
             _gmsh_option(gmsh, "General.Terminal", 0)
             _gmsh_option(gmsh, "General.Verbosity", 0)

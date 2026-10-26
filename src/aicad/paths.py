@@ -165,16 +165,18 @@ def prepare_geometry_import() -> None:
     Those libraries read ``ezdxf.ini`` from the working directory. A project
     is often that directory, and the file can name a font folder outside the
     project. ``EZDXF_CONFIG_FILE`` points at the file shipped with aicad, and
-    the working-directory file is not read. The image library asks to enter
-    the interpreter directory while it loads. That request is refused, so a
-    relative path in the project still opens.
+    the working-directory file is not read. Variables that name a font, Gmsh,
+    or OpenCascade configuration are removed before those libraries load. The
+    image library asks to enter the interpreter directory while it loads. That
+    request is refused, so a relative path in the project still opens.
     """
+    from aicad.sandbox import scrub_library_environment
+
+    scrub_library_environment()
     pin_interpreter_directory()
     global _FINDER_INSTALLED
     packaged = packaged_font_config()
-    current = os.environ.get("EZDXF_CONFIG_FILE", "")
-    if not current or _is_project_ini(Path(current)):
-        os.environ["EZDXF_CONFIG_FILE"] = str(packaged)
+    os.environ["EZDXF_CONFIG_FILE"] = str(packaged)
     if not _FINDER_INSTALLED:
         sys.meta_path.insert(0, _EzdxfOptionsFinder())
         _FINDER_INSTALLED = True
