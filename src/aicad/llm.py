@@ -109,7 +109,7 @@ def save_settings(incoming: dict) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     from aicad.paths import publish_text
 
-    publish_text(path, json.dumps(current, indent=2) + "\n", root=path.parent)
+    publish_text(path, json.dumps(current, indent=2) + "\n", root=path.parent, private=True)
     try:
         from aicad.paths import restrict_private_file
 

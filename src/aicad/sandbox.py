@@ -462,7 +462,7 @@ def _write_opt(data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     from aicad.paths import publish_text
 
-    publish_text(path, json.dumps(data, indent=2) + "\n", root=path.parent)
+    publish_text(path, json.dumps(data, indent=2) + "\n", root=path.parent, private=True)
     try:
         path.chmod(0o600)
     except OSError:
