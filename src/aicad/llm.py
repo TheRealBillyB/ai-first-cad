@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -345,10 +346,48 @@ def _anthropic(settings: dict, transcript: list[dict]) -> dict:
     return {"role": "assistant", "content": "\n".join(text).strip(), "tool_calls": calls}
 
 
+_TRUST_ENV = frozenset(
+    {
+        "ALL_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    }
+)
+
+
+def _trust_env_name(name: str) -> bool:
+    return name.upper() in _TRUST_ENV
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """A TLS context that does not use certificate paths from the environment."""
+
+    saved = {key: os.environ.pop(key) for key in list(os.environ) if _trust_env_name(key)}
+    try:
+        return ssl.create_default_context()
+    finally:
+        os.environ.update(saved)
+
+
+def open_assistant_url(request: urllib.request.Request, timeout: float):
+    """Open an assistant URL. Proxy and certificate variables are not used."""
+
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+    )
+    return opener.open(request, timeout=timeout)
+
+
 def _post(url: str, body: dict, headers: dict) -> dict:
     request = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with open_assistant_url(request, timeout=120) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
