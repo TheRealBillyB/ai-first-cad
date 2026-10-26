@@ -1898,6 +1898,20 @@ def _firewall_script(sid: str | None = None, *, install: bool) -> str:
     )
 
 
+def _powershell_executable() -> str:
+    """The system PowerShell, not a name looked up on PATH.
+
+    Windows PowerShell is under System32\\WindowsPowerShell, not in System32
+    itself. A child whose PATH is only the interpreter and the system
+    directories still has to install the network block.
+    """
+
+    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if not root:
+        return "powershell.exe"
+    return str(Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
 def _run_firewall_script(script: str) -> None:
     kwargs: dict = {
         "capture_output": True,
@@ -1911,7 +1925,7 @@ def _run_firewall_script(script: str) -> None:
         kwargs["creationflags"] = _CREATE_NO_WINDOW
     try:
         completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            [_powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", script],
             **kwargs,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
