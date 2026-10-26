@@ -1656,4 +1656,49 @@ def publish_text(path: Path, text: str, *, root: Path | None = None) -> Path:
     return publish_bytes(path, text.encode("utf-8"), root=root)
 
 
+def hide_project_path(text: str, root: str | Path) -> str:
+    """Replace an absolute project path with a relative one.
+
+    The project folder itself becomes ``.``. A file inside it keeps the path
+    under that folder. Slash and backslash forms are both removed.
+    """
+
+    if not isinstance(text, str) or not text:
+        return text
+    try:
+        folder = str(Path(root).resolve())
+    except OSError:
+        folder = str(Path(root))
+    variants = {folder, folder.replace("\\", "/"), folder.replace("/", "\\")}
+    cleaned = text
+    for variant in sorted((item for item in variants if item), key=len, reverse=True):
+        cleaned = _replace_path_prefix(cleaned, variant)
+    return cleaned
+
+
+def _replace_path_prefix(text: str, variant: str) -> str:
+    folded = text.casefold() if os.name == "nt" else text
+    needle = variant.casefold() if os.name == "nt" else variant
+    pieces: list[str] = []
+    index = 0
+    while True:
+        found = folded.find(needle, index)
+        if found < 0:
+            pieces.append(text[index:])
+            break
+        after = found + len(needle)
+        boundary = after >= len(text) or text[after] in "/\\ \t\r\n\"'.,;:)]}>"
+        if not boundary:
+            pieces.append(text[index:after])
+            index = after
+            continue
+        pieces.append(text[index:found])
+        if after < len(text) and text[after] in "/\\":
+            index = after + 1
+            continue
+        pieces.append(".")
+        index = after
+    return "".join(pieces)
+
+
 prepare_geometry_import()
