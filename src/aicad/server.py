@@ -1654,8 +1654,26 @@ def _with_images(payload: dict, views) -> list[str | Image]:
     ordered = sorted(views, key=lambda view: _VIEW_RANK.get(view.name, 50))
     blocks: list[str | Image] = [json.dumps(payload, indent=2)]
     for view in ordered:
-        blocks.append(Image(path=view.path))
+        blocks.append(Image(data=_picture_bytes(view.path), format="png"))
     return blocks
+
+
+def _picture_bytes(path: str) -> bytes:
+    """PNG bytes from a project file. A link is not followed."""
+
+    from aicad.paths import project_roots, read_checked_bytes, read_nofollow_bytes
+
+    raw = Path(path)
+    roots = project_roots()
+    if roots:
+        last = OSError(f"Could not read picture {path}.")
+        for root in roots:
+            try:
+                return read_checked_bytes(root, raw, maximum=8_000_000, label="Picture", error=OSError)
+            except OSError as exc:
+                last = exc
+        raise last
+    return read_nofollow_bytes(raw, maximum=8_000_000, label="Picture", error=OSError)
 
 
 _VIEW_RANK = {

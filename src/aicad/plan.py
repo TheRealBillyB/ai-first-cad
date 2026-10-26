@@ -1295,7 +1295,7 @@ def _fill(value) -> str:
 
 
 def _render_revision(root: Path, plan: dict, revision: dict) -> None:
-    from aicad.paths import output_dir
+    from aicad.paths import ensure_real_directory, output_dir
 
     output_dir(root, root / "plans" / plan["id"] / f"v{revision['version']}", "Plan sheet", PlanError)
     stamp = plan.get("status") or "draft"
@@ -1312,7 +1312,7 @@ def _render_revision(root: Path, plan: dict, revision: dict) -> None:
             for block in drawn["blocks"]:
                 block["_fill"] = FILLS[block["fill"]]
             panels.append(drawn)
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        ensure_real_directory(destination.parent)
         render_plan_sheet(
             destination,
             title=sheet["title"],

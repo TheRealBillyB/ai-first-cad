@@ -56,8 +56,10 @@ def render_plan_sheet(
     """Draw one blueprint PNG. ``panels`` are the cells, left to right."""
     if not panels:
         raise ValueError("A plan sheet needs at least one panel.")
+    from aicad.paths import ensure_real_directory
+
     out = Path(path)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    ensure_real_directory(out.parent)
     width, height = _page_size(len(panels))
     scale_px = _SSAA
     image = Image.new("RGB", (width * scale_px, height * scale_px), _PAPER)

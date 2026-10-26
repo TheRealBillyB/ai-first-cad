@@ -508,8 +508,10 @@ def _csv_cell(value: object) -> object:
 
 
 def _prepare(path: Path) -> None:
+    from aicad.paths import ensure_real_directory
+
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_real_directory(path.parent)
     except OSError as exc:
         raise GeometryError(f"Could not create the folder for {path}. {exc.strerror or exc}.") from exc
 

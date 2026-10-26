@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from aicad.kernel import TriangleMesh
 from aicad.models import Measurement, RenderedView, SketchReport, WallReport
-from aicad.paths import publish_file
+from aicad.paths import ensure_real_directory, publish_file, published_path
 
 
 def _save_png(path: Path, image: Image.Image, *, optimize: bool = False) -> None:
@@ -66,7 +66,7 @@ def render_views(
     wall: WallReport | None = None,
 ) -> list[RenderedView]:
     """Write the standard views and a contact sheet. Returns one record per file."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_real_directory(out_dir)
     bases = {name: _camera_basis(eye, up) for name, eye, up, _label in _VIEWS}
     scale, _span = _shared_scale(mesh.vertices, bases)
     panels: dict[str, Image.Image] = {}
@@ -84,7 +84,7 @@ def render_views(
         _save_png(path, image, optimize=True)
         panels[name] = image
         records.append(
-            RenderedView(name=name, path=str(path.resolve()), width=image.width, height=image.height)
+            RenderedView(name=name, path=str(published_path(path)), width=image.width, height=image.height)
         )
 
     contact = _contact_sheet(stem, panels, measurement, wall)
@@ -93,7 +93,7 @@ def render_views(
     records.append(
         RenderedView(
             name="contact",
-            path=str(contact_path.resolve()),
+            path=str(published_path(contact_path)),
             width=contact.width,
             height=contact.height,
         )
@@ -600,7 +600,7 @@ def render_sketch(report: SketchReport, out_path: Path) -> RenderedView:
     footer = _sketch_footer(report)
     draw.text((16, _HEADER + _VIEW_H + 6), footer, fill=_status_color(report.status), font=small)
     _save_png(out_path, canvas)
-    return RenderedView(name="sketch", path=str(out_path.resolve()), width=canvas.width, height=canvas.height)
+    return RenderedView(name="sketch", path=str(published_path(out_path)), width=canvas.width, height=canvas.height)
 
 
 _FREE = (32, 78, 168)
@@ -764,7 +764,7 @@ def render_scalar_views(
     scaled to this mesh, and the title carries the maximum so two pictures are
     not compared by color alone.
     """
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_real_directory(out_dir)
     normals = _vertex_normals(vertices, triangles)
     low = float(np.min(scalars)) if len(scalars) else 0.0
     high = float(np.max(scalars)) if len(scalars) else 1.0
@@ -785,7 +785,7 @@ def render_scalar_views(
         _save_png(path, image, optimize=True)
         panels[name] = image
         records.append(
-            RenderedView(name=f"{prefix}_{name}", path=str(path.resolve()), width=image.width, height=image.height)
+            RenderedView(name=f"{prefix}_{name}", path=str(published_path(path)), width=image.width, height=image.height)
         )
     contact = _scalar_contact(panels)
     contact_path = out_dir / f"{stem}_{prefix}_contact.png"
@@ -793,7 +793,7 @@ def render_scalar_views(
     records.append(
         RenderedView(
             name=f"{prefix}_contact",
-            path=str(contact_path.resolve()),
+            path=str(published_path(contact_path)),
             width=contact.width,
             height=contact.height,
         )
@@ -933,7 +933,7 @@ def render_motion_frames(
     """Write one isometric picture per frame, a strip, and a GIF."""
     if not meshes:
         raise RuntimeError("Motion rendering needs at least one mesh.")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_real_directory(out_dir)
     basis = _camera_basis((1.0, -1.0, 0.85), (0.0, 0.0, 1.0))
     combined = np.vstack([mesh.vertices for mesh in meshes])
     scale, _span = _shared_scale(combined, {"iso": basis})
@@ -945,7 +945,7 @@ def render_motion_frames(
         path = out_dir / f"{stem}_{index:02d}.png"
         _save_png(path, image, optimize=True)
         images.append(image)
-        frames.append({"index": index, "title": title, "path": str(path.resolve()), "name": "iso"})
+        frames.append({"index": index, "title": title, "path": str(published_path(path)), "name": "iso"})
     strip = _strip(images)
     strip_path = out_dir / f"{stem}_strip.png"
     _save_png(strip_path, strip, optimize=True)
@@ -965,8 +965,8 @@ def render_motion_frames(
     publish_file(gif_path, write_gif)
     return {
         "frames": frames,
-        "strip": str(strip_path.resolve()),
-        "gif": str(gif_path.resolve()),
+        "strip": str(published_path(strip_path)),
+        "gif": str(published_path(gif_path)),
     }
 
 
