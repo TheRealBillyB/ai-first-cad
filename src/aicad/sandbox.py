@@ -103,6 +103,9 @@ DISK_BYTES = FILE_BYTES
 SCRIPT_MAX_CHARS = 200_000
 STDOUT_MAX = 64_000
 _MAX_SCRIPT_LOG_BYTES = 1_000_000
+# The parent keeps only this much of a script's pipes or output files.
+# The tail is what an error report shows. The rest is not stored.
+_SCRIPT_OUTPUT_CAP = 1_000_000
 
 _REAL_IMPORT = builtins.__import__
 _GUARD = False
@@ -2365,19 +2368,86 @@ def _sweep_escaped(
     return found
 
 
-def _wait_script(proc: subprocess.Popen, wall: float, sweep) -> tuple[bytes, bytes]:
-    """Wait for ``proc``. On macOS, ``sweep`` runs while the script is still going."""
-    if sweep is None:
-        return proc.communicate(timeout=wall)
-    deadline = time.monotonic() + wall
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise subprocess.TimeoutExpired(proc.args, wall)
+class _OutputCapture:
+    """The tail of a process's pipes. A longer stream is discarded, not stored."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self.proc = proc
+        self._stdout = bytearray()
+        self._stderr = bytearray()
+        self._threads: list[threading.Thread] = []
+
+    def start(self) -> None:
+        for pipe, buf in ((self.proc.stdout, self._stdout), (self.proc.stderr, self._stderr)):
+            if pipe is None:
+                continue
+            thread = threading.Thread(
+                target=self._drain,
+                args=(pipe, buf),
+                name="aicad-output",
+                daemon=True,
+            )
+            thread.start()
+            self._threads.append(thread)
+
+    def _drain(self, pipe, buf: bytearray) -> None:
         try:
-            return proc.communicate(timeout=min(0.05, remaining))
-        except subprocess.TimeoutExpired:
-            sweep()
+            while True:
+                block = pipe.read(65536)
+                if not block:
+                    return
+                buf.extend(block)
+                extra = len(buf) - _SCRIPT_OUTPUT_CAP
+                if extra > 0:
+                    del buf[:extra]
+        except (OSError, ValueError):
+            return
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def finish(self, timeout: float = 5) -> None:
+        for thread in self._threads:
+            thread.join(timeout=timeout)
+
+    def stdout(self) -> bytes:
+        return bytes(self._stdout)
+
+    def stderr(self) -> bytes:
+        return bytes(self._stderr)
+
+
+def _wait_script(proc: subprocess.Popen, wall: float, sweep) -> tuple[bytes, bytes]:
+    """Wait for ``proc``. On macOS, ``sweep`` runs while the script is still going.
+
+    Standard output and standard error are drained while the process runs.
+    Only the last ``_SCRIPT_OUTPUT_CAP`` bytes of each are kept.
+    """
+    deadline = time.monotonic() + wall
+    capture = _OutputCapture(proc)
+    capture.start()
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(proc.args, wall)
+            step = min(0.05, remaining) if sweep is not None else remaining
+            try:
+                proc.wait(timeout=step)
+            except subprocess.TimeoutExpired:
+                if sweep is not None:
+                    sweep()
+                if deadline - time.monotonic() <= 0:
+                    raise subprocess.TimeoutExpired(proc.args, wall) from None
+                continue
+            break
+        capture.finish()
+        return capture.stdout(), capture.stderr()
+    except BaseException:
+        capture.finish(timeout=0.2)
+        raise
 
 
 def _exited(pid: int, expected: tuple[int, int] | None) -> bool:
@@ -2940,13 +3010,15 @@ def _stop_child(proc: subprocess.Popen, seen: set[int], seen_lock: threading.Loc
     child that does not die cannot hold the test until the job is cancelled.
     """
     _kill_process_tree(proc.pid, seen, seen_lock)
+    # Close the pipes instead of reading them. A long stream would be stored
+    # by communicate(), and the child can exit once the write end is gone.
+    _close_child_pipes(proc)
     try:
-        proc.communicate(timeout=reap_seconds)
+        proc.wait(timeout=reap_seconds)
         return
     except subprocess.TimeoutExpired:
         pass
     _kill_process_tree(proc.pid, seen, seen_lock)
-    _close_child_pipes(proc)
     try:
         proc.wait(timeout=reap_seconds)
     except subprocess.TimeoutExpired:

@@ -1403,12 +1403,15 @@ def _launch(
 
 
 def _read_text(path: Path) -> str:
+    """The end of a script output file. A longer file is not read in full."""
     try:
-        from aicad.file_access import read_text
+        from aicad.file_access import read_tail
+        from aicad.sandbox import _SCRIPT_OUTPUT_CAP
 
-        return read_text(path, maximum=8 * 1024 * 1024, errors="replace")
+        data = read_tail(path, _SCRIPT_OUTPUT_CAP)
     except OSError:
         return ""
+    return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 class _JobBasicAndIo(ctypes.Structure):
