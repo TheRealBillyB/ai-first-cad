@@ -1569,8 +1569,10 @@ def solid_inertia(shape: Shape) -> dict:
 
 
 def _prepare_export_parent(path: Path) -> None:
+    from aicad.paths import ensure_real_directory
+
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_real_directory(path.parent)
     except OSError as exc:
         raise GeometryError(f"Could not write {path}.") from exc
 

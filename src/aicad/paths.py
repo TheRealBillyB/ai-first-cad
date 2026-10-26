@@ -1019,6 +1019,43 @@ _PROJECTS: set[Path] = set()
 _LINK_ERRNOS = {errno.ELOOP, errno.ENOTDIR}
 
 
+def published_path(path: str | Path) -> str:
+    """Absolute path text. A symlink or junction in the path is not followed."""
+
+    return os.path.abspath(path)
+
+
+def ensure_real_directory(path: str | Path) -> Path:
+    """Create a directory. Do not follow a symlink or a junction to do it."""
+
+    raw = Path(os.path.abspath(path))
+    current = Path(raw.anchor)
+    relative = raw.relative_to(current)
+    for part in relative.parts:
+        current = current / part
+        if is_reparse(current) or current.is_symlink():
+            raise OSError(errno.ELOOP, f"{path} is a link and was not followed.")
+        if current.exists():
+            if not current.is_dir():
+                raise OSError(errno.ENOTDIR, f"{path} is not a folder.")
+            continue
+        current.mkdir()
+    return raw
+
+
+def refuse_link_ancestors(path: str | Path, label: str, error: type[Exception]) -> None:
+    """Refuse when an existing component of ``path`` is a symlink or junction."""
+
+    raw = Path(os.path.abspath(path))
+    current = Path(raw.anchor)
+    for part in raw.relative_to(current).parts:
+        current = current / part
+        if is_reparse(current) or current.is_symlink():
+            raise error(f"{label} {path} is a link and was not followed.")
+        if not current.exists():
+            return
+
+
 def nofollow_writes() -> bool:
     """True when a directory can be opened without following a link."""
     from aicad.file_access import available
