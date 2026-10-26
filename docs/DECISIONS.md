@@ -20,6 +20,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A script job file is not opened when that name is a link | The child reads the job and the script, and writes the result, without following a link at that name, on Windows, macOS, and Linux. |
 | A script's disk quota counts bytes written | The count includes a file the script removed, on Windows, macOS, and Linux, and the first sample is part of the count. |
 | Looking up the Windows user gives up after 10 seconds | The file grant then uses the user name, so a stuck lookup does not hold the parent. |
+| Reading a process's memory use gives up after 2 seconds | On macOS the fallback listing is given 2 seconds, so a stuck listing does not hold the parent. |
 | The sketch solver is compiled as C11 | GCC's C23 default removes a macro the solver's allocator uses. The installer asks for C11 unless the caller already chose C11 or C17, replaces a C23 choice, and leaves the MSVC default alone. |
 
 ## 2026-10-25
