@@ -243,7 +243,7 @@ def test_a_nested_directory_link_is_not_read(tmp_path):
     project = _project(tmp_path)
     kept = project / "docs" / "sub"
     kept.mkdir(parents=True)
-    (kept / "note.txt").write_text("keep\n", encoding="utf-8")
+    (kept / "note.txt").write_bytes(b"keep\n")
     _link(project / "renders", outside, directory=True)
     hidden = project / "renders" / "sub" / "log.txt"
     with pytest.raises(OSError) as caught:
