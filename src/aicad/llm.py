@@ -346,57 +346,59 @@ def _anthropic(settings: dict, transcript: list[dict]) -> dict:
     return {"role": "assistant", "content": "\n".join(text).strip(), "tool_calls": calls}
 
 
-_TRUST_ENV = frozenset(
-    {
-        "ALL_PROXY",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "NO_PROXY",
-        "SSL_CERT_DIR",
-        "SSL_CERT_FILE",
-        "REQUESTS_CA_BUNDLE",
-        "CURL_CA_BUNDLE",
-    }
-)
-
-
-def _trust_env_name(name: str) -> bool:
-    return name.upper() in _TRUST_ENV
-
-
 _URL_OPEN = urllib.request.urlopen
+
+
+def _packaged_trust() -> tuple[str | None, str | None, bytes | None]:
+    """Trust paths compiled into OpenSSL, plus the Windows store.
+
+    ``openssl_cafile`` and ``openssl_capath`` are the packaged locations.
+    ``SSL_CERT_FILE`` and ``SSL_CERT_DIR`` are not consulted.
+    """
+
+    paths = ssl.get_default_verify_paths()
+    cafile = paths.openssl_cafile if paths.openssl_cafile and os.path.isfile(paths.openssl_cafile) else None
+    capath = paths.openssl_capath if paths.openssl_capath and os.path.isdir(paths.openssl_capath) else None
+    if os.name != "nt":
+        return cafile, capath, None
+    purpose = ssl.Purpose.SERVER_AUTH
+    blob = bytearray()
+    for storename in ("CA", "ROOT"):
+        for cert, encoding, trust in ssl.enum_certificates(storename):
+            if encoding == "x509_asn" and (trust is True or purpose.oid in trust):
+                blob.extend(cert)
+    return cafile, capath, bytes(blob) or None
 
 
 def _ssl_context() -> ssl.SSLContext:
     """A TLS context that does not use certificate paths from the environment."""
 
-    saved = {key: os.environ.pop(key) for key in list(os.environ) if _trust_env_name(key)}
-    try:
-        return ssl.create_default_context()
-    finally:
-        os.environ.update(saved)
+    cafile, capath, cadata = _packaged_trust()
+    if cafile or capath or cadata:
+        return ssl.create_default_context(cafile=cafile, capath=capath, cadata=cadata)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
 
 
 def open_assistant_url(request: urllib.request.Request, timeout: float):
     """Open an assistant URL. Proxy and certificate variables are not used.
 
     A test double installed on ``urllib.request.urlopen`` still receives the
-    request. The real opener uses an empty proxy map and a TLS context built
-    while certificate variables are unset.
+    request. The real opener has an empty proxy map and a TLS context from
+    the packaged trust store. The process environment is not changed.
     """
 
     urlopen = urllib.request.urlopen
     if urlopen is not _URL_OPEN:
         return urlopen(request, timeout=timeout)
-    saved = {key: os.environ.pop(key) for key in list(os.environ) if _trust_env_name(key)}
-    try:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}),
-            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
-        )
-        return opener.open(request, timeout=timeout)
-    finally:
-        os.environ.update(saved)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+    )
+    return opener.open(request, timeout=timeout)
 
 
 def _post(url: str, body: dict, headers: dict) -> dict:
