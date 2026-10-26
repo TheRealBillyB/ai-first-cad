@@ -11,6 +11,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | Decision | Rationale |
 | --- | --- |
 | A linked CI solver is copied into the prefix | The loader looks for libraries beside the file a link points at, so a solver that stays a link does not start. |
+| A project file is opened from a directory handle | The open, the size check, and the replacement all use that handle, so a link swapped in after the path was accepted is not followed on Windows, macOS, or Linux. |
 
 ## 2026-10-25
 
@@ -49,6 +50,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | DXF text escapes a line break the way PDF text escapes a string | A title is one group value. A newline or a carriage return stays in that value, so it cannot start another entity. |
 | One relation drives a joint | A second relation, or a cycle, leaves a joint value that does not satisfy every relation. A linkage maps an angle, so it drives a revolute or cylindrical joint. |
 | Robot meshes are not written through a link | A robot export creates the mesh folder in the export folder, so a mesh folder that is a link is not followed. |
+| Security guarantees are separate entry files | A pull request adds a file under docs/security and leaves SECURITY.md to the docs rebuild, so other pull requests do not conflict on that generated master. |
 | Several planets still report shaft torque | The tooth-force split among equal planets is free, and the shaft torques are reported when they do not depend on that split. Mesh efficiency waits until every tooth force is determined. |
 | The assistant cannot allow scripts, grant network, or save settings | Those switches and the chat request belong to the person at the page. The assistant token stays on project commands. |
 | The workspace app does not listen on a public address | A Host header can say localhost while the connection comes from another machine, so the bind address and the peer both have to be loopback. |
