@@ -607,20 +607,21 @@ def test_a_design_script_records_a_gear_train_solve():
 
 
 def test_a_briefly_busy_result_file_is_read_again(monkeypatch):
+    from aicad import file_access
     from aicad.sandbox_run import script_document
 
-    real_open = os.open
+    real_read = file_access.read_from_root
     opened = {"results": 0}
 
-    def guarded_open(path, flags, *args, **kwargs):
-        text = os.fsdecode(path)
+    def guarded_read(root, relative, maximum):
+        text = os.fspath(relative)
         if text.endswith(".res.json"):
             opened["results"] += 1
             if opened["results"] == 1:
                 raise PermissionError(errno.EACCES, "busy", text)
-        return real_open(path, flags, *args, **kwargs)
+        return real_read(root, relative, maximum)
 
-    monkeypatch.setattr(os, "open", guarded_open)
+    monkeypatch.setattr(file_access, "read_from_root", guarded_read)
 
     class Doc:
         def solve_gear_train(self, name, drive):

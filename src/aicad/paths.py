@@ -122,7 +122,9 @@ class _EzdxfOptionsLoader:
         return None
 
     def exec_module(self, module) -> None:
-        source = Path(self.origin).read_text(encoding="utf-8")
+        from aicad.file_access import read_text
+
+        source = read_text(self.origin, maximum=1_000_000)
         replaced, count = _OPTIONS_ASSIGN.subn("options = None", source, count=1)
         code = compile(replaced if count == 1 else source, self.origin, "exec")
         with _ProjectIniUnread():
@@ -915,15 +917,9 @@ _LINK_ERRNOS = {errno.ELOOP, errno.ENOTDIR}
 
 def nofollow_writes() -> bool:
     """True when a directory can be opened without following a link."""
-    if sys.platform == "win32":
-        return False
-    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
-        return False
-    try:
-        _libc()
-    except OSError:
-        return False
-    return True
+    from aicad.file_access import available
+
+    return available()
 
 
 def remember_project(root: Path) -> None:
@@ -1065,6 +1061,13 @@ def _writer_target(descriptor: int, suffix: str) -> tuple[Path, Path | None]:
 
 def open_directory(path: Path) -> int:
     """Open one directory. A symlink is refused. The caller closes the descriptor."""
+    from aicad.file_access import open_directory as opened
+
+    return opened(path)
+
+
+def _posix_open_directory(path: Path) -> int:
+    """Open one directory on POSIX. A symlink is refused."""
     if not nofollow_writes():
         raise OSError(errno.ENOTSUP, "no-follow directory open is not available")
     return os.open(os.fspath(path), _directory_flags())
@@ -1123,6 +1126,13 @@ def open_relative(root: Path, relative: str | Path, *, create: bool = False) -> 
     A symlink is refused. The caller closes the returned descriptor.
     ``relative`` may be empty, which opens ``root`` itself.
     """
+    from aicad.file_access import open_relative as opened
+
+    return opened(root, relative, create=create)
+
+
+def _posix_open_relative(root: Path, relative: str | Path, *, create: bool = False) -> int:
+    """Open ``root / relative`` with ``openat``. A symlink is refused."""
     parts = _relative_parts(relative) if Path(relative).parts else ()
     current = open_directory(root)
     for name in parts:
@@ -1143,6 +1153,13 @@ def replace_file(root: Path, relative: str | Path, write) -> None:
     from the previous descriptor. The new bytes go to a new file in the parent
     directory, and that name then replaces ``relative``.
     """
+    from aicad.file_access import replace_file as replaced
+
+    replaced(root, relative, write)
+
+
+def _posix_replace_file(root: Path, relative: str | Path, write) -> None:
+    """Replace ``root / relative`` with ``renameat``. A symlink is not followed."""
     parts = _relative_parts(relative)
     if not parts:
         raise OSError(errno.EINVAL, "path is empty")
@@ -1198,10 +1215,16 @@ def read_checked_bytes(
     A link at that name is not followed. More than ``maximum`` bytes is refused.
     """
     root_resolved = Path(root).resolve()
+    raw = Path(path)
+    if not raw.is_absolute():
+        raw = root_resolved / raw
     resolved = resolve_in_project(root_resolved, path, label, error)
     if not resolved.is_file():
         raise error(f"Could not read {label}.")
-    relative = _relative_within(root_resolved, resolved)
+    try:
+        relative = _relative_within(root_resolved, raw)
+    except OSError as exc:
+        raise error(f"Could not read {label}.") from exc
     _before_nofollow(root_resolved, relative)
     return _finish_read(root_resolved, relative, maximum, label, error)
 
@@ -1264,34 +1287,9 @@ def _read_error(label: str, error: type[Exception], exc: OSError) -> Exception:
 
 
 def _read_from_root(root: Path, relative: Path, maximum: int) -> bytes:
-    if nofollow_writes():
-        descriptor = _open_file_relative(root, relative)
-    elif os.name == "nt":
-        descriptor = _open_file_windows(root, relative)
-    else:
-        descriptor = _open_file_fallback(root, relative)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise OSError(errno.EINVAL, "not an ordinary file")
-        if info.st_nlink > 1:
-            raise OSError(errno.ELOOP, "has another name")
-        if info.st_size > maximum:
-            raise _TooLarge()
-        chunks: list[bytes] = []
-        remaining = maximum + 1
-        while remaining > 0:
-            chunk = os.read(descriptor, min(1024 * 1024, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        data = b"".join(chunks)
-        if len(data) > maximum:
-            raise _TooLarge()
-        return data
-    finally:
-        os.close(descriptor)
+    from aicad.file_access import read_from_root
+
+    return read_from_root(root, relative, maximum)
 
 
 def _open_file_relative(root: Path, relative: Path) -> int:
@@ -1324,97 +1322,6 @@ def _open_file_fallback(root: Path, relative: Path) -> int:
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     return os.open(os.fspath(raw), flags)
-
-
-def _open_file_windows(root: Path, relative: Path) -> int:
-    """Open a file on Windows and refuse a link before reading it."""
-    import msvcrt
-    from ctypes import wintypes
-
-    raw = root.joinpath(*relative.parts)
-    current = Path(root)
-    for part in relative.parts:
-        current = current / part
-        if is_reparse(current):
-            raise OSError(errno.ELOOP, "is a link")
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    create = kernel32.CreateFileW
-    create.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-    ]
-    create.restype = wintypes.HANDLE
-    handle = create(os.fspath(raw), 0x80000000, 0x1 | 0x2 | 0x4, None, 3, 0x00200000, None)
-    value = ctypes.cast(handle, ctypes.c_void_p).value
-    invalid = ctypes.c_void_p(-1).value
-    if not value or value == invalid:
-        raise OSError(errno.ENOENT, "could not open")
-    try:
-        attributes, links = _windows_file_facts(kernel32, handle)
-        if attributes & _FILE_ATTRIBUTE_REPARSE_POINT or attributes & 0x10:
-            raise OSError(errno.ELOOP, "is a link")
-        if links > 1:
-            raise OSError(errno.ELOOP, "has another name")
-        final = _windows_final_path(kernel32, handle)
-        expected = os.path.normcase(os.path.normpath(os.path.abspath(raw)))
-        if final != expected:
-            raise OSError(errno.ELOOP, "is a link")
-        return msvcrt.open_osfhandle(int(value), os.O_BINARY)
-    except Exception:
-        close = kernel32.CloseHandle
-        close.argtypes = [wintypes.HANDLE]
-        close.restype = wintypes.BOOL
-        close(handle)
-        raise
-
-
-def _windows_file_facts(kernel32, handle) -> tuple[int, int]:
-    from ctypes import wintypes
-
-    class _Info(ctypes.Structure):
-        _fields_ = [
-            ("dwFileAttributes", wintypes.DWORD),
-            ("ftCreationTime", wintypes.FILETIME),
-            ("ftLastAccessTime", wintypes.FILETIME),
-            ("ftLastWriteTime", wintypes.FILETIME),
-            ("dwVolumeSerialNumber", wintypes.DWORD),
-            ("nFileSizeHigh", wintypes.DWORD),
-            ("nFileSizeLow", wintypes.DWORD),
-            ("nNumberOfLinks", wintypes.DWORD),
-            ("nFileIndexHigh", wintypes.DWORD),
-            ("nFileIndexLow", wintypes.DWORD),
-        ]
-
-    info = _Info()
-    get = kernel32.GetFileInformationByHandle
-    get.argtypes = [wintypes.HANDLE, ctypes.POINTER(_Info)]
-    get.restype = wintypes.BOOL
-    if not get(handle, ctypes.byref(info)):
-        raise OSError(errno.EIO, "could not read file information")
-    return int(info.dwFileAttributes), int(info.nNumberOfLinks)
-
-
-def _windows_final_path(kernel32, handle) -> str:
-    from ctypes import wintypes
-
-    query = kernel32.GetFinalPathNameByHandleW
-    query.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
-    query.restype = wintypes.DWORD
-    buffer = ctypes.create_unicode_buffer(32768)
-    length = int(query(handle, buffer, len(buffer), 0))
-    if length <= 0 or length >= len(buffer):
-        raise OSError(errno.EIO, "could not read the file path")
-    text = buffer.value
-    if text.startswith("\\\\?\\UNC\\"):
-        text = "\\\\" + text[8:]
-    elif text.startswith("\\\\?\\"):
-        text = text[4:]
-    return os.path.normcase(os.path.normpath(text))
 
 
 def _accept_project_file(root: Path, path: Path) -> Path:

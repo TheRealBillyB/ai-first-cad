@@ -982,7 +982,9 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
             if abs(fz) > 1e-15:
                 lines.append(f"{base}, 3, {fz:.8g}")
         lines += ["*NODE FILE", "U", "*EL FILE", "S", "*END STEP"]
-        (path / "job.inp").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        from aicad.paths import publish_text
+
+        publish_text(path / "job.inp", "\n".join(lines) + "\n", root=path)
         # ccx is GPL-2.0-only. It stays a separate process and is not linked.
         from aicad.prereqs import find_program
 
@@ -1016,7 +1018,9 @@ def _parse_frd(path: Path, node_count: int):
     mode = None
     seen_disp = 0
     seen_stress = 0
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    from aicad.file_access import read_text
+
+    for line in read_text(path, maximum=64 * 1024 * 1024, errors="replace").splitlines():
         if line.startswith(" -4"):
             if "DISP" in line:
                 mode = "disp"

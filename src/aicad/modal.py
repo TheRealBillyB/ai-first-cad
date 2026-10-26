@@ -718,7 +718,13 @@ def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
 def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory)
-        (path / "job.inp").write_text(_frequency_deck(bodies, fixed_nodes, equations, nmodes), encoding="utf-8")
+        from aicad.paths import publish_text
+
+        publish_text(
+            path / "job.inp",
+            _frequency_deck(bodies, fixed_nodes, equations, nmodes),
+            root=path,
+        )
         # ccx is GPL-2.0-only. Frequency solves launch it as a separate process.
         from aicad.prereqs import find_program
 
@@ -746,7 +752,9 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
             return None, None, _ccx_error(stdout)
         node_count = sum(len(body["points"]) for body in bodies)
         try:
-            frequencies = _parse_dat(dat.read_text(encoding="utf-8", errors="replace"), nmodes)
+            from aicad.file_access import read_text
+
+            frequencies = _parse_dat(read_text(dat, maximum=64 * 1024 * 1024, errors="replace"), nmodes)
         except GeometryError as exc:
             return None, None, str(exc)
         vectors = _parse_mode_shapes(frd, node_count) if frd.is_file() else []
@@ -847,7 +855,9 @@ def _parse_mode_shapes(path: Path, node_count: int) -> list[np.ndarray]:
     modes: list[np.ndarray] = []
     current = None
     seen = 0
-    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+    from aicad.file_access import read_text
+
+    for line in read_text(path, maximum=64 * 1024 * 1024, errors="replace").splitlines():
         head = line.strip().upper()
         if "PMODE" in head:
             if current is not None and seen > 0:

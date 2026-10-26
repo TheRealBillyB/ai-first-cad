@@ -52,9 +52,12 @@ def png_size(path: Path | str) -> tuple[int, int]:
     renamed as a picture cannot start a converter.
     """
     file = Path(path)
+    from aicad.file_access import TooLarge, read_prefix
+
     try:
-        with file.open("rb") as handle:
-            header = handle.read(24)
+        header = read_prefix(file, 24, maximum=_MAX_BYTES)
+    except TooLarge as exc:
+        raise GeometryError(f"{file.name} is too large, so it was not opened.") from exc
     except OSError as exc:
         raise GeometryError(f"Could not read {file.name}. {exc.strerror or exc}.") from exc
     if len(header) < 24 or not header.startswith(_PNG_MAGIC):
@@ -143,7 +146,7 @@ def open_blueprint(path: Path | str, root: Path | str) -> dict:
     try:
         data = read_checked_bytes(
             project,
-            resolved,
+            candidate,
             maximum=_MAX_BYTES,
             label="Blueprint",
             error=BlueprintError,

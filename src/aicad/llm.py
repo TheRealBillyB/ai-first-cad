@@ -82,8 +82,12 @@ def load_settings() -> dict[str, Any]:
     if not path.is_file():
         return _defaults()
     try:
-        stored = json.loads(path.read_text(encoding="utf-8"))
+        from aicad.file_access import read_text
+
+        stored = json.loads(read_text(path, maximum=1_000_000))
     except json.JSONDecodeError as exc:
+        raise GeometryError(f"Could not read LLM settings {path}: {exc}") from exc
+    except OSError as exc:
         raise GeometryError(f"Could not read LLM settings {path}: {exc}") from exc
     merged = _defaults()
     if isinstance(stored, dict):
@@ -100,7 +104,9 @@ def save_settings(incoming: dict) -> dict[str, Any]:
         raise GeometryError("provider must be openai, anthropic, or compatible.")
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+    from aicad.paths import publish_text
+
+    publish_text(path, json.dumps(current, indent=2) + "\n", root=path.parent)
     try:
         from aicad.paths import restrict_private_file
 

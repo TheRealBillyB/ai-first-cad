@@ -803,7 +803,9 @@ def _load_ledger() -> dict:
     if not path.is_file():
         return {"format": 1, "approvals": {}, "entries": {}}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        from aicad.file_access import read_text
+
+        payload = json.loads(read_text(path, maximum=8 * 1024 * 1024))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {"format": 1, "approvals": {}, "entries": {}}
     if not isinstance(payload, dict):
@@ -820,9 +822,9 @@ def _load_ledger() -> dict:
 def _save_ledger(ledger: dict) -> None:
     path = approvals_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    from aicad.paths import publish_text
+
+    publish_text(path, json.dumps(ledger, indent=2) + "\n", root=path.parent)
 
 
 def _revision_fingerprint(revision: dict) -> dict:

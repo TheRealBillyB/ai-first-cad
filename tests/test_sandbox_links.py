@@ -453,7 +453,19 @@ def test_a_swapped_directory_is_not_written(tmp_path, monkeypatch):
         if link.is_symlink() or not link.is_dir():
             return
         shutil.rmtree(link)
-        link.symlink_to(outside, target_is_directory=True)
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            if sys.platform != "win32":
+                raise
+            completed = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise OSError(completed.stderr.strip() or "could not create a junction")
 
     monkeypatch.setattr(paths, "_before_nofollow", swap)
     monkeypatch.setattr(paths, "_reopen_accepts_create", lambda _path: False)

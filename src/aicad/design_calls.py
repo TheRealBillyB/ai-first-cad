@@ -49,35 +49,28 @@ def _busy(exc: OSError) -> bool:
 
 
 def _read_json(path: Path, limit: int) -> dict | None:
-    if path.is_symlink():
-        raise OSError(errno.ELOOP, "link")
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
+    from aicad.file_access import read_from_root
+    from aicad.paths import _TooLarge, _before_nofollow
+
+    parent = path.parent
+    relative = Path(path.name)
+    _before_nofollow(parent, relative)
     try:
-        descriptor = os.open(path, flags)
-    except FileNotFoundError:
-        return None
+        raw = read_from_root(parent, relative, limit)
+    except _TooLarge as exc:
+        raise OSError(errno.EFBIG, "too large") from exc
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return None
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR, errno.EINVAL} or exc.strerror in {
+            "is a link",
+            "has another name",
+            "not an ordinary file",
+        }:
+            raise OSError(errno.ELOOP, "link") from exc
+        raise
     try:
-        info = os.fstat(descriptor)
-        if info.st_nlink > 1:
-            raise OSError(errno.ELOOP, "link")
-        if info.st_size > limit:
-            raise OSError(errno.EFBIG, "too large")
-        chunks: list[bytes] = []
-        while True:
-            block = os.read(descriptor, 1024 * 1024)
-            if not block:
-                break
-            chunks.append(block)
-            if sum(len(part) for part in chunks) > limit:
-                raise OSError(errno.EFBIG, "too large")
-    finally:
-        os.close(descriptor)
-    try:
-        payload = json.loads(b"".join(chunks).decode("utf-8"))
+        payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise OSError(errno.EINVAL, "not json") from exc
     if not isinstance(payload, dict):
@@ -90,19 +83,9 @@ def _write_json(path: Path, payload: dict) -> None:
     if len(text.encode("utf-8")) > _RESPONSE_LIMIT:
         payload = {"ok": False, "error_type": "RuntimeError", "error": "The result was too large."}
         text = json.dumps(payload) + "\n"
-    temporary = path.with_suffix(path.suffix + ".partial")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(temporary, flags, 0o600)
-    try:
-        os.write(descriptor, text.encode("utf-8"))
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    os.replace(temporary, path)
+    from aicad.paths import publish_bytes
+
+    publish_bytes(path, text.encode("utf-8"), root=path.parent)
 
 
 def _raise_remote(error_type: str, message: str) -> None:
@@ -367,6 +350,8 @@ def model_main(job: Path, record_path: Path) -> int:
     calls: list[dict] = []
     report = serve_calls(job / "calls", document, calls, before)
     text = json.dumps(report) + "\n"
+    # The parent recorded this file's identity. Writing in place keeps that
+    # identity. Replacing the name would make the record look swapped.
     flags = os.O_WRONLY | os.O_TRUNC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW

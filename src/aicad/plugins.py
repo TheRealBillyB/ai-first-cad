@@ -1040,7 +1040,9 @@ def _read_manifest_text(entry) -> str:
         if len(matches) == 1:
             path = Path(matches[0].locate())
             try:
-                return path.read_text(encoding="utf-8")
+                from aicad.file_access import read_text
+
+                return read_text(path, maximum=1_000_000)
             except OSError as exc:
                 raise PluginError(
                     f"Could not read {MANIFEST_NAME}: {exc}. The plugin was not imported."
@@ -1059,7 +1061,9 @@ def _manifest_beside_module(entry) -> str:
             "aicad will not import a plugin to find out what it wants."
         )
     try:
-        return path.read_text(encoding="utf-8")
+        from aicad.file_access import read_text
+
+        return read_text(path, maximum=1_000_000)
     except OSError as exc:
         raise PluginError(f"Could not read {MANIFEST_NAME}: {exc}. The plugin was not imported.") from exc
 
@@ -1163,7 +1167,9 @@ def _read_consent(path: Path | None) -> dict:
     if not file.is_file():
         return {"version": 1, "allowed": {}}
     try:
-        data = json.loads(file.read_text(encoding="utf-8"))
+        from aicad.file_access import read_text
+
+        data = json.loads(read_text(file, maximum=1_000_000))
     except (OSError, json.JSONDecodeError) as exc:
         raise PluginError(
             f"The plugin consent file {file} could not be read ({exc}). No plugin was run."
@@ -1217,9 +1223,9 @@ def _write_allow(offer: PluginOffer, consent_path: Path | None) -> None:
 
 def _atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    from aicad.paths import publish_text
+
+    publish_text(path, json.dumps(payload, indent=2) + "\n", root=path.parent)
 
 
 def _human_permissions(permissions: tuple[str, ...]) -> str:
