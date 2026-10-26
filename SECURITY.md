@@ -76,5 +76,6 @@ The workspace app listens on this computer only. A bind address that is not loop
 That stops another website, including one that tries to reach this computer by a DNS name that merely points here. It does not stop a program that already has a shell on this computer. An AI with that access can read the page, copy the session, and do what you can do. If a later approval step treats a click in the app as already approved, that step is a guardrail for an assistant that follows the rules. It is not a security boundary against a malicious program on this computer.
 
 - A design script's standard output and standard error are kept only up to 1 MB. A longer stream is not stored.
+- **E.** A project file is read from the project directory, so a directory link in the middle of the path is not followed.
 - A design script's disk quota counts the bytes it writes, including a file that was removed before the next look.
 - **E.** A directory link is unlinked when a project folder is removed, and the directory it points at is left in place.
