@@ -1650,11 +1650,61 @@ class _View:
         self.path = path
 
 
+_MAX_IMAGE_BYTES = 32 * 1024 * 1024
+_IMAGE_FORMATS = {"png": "png", "jpg": "jpeg", "jpeg": "jpeg", "gif": "gif", "webp": "webp"}
+
+
+def _image_root(file: Path) -> Path | None:
+    """Project directory that lexically contains ``file``, when there is one."""
+    from aicad.paths import _project_containing, _project_holding, is_reparse
+
+    holder = _project_containing(file)
+    if holder is not None:
+        try:
+            if not is_reparse(holder):
+                return holder
+        except OSError:
+            return None
+    found = _project_holding(file)
+    if found is None:
+        return None
+    try:
+        if is_reparse(found):
+            return None
+    except OSError:
+        return None
+    return found
+
+
+def _attach_image(path: str) -> Image | str:
+    """Read a picture from its project. The picture library is not given the path."""
+    from aicad.paths import read_checked_bytes
+
+    file = Path(path)
+    if not file.is_absolute():
+        file = Path.cwd() / file
+    name = file.name
+    root = _image_root(file)
+    if root is None:
+        return f"{name} was not opened."
+    try:
+        data = read_checked_bytes(
+            root, file, maximum=_MAX_IMAGE_BYTES, label=name, error=OSError
+        )
+    except OSError as exc:
+        message = str(exc).replace("\n", " ").strip()
+        if not message or len(message) > 200 or "\x00" in message:
+            return f"{name} was not opened."
+        return message
+    suffix = _IMAGE_FORMATS.get(file.suffix.lower().lstrip("."), "png")
+    return Image(data=data, format=suffix)
+
+
 def _with_images(payload: dict, views) -> list[str | Image]:
     ordered = sorted(views, key=lambda view: _VIEW_RANK.get(view.name, 50))
     blocks: list[str | Image] = [json.dumps(payload, indent=2)]
     for view in ordered:
-        blocks.append(Image(path=view.path))
+        blocks.append(_attach_image(str(view.path)))
     return blocks
 
 
