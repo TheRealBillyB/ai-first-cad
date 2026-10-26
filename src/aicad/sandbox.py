@@ -2994,11 +2994,19 @@ class _DesignRecord:
         calls = self.job / "calls"
         calls.mkdir(mode=0o700)
         descriptor, name = tempfile.mkstemp(prefix="aicad-design-checks-", suffix=".json")
-        os.close(descriptor)
+        try:
+            self._start_record_process(descriptor, name)
+        finally:
+            os.close(descriptor)
+            self._record_fd = None
+
+    def _start_record_process(self, descriptor: int, name: str) -> None:
+        os.set_inheritable(descriptor, True)
         self.record = Path(name)
-        info = os.lstat(self.record)
+        info = os.fstat(descriptor)
         self._device = info.st_dev
         self._inode = info.st_ino
+        self._record_fd = descriptor
         log_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             log_flags |= os.O_NOFOLLOW
@@ -3017,26 +3025,39 @@ class _DesignRecord:
             env.pop("PYTHONPATH", None)
         from aicad.thread_stack import child_inherits_geometry_stack
 
+        command = [
+            sys.executable,
+            "-P",
+            "-B",
+            "-u",
+            str(_sandbox_runner()),
+            "--model",
+            str(self.job),
+            str(self.record),
+        ]
+        popen_kwargs: dict = {
+            "cwd": str(self.workspace),
+            "env": env,
+            "stdin": subprocess.DEVNULL,
+            "stdout": log_fd,
+            "stderr": subprocess.STDOUT,
+            "start_new_session": True,
+            "close_fds": True,
+        }
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle = int(msvcrt.get_osfhandle(descriptor))
+            command.append(str(handle))
+            startup = subprocess.STARTUPINFO()
+            startup.lpAttributeList = {"handle_list": [handle]}
+            popen_kwargs["startupinfo"] = startup
+        else:
+            command.append(str(descriptor))
+            popen_kwargs["pass_fds"] = (descriptor,)
         try:
             with child_inherits_geometry_stack():
-                self.proc = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-P",
-                        "-B",
-                        "-u",
-                        str(_sandbox_runner()),
-                        "--model",
-                        str(self.job),
-                        str(self.record),
-                    ],
-                    cwd=str(self.workspace),
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log_fd,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
+                self.proc = subprocess.Popen(command, **popen_kwargs)
         finally:
             os.close(log_fd)
 

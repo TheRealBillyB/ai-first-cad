@@ -85,6 +85,31 @@ def open_relative(root: Path, relative: str | Path, *, create: bool = False) -> 
     return _posix_open_relative(root, relative, create=create)
 
 
+def open_inplace(path: str | Path) -> int:
+    """Open an existing file so it can be rewritten. A link is refused.
+
+    The caller closes the descriptor. The file is truncated.
+    """
+
+    file = Path(path)
+    if sys.platform == "win32":
+        return _windows_open_inplace(file)
+    flags = os.O_WRONLY | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    descriptor = os.open(file, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "not an ordinary file", str(file))
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def replace_file(root: Path, relative: str | Path, write) -> None:
     """Replace ``root / relative`` without following a link in any component."""
     if sys.platform == "win32":
@@ -296,6 +321,35 @@ def _windows_open_child(parent: int, name: str, *, create: bool, write: bool) ->
     except Exception:
         _close_handle(handle)
         raise
+
+
+def _windows_open_inplace(path: Path) -> int:
+    directory = open_directory(path.parent)
+    handle = None
+    descriptor = -1
+    try:
+        handle = _nt_open(
+            _os_handle(directory),
+            path.name,
+            access=_FILE_WRITE_ACCESS,
+            directory=False,
+            create=False,
+        )
+        _refuse_reparse(handle, path.name)
+        if _attributes(handle) & _FILE_ATTRIBUTE_DIRECTORY:
+            raise OSError(errno.EINVAL, "not an ordinary file", str(path))
+        descriptor = _descriptor(handle, os.O_WRONLY | getattr(os, "O_BINARY", 0))
+        handle = None
+        os.ftruncate(descriptor, 0)
+        return descriptor
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    finally:
+        if handle is not None:
+            _close_handle(handle)
+        os.close(directory)
 
 
 def _windows_open_file(root: Path, relative: Path) -> int:

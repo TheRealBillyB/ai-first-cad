@@ -343,13 +343,22 @@ def main(argv: list[str] | None = None) -> int:
     if stack is not None:
         stack.prepare_geometry_thread_stack()
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) == 3 and args[0] == "--model":
+    if args and args[0] == "--model" and len(args) in (3, 4):
         if stack is not None and not stack.current_thread_can_run_geometry():
             print(stack.SMALL_CALLER_STACK, file=sys.stderr)
             return 1
         from aicad.design_calls import model_main
 
-        return model_main(Path(args[1]), Path(args[2]))
+        record_fd = None
+        if len(args) == 4:
+            try:
+                record_fd = int(args[3])
+            except ValueError:
+                print("usage: python -P -m aicad.sandbox_run --model JOB RECORD FD", file=sys.stderr)
+                return 2
+            if record_fd < 0:
+                return 2
+        return model_main(Path(args[1]), Path(args[2]), record_fd)
     if len(args) != 1:
         print("usage: python -P -m aicad.sandbox_run JOB_DIR", file=sys.stderr)
         return 2
