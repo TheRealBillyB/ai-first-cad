@@ -22,7 +22,10 @@ _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _FILE_SHARE_ALL = 0x1 | 0x2 | 0x4
 _OPEN_EXISTING = 3
-_DIR_ACCESS = 0x1 | 0x2 | 0x4 | 0x20 | 0x80 | 0x100 | 0x10000 | 0x100000
+# A read asks only to list and traverse. Add, write, and delete are refused
+# by a confined process that is still allowed to read the directory.
+_DIR_READ = 0x1 | 0x20 | 0x80 | 0x100000
+_DIR_ACCESS = _DIR_READ | 0x2 | 0x4 | 0x100 | 0x10000
 _FILE_READ_ACCESS = 0x1 | 0x80 | 0x100000
 _FILE_WRITE_ACCESS = 0x1 | 0x2 | 0x100 | 0x10000 | 0x100000
 _FILE_OPEN = 1
@@ -70,7 +73,7 @@ def open_directory(path: Path) -> int:
 def open_relative(root: Path, relative: str | Path, *, create: bool = False) -> int:
     """Open ``root / relative`` one component at a time. A link is refused."""
     if sys.platform == "win32":
-        return _windows_open_relative(Path(root), relative, create=create)
+        return _windows_open_relative(Path(root), relative, create=create, write=create)
     from aicad.paths import _posix_open_relative
 
     return _posix_open_relative(root, relative, create=create)
@@ -237,8 +240,9 @@ def _windows_available() -> bool:
         return False
 
 
-def _windows_open_root(path: Path) -> int:
-    handle = _create_file(os.fspath(path), _DIR_ACCESS, _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT)
+def _windows_open_root(path: Path, *, write: bool = False) -> int:
+    access = _DIR_ACCESS if write else _DIR_READ
+    handle = _create_file(os.fspath(path), access, _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT)
     try:
         _refuse_reparse(handle, path.name or os.fspath(path))
         if not _attributes(handle) & _FILE_ATTRIBUTE_DIRECTORY:
@@ -249,12 +253,12 @@ def _windows_open_root(path: Path) -> int:
         raise
 
 
-def _windows_open_relative(root: Path, relative: str | Path, *, create: bool) -> int:
+def _windows_open_relative(root: Path, relative: str | Path, *, create: bool, write: bool = False) -> int:
     parts = _relative_parts(relative) if Path(relative).parts else ()
-    current = _windows_open_root(root)
+    current = _windows_open_root(root, write=write)
     for name in parts:
         try:
-            nxt = _windows_open_child(current, name, create=create)
+            nxt = _windows_open_child(current, name, create=create, write=write)
         except OSError:
             os.close(current)
             raise
@@ -263,20 +267,21 @@ def _windows_open_relative(root: Path, relative: str | Path, *, create: bool) ->
     return current
 
 
-def _windows_open_child(parent: int, name: str, *, create: bool) -> int:
+def _windows_open_child(parent: int, name: str, *, create: bool, write: bool) -> int:
     _check_component(name)
     parent_handle = _os_handle(parent)
+    access = _DIR_ACCESS if write else _DIR_READ
     try:
-        handle = _nt_open(parent_handle, name, access=_DIR_ACCESS, directory=True, create=False)
+        handle = _nt_open(parent_handle, name, access=access, directory=True, create=False)
     except OSError as exc:
         if exc.errno != errno.ENOENT or not create:
             raise
         try:
-            handle = _nt_open(parent_handle, name, access=_DIR_ACCESS, directory=True, create=True)
+            handle = _nt_open(parent_handle, name, access=access, directory=True, create=True)
         except OSError as created:
             if created.errno != errno.EEXIST:
                 raise
-            handle = _nt_open(parent_handle, name, access=_DIR_ACCESS, directory=True, create=False)
+            handle = _nt_open(parent_handle, name, access=access, directory=True, create=False)
     try:
         _refuse_reparse(handle, name)
         if not _attributes(handle) & _FILE_ATTRIBUTE_DIRECTORY:
@@ -292,7 +297,7 @@ def _windows_open_file(root: Path, relative: Path) -> int:
     if not parts:
         raise OSError(errno.EINVAL, "path is empty")
     parent = Path(*parts[:-1]) if len(parts) > 1 else Path()
-    directory = _windows_open_relative(root, parent, create=False)
+    directory = _windows_open_relative(root, parent, create=False, write=False)
     try:
         handle = _nt_open(_os_handle(directory), parts[-1], access=_FILE_READ_ACCESS, directory=False, create=False)
     finally:
@@ -320,7 +325,7 @@ def _windows_replace(root: Path, relative: str | Path, write) -> None:
     name = parts[-1]
     _check_component(name)
     parent = Path(*parts[:-1]) if len(parts) > 1 else Path()
-    directory = _windows_open_relative(root, parent, create=True)
+    directory = _windows_open_relative(root, parent, create=True, write=True)
     temporary = f".aicad-{os.getpid()}-{uuid.uuid4().hex}{Path(name).suffix}"
     descriptor = -1
     staged: Path | None = None

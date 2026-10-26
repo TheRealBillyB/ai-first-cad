@@ -1036,8 +1036,12 @@ def _reopen_accepts_create(path: Path) -> bool:
 
     ``/dev/fd/N`` refuses that open, so a writer which creates its file is
     given a private file and the bytes are copied into the descriptor.
+    Windows has no such path. ``Path`` turns ``/dev/fd/N`` into ``\\dev\\fd\\N``.
     """
-    return not os.fspath(path).startswith("/dev/fd/")
+    text = os.fspath(path).replace("\\", "/")
+    if text.startswith("/dev/fd/"):
+        return False
+    return sys.platform != "win32"
 
 
 def _copy_into_descriptor(descriptor: int, source: Path) -> None:

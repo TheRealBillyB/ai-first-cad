@@ -45,6 +45,20 @@ def _link(path: Path, target: Path, *, directory: bool = False) -> None:
         pytest.fail(f"this system cannot create a link ({exc})")
 
 
+def test_a_descriptor_path_is_not_reopened_as_a_file():
+    from aicad.paths import _reopen_accepts_create
+
+    assert _reopen_accepts_create(Path("/dev/fd/6")) is False
+    assert _reopen_accepts_create(Path("\\dev\\fd\\6")) is False
+
+
+def test_a_windows_read_does_not_ask_to_change_the_directory():
+    from aicad import file_access
+
+    change = 0x2 | 0x4 | 0x40 | 0x100 | 0x10000
+    assert file_access._DIR_READ & change == 0
+
+
 def test_the_windows_file_record_keeps_the_link_count_in_place():
     from aicad import file_access
 
