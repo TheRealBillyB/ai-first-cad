@@ -99,6 +99,7 @@ WALL_SECONDS = 120
 CPU_SECONDS = 60
 MEMORY_BYTES = 4 * 1024 * 1024 * 1024
 FILE_BYTES = 512 * 1024 * 1024
+DISK_BYTES = FILE_BYTES
 SCRIPT_MAX_CHARS = 200_000
 STDOUT_MAX = 64_000
 
@@ -421,6 +422,11 @@ def memory_bytes() -> int:
 def file_bytes() -> int:
     """File-size cap for one script. An environment value cannot raise it."""
     return _capped("AICAD_SCRIPT_FILE_BYTES", FILE_BYTES, FILE_BYTES)
+
+
+def disk_bytes() -> int:
+    """Cumulative bytes one script may write. An environment value cannot raise it."""
+    return _capped("AICAD_SCRIPT_DISK_BYTES", DISK_BYTES, DISK_BYTES)
 
 
 def config_dir() -> Path:
@@ -2462,6 +2468,179 @@ def _reap_macos(leader: int, sentinel: str, account: _Account, seen: set[int], l
     _refuse_unaccounted(False, survivors)
 
 
+def _file_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _snapshot_files(root: Path) -> dict[str, int]:
+    """Sizes of regular files under ``root``. A link is not followed."""
+    from aicad.paths import is_reparse
+
+    sizes: dict[str, int] = {}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        kept: list[str] = []
+        for name in dirnames:
+            child = Path(dirpath) / name
+            if child.is_symlink() or is_reparse(child):
+                continue
+            kept.append(name)
+        dirnames[:] = kept
+        for name in filenames:
+            path = Path(dirpath) / name
+            if path.is_symlink() or is_reparse(path):
+                continue
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            sizes[_file_key(path)] = int(info.st_size)
+    return sizes
+
+
+def _process_write_bytes(pid: int) -> int | None:
+    """Bytes this process has written, or None when the system will not say."""
+    if sys.platform.startswith("linux"):
+        try:
+            text = Path(f"/proc/{pid}/io").read_text(encoding="utf-8")
+        except OSError:
+            return None
+        for line in text.splitlines():
+            if line.startswith("write_bytes:"):
+                try:
+                    return int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    return None
+        return None
+    if sys.platform == "darwin":
+        from aicad.sandbox_macos import bytes_written
+
+        return bytes_written(pid)
+    return None
+
+
+class _DiskWatch:
+    """Cumulative and per-file write caps for one script.
+
+    The parent counts bytes written and the files that grew. A run past either
+    cap is stopped, and the extra bytes are removed afterwards.
+    """
+
+    def __init__(self, root: Path, before: dict[str, int], file_cap: int, disk_cap: int):
+        self.root = root
+        self.before = before
+        self.file_cap = file_cap
+        self.disk_cap = disk_cap
+        self.hit = threading.Event()
+        self._io_base: dict[int, int] = {}
+        self.io_peak = 0
+        self._lock = threading.Lock()
+
+    def note_io(self, pids: set[int]) -> None:
+        total = 0
+        for pid in pids:
+            current = _process_write_bytes(pid)
+            if current is None:
+                continue
+            with self._lock:
+                base = self._io_base.get(pid)
+                if base is None:
+                    self._io_base[pid] = current
+                    base = current
+            total += max(0, current - base)
+        with self._lock:
+            self.io_peak = max(self.io_peak, total)
+        if total > self.disk_cap:
+            self.hit.set()
+
+    def note_job_io(self, written: int, baseline: int | None) -> None:
+        delta = written if baseline is None else max(0, written - baseline)
+        with self._lock:
+            self.io_peak = max(self.io_peak, delta)
+        if delta > self.disk_cap:
+            self.hit.set()
+
+    def note_files(self) -> None:
+        try:
+            over = self._growth_over()
+        except OSError:
+            return
+        if over:
+            self.hit.set()
+
+    def _growth_over(self) -> bool:
+        total = 0
+        for key, size, old in _file_growth(self.root, self.before):
+            del key
+            if size > self.file_cap and size > old:
+                return True
+            total += max(0, size - old)
+            if total > self.disk_cap:
+                return True
+        return False
+
+    def settle(self) -> str | None:
+        """Remove writes past the caps. The message is None when the run stayed inside them."""
+        if sys.platform == "win32":
+            from aicad.sandbox_windows import _reclaim_for_user
+
+            _reclaim_for_user(self.root)
+        grown: list[tuple[int, str]] = []
+        total = 0
+        file_over = False
+        for key, size, old in _file_growth(self.root, self.before):
+            growth = max(0, size - old)
+            if size > self.file_cap and size > old:
+                file_over = True
+                _restore_file(key, self.before)
+                continue
+            if growth:
+                grown.append((growth, key))
+                total += growth
+        with self._lock:
+            io_peak = self.io_peak
+        used = max(total, io_peak)
+        if used > self.disk_cap:
+            grown.sort(reverse=True)
+            for growth, key in grown:
+                if total <= self.disk_cap and io_peak <= self.disk_cap:
+                    break
+                _restore_file(key, self.before)
+                total -= growth
+            return f"The script was stopped because it wrote more than {self.disk_cap} bytes."
+        if file_over:
+            return f"The script was stopped because it wrote more than {self.file_cap} bytes."
+        return None
+
+
+def _file_growth(root: Path, before: dict[str, int]):
+    """Yield ``(key, size, old_size)`` for regular files. ``old_size`` is 0 for a new file."""
+    current = _snapshot_files(root)
+    keys = set(before) | set(current)
+    for key in keys:
+        size = current.get(key, 0)
+        old = before.get(key, 0)
+        if size == 0 and old == 0:
+            continue
+        yield key, size, old
+
+
+def _restore_file(key: str, before: dict[str, int]) -> None:
+    path = Path(key)
+    old = before.get(key)
+    try:
+        if old is None:
+            path.unlink(missing_ok=True)
+            return
+        os.truncate(path, old)
+    except OSError:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return
+
+
 def _watch_descendants(
     leader: int,
     seen: set[int],
@@ -2473,6 +2652,7 @@ def _watch_descendants(
     process_hit: threading.Event | None = None,
     account: _Account | None = None,
     sentinel: str | None = None,
+    disk: _DiskWatch | None = None,
 ) -> None:
     """Remember children, kill any that leave the group, and enforce the memory and process caps."""
     next_sample = 0.0
@@ -2503,14 +2683,21 @@ def _watch_descendants(
                 process_hit.set()
             _kill_process_tree(leader, seen, lock, extra=found)
             return
-        if memory_cap is not None and time.monotonic() >= next_sample:
+        if time.monotonic() >= next_sample:
             next_sample = time.monotonic() + _MEMORY_POLL_SECONDS
-            used = _tree_resident_bytes(leader, found)
-            if used is not None and used > memory_cap:
-                if memory_hit is not None:
-                    memory_hit.set()
-                _kill_process_tree(leader, seen, lock, extra=found)
-                return
+            if disk is not None:
+                disk.note_io({leader, *found})
+                disk.note_files()
+                if disk.hit.is_set():
+                    _kill_process_tree(leader, seen, lock, extra=found)
+                    return
+            if memory_cap is not None:
+                used = _tree_resident_bytes(leader, found)
+                if used is not None and used > memory_cap:
+                    if memory_hit is not None:
+                        memory_hit.set()
+                    _kill_process_tree(leader, seen, lock, extra=found)
+                    return
         stop.wait(0.02)
 
 
@@ -2845,6 +3032,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         profile_path.write_text(profile, encoding="utf-8")
         command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds()
+    disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
+    disk_stop = threading.Event()
     stop_watch: threading.Event | None = None
     watcher: threading.Thread | None = None
     seen: set[int] = set()
@@ -2866,19 +3055,33 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
 
-            code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
-                command,
-                cwd=str(workspace),
-                env=_child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir),
-                read_paths=_read_roots(),
-                workspace=workspace,
-                cpu_seconds=cpu_seconds(),
-                memory_bytes=memory_bytes(),
-                network=network,
-                timeout_seconds=wall,
-                stdout_path=job / "stdout.txt",
-                stderr_path=job / "stderr.txt",
-            )
+            def _watch_windows_files() -> None:
+                while not disk_stop.is_set():
+                    disk.note_files()
+                    if disk.hit.is_set():
+                        return
+                    disk_stop.wait(0.1)
+
+            windows_files = threading.Thread(target=_watch_windows_files, name="aicad-disk", daemon=True)
+            windows_files.start()
+            try:
+                code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
+                    command,
+                    cwd=str(workspace),
+                    env=_child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir),
+                    read_paths=_read_roots(),
+                    workspace=workspace,
+                    cpu_seconds=cpu_seconds(),
+                    memory_bytes=memory_bytes(),
+                    network=network,
+                    timeout_seconds=wall,
+                    stdout_path=job / "stdout.txt",
+                    stderr_path=job / "stderr.txt",
+                    disk=disk,
+                )
+            finally:
+                disk_stop.set()
+                windows_files.join(timeout=1)
             if timed_out:
                 detail = design_record.failure_detail() if design_record is not None else ""
                 shutil.rmtree(job, ignore_errors=True)
@@ -2888,6 +3091,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 raise ScriptError(message)
             if design_record is not None and design_record.proc is not None and design_record.proc.poll() not in (0, None):
                 design_record._refuse()
+            disk_message = disk.settle()
+            if disk_message:
+                shutil.rmtree(job, ignore_errors=True)
+                raise ScriptError(disk_message)
             payload = _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
             if design_record is not None:
                 payload = design_record.merge(payload)
@@ -2946,7 +3153,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 process_cap,
                 process_hit,
             ),
-            kwargs={"account": account, "sentinel": sentinel_path},
+            kwargs={"account": account, "sentinel": sentinel_path, "disk": disk},
             name="aicad-sandbox-reap",
             daemon=True,
         )
@@ -2982,6 +3189,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             _kill_process_tree(proc.pid, seen, seen_lock)
         if design_record is not None and design_record.proc is not None and design_record.proc.poll() not in (0, None):
             design_record._refuse()
+        disk_message = disk.settle()
+        if disk_message:
+            shutil.rmtree(job, ignore_errors=True)
+            raise ScriptError(disk_message)
         payload = _payload_from_result(
             job,
             proc.returncode if proc.returncode is not None else -1,
