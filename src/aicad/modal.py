@@ -725,6 +725,8 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
         solver = find_program("ccx")
         if solver is None:
             return None, None, "CalculiX (ccx) is not on PATH."
+        from aicad.sandbox import program_environment
+
         completed = subprocess.run(
             [solver, "-i", "job"],
             cwd=directory,
@@ -733,6 +735,7 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
             stdin=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
+            env=program_environment(),
         )
         dat = path / "job.dat"
         frd = path / "job.frd"
