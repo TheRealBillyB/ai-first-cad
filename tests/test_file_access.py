@@ -112,7 +112,7 @@ def test_the_windows_file_record_keeps_the_link_count_in_place():
 def test_a_regular_file_is_read_from_its_directory(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
-    (root / "note.txt").write_text("keep\n", encoding="utf-8")
+    (root / "note.txt").write_bytes(b"keep\n")
     assert read_from_root(root, Path("note.txt"), 100) == b"keep\n"
     assert read_file(root / "note.txt", maximum=100) == b"keep\n"
 

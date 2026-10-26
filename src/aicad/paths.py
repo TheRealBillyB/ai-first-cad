@@ -1423,6 +1423,10 @@ def output_dir(root: Path, path: str | Path, label: str, error: type[Exception])
             os.close(descriptor)
             resolved = raw.resolve()
         except OSError as exc:
+            if exc.strerror == "is a link" or exc.errno == errno.ELOOP:
+                raise error(
+                    f"Could not create {label} {path}. {path} is a link and was not followed."
+                ) from exc
             reason = exc.strerror or str(exc)
             raise error(f"Could not create {label} {path}. {reason}.") from exc
         if not _is_inside(resolved, root_resolved):
