@@ -78,4 +78,5 @@ That stops another website, including one that tries to reach this computer by a
 - A design script's standard output and standard error are kept only up to 1 MB. A longer stream is not stored.
 - **E.** A project file is read from the project directory, so a directory link in the middle of the path is not followed.
 - A design script's disk quota counts the bytes it writes, including a file that was removed before the next look.
+- **R.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
 - **E.** A directory link is unlinked when a project folder is removed, and the directory it points at is left in place.

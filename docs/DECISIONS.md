@@ -13,6 +13,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A design script's output is capped | The parent keeps at most 1 MB of the script's standard output and standard error, on Windows, macOS, and Linux, and drops the earlier bytes. |
 | A directory link is unlinked when a project folder is removed | The directory it points at is left in place on Windows, macOS, and Linux. |
 | A linked CI solver is copied into the prefix | The loader looks for libraries beside the file a link points at, so a solver that stays a link does not start. |
+| A picture and a robot mesh are read from the project | The bytes are read before a picture is attached or a simulator opens a mesh, so a link is not followed. |
 | A project file is opened from a directory handle | The open, the size check, and the replacement all use that handle, so a link swapped in after the path was accepted is not followed on Windows, macOS, or Linux. |
 | A project file is read from the project directory | A directory link in the middle of the path is not followed on Windows, macOS, or Linux. |
 | A script's disk quota counts bytes written | The count includes a file the script removed, on Windows, macOS, and Linux, and the first sample is part of the count. |
