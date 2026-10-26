@@ -1181,7 +1181,9 @@ def _read_consent(path: Path | None) -> dict:
     if not file.is_file():
         return {"version": 1, "allowed": {}}
     try:
-        data = json.loads(file.read_text(encoding="utf-8"))
+        from aicad.file_access import read_text
+
+        data = json.loads(read_text(file, maximum=1_000_000))
     except (OSError, json.JSONDecodeError) as exc:
         raise PluginError(
             f"The plugin consent file {file} could not be read ({exc}). No plugin was run."
@@ -1235,9 +1237,9 @@ def _write_allow(offer: PluginOffer, consent_path: Path | None) -> None:
 
 def _atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    from aicad.paths import publish_text
+
+    publish_text(path, json.dumps(payload, indent=2) + "\n", root=path.parent)
 
 
 def _human_permissions(permissions: tuple[str, ...]) -> str:

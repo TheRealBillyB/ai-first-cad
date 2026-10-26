@@ -239,8 +239,14 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
                 env=program_environment(),
             )
             last = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
-            if gcode.is_file() and gcode.stat().st_size > 0:
-                parsed = parse_gcode(gcode.read_text(encoding="utf-8", errors="replace"))
+            from aicad.file_access import read_text
+
+            try:
+                gcode_text = read_text(gcode, maximum=64 * 1024 * 1024, errors="replace")
+            except OSError:
+                gcode_text = ""
+            if gcode_text:
+                parsed = parse_gcode(gcode_text)
                 parsed["status"] = "sliced" if parsed.get("grams") is not None or parsed.get("seconds") is not None else "unparsed"
                 parsed["slicer"] = Path(executable).name
                 parsed["gcode"] = str(gcode.resolve())

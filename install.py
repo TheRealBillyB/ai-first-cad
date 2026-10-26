@@ -153,6 +153,22 @@ def _ensure_venv() -> Path:
     return python
 
 
+def _pip_env() -> dict[str, str]:
+    """Environment for the pip install that compiles python-solvespace.
+
+    That package ships a C11 mimalloc. It initializes an atomic with
+    ATOMIC_VAR_INIT, which C23 removed. Current GCC defaults to C23, so the
+    C files are compiled as C11 unless the caller already chose a standard.
+    """
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        return env
+    flags = env.get("CFLAGS", "")
+    if "-std=" not in flags:
+        env["CFLAGS"] = (flags + " -std=gnu11").strip()
+    return env
+
+
 def _pip_install(python: Path) -> None:
     subprocess.run(
         [str(python), "-m", "pip", "install", "--upgrade", "pip"],
@@ -166,6 +182,7 @@ def _pip_install(python: Path) -> None:
             [str(python), "-m", "pip", "install", "-e", ".[dev,robot]"],
             cwd=ROOT,
             check=True,
+            env=_pip_env(),
             timeout=_INSTALL_TIMEOUT_SECONDS,
         )
         return
@@ -174,6 +191,7 @@ def _pip_install(python: Path) -> None:
         [str(python), "-m", "pip", "install", "aicad"],
         cwd=ROOT,
         check=True,
+        env=_pip_env(),
         timeout=_INSTALL_TIMEOUT_SECONDS,
     )
 

@@ -443,11 +443,11 @@ def _opt_in_file() -> Path:
 
 def _read_opt() -> dict:
     path = _opt_in_file()
-    if not path.is_file():
-        return {"projects": {}}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        from aicad.file_access import read_text
+
+        data = json.loads(read_text(path, maximum=1_000_000))
+    except (OSError, json.JSONDecodeError, UnicodeError):
         return {"projects": {}}
     if not isinstance(data, dict) or not isinstance(data.get("projects"), dict):
         return {"projects": {}}
@@ -457,13 +457,13 @@ def _read_opt() -> dict:
 def _write_opt(data: dict) -> None:
     path = _opt_in_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    from aicad.paths import publish_text
+
+    publish_text(path, json.dumps(data, indent=2) + "\n", root=path.parent)
     try:
-        temporary.chmod(0o600)
+        path.chmod(0o600)
     except OSError:
         pass
-    temporary.replace(path)
 
 
 def _now() -> str:
@@ -553,19 +553,12 @@ def script_log_path(workspace: Path) -> Path:
 
 def _read_log_tail(path: Path, maximum: int) -> str:
     """The end of a log, at most ``maximum`` bytes. The rest is not read."""
+    from aicad.file_access import read_tail
+
     try:
-        info = path.stat()
+        data = read_tail(path, maximum)
     except OSError:
         return ""
-    try:
-        with path.open("rb") as handle:
-            if info.st_size > maximum:
-                handle.seek(max(0, info.st_size - maximum))
-            data = handle.read(maximum + 1)
-    except OSError:
-        return ""
-    if len(data) > maximum:
-        data = data[-maximum:]
     return data.decode("utf-8", errors="replace")
 
 
@@ -1987,7 +1980,9 @@ def _make_probe(workspace: Path) -> tuple[Path, str, str]:
             break
     root = Path(tempfile.mkdtemp(prefix="aicad-probe-", dir=base))
     secret = root / "secret.txt"
-    secret.write_text("aicad-confinement-probe\n", encoding="utf-8")
+    from aicad.paths import publish_text
+
+    publish_text(secret, "aicad-confinement-probe\n", root=root)
     writes = root / "writes"
     writes.mkdir()
     return root, str(secret), str(writes / "escaped.txt")
@@ -3004,7 +2999,12 @@ class _DesignRecord:
         info = os.lstat(self.record)
         self._device = info.st_dev
         self._inode = info.st_ino
-        log_fd = os.open(name + ".log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        log_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            log_flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            log_flags |= os.O_CLOEXEC
+        log_fd = os.open(name + ".log", log_flags, 0o600)
         self._log = Path(name + ".log")
         env = _child_env(self.workspace, self.job, network=False)
         # This process runs the calls. It is not the confined script.
@@ -3160,7 +3160,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     _refuse_multilink(workspace)
-    from aicad.paths import is_reparse, output_dir
+    from aicad.paths import is_reparse, output_dir, publish_text
 
     private = output_dir(workspace, workspace / ".aicad", "Project data", ScriptError)
     tmp_dir = output_dir(workspace, private / "tmp", "Temporary files", ScriptError)
@@ -3180,9 +3180,9 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     probe_root = None
     if kind == "probe":
         probe_root, spec["probe_read"], spec["probe_write"] = _make_probe(workspace)
-    (job / "job.json").write_text(json.dumps(spec) + "\n", encoding="utf-8")
+    publish_text(job / "job.json", json.dumps(spec) + "\n", root=job)
     if script is not None:
-        (job / "script.py").write_text(script, encoding="utf-8")
+        publish_text(job / "script.py", script, root=job)
     # -P is the same rule as PYTHONSAFEPATH: the project is the working
     # directory, and it must not be the first place Python imports from.
     # The runner is this install's file, not a module name looked up from
@@ -3200,7 +3200,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         descriptor, name = tempfile.mkstemp(prefix="aicad-seatbelt-", suffix=".sb")
         os.close(descriptor)
         profile_path = Path(name)
-        profile_path.write_text(profile, encoding="utf-8")
+        publish_text(profile_path, profile, root=profile_path.parent)
         command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds()
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
@@ -3414,54 +3414,30 @@ def _result_text(path: Path) -> str | None:
     """UTF-8 text of a regular result file. A link is not read.
 
     ``None`` means the file is not there. A symlink, junction, or file with
-    another name raises ``ScriptError`` before a byte of that file is read.
+    another name raises ``ScriptError`` before a byte of that file is returned.
     """
-    from aicad.paths import is_reparse
+    from aicad.file_access import read_from_root
+    from aicad.paths import _TooLarge, _before_nofollow
 
+    parent = path.parent
+    relative = Path(path.name)
+    _before_nofollow(parent, relative)
     try:
-        info = path.lstat()
+        data = read_from_root(parent, relative, 512 * 1024 * 1024)
+    except _TooLarge as exc:
+        raise ScriptError("The script result could not be read.") from exc
     except OSError as exc:
         if exc.errno == errno.ENOENT:
             return None
-        raise ScriptError("The script result is a link and was not read.") from exc
-    if stat.S_ISLNK(info.st_mode) or is_reparse(path):
-        raise ScriptError("The script result is a link and was not read.")
-    if not stat.S_ISREG(info.st_mode):
-        return None
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    try:
-        descriptor = os.open(os.fspath(path), flags)
-    except OSError as exc:
-        if exc.errno in {errno.ELOOP, errno.EMLINK}:
+        if exc.errno == errno.EINVAL and exc.strerror == "not an ordinary file":
+            return None
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR} or exc.strerror in {"is a link", "has another name"}:
             raise ScriptError("The script result is a link and was not read.") from exc
-        if exc.errno == errno.ENOENT:
-            return None
         raise ScriptError("The script result could not be read.") from exc
     try:
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink > 1
-            or opened.st_ino != info.st_ino
-            or opened.st_dev != info.st_dev
-        ):
-            raise ScriptError("The script result is a link and was not read.")
-        chunks: list[bytes] = []
-        while True:
-            block = os.read(descriptor, 1024 * 1024)
-            if not block:
-                break
-            chunks.append(block)
-        try:
-            return b"".join(chunks).decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ScriptError("The script result could not be read.") from exc
-    finally:
-        os.close(descriptor)
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ScriptError("The script result could not be read.") from exc
 
 
 def _project_regular_file(root: Path, raw: str | Path, label: str) -> Path:

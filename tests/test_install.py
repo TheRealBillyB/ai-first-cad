@@ -163,6 +163,27 @@ def test_package_commands_stop_if_they_do_not_finish(monkeypatch):
     assert all(timeout == module._INSTALL_TIMEOUT_SECONDS for timeout in timeouts)
 
 
+def test_the_solver_c_is_compiled_as_c11(monkeypatch):
+    module = _load_install()
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.delenv("CFLAGS", raising=False)
+    assert module._pip_env()["CFLAGS"] == "-std=gnu11"
+
+
+def test_an_explicit_c_standard_is_kept(monkeypatch):
+    module = _load_install()
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.setenv("CFLAGS", "-O2 -std=c17")
+    assert module._pip_env()["CFLAGS"] == "-O2 -std=c17"
+
+
+def test_windows_does_not_set_cflags(monkeypatch):
+    module = _load_install()
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.delenv("CFLAGS", raising=False)
+    assert "CFLAGS" not in module._pip_env()
+
+
 def test_install_script_help_runs_without_installing():
     completed = subprocess.run(
         [sys.executable, str(ROOT / "install.py"), "--help"],
