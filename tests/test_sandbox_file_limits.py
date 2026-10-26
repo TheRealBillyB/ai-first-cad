@@ -6,7 +6,6 @@ oversized file is sparse: the test checks the size and does not fill the disk.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -15,7 +14,7 @@ from aicad.app import _MAX_SERVED_BYTES, make_server
 from aicad.document import Document
 from aicad.errors import GeometryError, ScriptError
 from aicad.kernel import MAX_STEP_BYTES, import_step_file, read_step_bytes, tessellate, viewport_mesh
-from aicad.sandbox import FILE_BYTES, file_bytes, run_part_script, sandbox_supported
+from aicad.sandbox import DISK_BYTES, FILE_BYTES, _DiskWatch, _snapshot_files, disk_bytes, file_bytes, run_part_script, sandbox_supported
 
 
 def _sparse(path: Path, size: int) -> None:
@@ -123,7 +122,29 @@ def test_file_bytes_cannot_be_raised(monkeypatch):
     assert file_bytes() == 2048
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no RLIMIT_FSIZE")
+def test_disk_bytes_cannot_be_raised(monkeypatch):
+    assert disk_bytes() == DISK_BYTES
+    monkeypatch.setenv("AICAD_SCRIPT_DISK_BYTES", str(DISK_BYTES * 4))
+    assert disk_bytes() == DISK_BYTES
+    monkeypatch.setenv("AICAD_SCRIPT_DISK_BYTES", "4096")
+    assert disk_bytes() == 4096
+
+
+def test_extra_files_are_removed_when_the_disk_quota_is_passed(tmp_path):
+    before = _snapshot_files(tmp_path)
+    (tmp_path / "a.bin").write_bytes(b"a" * 1500)
+    (tmp_path / "b.bin").write_bytes(b"b" * 1500)
+    message = _DiskWatch(tmp_path, before, file_cap=2000, disk_cap=2000).settle()
+    assert message is not None
+    assert "wrote more than 2000 bytes" in message
+    total = 0
+    for name in ("a.bin", "b.bin"):
+        path = tmp_path / name
+        if path.exists():
+            total += path.stat().st_size
+    assert total <= 2000
+
+
 def test_a_script_stops_when_the_file_cap_is_hit(tmp_path, monkeypatch):
     supported, reason = sandbox_supported()
     if not supported:
@@ -153,6 +174,43 @@ def test_a_script_stops_when_the_file_cap_is_hit(tmp_path, monkeypatch):
     written = project / "big.bin"
     assert not written.exists() or written.stat().st_size <= 65536
     assert not canary.exists()
+
+
+def test_a_script_stops_when_two_files_pass_the_disk_quota(tmp_path, monkeypatch):
+    supported, reason = sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+    monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
+    monkeypatch.setenv("AICAD_SCRIPT_DISK_BYTES", "200000")
+    monkeypatch.setenv("AICAD_SCRIPT_FILE_BYTES", "200000")
+    monkeypatch.delenv("AICAD_SCRIPT_NETWORK", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    script = (
+        "from pathlib import Path\n"
+        "Path('a.bin').write_bytes(b'a' * 150000)\n"
+        "Path('b.bin').write_bytes(b'b' * 150000)\n"
+        "part = Box(1, 1, 1)\n"
+    )
+    with pytest.raises(ScriptError, match="wrote more than"):
+        run_part_script(script, project)
+    total = 0
+    for name in ("a.bin", "b.bin"):
+        path = project / name
+        if path.exists():
+            total += path.stat().st_size
+    assert total <= 200000
+
+
+def test_the_windows_job_counts_bytes_written():
+    import ctypes
+
+    from aicad.sandbox_windows import _IoCounters, _JobBasicAccounting, _JobBasicAndIo
+
+    assert _JobBasicAndIo.IoInfo.offset == ctypes.sizeof(_JobBasicAccounting)
+    assert ctypes.sizeof(_JobBasicAndIo().IoInfo) == ctypes.sizeof(_IoCounters)
+    names = [name for name, _kind in _IoCounters._fields_]
+    assert names[4] == "WriteTransferCount"
 
 
 def test_the_macos_file_helper_uses_the_script_cap():
