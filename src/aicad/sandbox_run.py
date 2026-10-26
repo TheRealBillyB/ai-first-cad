@@ -42,10 +42,22 @@ _CHECKS = frozenset(
     }
 )
 _RENDER_LIMIT = 8
+# The parent already bounds a script. This is the byte cap for the file itself.
+_JOB_MAX_BYTES = 1_000_000
+_SCRIPT_MAX_BYTES = 1_000_000
+
+
+def _read_job_text(path: Path, maximum: int) -> str:
+    """Read one job file. A link at that name is not followed."""
+    from aicad.file_access import read_text
+
+    return read_text(path, maximum=maximum)
 
 
 def _write(job: Path, payload: dict) -> None:
-    (job / "result.json").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    from aicad.paths import publish_text
+
+    publish_text(job / "result.json", json.dumps(payload) + "\n", root=job)
 
 
 def _format(code: str, exc: BaseException, filename: str) -> str:
@@ -131,7 +143,11 @@ def _probe(workspace: Path, job: Path) -> int:
 
     from aicad.sandbox import denied_probe_label
 
-    spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
+    try:
+        spec = json.loads(_read_job_text(job / "job.json", _JOB_MAX_BYTES))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _write(job, {"ok": False, "error": "The script job could not be read."})
+        return 0
     read_path = str(spec.get("probe_read") or "/etc/passwd")
     write_path = str(spec.get("probe_write") or "/tmp/aicad-sandbox-outside")
     found: dict[str, str] = {}
@@ -198,8 +214,16 @@ def _probe(workspace: Path, job: Path) -> int:
     return 0
 
 
+def _read_script(job: Path) -> str:
+    return _read_job_text(job / "script.py", _SCRIPT_MAX_BYTES)
+
+
 def _part(workspace: Path, job: Path) -> int:
-    code = (job / "script.py").read_text(encoding="utf-8")
+    try:
+        code = _read_script(job)
+    except (OSError, UnicodeError):
+        _write(job, {"ok": False, "error": "The script could not be read."})
+        return 0
     from aicad.kernel import _execute_part_script, export_step_file
 
     try:
@@ -218,7 +242,11 @@ def _design(workspace: Path, job: Path) -> int:
     from aicad.design_calls import design_proxy
     from aicad.sandbox import STDOUT_MAX, script_builtins
 
-    code = (job / "script.py").read_text(encoding="utf-8")
+    try:
+        code = _read_script(job)
+    except (OSError, UnicodeError):
+        _write(job, {"ok": False, "error": "The script could not be read."})
+        return 0
     proxy, finish = design_proxy(job / "calls")
     namespace = {
         "__builtins__": script_builtins(),
@@ -360,7 +388,17 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             print(stack.SMALL_CALLER_STACK, file=sys.stderr)
         return _leave(0)
-    spec = json.loads((job / "job.json").read_text(encoding="utf-8"))
+    try:
+        spec = json.loads(_read_job_text(job / "job.json", _JOB_MAX_BYTES))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        try:
+            _write(job, {"ok": False, "error": "The script job could not be read."})
+        except OSError:
+            print("The script job could not be read.", file=sys.stderr)
+        return _leave(0)
+    if not isinstance(spec, dict):
+        _write(job, {"ok": False, "error": "The script job could not be read."})
+        return _leave(0)
     workspace = Path(os.environ["AICAD_WORKSPACE"]).resolve()
     try:
         import faulthandler
