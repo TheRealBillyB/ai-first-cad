@@ -45,6 +45,8 @@ _RENDER_LIMIT = 8
 # The parent already bounds a script. This is the byte cap for the file itself.
 _JOB_MAX_BYTES = 1_000_000
 _SCRIPT_MAX_BYTES = 1_000_000
+# The same bound the parent uses when it reads result.json.
+_RESULT_MAX_BYTES = 512 * 1024 * 1024
 
 
 def _read_job_text(path: Path, maximum: int) -> str:
@@ -55,9 +57,32 @@ def _read_job_text(path: Path, maximum: int) -> str:
 
 
 def _write(job: Path, payload: dict) -> None:
+    """Publish ``result.json``. A link at that name is not followed.
+
+    The text is written with ``Path.write_text`` to a new file of that name.
+    The bytes from that file are what get published onto ``result.json``.
+    """
+    import tempfile
+
+    from aicad.file_access import read_text
     from aicad.paths import publish_text
 
-    publish_text(job / "result.json", json.dumps(payload) + "\n", root=job)
+    text = json.dumps(payload) + "\n"
+    staging = Path(tempfile.mkdtemp(prefix=".aicad-result-", dir=job))
+    staged = staging / "result.json"
+    try:
+        staged.write_text(text, encoding="utf-8")
+        try:
+            written = read_text(staged, maximum=_RESULT_MAX_BYTES)
+        except (OSError, UnicodeError):
+            written = text
+        publish_text(job / "result.json", written, root=job)
+    finally:
+        staged.unlink(missing_ok=True)
+        try:
+            staging.rmdir()
+        except OSError:
+            pass
 
 
 def _format(code: str, exc: BaseException, filename: str) -> str:

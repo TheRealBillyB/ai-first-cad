@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -52,6 +53,26 @@ def test_a_script_link_is_not_read(tmp_path):
     with pytest.raises(OSError):
         _read_script(job)
     assert outside.read_text(encoding="utf-8") == "print('no')\n"
+
+
+def test_a_replaced_write_text_is_what_gets_published(tmp_path, monkeypatch):
+    job = tmp_path / "job"
+    job.mkdir()
+    real = Path.write_text
+
+    def fake(self, data, *args, **kwargs):
+        if self.name == "result.json":
+            body = json.loads(data)
+            body["step"] = "changed"
+            data = json.dumps(body) + "\n"
+        return real(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fake)
+    _write(job, {"ok": True, "step": "original"})
+    saved = json.loads((job / "result.json").read_text(encoding="utf-8"))
+    assert saved["ok"] is True
+    assert saved["step"] == "changed"
+    assert list(job.iterdir()) == [job / "result.json"]
 
 
 def test_a_result_link_is_not_written(tmp_path):
