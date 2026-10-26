@@ -4,7 +4,7 @@
   const ui = { id: null, version: null, plan: null, summaries: [], error: "", notice: "", editing: false };
 
   function esc(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    return String(value ?? "").replace(/\p{Cf}/gu, "").replace(/[&<>"']/g, (ch) => ({
       "&": "&amp;",
       "<": "&lt;",
       ">": "&gt;",

@@ -615,25 +615,62 @@ def _dacl_needs_grant(
     return True
 
 
+class _GrantStopped(BaseException):
+    """The grant wait ended. The folder must be left unchanged."""
+
+
+_grant_stop = threading.local()
+
+
+def _grant_was_stopped() -> bool:
+    """True after the grant wait has given up. The writer has to stop."""
+
+    event = getattr(_grant_stop, "event", None)
+    return event is not None and event.is_set()
+
+
+def _stop_grant_thread(thread: threading.Thread) -> None:
+    """Ask the grant thread to raise at its next Python instruction."""
+
+    ident = thread.ident
+    if not ident:
+        return
+    api = ctypes.pythonapi.PyThreadState_SetAsyncExc
+    api.argtypes = [ctypes.c_ulong, ctypes.py_object]
+    api.restype = ctypes.c_int
+    count = api(ctypes.c_ulong(ident), ctypes.py_object(_GrantStopped))
+    if count > 1:
+        api(ctypes.c_ulong(ident), None)
+
+
 def _finish_within(seconds: float, path: Path, work) -> None:
     """Run ``work`` and give up if it does not return.
 
     A grant that walks every child of a tool-cache directory does not return
     before the test is killed. Stopping here leaves that directory unchanged.
+    The thread is told to stop, and it does not write the access entry after that.
     """
 
     box: dict[str, Exception] = {}
+    stop = threading.Event()
 
     def run() -> None:
+        _grant_stop.event = stop
         try:
             work()
+        except _GrantStopped:
+            return
         except Exception as exc:
             box["error"] = exc
+        finally:
+            _grant_stop.event = None
 
     thread = threading.Thread(target=run, name="aicad-grant", daemon=True)
     thread.start()
     thread.join(seconds)
     if thread.is_alive():
+        stop.set()
+        _stop_grant_thread(thread)
         raise GrantTimeout(
             f"Granting traverse did not finish within {seconds:g} seconds for {path}. "
             "The sandbox stopped waiting, and that folder was not changed."
@@ -865,6 +902,8 @@ def _write_traverse_ace(path: Path, sid: str) -> None:
             raise _acl_error(f"Could not grant traverse on {path}")
         if not advapi32.SetSecurityDescriptorDacl(security, True, new_dacl, False):
             raise _acl_error(f"Could not grant traverse on {path}")
+        if _grant_was_stopped():
+            raise _GrantStopped()
         if not advapi32.SetKernelObjectSecurity(handle, _DACL_SECURITY_INFORMATION, security):
             raise _acl_error(f"Could not grant traverse on {path}")
     finally:
@@ -877,6 +916,8 @@ def _write_traverse_ace(path: Path, sid: str) -> None:
 
 
 def _grant_traverse_one(path: Path, sid: str, package_sid: str) -> None:
+    if _grant_was_stopped():
+        raise _GrantStopped()
     if _parent_allows_traverse(path, sid, package_sid):
         return
     _write_traverse_ace(path, sid)
@@ -1364,6 +1405,33 @@ def _read_text(path: Path) -> str:
         return ""
 
 
+class _JobBasicAndIo(ctypes.Structure):
+    """JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION."""
+
+    _fields_ = [
+        ("BasicInfo", _JobBasicAccounting),
+        ("IoInfo", _IoCounters),
+    ]
+
+
+# JobObjectBasicAndIoAccountingInformation. WriteTransferCount is the job's writes.
+_JobObjectBasicAndIoAccountingInformation = 8
+
+
+def _job_bytes_written(job: wintypes.HANDLE) -> int | None:
+    info = _JobBasicAndIo()
+    returned = wintypes.DWORD(0)
+    if not _kernel32().QueryInformationJobObject(
+        job,
+        _JobObjectBasicAndIoAccountingInformation,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+        ctypes.byref(returned),
+    ):
+        return None
+    return int(info.IoInfo.WriteTransferCount)
+
+
 def _job_memory_killed(job: wintypes.HANDLE, memory_bytes: int) -> bool:
     info = _JobExtendedLimit()
     returned = wintypes.DWORD(0)
@@ -1830,6 +1898,20 @@ def _firewall_script(sid: str | None = None, *, install: bool) -> str:
     )
 
 
+def _powershell_executable() -> str:
+    """The system PowerShell, not a name looked up on PATH.
+
+    Windows PowerShell is under System32\\WindowsPowerShell, not in System32
+    itself. A child whose PATH is only the interpreter and the system
+    directories still has to install the network block.
+    """
+
+    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if not root:
+        return "powershell.exe"
+    return str(Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
 def _run_firewall_script(script: str) -> None:
     kwargs: dict = {
         "capture_output": True,
@@ -1843,7 +1925,7 @@ def _run_firewall_script(script: str) -> None:
         kwargs["creationflags"] = _CREATE_NO_WINDOW
     try:
         completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            [_powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", script],
             **kwargs,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -2094,6 +2176,7 @@ def spawn(
     timeout_seconds: float,
     stdout_path: Path,
     stderr_path: Path,
+    disk=None,
 ) -> tuple[int, str, str, bool, bool, str]:
     """Start one confined process. Returns code, stdout, stderr, timed_out, memory_killed, mechanism."""
 
@@ -2129,8 +2212,26 @@ def spawn(
             stderr_path=stderr_path,
         )
         wait_ms = max(1, int(timeout_seconds * 1000))
-        waited = _kernel32().WaitForSingleObject(process.hProcess, wait_ms)
-        timed_out = waited == _WAIT_TIMEOUT
+        spent = 0
+        finished = False
+        io_base = _job_bytes_written(job)
+        while spent < wait_ms:
+            step = min(100, wait_ms - spent)
+            waited = _kernel32().WaitForSingleObject(process.hProcess, step)
+            if waited != _WAIT_TIMEOUT:
+                finished = True
+                break
+            spent += step
+            written = _job_bytes_written(job)
+            if disk is not None and written is not None:
+                disk.note_job_io(written, io_base)
+            if disk is not None and disk.hit.is_set():
+                _kernel32().TerminateJobObject(job, 1)
+                _kernel32().WaitForSingleObject(process.hProcess, 5000)
+                break
+        else:
+            finished = False
+        timed_out = not finished and not (disk is not None and disk.hit.is_set())
         if timed_out:
             _kernel32().TerminateJobObject(job, 1)
             _kernel32().WaitForSingleObject(process.hProcess, 5000)

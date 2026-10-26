@@ -6,32 +6,53 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-26
+
+| Decision | Rationale |
+| --- | --- |
+| A linked CI solver is copied into the prefix | The loader looks for libraries beside the file a link points at, so a solver that stays a link does not start. |
+
 ## 2026-10-25
 
 | Decision | Rationale |
 | --- | --- |
 | A bill of materials keeps text as text | A route name and a material are written as text in the bill of materials. A plain part name is unchanged. |
 | A busy process cgroup is removed on a later stop | A directory that is still busy after the script stops is remembered and removed the next time a cgroup is prepared or released. |
+| A child process does not inherit the parent loader environment | Loader variables, startup variables, and the parent's PATH and PYTHONPATH are replaced before a script, CalculiX, ffmpeg, or a slicer starts. |
 | A cylinder stroke uses the in-plane length | The barrel joint cannot tilt, so the stroke is the pin distance in the barrel plane. A side offset is how far the eye misses the clevis. |
+| A gear on a planetary carrier is not a second load | The following mesh already applies the carrier torque. An extra external load leaves the output torque free. |
 | A gear or linkage adds the driven load | The driver load gains ratio times the driven load, with ratio d(driven)/d(driver), so a reversing pair cancels equal moments and a chain is followed to its end. |
+| A plan, a plugin manifest, and a command-line file are read without following a link | The read uses the checked directory, so a link at that name is not opened. |
+| A plan file is opened from the checked directory | A plan is read from the project directory without following a link, and a plan past the size cap is not copied into undo. |
 | A plan file that is a link is not opened | Listing a plan and the undo copy do not open a plan folder that is a link, or a plan file that has another name. |
+| A project copy does not follow a link | Saving a copy reads each project file from the directory that was checked, and a link or a second name is left behind. |
 | A project file is opened from the checked directory | The read uses the same directory descriptor as a write, so a link swapped in after the check is not followed. A session also stops at a fixed size and nesting depth. |
+| A project path that Windows would resolve to a different file is refused | Alternate data streams, short names, trailing dots and spaces, overlong paths, and a name that differs only by case are refused on every system. |
 | A sandbox setup failure has no traceback | A failure while the sandbox is starting is one error line in the job result. The traceback stays out of that result and out of the child's error stream. |
+| A script cannot write more than its disk quota | One run stops at 512 MiB of writes, and one file still stops at 512 MiB. The parent enforces both on every system, including Windows, where a file-size limit is not available. |
 | A script is not run when it cannot enter its process cgroup | A failed move would leave the script outside `pids.max`, so the script is not run. |
+| A script log is not read past 1 MiB | Appending a row reads only the newest part of the log. A failure note reads only its last 500 bytes. |
+| A script report does not repeat the project path | Design-script status, a script error, and the script log use a path relative to the project. The open project's own path stays available to the workspace. |
 | A script solid is read only from the file named for that script | The file is `.aicad/geometry/<name>-<script hash>.step`. Another path is not the solid that script built, so it is not opened. |
 | A shared STEP file and a served project file have a size cap | The host returns an error past that cap. A mesh stops at a fixed triangle count, and the macOS file helper uses the same cap as the script. |
 | A STEP file with another name is not imported | A STEP file in the project that has another name is not opened. A file the person named by an absolute path is still read. |
 | A STEP text scan and a saved session stay inside their size caps | The scan refuses a buffer larger than the STEP read, and saving a project does not copy a session past 32 MiB. |
+| A title and a note show the characters that are stored | Format characters are removed, and a letter that looks like a different letter is refused, so the approval text matches the stored text. |
+| A traverse grant does not change the folder after the wait | The grant thread is told to stop when the wait ends, and it does not write the access entry after that. |
 | A trimmed Windows path is refused before a record, a STEP name, or a workspace file is opened | ``....\....\hidden`` is ``..\..\hidden`` after Win32 removes trailing dots. Those readers now use the same check as a session path. |
 | A workspace command response stops at 32 MiB | The assistant's command client does not keep a response larger than that. |
+| A workspace file is read from the checked directory and is not run | A project file shown in the workspace is opened from the directory that was checked, and the response tells the browser not to run it. |
 | A workspace file with another name is not shown | The workspace file view does not open a file that is a link or that has another name. |
 | An existing virtual environment older than Python 3.11 is not reused | The installer requires Python 3.11. An existing `.venv` on an older interpreter is reported, and it is not used for the install. |
 | An installer package command stops if it does not finish | apt, pip, and the virtual-environment command wait at most 30 minutes. A lock that never clears does not hold the installer open. |
 | An MCP resource returns a project error as that error | A resource read reports the project error in its message. It does not replace that message with a generic failure or a traceback. |
+| DXF text escapes a line break the way PDF text escapes a string | A title is one group value. A newline or a carriage return stays in that value, so it cannot start another entity. |
+| One relation drives a joint | A second relation, or a cycle, leaves a joint value that does not satisfy every relation. A linkage maps an angle, so it drives a revolute or cylindrical joint. |
 | Robot meshes are not written through a link | A robot export creates the mesh folder in the export folder, so a mesh folder that is a link is not followed. |
 | Several planets still report shaft torque | The tooth-force split among equal planets is free, and the shaft torques are reported when they do not depend on that split. Mesh efficiency waits until every tooth force is determined. |
 | The assistant cannot allow scripts, grant network, or save settings | Those switches and the chat request belong to the person at the page. The assistant token stays on project commands. |
 | The workspace app does not listen on a public address | A Host header can say localhost while the connection comes from another machine, so the bind address and the peer both have to be loopback. |
+| Tool text for the assistant is marked as data, and a mesh stays inside its budget | A solver result and an error are marked as data. A mesh that would run past the triangle budget is refused before it starts, and tessellation stays within one million triangles. |
 | Workspace responses deny framing and omit the referrer | The page is not embedded in another site, and a picture address that carries the session is not sent onward or stored. |
 
 ## 2026-10-24

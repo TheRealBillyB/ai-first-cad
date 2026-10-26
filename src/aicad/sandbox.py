@@ -99,8 +99,10 @@ WALL_SECONDS = 120
 CPU_SECONDS = 60
 MEMORY_BYTES = 4 * 1024 * 1024 * 1024
 FILE_BYTES = 512 * 1024 * 1024
+DISK_BYTES = FILE_BYTES
 SCRIPT_MAX_CHARS = 200_000
 STDOUT_MAX = 64_000
+_MAX_SCRIPT_LOG_BYTES = 1_000_000
 
 _REAL_IMPORT = builtins.__import__
 _GUARD = False
@@ -423,6 +425,11 @@ def file_bytes() -> int:
     return _capped("AICAD_SCRIPT_FILE_BYTES", FILE_BYTES, FILE_BYTES)
 
 
+def disk_bytes() -> int:
+    """Cumulative bytes one script may write. An environment value cannot raise it."""
+    return _capped("AICAD_SCRIPT_DISK_BYTES", DISK_BYTES, DISK_BYTES)
+
+
 def config_dir() -> Path:
     override = os.environ.get("AICAD_CONFIG")
     if override:
@@ -512,10 +519,13 @@ def require_in_project(path: str | Path, workspace: str | Path, *, writing: bool
     if not writing and _under(candidate, _read_roots()):
         return
     action = "write" if writing else "read"
-    raise ScriptError(
+    from aicad.paths import hide_project_path
+
+    message = (
         f"The script tried to {action} {candidate}, which is outside the project folder {root}. "
         "A design script can only use files inside that folder."
     )
+    raise ScriptError(hide_project_path(message, root))
 
 
 def design_script_status(workspace: str | Path, network_once: bool = False, network_all: bool = False) -> dict:
@@ -526,17 +536,37 @@ def design_script_status(workspace: str | Path, network_once: bool = False, netw
         network = "next run"
     else:
         network = "off"
+    from aicad.paths import hide_project_path
+
     return {
         "enabled": design_scripts_enabled(root),
         "warning": WARNING,
-        "enable": f"aicad allow-scripts --workspace {root}",
+        "enable": hide_project_path(f"aicad allow-scripts --workspace {root}", root),
         "network": network,
-        "log": str(root / ".aicad" / "script_log.jsonl"),
+        "log": hide_project_path(str(root / ".aicad" / "script_log.jsonl"), root),
     }
 
 
 def script_log_path(workspace: Path) -> Path:
     return Path(workspace) / ".aicad" / "script_log.jsonl"
+
+
+def _read_log_tail(path: Path, maximum: int) -> str:
+    """The end of a log, at most ``maximum`` bytes. The rest is not read."""
+    try:
+        info = path.stat()
+    except OSError:
+        return ""
+    try:
+        with path.open("rb") as handle:
+            if info.st_size > maximum:
+                handle.seek(max(0, info.st_size - maximum))
+            data = handle.read(maximum + 1)
+    except OSError:
+        return ""
+    if len(data) > maximum:
+        data = data[-maximum:]
+    return data.decode("utf-8", errors="replace")
 
 
 def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> None:
@@ -554,16 +584,32 @@ def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> No
         return
     if is_reparse(path) or shared_file(path):
         return
-    row = {"time": _now(), "kind": "design", "ok": ok, "error": error, "script": script}
+    from aicad.paths import hide_project_path
+
+    shown = hide_project_path(error, root) if isinstance(error, str) else error
+    row = {"time": _now(), "kind": "design", "ok": ok, "error": shown, "script": script}
     line = json.dumps(row) + "\n"
     try:
-        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        existing = _read_log_tail(path, _MAX_SCRIPT_LOG_BYTES) if path.is_file() else ""
     except OSError:
         return
     try:
         publish_text(path, existing + line, root=root)
     except OSError:
         return
+
+
+def _hide_script_report(payload: dict, root: Path) -> None:
+    """Remove the absolute project path from a script's errors and output."""
+    from aicad.paths import hide_project_path
+
+    for key in ("error", "stdout", "stderr"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            payload[key] = hide_project_path(value, root)
+    errors = payload.get("errors")
+    if isinstance(errors, list):
+        payload["errors"] = [hide_project_path(item, root) if isinstance(item, str) else item for item in errors]
 
 
 def _check_script(code: str) -> None:
@@ -1705,6 +1751,163 @@ def _pythonpath_for_child(workspace: Path, raw: str | None) -> str | None:
     return os.pathsep.join(kept)
 
 
+# A parent can be started with a loader or interpreter variable. Those must
+# not reach a script or another program this process starts.
+_DROPPED_ENV = frozenset(
+    {
+        "BASH_ENV",
+        "ENV",
+        "GCONV_PATH",
+        "GIT_EXTERNAL_DIFF",
+        "GLIBC_TUNABLES",
+        "HOSTALIASES",
+        "LIBPATH",
+        "LOCALDOMAIN",
+        "LOCPATH",
+        "NLSPATH",
+        "RES_OPTIONS",
+        "GIT_PAGER",
+        "GIT_SSH_COMMAND",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "PERL5LIB",
+        "PERL5OPT",
+        "PS4",
+        "PYTHONEXECUTABLE",
+        "PYTHONHOME",
+        "PYTHONINSPECT",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONUSERBASE",
+        "PYTHONWARNINGS",
+        "RUBYLIB",
+        "RUBYOPT",
+        "SHELLOPTS",
+    }
+)
+
+
+def _system_path() -> str:
+    """Directories the operating system uses, not the parent's PATH."""
+
+    parts = [str(Path(sys.executable).resolve().parent)]
+    if os.name == "nt":
+        root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+        parts.append(str(Path(root) / "System32"))
+        parts.append(root)
+    else:
+        parts.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+    kept: list[str] = []
+    for part in parts:
+        if part and part not in kept:
+            kept.append(part)
+    return os.pathsep.join(kept)
+
+
+def _trusted_pythonpath(workspace: Path | None) -> str:
+    """Import roots for a child: this install, not the parent's PYTHONPATH."""
+
+    install = Path(__file__).resolve().parent.parent
+    prefixes: list[Path] = [install]
+    for item in (sys.prefix, getattr(sys, "base_prefix", sys.prefix)):
+        try:
+            prefixes.append(Path(item).resolve())
+        except OSError:
+            continue
+    workspace_resolved = None
+    if workspace is not None:
+        try:
+            workspace_resolved = workspace.resolve()
+        except OSError:
+            workspace_resolved = None
+    roots: list[str] = []
+    candidates = [install]
+    for entry in sys.path:
+        if not entry:
+            continue
+        try:
+            candidates.append(Path(entry).resolve())
+        except OSError:
+            continue
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if workspace_resolved is not None and (
+            resolved == workspace_resolved or _under_directory(resolved, workspace_resolved)
+        ):
+            continue
+        trusted = resolved == install or any(
+            resolved == prefix or prefix in resolved.parents for prefix in prefixes
+        )
+        if not trusted:
+            continue
+        text = str(resolved)
+        if text not in roots:
+            roots.append(text)
+    return os.pathsep.join(roots)
+
+
+def scrubbed_environment(workspace: Path | None = None) -> dict[str, str]:
+    """An environment for a child. Loader and startup variables are omitted."""
+
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper.startswith("LD_") or upper.startswith("DYLD_") or upper == "PATH":
+            continue
+        if upper in _DROPPED_ENV:
+            continue
+        if any(part in upper for part in _SECRET_PARTS):
+            continue
+        if key in ("AICAD_CONFIG", "AICAD_SETTINGS", "AICAD_PLUGIN_CONSENT", "XDG_CONFIG_HOME"):
+            continue
+        env[key] = value
+    env["PATH"] = _system_path()
+    env["PYTHONSAFEPATH"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    pythonpath = _trusted_pythonpath(workspace)
+    if pythonpath:
+        env["PYTHONPATH"] = pythonpath
+    _restore_os_environment(env)
+    return env
+
+
+# Windows refuses to start a program when these are missing. A scrub keeps
+# them even when a drop rule would have removed the name.
+_OS_ENV = ("COMSPEC", "PATHEXT", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "WINDIR")
+
+
+def _restore_os_environment(env: dict[str, str]) -> None:
+    """Put back the variables Windows needs to start a process.
+
+    Windows stores these names in uppercase. A mixed-case copy is the same
+    variable, so the child keeps the canonical name.
+    """
+
+    parent = {key.upper(): value for key, value in os.environ.items()}
+    carried = {key.upper(): value for key, value in env.items()}
+    for key in [key for key in env if key.upper() in _OS_ENV and key not in _OS_ENV]:
+        del env[key]
+    for name in _OS_ENV:
+        if env.get(name):
+            continue
+        value = carried.get(name) or parent.get(name)
+        if value:
+            env[name] = value
+
+
+def program_environment() -> dict[str, str]:
+    """Environment for CalculiX, ffmpeg, a slicer, and other helper programs."""
+
+    env = scrubbed_environment(None)
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONSTARTUP", None)
+    return env
+
+
 def _child_env(
     workspace: Path,
     job: Path,
@@ -1712,19 +1915,7 @@ def _child_env(
     tmp: Path | None = None,
     cache: Path | None = None,
 ) -> dict[str, str]:
-    env: dict[str, str] = {}
-    for key, value in os.environ.items():
-        upper = key.upper()
-        if any(part in upper for part in _SECRET_PARTS):
-            continue
-        if key in ("AICAD_CONFIG", "AICAD_SETTINGS", "AICAD_PLUGIN_CONSENT", "XDG_CONFIG_HOME"):
-            continue
-        env[key] = value
-    safe_path = _pythonpath_for_child(workspace, env.get("PYTHONPATH"))
-    if safe_path is None:
-        env.pop("PYTHONPATH", None)
-    else:
-        env["PYTHONPATH"] = safe_path
+    env = scrubbed_environment(workspace)
     # Do not prepend the working directory to sys.path. The working directory
     # is the project, and a module there would run before the sandbox.
     env["PYTHONSAFEPATH"] = "1"
@@ -1899,6 +2090,7 @@ def _descendants(leader: int) -> set[int]:
                 text=True,
                 check=False,
                 timeout=2,
+                env=program_environment(),
             )
         except (OSError, subprocess.TimeoutExpired):
             return set()
@@ -1956,6 +2148,7 @@ def _ps_descendants(leader: int) -> set[int] | None:
             text=True,
             check=False,
             timeout=2,
+            env=program_environment(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -2462,6 +2655,179 @@ def _reap_macos(leader: int, sentinel: str, account: _Account, seen: set[int], l
     _refuse_unaccounted(False, survivors)
 
 
+def _file_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _snapshot_files(root: Path) -> dict[str, int]:
+    """Sizes of regular files under ``root``. A link is not followed."""
+    from aicad.paths import is_reparse
+
+    sizes: dict[str, int] = {}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        kept: list[str] = []
+        for name in dirnames:
+            child = Path(dirpath) / name
+            if child.is_symlink() or is_reparse(child):
+                continue
+            kept.append(name)
+        dirnames[:] = kept
+        for name in filenames:
+            path = Path(dirpath) / name
+            if path.is_symlink() or is_reparse(path):
+                continue
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            sizes[_file_key(path)] = int(info.st_size)
+    return sizes
+
+
+def _process_write_bytes(pid: int) -> int | None:
+    """Bytes this process has written, or None when the system will not say."""
+    if sys.platform.startswith("linux"):
+        try:
+            text = Path(f"/proc/{pid}/io").read_text(encoding="utf-8")
+        except OSError:
+            return None
+        for line in text.splitlines():
+            if line.startswith("write_bytes:"):
+                try:
+                    return int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    return None
+        return None
+    if sys.platform == "darwin":
+        from aicad.sandbox_macos import bytes_written
+
+        return bytes_written(pid)
+    return None
+
+
+class _DiskWatch:
+    """Cumulative and per-file write caps for one script.
+
+    The parent counts bytes written and the files that grew. A run past either
+    cap is stopped, and the extra bytes are removed afterwards.
+    """
+
+    def __init__(self, root: Path, before: dict[str, int], file_cap: int, disk_cap: int):
+        self.root = root
+        self.before = before
+        self.file_cap = file_cap
+        self.disk_cap = disk_cap
+        self.hit = threading.Event()
+        self._io_base: dict[int, int] = {}
+        self.io_peak = 0
+        self._lock = threading.Lock()
+
+    def note_io(self, pids: set[int]) -> None:
+        total = 0
+        for pid in pids:
+            current = _process_write_bytes(pid)
+            if current is None:
+                continue
+            with self._lock:
+                base = self._io_base.get(pid)
+                if base is None:
+                    self._io_base[pid] = current
+                    base = current
+            total += max(0, current - base)
+        with self._lock:
+            self.io_peak = max(self.io_peak, total)
+        if total > self.disk_cap:
+            self.hit.set()
+
+    def note_job_io(self, written: int, baseline: int | None) -> None:
+        delta = written if baseline is None else max(0, written - baseline)
+        with self._lock:
+            self.io_peak = max(self.io_peak, delta)
+        if delta > self.disk_cap:
+            self.hit.set()
+
+    def note_files(self) -> None:
+        try:
+            over = self._growth_over()
+        except OSError:
+            return
+        if over:
+            self.hit.set()
+
+    def _growth_over(self) -> bool:
+        total = 0
+        for key, size, old in _file_growth(self.root, self.before):
+            del key
+            if size > self.file_cap and size > old:
+                return True
+            total += max(0, size - old)
+            if total > self.disk_cap:
+                return True
+        return False
+
+    def settle(self) -> str | None:
+        """Remove writes past the caps. The message is None when the run stayed inside them."""
+        if sys.platform == "win32":
+            from aicad.sandbox_windows import _reclaim_for_user
+
+            _reclaim_for_user(self.root)
+        grown: list[tuple[int, str]] = []
+        total = 0
+        file_over = False
+        for key, size, old in _file_growth(self.root, self.before):
+            growth = max(0, size - old)
+            if size > self.file_cap and size > old:
+                file_over = True
+                _restore_file(key, self.before)
+                continue
+            if growth:
+                grown.append((growth, key))
+                total += growth
+        with self._lock:
+            io_peak = self.io_peak
+        used = max(total, io_peak)
+        if used > self.disk_cap:
+            grown.sort(reverse=True)
+            for growth, key in grown:
+                if total <= self.disk_cap and io_peak <= self.disk_cap:
+                    break
+                _restore_file(key, self.before)
+                total -= growth
+            return f"The script was stopped because it wrote more than {self.disk_cap} bytes."
+        if file_over:
+            return f"The script was stopped because it wrote more than {self.file_cap} bytes."
+        return None
+
+
+def _file_growth(root: Path, before: dict[str, int]):
+    """Yield ``(key, size, old_size)`` for regular files. ``old_size`` is 0 for a new file."""
+    current = _snapshot_files(root)
+    keys = set(before) | set(current)
+    for key in keys:
+        size = current.get(key, 0)
+        old = before.get(key, 0)
+        if size == 0 and old == 0:
+            continue
+        yield key, size, old
+
+
+def _restore_file(key: str, before: dict[str, int]) -> None:
+    path = Path(key)
+    old = before.get(key)
+    try:
+        if old is None:
+            path.unlink(missing_ok=True)
+            return
+        os.truncate(path, old)
+    except OSError:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return
+
+
 def _watch_descendants(
     leader: int,
     seen: set[int],
@@ -2473,6 +2839,7 @@ def _watch_descendants(
     process_hit: threading.Event | None = None,
     account: _Account | None = None,
     sentinel: str | None = None,
+    disk: _DiskWatch | None = None,
 ) -> None:
     """Remember children, kill any that leave the group, and enforce the memory and process caps."""
     next_sample = 0.0
@@ -2503,14 +2870,21 @@ def _watch_descendants(
                 process_hit.set()
             _kill_process_tree(leader, seen, lock, extra=found)
             return
-        if memory_cap is not None and time.monotonic() >= next_sample:
+        if time.monotonic() >= next_sample:
             next_sample = time.monotonic() + _MEMORY_POLL_SECONDS
-            used = _tree_resident_bytes(leader, found)
-            if used is not None and used > memory_cap:
-                if memory_hit is not None:
-                    memory_hit.set()
-                _kill_process_tree(leader, seen, lock, extra=found)
-                return
+            if disk is not None:
+                disk.note_io({leader, *found})
+                disk.note_files()
+                if disk.hit.is_set():
+                    _kill_process_tree(leader, seen, lock, extra=found)
+                    return
+            if memory_cap is not None:
+                used = _tree_resident_bytes(leader, found)
+                if used is not None and used > memory_cap:
+                    if memory_hit is not None:
+                        memory_hit.set()
+                    _kill_process_tree(leader, seen, lock, extra=found)
+                    return
         stop.wait(0.02)
 
 
@@ -2634,29 +3008,13 @@ class _DesignRecord:
         self._log = Path(name + ".log")
         env = _child_env(self.workspace, self.job, network=False)
         # This process runs the calls. It is not the confined script.
+        # It still does not inherit loader variables or the parent PYTHONPATH.
         env.pop("AICAD_SANDBOX_CHILD", None)
-        # Use the libraries this process already loaded. A redirected home
-        # must not hide that install, and the project is not an import root.
-        roots: list[str] = []
-        for entry in sys.path:
-            if not entry:
-                continue
-            try:
-                resolved = Path(entry).resolve()
-            except OSError:
-                continue
-            if _inside(resolved, self.workspace):
-                continue
-            text = str(resolved)
-            if text not in roots:
-                roots.append(text)
-        current = env.get("PYTHONPATH")
-        if current:
-            for entry in current.split(os.pathsep):
-                if entry and entry not in roots:
-                    roots.append(entry)
-        if roots:
-            env["PYTHONPATH"] = os.pathsep.join(roots)
+        trusted = _trusted_pythonpath(self.workspace)
+        if trusted:
+            env["PYTHONPATH"] = trusted
+        else:
+            env.pop("PYTHONPATH", None)
         from aicad.thread_stack import child_inherits_geometry_stack
 
         try:
@@ -2687,7 +3045,7 @@ class _DesignRecord:
         if proc is None or proc.poll() in (0, None) or self._log is None:
             return ""
         try:
-            text = self._log.read_text(encoding="utf-8", errors="replace").strip()
+            text = _read_log_tail(self._log, 500).strip()
         except OSError:
             return ""
         if len(text) > 500:
@@ -2845,6 +3203,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         profile_path.write_text(profile, encoding="utf-8")
         command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds()
+    disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
+    disk_stop = threading.Event()
     stop_watch: threading.Event | None = None
     watcher: threading.Thread | None = None
     seen: set[int] = set()
@@ -2866,19 +3226,33 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
 
-            code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
-                command,
-                cwd=str(workspace),
-                env=_child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir),
-                read_paths=_read_roots(),
-                workspace=workspace,
-                cpu_seconds=cpu_seconds(),
-                memory_bytes=memory_bytes(),
-                network=network,
-                timeout_seconds=wall,
-                stdout_path=job / "stdout.txt",
-                stderr_path=job / "stderr.txt",
-            )
+            def _watch_windows_files() -> None:
+                while not disk_stop.is_set():
+                    disk.note_files()
+                    if disk.hit.is_set():
+                        return
+                    disk_stop.wait(0.1)
+
+            windows_files = threading.Thread(target=_watch_windows_files, name="aicad-disk", daemon=True)
+            windows_files.start()
+            try:
+                code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
+                    command,
+                    cwd=str(workspace),
+                    env=_child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir),
+                    read_paths=_read_roots(),
+                    workspace=workspace,
+                    cpu_seconds=cpu_seconds(),
+                    memory_bytes=memory_bytes(),
+                    network=network,
+                    timeout_seconds=wall,
+                    stdout_path=job / "stdout.txt",
+                    stderr_path=job / "stderr.txt",
+                    disk=disk,
+                )
+            finally:
+                disk_stop.set()
+                windows_files.join(timeout=1)
             if timed_out:
                 detail = design_record.failure_detail() if design_record is not None else ""
                 shutil.rmtree(job, ignore_errors=True)
@@ -2888,6 +3262,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 raise ScriptError(message)
             if design_record is not None and design_record.proc is not None and design_record.proc.poll() not in (0, None):
                 design_record._refuse()
+            disk_message = disk.settle()
+            if disk_message:
+                shutil.rmtree(job, ignore_errors=True)
+                raise ScriptError(disk_message)
             payload = _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
             if design_record is not None:
                 payload = design_record.merge(payload)
@@ -2946,7 +3324,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 process_cap,
                 process_hit,
             ),
-            kwargs={"account": account, "sentinel": sentinel_path},
+            kwargs={"account": account, "sentinel": sentinel_path, "disk": disk},
             name="aicad-sandbox-reap",
             daemon=True,
         )
@@ -2982,6 +3360,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             _kill_process_tree(proc.pid, seen, seen_lock)
         if design_record is not None and design_record.proc is not None and design_record.proc.poll() not in (0, None):
             design_record._refuse()
+        disk_message = disk.settle()
+        if disk_message:
+            shutil.rmtree(job, ignore_errors=True)
+            raise ScriptError(disk_message)
         payload = _payload_from_result(
             job,
             proc.returncode if proc.returncode is not None else -1,
@@ -3201,7 +3583,10 @@ def run_part_script(code: str, workspace: str | Path | None = None):
     try:
         payload = _spawn(Path(workspace), "part", code, network=False)
         if not payload.get("ok"):
-            raise ScriptError(str(payload.get("error") or "The part script failed."))
+            from aicad.paths import hide_project_path
+
+            detail = str(payload.get("error") or "The part script failed.")
+            raise ScriptError(hide_project_path(detail, workspace))
         from aicad.kernel import import_step_file
         from aicad.models import feature_report_from_dict
 
@@ -3235,6 +3620,7 @@ def run_design_script(workspace: str | Path, code: str, network: bool = False) -
         _append_log(root, code, False, str(exc))
         raise
     _drop_job(payload)
+    _hide_script_report(payload, root)
     error = payload.get("error")
     _append_log(root, code, bool(payload.get("ok")), error if isinstance(error, str) else None)
     return payload

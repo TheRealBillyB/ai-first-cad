@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import shutil
 from pathlib import Path
 
 from aicad import kernel, library
@@ -645,75 +644,86 @@ def _write_recent(projects: list[dict]) -> None:
         return
 
 
-def _copy_project(source: Path, destination: Path) -> None:
-    from aicad.paths import is_reparse, stays_inside
+# Same ceiling as a script file. A larger project file is not copied into memory.
+_COPY_LIMIT = 512 * 1024 * 1024
 
-    def refuse_outward(path: Path, root: Path) -> None:
+
+def _copy_project(source: Path, destination: Path) -> None:
+    """Copy the project record. A link is not followed.
+
+    A link that stays inside the project is still a link: the copy does not
+    read through it. A file with another name is not read. The check covers
+    the whole tree before any byte is copied.
+    """
+    from aicad.paths import is_reparse, publish_bytes, read_checked_bytes, shared_file, stays_inside
+
+    def refuse(path: Path, root: Path) -> None:
         if not (path.exists() or path.is_symlink()):
             return
-        if is_reparse(path) and not stays_inside(root, path):
-            raise GeometryError(f"{path} is a link outside the project. It was not followed.")
-        if path.is_dir() and not path.is_symlink():
+        if is_reparse(path):
+            if not stays_inside(root, path):
+                raise GeometryError(f"{path} is a link outside the project. It was not followed.")
+            raise GeometryError(f"{path} is a link and was not followed.")
+        if path.is_dir():
             for child in path.iterdir():
-                refuse_outward(child, root)
+                refuse(child, root)
+            return
+        if shared_file(path):
+            raise GeometryError(f"{path.name} has another name and was not copied.")
 
+    def copy_file(src: Path, dest: Path, root: Path) -> None:
+        maximum = _COPY_LIMIT
+        label = src.name
+        # Opening a session stops at 32 MiB. The copy uses that same cap.
+        if src.name == "session.json" and src.parent.resolve() == Path(root).resolve():
+            from aicad.document import _MAX_SESSION_BYTES
+
+            maximum = _MAX_SESSION_BYTES
+            label = "Session file"
+        data = read_checked_bytes(root, src, maximum=maximum, label=label, error=GeometryError)
+        publish_bytes(dest, data, root=destination)
+
+    def copy_tree(src: Path, dest: Path, root: Path) -> None:
+        refuse(src, root)
+        if dest.exists() or dest.is_symlink():
+            refuse(dest, destination)
+        if src.is_dir():
+            dest.mkdir(parents=True, exist_ok=True)
+            for child in src.iterdir():
+                copy_tree(child, dest / child.name, root)
+            return
+        copy_file(src, dest, root)
+
+    pending: list[tuple[Path, Path]] = []
     for name in ("session.json", "requirements.json"):
         file = source / name
         if file.is_file() or file.is_symlink():
-            refuse_outward(file, source)
-            target = destination / name
-            if target.exists() or target.is_symlink():
-                refuse_outward(target, destination)
-            if name == "session.json":
-                _copy_session(source, file, target)
-            else:
-                shutil.copy2(file, target)
+            pending.append((file, destination / name))
     for folder in ("documents", "imports"):
         origin = source / folder
         if origin.is_dir() or origin.is_symlink():
-            refuse_outward(origin, source)
-            target = destination / folder
-            if target.exists() or target.is_symlink():
-                refuse_outward(target, destination)
-            shutil.copytree(origin, target, dirs_exist_ok=True)
+            pending.append((origin, destination / folder))
     # A script part is stored as text plus a STEP solid. Opening the copy
     # must not run the script, so the solid has to travel with the folder.
+    # The cache beside it is not part of the copy.
     dot = source / ".aicad"
-    if dot.exists() or dot.is_symlink():
-        refuse_outward(dot, source)
+    if is_reparse(dot):
+        refuse(dot, source)
     dest_dot = destination / ".aicad"
-    if dest_dot.exists() or dest_dot.is_symlink():
-        refuse_outward(dest_dot, destination)
+    if is_reparse(dest_dot):
+        refuse(dest_dot, destination)
     geometry = source / ".aicad" / "geometry"
-    if geometry.is_dir() or geometry.is_symlink():
-        refuse_outward(geometry, source)
-        target = destination / ".aicad" / "geometry"
-        if target.exists() or target.is_symlink():
-            refuse_outward(target, destination)
-        shutil.copytree(geometry, target, dirs_exist_ok=True)
+    if not is_reparse(dot) and (geometry.is_dir() or geometry.is_symlink()):
+        pending.append((geometry, destination / ".aicad" / "geometry"))
     log = source / ".aicad" / "script_log.jsonl"
-    if log.is_file() or log.is_symlink():
-        refuse_outward(log, source)
-        target = destination / ".aicad" / "script_log.jsonl"
-        if target.exists() or target.is_symlink():
-            refuse_outward(target, destination)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(log, target)
-
-
-def _copy_session(source: Path, file: Path, target: Path) -> None:
-    """Copy ``session.json`` and stop at the same cap as opening a session."""
-    from aicad.document import _MAX_SESSION_BYTES
-    from aicad.paths import read_checked_bytes
-
-    data = read_checked_bytes(
-        source,
-        file,
-        maximum=_MAX_SESSION_BYTES,
-        label="Session file",
-        error=GeometryError,
-    )
-    target.write_bytes(data)
+    if not is_reparse(dot) and (log.is_file() or log.is_symlink()):
+        pending.append((log, destination / ".aicad" / "script_log.jsonl"))
+    for src, dest in pending:
+        refuse(src, source)
+        if dest.exists() or dest.is_symlink():
+            refuse(dest, destination)
+    for src, dest in pending:
+        copy_tree(src, dest, source)
 
 
 def reject_placement(position, rotation_deg=None) -> None:

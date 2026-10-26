@@ -273,6 +273,22 @@ def test_a_solver_bin_keeps_ccx_libraries_and_leaves_system_dlls(tmp_path):
     assert module.stage_solver_bin(posix, [library], tmp_path / "unused") == posix.parent
 
 
+def test_a_linked_solver_is_copied_into_the_prefix(tmp_path):
+    module = _installer()
+    package = tmp_path / "pkgs" / "bin"
+    package.mkdir(parents=True)
+    real = package / "ccx"
+    real.write_bytes(b"real-ccx")
+    linked = tmp_path / "prefix" / "bin" / "ccx"
+    linked.parent.mkdir(parents=True)
+    linked.symlink_to(real)
+    result = module.materialize_linked_binary(linked)
+    assert result == linked
+    assert not linked.is_symlink()
+    assert linked.read_bytes() == b"real-ccx"
+    assert real.is_file()
+
+
 def test_a_lock_path_that_leaves_the_work_directory_is_refused(tmp_path):
     module = _installer()
     outside = tmp_path / "outside"

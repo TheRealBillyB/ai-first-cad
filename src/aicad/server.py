@@ -407,17 +407,24 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         # OpenCascade and Gmsh write to the C stdout. That descriptor is this
         # process's JSON-RPC stream, so it is pointed away for the call.
         with divert_native_stdio():
-            return client.execute(command, payload, source="agent")
+            result = client.execute(command, payload, source="agent")
+        from aicad.untrusted import mark_assistant_result
+
+        return mark_assistant_result(result)
 
     def guard(fn):
+        from aicad.untrusted import fence_external_text
+
         try:
             return fn()
         except ToolError:
             raise
         except AICADError as exc:
-            raise ToolError(str(exc)) from exc
+            message = _hide_client_path(client, str(exc))
+            raise ToolError(fence_external_text(message)) from exc
         except Exception as exc:
-            raise ToolError(f"{type(exc).__name__}: {exc}") from exc
+            message = _hide_client_path(client, f"{type(exc).__name__}: {exc}")
+            raise ToolError(fence_external_text(message)) from exc
 
     def resource_guard(fn):
         try:
@@ -425,9 +432,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         except ResourceError:
             raise
         except AICADError as exc:
-            raise ResourceError(str(exc)) from exc
+            raise ResourceError(_hide_client_path(client, str(exc))) from exc
         except Exception as exc:
-            raise ResourceError(f"{type(exc).__name__}: {exc}") from exc
+            raise ResourceError(_hide_client_path(client, f"{type(exc).__name__}: {exc}")) from exc
 
     @mcp.tool()
     def list_parts() -> dict:
@@ -1613,6 +1620,15 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     register_mcp(mcp, run, guard)
     return mcp
+
+
+def _hide_client_path(client: object, text: str) -> str:
+    from aicad.paths import hide_project_path
+
+    root = getattr(client, "root", None)
+    if root is None:
+        return text
+    return hide_project_path(text, root)
 
 
 def _images(payload: dict) -> list[str | Image]:
