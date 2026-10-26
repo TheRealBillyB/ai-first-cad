@@ -27,7 +27,8 @@ _OPEN_EXISTING = 3
 _DIR_READ = 0x1 | 0x20 | 0x80 | 0x100000
 _DIR_ACCESS = _DIR_READ | 0x2 | 0x4 | 0x100 | 0x10000
 _FILE_READ_ACCESS = 0x1 | 0x80 | 0x100000
-_FILE_WRITE_ACCESS = 0x1 | 0x2 | 0x100 | 0x10000 | 0x100000
+# FILE_READ_ATTRIBUTES (0x80) is required to read the file record on a write handle.
+_FILE_WRITE_ACCESS = 0x1 | 0x2 | 0x80 | 0x100 | 0x10000 | 0x100000
 _FILE_OPEN = 1
 _FILE_CREATE = 2
 _FILE_DIRECTORY_FILE = 0x1
@@ -36,10 +37,13 @@ _FILE_SYNCHRONOUS_IO_NONALERT = 0x20
 _FILE_OPEN_REPARSE_POINT = 0x00200000
 _OBJ_CASE_INSENSITIVE = 0x40
 _STATUS_OBJECT_NAME_COLLISION = 0xC0000035
-_FILE_RENAME_INFO_EX = 22
 _FILE_DISPOSITION_INFO = 4
-_FILE_RENAME_REPLACE_IF_EXISTS = 0x1
 _FILE_RENAME_POSIX_SEMANTICS = 0x2
+_FILE_RENAME_INFORMATION = 10
+_FILE_RENAME_INFORMATION_EX = 65
+_VOLUME_NAME_DOS = 0
+_VOLUME_NAME_GUID = 1
+_VOLUME_NAME_NT = 2
 
 
 class TooLarge(Exception):
@@ -298,22 +302,22 @@ def _windows_open_file(root: Path, relative: Path) -> int:
         raise OSError(errno.EINVAL, "path is empty")
     parent = Path(*parts[:-1]) if len(parts) > 1 else Path()
     directory = _windows_open_relative(root, parent, create=False, write=False)
+    handle = None
     try:
         handle = _nt_open(_os_handle(directory), parts[-1], access=_FILE_READ_ACCESS, directory=False, create=False)
-    finally:
-        os.close(directory)
-    try:
         _refuse_reparse(handle, parts[-1])
-        links = _link_count(handle)
-        if links > 1:
+        if _link_count(handle) > 1:
             raise OSError(errno.ELOOP, "has another name")
         if _attributes(handle) & _FILE_ATTRIBUTE_DIRECTORY:
             raise OSError(errno.EINVAL, "not an ordinary file")
-        _refuse_unexpected_final(handle, root, parts)
-        return _descriptor(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
-    except Exception:
-        _close_handle(handle)
-        raise
+        _refuse_unexpected_final(handle, _os_handle(directory), parts[-1])
+        descriptor = _descriptor(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        handle = None
+        return descriptor
+    finally:
+        if handle is not None:
+            _close_handle(handle)
+        os.close(directory)
 
 
 def _windows_replace(root: Path, relative: str | Path, write) -> None:
@@ -368,8 +372,7 @@ def _rename_into(directory: int, descriptor: int, name: str) -> None:
             _delete_handle(existing)
         finally:
             _close_handle(existing)
-    if not _set_rename(descriptor, directory, name, replace=False):
-        raise OSError(errno.EIO, "could not replace", name)
+    _apply_rename(_os_handle(descriptor), _os_handle(directory), name)
 
 
 def _open_existing(parent, name: str):
@@ -388,20 +391,27 @@ def _refuse_reparse(handle, name: str) -> None:
         raise OSError(errno.ELOOP, "is a link", name)
 
 
-def _refuse_unexpected_final(handle, root: Path, parts: tuple[str, ...]) -> None:
-    final = _final_path(handle)
-    root_final = _final_path_of_path(root)
-    expected = os.path.normcase(os.path.normpath(os.path.join(root_final, *parts)))
-    if final != expected:
-        raise OSError(errno.ELOOP, "is a link")
+def _refuse_unexpected_final(handle, parent_handle, name: str) -> None:
+    """Refuse a file whose final path is not the opened directory plus its name.
 
-
-def _final_path_of_path(path: Path) -> str:
-    handle = _create_file(os.fspath(path), _DIR_ACCESS, _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT)
-    try:
-        return _final_path(handle)
-    finally:
-        _close_handle(handle)
+    A drive-letter path is tried first. A confined process may only be able to
+    return the NT path, so that form is tried with the same handles.
+    """
+    last: OSError | None = None
+    for flag in (_VOLUME_NAME_DOS, _VOLUME_NAME_NT, _VOLUME_NAME_GUID):
+        try:
+            final = _final_path(handle, flag)
+            parent = _final_path(parent_handle, flag)
+        except OSError as exc:
+            last = exc
+            continue
+        expected = os.path.normcase(os.path.normpath(os.path.join(parent, name)))
+        if final != expected:
+            raise OSError(errno.ELOOP, "is a link")
+        return
+    if last is not None:
+        raise last
+    raise OSError(errno.EIO, "could not read the file path")
 
 
 def _create_file(path: str, access: int, flags: int):
@@ -561,13 +571,13 @@ def _link_count(handle) -> int:
     return int(_file_info(handle).nNumberOfLinks)
 
 
-def _final_path(handle) -> str:
+def _final_path(handle, flag: int) -> str:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     query = kernel32.GetFinalPathNameByHandleW
     query.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
     query.restype = ctypes.c_uint32
     buffer = ctypes.create_unicode_buffer(32768)
-    length = int(query(handle, buffer, len(buffer), 0))
+    length = int(query(handle, buffer, len(buffer), flag))
     if length <= 0 or length >= len(buffer):
         raise OSError(errno.EIO, "could not read the file path")
     text = buffer.value
@@ -619,25 +629,46 @@ def _delete_handle(handle) -> None:
         raise OSError(errno.EIO, "could not remove")
 
 
-def _set_rename(descriptor: int, directory: int, name: str, *, replace: bool) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    set_info = kernel32.SetFileInformationByHandle
-    set_info.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
-    set_info.restype = ctypes.c_int
-    flags = _FILE_RENAME_POSIX_SEMANTICS
-    if replace:
-        flags |= _FILE_RENAME_REPLACE_IF_EXISTS
-    class _Rename(ctypes.Structure):
-        _fields_ = (
-            ("Flags", ctypes.c_uint32),
-            ("RootDirectory", ctypes.c_void_p),
-            ("FileNameLength", ctypes.c_uint32),
-            ("FileName", ctypes.c_wchar * (len(name) + 1)),
-        )
+def _rename_information(root_handle: int, name: str, *, flags: int | None) -> bytes:
+    """Native rename record. The directory handle is at byte 8 on 64-bit Windows."""
+    encoded = name.encode("utf-16-le")
+    buffer = bytearray(20 + len(encoded))
+    if flags is not None:
+        buffer[0:4] = (flags & 0xFFFFFFFF).to_bytes(4, "little")
+    buffer[8:16] = (root_handle & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "little")
+    buffer[16:20] = len(encoded).to_bytes(4, "little")
+    buffer[20:] = encoded
+    return bytes(buffer)
 
-    info = _Rename()
-    info.Flags = flags
-    info.RootDirectory = _os_handle(directory)
-    info.FileNameLength = len(name) * 2
-    info.FileName = name
-    return bool(set_info(_os_handle(descriptor), _FILE_RENAME_INFO_EX, ctypes.byref(info), ctypes.sizeof(info)))
+
+def _apply_rename(file_handle, directory_handle, name: str) -> None:
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    ntdll.NtSetInformationFile.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_IoStatus),
+        ctypes.POINTER(ctypes.c_char),
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+    ]
+    ntdll.NtSetInformationFile.restype = ctypes.c_long
+    attempts = (
+        (_FILE_RENAME_INFORMATION, None),
+        (_FILE_RENAME_INFORMATION_EX, _FILE_RENAME_POSIX_SEMANTICS),
+    )
+    seen: list[str] = []
+    for info_class, flags in attempts:
+        raw = _rename_information(int(directory_handle), name, flags=flags)
+        buf = (ctypes.c_char * len(raw)).from_buffer_copy(raw)
+        status = int(
+            ntdll.NtSetInformationFile(
+                ctypes.c_void_p(int(file_handle)),
+                ctypes.byref(_IoStatus()),
+                buf,
+                len(raw),
+                info_class,
+            )
+        )
+        if status >= 0:
+            return
+        seen.append(f"{status & 0xFFFFFFFF:08X}")
+    raise OSError(errno.EIO, "could not replace (" + ", ".join(seen) + ")", name)

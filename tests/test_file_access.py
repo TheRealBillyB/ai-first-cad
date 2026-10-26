@@ -59,6 +59,38 @@ def test_a_windows_read_does_not_ask_to_change_the_directory():
     assert file_access._DIR_READ & change == 0
 
 
+def test_the_windows_rename_record_keeps_the_directory_handle_in_place():
+    from aicad import file_access
+
+    raw = file_access._rename_information(0x1234, "a.txt", flags=None)
+    assert raw[:8] == b"\x00" * 8
+    assert int.from_bytes(raw[8:16], "little") == 0x1234
+    assert int.from_bytes(raw[16:20], "little") == len("a.txt".encode("utf-16-le"))
+    assert raw[20:] == "a.txt".encode("utf-16-le")
+    flagged = file_access._rename_information(0x1234, "a.txt", flags=0x2)
+    assert int.from_bytes(flagged[:4], "little") == 0x2
+    assert flagged[8:] == raw[8:]
+
+
+def test_a_windows_write_can_read_the_file_record():
+    from aicad import file_access
+
+    assert file_access._FILE_WRITE_ACCESS & 0x80
+    assert file_access._FILE_READ_ACCESS & 0x80
+
+
+def test_an_installed_module_is_read_with_a_size_cap(tmp_path):
+    from aicad.paths import _read_installed_source
+
+    source = tmp_path / "_options.py"
+    source.write_bytes(b"options = Options()\r\n")
+    assert _read_installed_source(os.fspath(source)) == "options = Options()\n"
+    huge = tmp_path / "huge.py"
+    huge.write_bytes(b"x" * 1_000_001)
+    with pytest.raises(OSError):
+        _read_installed_source(os.fspath(huge))
+
+
 def test_the_windows_file_record_keeps_the_link_count_in_place():
     from aicad import file_access
 

@@ -114,6 +114,20 @@ class _ProjectIniUnread:
         return False
 
 
+def _read_installed_source(origin: str) -> str:
+    """Read the module the importer already found.
+
+    This is the installed copy, not a project file. A confined process can
+    read that copy without asking for a drive-letter path.
+    """
+    with open(origin, "rb") as handle:
+        data = handle.read(1_000_001)
+    if len(data) > 1_000_000:
+        raise OSError(errno.EFBIG, "too large", origin)
+    text = data.decode("utf-8")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 class _EzdxfOptionsLoader:
     def __init__(self, origin: str):
         self.origin = origin
@@ -122,9 +136,7 @@ class _EzdxfOptionsLoader:
         return None
 
     def exec_module(self, module) -> None:
-        from aicad.file_access import read_text
-
-        source = read_text(self.origin, maximum=1_000_000)
+        source = _read_installed_source(self.origin)
         replaced, count = _OPTIONS_ASSIGN.subn("options = None", source, count=1)
         code = compile(replaced if count == 1 else source, self.origin, "exec")
         with _ProjectIniUnread():
