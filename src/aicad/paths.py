@@ -205,6 +205,7 @@ def require_session_file(root: Path, raw: object, label: str, error: type[Except
     trimmed = _path_after_windows_trim(text)
     if trimmed != text.replace("\\", "/") and session_path_escapes(trimmed):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
+    refuse_windows_aliases(root, text, label, error)
     root_resolved = Path(root).resolve()
     full = (root_resolved / text).resolve()
     if not _is_inside(full, root_resolved):
@@ -237,6 +238,8 @@ def require_export_path(root: Path, raw: str | Path, label: str, error: type[Exc
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
     if _export_blocked(expanded, root_resolved):
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+    if not Path(text).is_absolute():
+        refuse_windows_aliases(root_resolved, text, label, error)
     candidate = Path(expanded)
     if not candidate.is_absolute():
         candidate = root_resolved / candidate
@@ -342,6 +345,48 @@ def is_reserved_device_name(component: str) -> bool:
     if stem in _RESERVED_DEVICES:
         return True
     return len(stem) == 4 and stem[:3] in {"com", "lpt"} and stem[3] in "123456789"
+
+
+_SHORT_NAME = re.compile(r"^[A-Za-z0-9]{1,6}~\d(?:\.[A-Za-z0-9]{1,3})?$")
+
+
+def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Exception]) -> None:
+    """Refuse Windows path forms that name a different file than they show.
+
+    Alternate data streams, 8.3 short names, trailing dots and spaces, and a
+    path past the classic length limit are refused on every system. A name
+    that differs only by case from an existing entry is the same file on a
+    case-insensitive volume, so it is refused too.
+    """
+
+    raw = text.replace("\\", "/")
+    if len(raw) > 180:
+        raise error(f"{label} is too long for a project path.")
+    parts = [part for part in raw.split("/") if part not in {"", ".", ".."}]
+    for part in parts:
+        if ":" in part or _SHORT_NAME.match(part) or part.endswith((" ", ".")):
+            raise error(f"{label} {part!r} is not a file name.")
+    current = Path(root).resolve()
+    for part in raw.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            return
+        if not current.is_dir():
+            return
+        folded = part.casefold()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            return
+        match = None
+        for entry in entries:
+            if entry.name == part:
+                match = entry
+                break
+            if entry.name.casefold() == folded:
+                raise error(f"{label} {part!r} differs only by case from an existing name.")
+        current = match if match is not None else current / part
 
 
 def refuse_reserved_device(path: str | Path, root: Path | None, label: str, error: type[Exception]) -> None:
@@ -1486,6 +1531,15 @@ def output_path(
         raw = root_resolved / raw
     if "\x00" in os.fspath(raw):
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+    if _lexical_inside(raw, root_resolved):
+        try:
+            relative = Path(os.path.normpath(raw)).resolve().relative_to(root_resolved).as_posix()
+        except (OSError, ValueError):
+            relative = None
+        if relative is not None:
+            if windows_trim_escapes(relative) or session_path_escapes(relative):
+                raise error(f"{label} {path} is outside the project folder {root_resolved}.")
+            refuse_windows_aliases(root_resolved, relative, label, error)
     if not _lexical_inside(raw, root_resolved):
         if absolute and allow_absolute_outside:
             return Path(os.path.abspath(raw))
@@ -1600,6 +1654,51 @@ def publish_bytes(path: Path, data: bytes, *, root: Path | None = None) -> Path:
 def publish_text(path: Path, text: str, *, root: Path | None = None) -> Path:
     """Replace ``path`` with UTF-8 text without following a link at that name."""
     return publish_bytes(path, text.encode("utf-8"), root=root)
+
+
+def hide_project_path(text: str, root: str | Path) -> str:
+    """Replace an absolute project path with a relative one.
+
+    The project folder itself becomes ``.``. A file inside it keeps the path
+    under that folder. Slash and backslash forms are both removed.
+    """
+
+    if not isinstance(text, str) or not text:
+        return text
+    try:
+        folder = str(Path(root).resolve())
+    except OSError:
+        folder = str(Path(root))
+    variants = {folder, folder.replace("\\", "/"), folder.replace("/", "\\")}
+    cleaned = text
+    for variant in sorted((item for item in variants if item), key=len, reverse=True):
+        cleaned = _replace_path_prefix(cleaned, variant)
+    return cleaned
+
+
+def _replace_path_prefix(text: str, variant: str) -> str:
+    folded = text.casefold() if os.name == "nt" else text
+    needle = variant.casefold() if os.name == "nt" else variant
+    pieces: list[str] = []
+    index = 0
+    while True:
+        found = folded.find(needle, index)
+        if found < 0:
+            pieces.append(text[index:])
+            break
+        after = found + len(needle)
+        boundary = after >= len(text) or text[after] in "/\\ \t\r\n\"'.,;:)]}>"
+        if not boundary:
+            pieces.append(text[index:after])
+            index = after
+            continue
+        pieces.append(text[index:found])
+        if after < len(text) and text[after] in "/\\":
+            index = after + 1
+            continue
+        pieces.append(".")
+        index = after
+    return "".join(pieces)
 
 
 prepare_geometry_import()
