@@ -10,14 +10,17 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A design record is written to the open file | The model process keeps the file the parent opened, on Windows, macOS, and Linux, so a different file at that path is not the record. |
 | A design script's output is capped | The parent keeps at most 1 MB of the script's standard output and standard error, on Windows, macOS, and Linux, and drops the earlier bytes. |
 | A directory link is unlinked when a project folder is removed | The directory it points at is left in place on Windows, macOS, and Linux. |
 | A linked CI solver is copied into the prefix | The loader looks for libraries beside the file a link points at, so a solver that stays a link does not start. |
 | A picture and a robot mesh are read from the project | The bytes are read before a picture is attached or a simulator opens a mesh, so a link is not followed. |
 | A project file is opened from a directory handle | The open, the size check, and the replacement all use that handle, so a link swapped in after the path was accepted is not followed on Windows, macOS, or Linux. |
 | A project file is read from the project directory | A directory link in the middle of the path is not followed on Windows, macOS, or Linux. |
+| A script job file is not opened when that name is a link | The child reads the job and the script, and writes the result, without following a link at that name, on Windows, macOS, and Linux. |
 | A script's disk quota counts bytes written | The count includes a file the script removed, on Windows, macOS, and Linux, and the first sample is part of the count. |
 | Looking up the Windows user gives up after 10 seconds | The file grant then uses the user name, so a stuck lookup does not hold the parent. |
+| The sketch solver is compiled as C11 | GCC's C23 default removes a macro the solver's allocator uses. The installer asks for C11 unless the caller already chose C11 or C17, replaces a C23 choice, and leaves the MSVC default alone. |
 
 ## 2026-10-25
 
