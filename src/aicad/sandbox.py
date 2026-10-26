@@ -518,10 +518,13 @@ def require_in_project(path: str | Path, workspace: str | Path, *, writing: bool
     if not writing and _under(candidate, _read_roots()):
         return
     action = "write" if writing else "read"
-    raise ScriptError(
+    from aicad.paths import hide_project_path
+
+    message = (
         f"The script tried to {action} {candidate}, which is outside the project folder {root}. "
         "A design script can only use files inside that folder."
     )
+    raise ScriptError(hide_project_path(message, root))
 
 
 def design_script_status(workspace: str | Path, network_once: bool = False, network_all: bool = False) -> dict:
@@ -532,12 +535,14 @@ def design_script_status(workspace: str | Path, network_once: bool = False, netw
         network = "next run"
     else:
         network = "off"
+    from aicad.paths import hide_project_path
+
     return {
         "enabled": design_scripts_enabled(root),
         "warning": WARNING,
-        "enable": f"aicad allow-scripts --workspace {root}",
+        "enable": hide_project_path(f"aicad allow-scripts --workspace {root}", root),
         "network": network,
-        "log": str(root / ".aicad" / "script_log.jsonl"),
+        "log": hide_project_path(str(root / ".aicad" / "script_log.jsonl"), root),
     }
 
 
@@ -560,7 +565,10 @@ def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> No
         return
     if is_reparse(path) or shared_file(path):
         return
-    row = {"time": _now(), "kind": "design", "ok": ok, "error": error, "script": script}
+    from aicad.paths import hide_project_path
+
+    shown = hide_project_path(error, root) if isinstance(error, str) else error
+    row = {"time": _now(), "kind": "design", "ok": ok, "error": shown, "script": script}
     line = json.dumps(row) + "\n"
     try:
         existing = path.read_text(encoding="utf-8") if path.is_file() else ""
@@ -570,6 +578,19 @@ def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> No
         publish_text(path, existing + line, root=root)
     except OSError:
         return
+
+
+def _hide_script_report(payload: dict, root: Path) -> None:
+    """Remove the absolute project path from a script's errors and output."""
+    from aicad.paths import hide_project_path
+
+    for key in ("error", "stdout", "stderr"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            payload[key] = hide_project_path(value, root)
+    errors = payload.get("errors")
+    if isinstance(errors, list):
+        payload["errors"] = [hide_project_path(item, root) if isinstance(item, str) else item for item in errors]
 
 
 def _check_script(code: str) -> None:
@@ -3412,7 +3433,10 @@ def run_part_script(code: str, workspace: str | Path | None = None):
     try:
         payload = _spawn(Path(workspace), "part", code, network=False)
         if not payload.get("ok"):
-            raise ScriptError(str(payload.get("error") or "The part script failed."))
+            from aicad.paths import hide_project_path
+
+            detail = str(payload.get("error") or "The part script failed.")
+            raise ScriptError(hide_project_path(detail, workspace))
         from aicad.kernel import import_step_file
         from aicad.models import feature_report_from_dict
 
@@ -3446,6 +3470,7 @@ def run_design_script(workspace: str | Path, code: str, network: bool = False) -
         _append_log(root, code, False, str(exc))
         raise
     _drop_job(payload)
+    _hide_script_report(payload, root)
     error = payload.get("error")
     _append_log(root, code, bool(payload.get("ok")), error if isinstance(error, str) else None)
     return payload
