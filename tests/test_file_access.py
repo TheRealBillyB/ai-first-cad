@@ -72,6 +72,14 @@ def test_the_windows_rename_record_keeps_the_directory_handle_in_place():
     assert flagged[8:] == raw[8:]
 
 
+def test_a_windows_directory_write_does_not_ask_to_delete_the_directory():
+    from aicad import file_access
+
+    assert file_access._DIR_ACCESS & 0x10000 == 0
+    assert file_access._DIR_ACCESS & 0x2
+    assert file_access._DIR_ACCESS & 0x4
+
+
 def test_a_windows_write_can_read_the_file_record():
     from aicad import file_access
 

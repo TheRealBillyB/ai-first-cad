@@ -22,10 +22,12 @@ _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _FILE_SHARE_ALL = 0x1 | 0x2 | 0x4
 _OPEN_EXISTING = 3
-# A read asks only to list and traverse. Add, write, and delete are refused
-# by a confined process that is still allowed to read the directory.
+# A read asks only to list and traverse. Add and write are refused by a
+# confined process that is still allowed to read the directory.
+# DELETE is not requested. That right deletes the directory itself, and
+# Windows refuses it while the directory is the working directory.
 _DIR_READ = 0x1 | 0x20 | 0x80 | 0x100000
-_DIR_ACCESS = _DIR_READ | 0x2 | 0x4 | 0x100 | 0x10000
+_DIR_ACCESS = _DIR_READ | 0x2 | 0x4 | 0x100
 _FILE_READ_ACCESS = 0x1 | 0x80 | 0x100000
 # FILE_READ_ATTRIBUTES (0x80) is required to read the file record on a write handle.
 _FILE_WRITE_ACCESS = 0x1 | 0x2 | 0x80 | 0x100 | 0x10000 | 0x100000
@@ -430,7 +432,9 @@ def _create_file(path: str, access: int, flags: int):
     handle = create(path, access, _FILE_SHARE_ALL, None, _OPEN_EXISTING, flags, None)
     if not handle or handle == ctypes.c_void_p(-1).value:
         error = ctypes.get_last_error()
-        raise OSError(error, os.strerror(error) if error else "could not open", path)
+        if error:
+            raise OSError(None, None, path, error)
+        raise OSError(errno.EIO, "could not open", path)
     return handle
 
 
