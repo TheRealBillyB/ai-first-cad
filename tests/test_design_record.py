@@ -12,6 +12,69 @@ import pytest
 from aicad.file_access import open_inplace
 
 
+def _windows_record(path: str) -> tuple[int, int]:
+    """A readable file, and a second handle that may be closed.
+
+    Windows can drop a directory entry that was opened with delete sharing.
+    Closing the handle passed to ``model_main`` must leave this file open.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.DuplicateHandle.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    ]
+    kernel32.DuplicateHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    generic_read_write = 0x80000000 | 0x40000000
+    share_read_write_delete = 0x1 | 0x2 | 0x4
+    open_existing = 3
+    normal = 0x80
+    duplicate_same_access = 0x2
+    invalid = wintypes.HANDLE(-1).value
+    handle = kernel32.CreateFileW(
+        path,
+        generic_read_write,
+        share_read_write_delete,
+        None,
+        open_existing,
+        normal,
+        None,
+    )
+    if handle in {invalid, None} or int(handle) in {-1, 2**32 - 1, 2**64 - 1}:
+        raise ctypes.WinError(ctypes.get_last_error())
+    current = kernel32.GetCurrentProcess()
+    copied = wintypes.HANDLE()
+    if not kernel32.DuplicateHandle(
+        current, handle, current, ctypes.byref(copied), 0, False, duplicate_same_access
+    ):
+        kernel32.CloseHandle(handle)
+        raise ctypes.WinError(ctypes.get_last_error())
+    descriptor = msvcrt.open_osfhandle(int(handle), os.O_BINARY)
+    return descriptor, int(copied.value)
+
+
 def test_open_inplace_does_not_follow_a_link(tmp_path):
     target = tmp_path / "target"
     target.write_bytes(b"kept")
@@ -40,26 +103,35 @@ def test_model_main_writes_the_open_file_not_the_path(tmp_path, monkeypatch):
     calls.mkdir(parents=True)
     (calls / "STOP").write_text("", encoding="utf-8")
     descriptor, name = tempfile.mkstemp(prefix="aicad-record-", suffix=".json")
-    duplicate = os.dup(descriptor)
+    reader: int | None = None
     try:
-        swapped = tmp_path / "swapped"
-        swapped.write_bytes(b"SWAPPED")
-        os.replace(swapped, name)
         if sys.platform == "win32":
-            import msvcrt
-
-            token = msvcrt.get_osfhandle(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            reader, token = _windows_record(name)
+            os.remove(name)
+            Path(name).write_bytes(b"SWAPPED")
         else:
+            reader = os.dup(descriptor)
             token = descriptor
+            swapped = tmp_path / "swapped"
+            swapped.write_bytes(b"SWAPPED")
+            os.replace(swapped, name)
         from aicad.design_calls import model_main
 
         assert model_main(job, Path(name), token) == 0
-        os.lseek(duplicate, 0, os.SEEK_SET)
-        body = os.read(duplicate, 4096)
+        os.lseek(reader, 0, os.SEEK_SET)
+        body = os.read(reader, 4096)
         assert b'"checks"' in body
         assert Path(name).read_bytes() == b"SWAPPED"
     finally:
-        os.close(duplicate)
+        if reader is not None:
+            os.close(reader)
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         Path(name).unlink(missing_ok=True)
 
 
