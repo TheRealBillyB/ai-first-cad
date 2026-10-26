@@ -14,6 +14,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A linked CI solver is copied into the prefix | The loader looks for libraries beside the file a link points at, so a solver that stays a link does not start. |
 | A project file is opened from a directory handle | The open, the size check, and the replacement all use that handle, so a link swapped in after the path was accepted is not followed on Windows, macOS, or Linux. |
 | A script's disk quota counts bytes written | The count includes a file the script removed, on Windows, macOS, and Linux, and the first sample is part of the count. |
+| Looking up the Windows user gives up after 10 seconds | The file grant then uses the user name, so a stuck lookup does not hold the parent. |
 
 ## 2026-10-25
 
