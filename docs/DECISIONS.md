@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-26
+
+| Decision | Rationale |
+| --- | --- |
+| A linked CI solver is copied into the prefix | The loader looks for libraries beside the file a link points at, so a solver that stays a link does not start. |
+
 ## 2026-10-25
 
 | Decision | Rationale |
