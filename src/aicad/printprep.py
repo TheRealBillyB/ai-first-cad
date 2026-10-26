@@ -211,6 +211,27 @@ def fits_printer(size_mm: list[float], printer_name: str) -> dict:
     }
 
 
+def _real_output_dir(path: Path) -> None:
+    """Create ``path``. Do not follow a symlink or a junction to do it."""
+
+    import errno
+    import os
+
+    from aicad.paths import is_reparse
+
+    raw = Path(os.path.abspath(path))
+    current = Path(raw.anchor)
+    for part in raw.relative_to(current).parts:
+        current = current / part
+        if is_reparse(current) or current.is_symlink():
+            raise OSError(errno.ELOOP, f"{path} is a link and was not followed.")
+        if current.exists():
+            if not current.is_dir():
+                raise OSError(errno.ENOTDIR, f"{path} is not a folder.")
+            continue
+        current.mkdir()
+
+
 def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price_per_kg=None) -> dict:
     executables = find_slicers()
     if not executables:
@@ -224,7 +245,7 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
             ),
             "assumptions": ["No slicer ran. Time and grams are not estimated."],
         }
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _real_output_dir(out_dir)
     stl = out_dir / "oriented.stl"
     gcode = out_dir / "print.gcode"
     _write_stl(vertices, triangles, stl)
@@ -243,10 +264,13 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
 
             completed = subprocess.run(
                 command,
+                cwd=str(Path(executable).resolve().parent),
                 capture_output=True,
                 text=True,
+                stdin=subprocess.DEVNULL,
                 timeout=180,
                 check=False,
+                close_fds=True,
                 env=program_environment(),
             )
             last = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
