@@ -22,6 +22,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A cylinder stroke uses the in-plane length | The barrel joint cannot tilt, so the stroke is the pin distance in the barrel plane. A side offset is how far the eye misses the clevis. |
 | A gear on a planetary carrier is not a second load | The following mesh already applies the carrier torque. An extra external load leaves the output torque free. |
 | A gear or linkage adds the driven load | The driver load gains ratio times the driven load, with ratio d(driven)/d(driver), so a reversing pair cancels equal moments and a chain is followed to its end. |
+| A plan, a plugin manifest, and a command-line file are read without following a link | The read uses the checked directory, so a link at that name is not opened. |
 | A plan file is opened from the checked directory | A plan is read from the project directory without following a link, and a plan past the size cap is not copied into undo. |
 | A plan file that is a link is not opened | Listing a plan and the undo copy do not open a plan folder that is a link, or a plan file that has another name. |
 | A project copy does not follow a link | Saving a copy reads each project file from the directory that was checked, and a link or a second name is left behind. |
