@@ -302,9 +302,10 @@ def _resident_via_ps(pid: int) -> int | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=2,
             env=program_environment(),
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     text = completed.stdout.strip().split()
     if not text:
