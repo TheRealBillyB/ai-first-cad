@@ -37,8 +37,12 @@ EXACT = frozenset(
         "docs/LICENSE_AUDIT.md",
         "docs/PLAN_AND_SKETCH.md",
         "docs/PRINCIPLES.md",
+        "docs/README.md",
         "docs/ROADMAP.md",
         "docs/plugins.md",
+        # check_docs strips a leading "." from the path, so the template is
+        # recorded under the name the scanner compares.
+        "github/PULL_REQUEST_TEMPLATE.md",
         "examples/rod_handler_notes.md",
     }
 )
@@ -48,6 +52,7 @@ PREFIXES = (
     "docs/guides/",
     "docs/reference/",
     "docs/roadmap/",
+    "docs/security/",
     "docs/tools/",
 )
 

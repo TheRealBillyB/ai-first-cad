@@ -40,6 +40,7 @@ def test_future_software_docs_are_allowed():
             ("docs/roadmap/motion.md", "Motion is queued.\n"),
             ("docs/decisions/2026-10-24-example.md", "A decision.\n"),
             ("docs/tools/inspect-part.md", "A tool.\n"),
+            ("docs/security/report-privately.md", "A security guarantee.\n"),
         ]
     )
     assert errors == []

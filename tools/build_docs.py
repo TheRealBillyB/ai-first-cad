@@ -2,17 +2,22 @@
 """Build the master documents from entry files.
 
 Decisions live in ``docs/decisions/``, one file per decision. Tool-table
-rows live in ``docs/tools/``. This script writes ``docs/DECISIONS.md`` and
-the marked tool table in ``README.md``.
+rows live in ``docs/tools/``. Security guarantees live in ``docs/security/``,
+one file per guarantee. This script writes ``docs/DECISIONS.md``, the marked
+tool table in ``README.md``, and ``SECURITY.md``.
 
     python3 tools/build_docs.py
     python3 tools/build_docs.py --check
+    python3 tools/build_docs.py --forbid-master-edits --base origin/main --branch feature
 
 ``--check`` validates entry format and the generated-section markers. It
 does not compare a master document with the entries, so a pull request can
-add an entry without editing the master. After the entries land on ``main``,
-``.github/workflows/regenerate-docs.yml`` opens one pull request with the
-rebuilt masters.
+add an entry without editing the master. ``--forbid-master-edits`` fails
+when a pull request changes a generated master. The docs rebuild branch
+``chore/regenerate-master-docs`` is the one exception. After the entries
+land on ``main``, ``.github/workflows/regenerate-docs.yml`` opens one pull
+request with the rebuilt masters. That pull request is not merged by the
+workflow.
 
 A symlink, a junction, or a file with another name is not read or written.
 The generator stays on the file the repository path names.
@@ -26,6 +31,7 @@ import hashlib
 import os
 import re
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date
@@ -33,8 +39,13 @@ from pathlib import Path
 
 DECISIONS_DIR = "docs/decisions"
 TOOLS_DIR = "docs/tools"
+SECURITY_DIR = "docs/security"
 DECISIONS_MASTER = "docs/DECISIONS.md"
 README_MASTER = "README.md"
+SECURITY_MASTER = "SECURITY.md"
+# The workflow on main is the only pull request allowed to change a master.
+REBUILD_BRANCH = "chore/regenerate-master-docs"
+WHOLE_MASTERS = (DECISIONS_MASTER, SECURITY_MASTER)
 
 TOOLS_START = "<!-- generated:tools -->"
 TOOLS_END = "<!-- /generated:tools -->"
@@ -245,6 +256,14 @@ class ToolEntry:
     tool: str
     summary: str
     order: int | None
+
+
+@dataclass(frozen=True)
+class SecurityEntry:
+    filename: str
+    order: int
+    body: str
+    separator: str
 
 
 def normalize_repo_path(path: str) -> str:
@@ -550,6 +569,42 @@ def parse_decision_file(filename: str, text: str) -> DecisionEntry:
     )
 
 
+def _odd_line_break(text: str) -> bool:
+    return any(mark in text for mark in _LINE_BREAKS if mark != "\n")
+
+
+def parse_security_file(filename: str, text: str) -> SecurityEntry:
+    if TOOL_FILENAME.fullmatch(filename) is None:
+        raise FormatProblem("file name must be a lowercase slug such as report-privately.md")
+    if RESERVED_STEM.fullmatch(Path(filename).stem):
+        raise FormatProblem("file name is a Windows reserved device name")
+    fields, body = _split_front_matter(text)
+    if fields is None:
+        raise FormatProblem("security file needs front matter with an order")
+    unknown = sorted(set(fields) - {"order", "separator"})
+    if unknown:
+        raise FormatProblem(f"unknown front matter key: {', '.join(unknown)}")
+    if "order" not in fields:
+        raise FormatProblem("front matter needs an order")
+    order = _parse_order(fields)
+    if order is None:
+        raise FormatProblem("front matter needs an order")
+    separator = fields.get("separator", "blank")
+    if separator not in {"blank", "line"}:
+        raise FormatProblem("separator must be blank or line")
+    if not body.endswith("\n"):
+        raise FormatProblem("file must end with a newline")
+    if body.startswith("\n"):
+        body = body[1:]
+    if body.strip() == "":
+        raise FormatProblem("security entry must not be empty")
+    if _odd_line_break(body):
+        raise FormatProblem("security entry must use line feeds only")
+    if "<!--" in body:
+        raise FormatProblem("security entry cannot include a comment")
+    return SecurityEntry(filename=filename, order=order, body=body, separator=separator)
+
+
 def parse_tool_file(filename: str, text: str) -> ToolEntry:
     if TOOL_FILENAME.fullmatch(filename) is None:
         raise FormatProblem("file name must be a lowercase slug such as inspect-part.md")
@@ -634,6 +689,20 @@ def load_tools(root: Path) -> tuple[list[ToolEntry], list[str]]:
     return entries, errors
 
 
+def load_security(root: Path) -> tuple[list[SecurityEntry], list[str]]:
+    files, errors = _iter_markdown(root, SECURITY_DIR)
+    entries: list[SecurityEntry] = []
+    for file in files:
+        rel = repo_relative(root, file)
+        try:
+            entries.append(parse_security_file(file.name, read_text(file, root=root)))
+        except FormatProblem as exc:
+            errors.append(f"{rel}: {exc}")
+    if not errors and not entries:
+        errors.append(f"{SECURITY_DIR}: entry folder has no entries")
+    return entries, errors
+
+
 def sort_decisions(entries: list[DecisionEntry]) -> list[DecisionEntry]:
     def key(entry: DecisionEntry) -> tuple:
         # Unset order sorts by file name ahead of the migrated sequence.
@@ -652,6 +721,11 @@ def sort_tools(entries: list[ToolEntry]) -> list[ToolEntry]:
         return (0, entry.order, entry.filename)
 
     return sorted(entries, key=key)
+
+
+def sort_security(entries: list[SecurityEntry]) -> list[SecurityEntry]:
+    # A shared order stays stable because the file name breaks the tie.
+    return sorted(entries, key=lambda entry: (entry.order, entry.filename))
 
 
 def render_decisions(entries: list[DecisionEntry]) -> str:
@@ -681,6 +755,28 @@ def render_decisions(entries: list[DecisionEntry]) -> str:
     return "\n\n".join(sections)
 
 
+def render_security(entries: list[SecurityEntry]) -> str:
+    """Copy each guarantee in order.
+
+    ``separator: line`` keeps the next guarantee on the following line, which
+    is how items of one list are written. ``separator: blank`` inserts the
+    blank line that separates paragraphs. The last guarantee does not add a
+    trailing break; its separator is used when a later file is added.
+    """
+    ordered = sort_security(entries)
+    if not ordered:
+        return ""
+    chunks: list[str] = []
+    for index, entry in enumerate(ordered):
+        body = entry.body
+        if not body.endswith("\n"):
+            body += "\n"
+        chunks.append(body)
+        if index != len(ordered) - 1 and entry.separator == "blank":
+            chunks.append("\n")
+    return "".join(chunks)
+
+
 def render_tools_inner(entries: list[ToolEntry]) -> str:
     lines = [TOOL_NOTE, "", "| Tool | What it does |", "| --- | --- |"]
     for entry in sort_tools(entries):
@@ -692,7 +788,8 @@ def render_tools_block(entries: list[ToolEntry]) -> str:
     return f"{TOOLS_START}\n{render_tools_inner(entries)}\n{TOOLS_END}\n"
 
 
-def replace_marked_tools(text: str, block: str) -> str | None:
+def generated_tools_span(text: str) -> tuple[int, int] | None:
+    """Return the generated tool-table span, including its marker lines."""
     start = text.find(TOOLS_START)
     end = text.find(TOOLS_END)
     if start < 0 or end < 0 or end < start:
@@ -702,7 +799,21 @@ def replace_marked_tools(text: str, block: str) -> str | None:
         line_end = len(text)
     else:
         line_end += 1
-    return text[:start] + block + text[line_end:]
+    return start, line_end
+
+
+def generated_tools_block(text: str) -> str | None:
+    span = generated_tools_span(text)
+    if span is None:
+        return None
+    return text[span[0] : span[1]]
+
+
+def replace_marked_tools(text: str, block: str) -> str | None:
+    span = generated_tools_span(text)
+    if span is None:
+        return None
+    return text[: span[0]] + block + text[span[1] :]
 
 
 def replace_raw_tool_table(text: str, block: str) -> str:
@@ -863,7 +974,8 @@ def check(root: Path) -> list[str]:
     root = Path(root)
     _, decision_errors = load_decisions(root)
     _, tool_errors = load_tools(root)
-    errors = decision_errors + tool_errors
+    _, security_errors = load_security(root)
+    errors = decision_errors + tool_errors + security_errors
     readme = root / README_MASTER
     problem = _master_problem(root, readme, README_MASTER)
     if problem:
@@ -881,20 +993,108 @@ def check(root: Path) -> list[str]:
     return errors
 
 
+def _normalize_diff_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./")
+
+
+def master_edit_errors(
+    changed: list[str],
+    *,
+    branch: str,
+    base_readme: str | None,
+    head_readme: str | None,
+) -> list[str]:
+    """Fail when a pull request edits a generated master by hand.
+
+    A stale master is not an edit. Only paths in ``changed`` are judged.
+    ``REBUILD_BRANCH`` is the pull request the docs workflow opens.
+    """
+    if branch == REBUILD_BRANCH:
+        return []
+    errors: list[str] = []
+    names = [_normalize_diff_path(path) for path in changed]
+    for name in names:
+        if name in WHOLE_MASTERS:
+            errors.append(
+                f"{name}: generated master was edited; add an entry file and leave the master to the docs rebuild"
+            )
+    if README_MASTER in names:
+        base_block = generated_tools_block(base_readme or "")
+        head_block = generated_tools_block(head_readme or "")
+        if base_block is None or head_block is None or base_block != head_block:
+            errors.append(
+                "README.md: generated tool table was edited; add a file under docs/tools/ and leave the table to the docs rebuild"
+            )
+    return errors
+
+
+def _git_show(root: Path, spec: str) -> str | None:
+    try:
+        data = subprocess.check_output(
+            ["git", "show", spec],
+            cwd=root,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def forbid_master_edits(root: Path, base: str, branch: str) -> list[str]:
+    """Compare ``HEAD`` with ``base`` and reject hand edits of generated masters.
+
+    The comparison is the three-dot diff, so a master that changed only on
+    ``base`` after this branch diverged is not charged to the branch.
+    """
+    if branch == REBUILD_BRANCH:
+        return []
+    try:
+        blob = subprocess.check_output(
+            ["git", "diff", "--name-only", "-z", f"{base}...HEAD"],
+            cwd=root,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return ["git is required to compare generated masters"]
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode("utf-8", errors="replace").strip()
+        suffix = f": {detail}" if detail else ""
+        return [f"could not compare generated masters with {base}{suffix}"]
+    changed = [part.decode("utf-8", errors="replace") for part in blob.split(b"\0") if part]
+    base_readme = None
+    head_readme = None
+    if any(_normalize_diff_path(path) == README_MASTER for path in changed):
+        base_readme = _git_show(root, f"{base}:README.md")
+        head_readme = _git_show(root, "HEAD:README.md")
+    return master_edit_errors(
+        changed,
+        branch=branch,
+        base_readme=base_readme,
+        head_readme=head_readme,
+    )
+
+
 def build(root: Path) -> list[str]:
     root = Path(root)
     decisions, decision_errors = load_decisions(root)
     tools, tool_errors = load_tools(root)
-    errors = decision_errors + tool_errors
+    security, security_errors = load_security(root)
+    errors = decision_errors + tool_errors + security_errors
     master = entry_directory(root, DECISIONS_MASTER)
     readme = root / README_MASTER
-    for path, label in ((master, DECISIONS_MASTER), (readme, README_MASTER)):
+    security_path = root / SECURITY_MASTER
+    for path, label in (
+        (master, DECISIONS_MASTER),
+        (readme, README_MASTER),
+        (security_path, SECURITY_MASTER),
+    ):
         problem = _master_problem(root, path, label)
         if problem:
             errors.append(problem)
     if errors:
         return errors
     decision_text = render_decisions(decisions)
+    security_text = render_security(security)
     readme_text: str | None = None
     if readme.is_file():
         try:
@@ -908,6 +1108,7 @@ def build(root: Path) -> list[str]:
         write_text(master, decision_text, root=root)
         if readme_text is not None:
             write_text(readme, readme_text, root=root)
+        write_text(security_path, security_text, root=root)
     except FormatProblem as exc:
         return [str(exc)]
     return []
@@ -920,9 +1121,28 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="validate entry files and markers; do not compare or write masters",
     )
+    parser.add_argument(
+        "--forbid-master-edits",
+        action="store_true",
+        help="fail when HEAD edits a generated master, except the docs rebuild branch",
+    )
+    parser.add_argument("--base", default=None, help="git revision the branch diverged from")
+    parser.add_argument("--branch", default="", help="pull request head branch name")
     parser.add_argument("--root", type=Path, default=None)
     args = parser.parse_args(argv)
     root = args.root if args.root is not None else Path(__file__).resolve().parents[1]
+    if args.forbid_master_edits:
+        if not args.base:
+            print("need --base to compare generated masters", file=sys.stderr)
+            return 2
+        errors = forbid_master_edits(root, args.base, args.branch)
+        if errors:
+            print(f"{len(errors)} generated master edit(s):", file=sys.stderr)
+            for error in errors:
+                print(error, file=sys.stderr)
+            return 1
+        print("generated masters were not hand-edited")
+        return 0
     errors = check(root) if args.check else build(root)
     if errors:
         print(f"{len(errors)} documentation entry failure(s):", file=sys.stderr)

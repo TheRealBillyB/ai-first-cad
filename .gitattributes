@@ -3,3 +3,4 @@
 docs/*.md text eol=lf
 docs/**/*.md text eol=lf
 README.md text eol=lf
+SECURITY.md text eol=lf
