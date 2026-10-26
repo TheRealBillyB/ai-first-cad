@@ -752,11 +752,33 @@ def _write_dxf(path: Path, lines: list[_Line], texts: list[_Text]) -> None:
                 "10", _dxf_num(text.x),
                 "20", _dxf_num(text.y),
                 "40", _dxf_num(text.size),
-                "1", text.text,
+                "1", _dxf_escape(text.text),
             ]
         )
     parts.extend(["0", "ENDSEC", "0", "EOF", ""])
     _write_text(path, "\n".join(parts))
+
+
+def _dxf_escape(text: str) -> str:
+    """One DXF group value.
+
+    PDF text escapes a backslash and a parenthesis because those end or
+    continue a PDF string. A DXF value ends at the next line, so a newline
+    or a carriage return is escaped the same way: it stays in this value
+    and does not start another entity.
+    """
+
+    parts: list[str] = []
+    for char in text:
+        if char == "\\":
+            parts.append("\\\\")
+        elif char in "\n\r":
+            parts.append("\\n")
+        elif ord(char) < 32:
+            parts.append(" ")
+        else:
+            parts.append(char)
+    return "".join(parts)
 
 
 def _dxf_num(value: float) -> str:

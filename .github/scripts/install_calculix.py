@@ -275,6 +275,26 @@ def _find_ccx(prefix: Path, relative_dirs: list[str]) -> Path:
     raise SystemExit(f"ccx was not linked under {prefix}")
 
 
+def materialize_linked_binary(binary: Path) -> Path:
+    """Replace a linked solver with a real file in the same directory.
+
+    The dynamic loader looks for libraries beside the file a link points at.
+    That file sits in the package cache, so the prefix libraries are missed
+    and the solver does not start. A real file in the prefix looks beside the
+    prefix.
+    """
+
+    if not binary.is_symlink():
+        return binary
+    target = binary.resolve()
+    data = target.read_bytes()
+    mode = target.stat().st_mode
+    binary.unlink()
+    binary.write_bytes(data)
+    binary.chmod(mode | stat.S_IEXEC)
+    return binary
+
+
 # Names Windows resolves from the system directory or the API-set schema.
 # They must not be copied onto PATH: a conda copy of one of them makes
 # powershell.exe fail to start, and the script network block is installed
@@ -579,7 +599,7 @@ def install(lock: dict, *, system: str, machine: str, work: Path, prefix: Path) 
         packages.append(dest)
     _link(micromamba, prefix, work / "root", packages)
     linked = [work_path(prefix, relative) for relative in spec["path"]]
-    binary = _find_ccx(prefix, spec["path"])
+    binary = materialize_linked_binary(_find_ccx(prefix, spec["path"]))
     solver_bin = stage_solver_bin(binary, linked, prefix / "solver-bin")
     staged = solver_bin / binary.name
     print(f"ccx is on PATH from {solver_bin}")
