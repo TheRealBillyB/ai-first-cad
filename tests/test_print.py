@@ -76,6 +76,51 @@ def test_a_long_part_fails_the_ender_and_a_plate_passes(tmp_path):
     assert "Prusa MK4" in checks["plate"]["detail"]
 
 
+def test_a_bar_stands_on_end_when_that_is_what_fits_the_ender(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_ops(
+        "bar",
+        [{"op": "add", "shape": "box", "size": [240, 10, 10], "center": [0, 0, 5]}],
+    )
+    plain = document.check_print("bar", {"orientation": "best", "render": False, "slice": False})
+    assert plain["height_mm"] == pytest.approx(10, abs=0.5)
+    ender = next(row for row in plain["printers"] if row["id"] == "ender_3")
+    assert ender["fits"] is False
+    assert "x_up" in ender["note"]
+    fitted = document.check_print(
+        "bar",
+        {"orientation": "best", "printer": "ender_3", "render": False, "slice": False},
+    )
+    assert fitted["status"] == "pass"
+    assert fitted["orientation"] in ("x_up", "x_down")
+    assert fitted["height_mm"] == pytest.approx(240, abs=0.5)
+    assert fitted["printer"]["fits"] is True
+    assert fitted["printer"]["note"].startswith("Fits in this orientation")
+    workspace = Workspace(tmp_path / "req")
+    workspace.execute(
+        "create_part_from_ops",
+        {"name": "bar", "ops": [{"op": "add", "shape": "box", "size": [240, 10, 10], "center": [0, 0, 5]}]},
+    )
+    workspace.execute(
+        "set_requirements",
+        {
+            "requirements": [
+                {
+                    "id": "bar",
+                    "kind": "fits_printer",
+                    "part": "bar",
+                    "printer": "ender_3",
+                    "orientation": "best",
+                    "title": "Bar on the Ender",
+                }
+            ]
+        },
+    )
+    check = workspace.execute("check_requirements", {"run": False})["checks"][0]
+    assert check["status"] == "pass"
+    assert check["detail"].split("orientation ", 1)[1].startswith(("x_up", "x_down"))
+
+
 def test_unknown_orientation_and_printer_are_rejected(tmp_path):
     document = Document(tmp_path)
     _plate(document)
