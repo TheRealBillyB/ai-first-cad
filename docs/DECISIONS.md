@@ -10,6 +10,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A design script's output is capped | The parent keeps at most 1 MB of the script's standard output and standard error, on Windows, macOS, and Linux, and drops the earlier bytes. |
 | A linked CI solver is copied into the prefix | The loader looks for libraries beside the file a link points at, so a solver that stays a link does not start. |
 | A project file is opened from a directory handle | The open, the size check, and the replacement all use that handle, so a link swapped in after the path was accepted is not followed on Windows, macOS, or Linux. |
 
