@@ -20,7 +20,6 @@ import json
 import math
 import os
 import re
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -528,6 +527,7 @@ class PlanStore:
         if payload.get("current_revision") != revisions[-1].get("version"):
             raise PlanError(f"{path.name} current revision does not match the last revision in the file.")
         _check_strings(payload, path.name)
+        _plain_loaded(payload, path.name)
         return payload
 
     def _write(self, plan: dict) -> None:
@@ -717,7 +717,7 @@ def _refuse_plan_link(root: Path, path: Path) -> None:
 
 def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
     """Put plan JSON back and redraw the sheets those revisions name."""
-    from aicad.paths import output_dir, publish_text
+    from aicad.paths import is_reparse, output_dir, publish_text, remove_tree
 
     root_path = Path(root)
     directory = root_path / "plans"
@@ -731,8 +731,8 @@ def restore_plan_files(root: str | Path, files: dict[str, str]) -> None:
                 continue
             folder = directory / path.stem
             path.unlink()
-            if folder.is_dir():
-                shutil.rmtree(folder)
+            if folder.is_dir() or is_reparse(folder):
+                remove_tree(folder)
     for name, text in files.items():
         if Path(name).name != name or not name.endswith(".json"):
             continue
@@ -1503,17 +1503,88 @@ def _slug(title: str) -> str:
     return cleaned[:24]
 
 
+def _plain_loaded(payload: dict, filename: str) -> None:
+    """Stored plan text shows the same characters that were saved.
+
+    A bidi control is removed. A letter that looks like a different letter is
+    refused, including in a sheet, a research note, and the text a receipt shows.
+    """
+
+    from aicad.labels import spoofs_latin, strip_hidden
+
+    def show(value: str, label: str) -> str:
+        cleaned = strip_hidden(value)
+        if spoofs_latin(cleaned):
+            raise PlanError(f"{filename} {label} has a character that looks like a different letter.")
+        return cleaned
+
+    def assign(container: dict, key: str, label: str) -> None:
+        if not isinstance(container, dict) or key not in container:
+            return
+        current = container[key]
+        if not isinstance(current, str):
+            return
+        container[key] = show(current, label)
+
+    assign(payload, "title", "title")
+    assign(payload, "summary", "summary")
+    for revision in payload.get("revisions") or []:
+        if not isinstance(revision, dict):
+            continue
+        assign(revision, "changed", "changed")
+        for item in revision.get("research") or []:
+            if isinstance(item, dict):
+                assign(item, "title", "title")
+                assign(item, "note", "note")
+                assign(item, "source", "source")
+        for item in revision.get("assumptions") or []:
+            if isinstance(item, dict):
+                assign(item, "text", "assumption")
+                assign(item, "comment", "comment")
+        for item in revision.get("questions") or []:
+            if isinstance(item, dict):
+                assign(item, "text", "question")
+                assign(item, "answer", "answer")
+                assign(item, "comment", "comment")
+        for item in revision.get("dimensions") or []:
+            if isinstance(item, dict):
+                assign(item, "name", "dimension name")
+                assign(item, "note", "note")
+        for item in revision.get("activity") or []:
+            if isinstance(item, dict):
+                assign(item, "text", "activity")
+        for sheet in revision.get("sheets") or []:
+            if not isinstance(sheet, dict):
+                continue
+            assign(sheet, "title", "sheet title")
+            assign(sheet, "subtitle", "subtitle")
+            assign(sheet, "footer", "footer")
+            for panel in sheet.get("panels") or []:
+                if not isinstance(panel, dict):
+                    continue
+                assign(panel, "title", "panel title")
+                for block in panel.get("blocks") or []:
+                    if isinstance(block, dict):
+                        assign(block, "label", "label")
+                for dim in panel.get("dimensions") or []:
+                    if isinstance(dim, dict):
+                        assign(dim, "text", "dimension text")
+                for label in panel.get("labels") or []:
+                    if isinstance(label, dict):
+                        assign(label, "text", "label")
+                notes = panel.get("notes")
+                if isinstance(notes, list):
+                    panel["notes"] = [show(line, "note") if isinstance(line, str) else line for line in notes]
+
+
 def _text(value: Any, label: str, required: bool = False, limit: int = _MAX_TEXT) -> str:
     if value is None:
         value = ""
     if not isinstance(value, str):
         raise PlanError(f"{label} has to be text.")
-    from aicad.labels import plain_title, strip_hidden
+    from aicad.labels import plain_title
 
-    if label == "title":
-        value = plain_title(value, label, PlanError)
-    else:
-        value = strip_hidden(value).strip()
+    value = plain_title(value, label, PlanError)
     if required and not value:
         raise PlanError(f"{label} is required.")
     if len(value) > limit:

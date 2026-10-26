@@ -103,6 +103,9 @@ DISK_BYTES = FILE_BYTES
 SCRIPT_MAX_CHARS = 200_000
 STDOUT_MAX = 64_000
 _MAX_SCRIPT_LOG_BYTES = 1_000_000
+# The parent keeps only this much of a script's pipes or output files.
+# The tail is what an error report shows. The rest is not stored.
+_SCRIPT_OUTPUT_CAP = 1_000_000
 
 _REAL_IMPORT = builtins.__import__
 _GUARD = False
@@ -1842,6 +1845,36 @@ def _trusted_pythonpath(workspace: Path | None) -> str:
     return os.pathsep.join(roots)
 
 
+_LIBRARY_PREFIXES = ("CSF_", "GMSH_", "FONTCONFIG_")
+_LIBRARY_NAMES = frozenset(
+    {
+        "CASROOT",
+        "MMGT_OPT",
+        "MMGT_CLEAR",
+        "MMGT_REENTRANT",
+        "FREETYPE_PROPERTIES",
+        "MPLCONFIGDIR",
+    }
+)
+
+
+def library_env_steers(name: str) -> bool:
+    """True when ``name`` points a geometry or font library at a config."""
+
+    upper = name.upper()
+    if upper in _LIBRARY_NAMES:
+        return True
+    return upper.startswith(_LIBRARY_PREFIXES)
+
+
+def scrub_library_environment() -> None:
+    """Drop geometry and font configuration variables from this process."""
+
+    for key in list(os.environ):
+        if library_env_steers(key):
+            os.environ.pop(key, None)
+
+
 def scrubbed_environment(workspace: Path | None = None) -> dict[str, str]:
     """An environment for a child. Loader and startup variables are omitted."""
 
@@ -1850,7 +1883,7 @@ def scrubbed_environment(workspace: Path | None = None) -> dict[str, str]:
         upper = key.upper()
         if upper.startswith("LD_") or upper.startswith("DYLD_") or upper == "PATH":
             continue
-        if upper in _DROPPED_ENV:
+        if upper in _DROPPED_ENV or library_env_steers(key):
             continue
         if any(part in upper for part in _SECRET_PARTS):
             continue
@@ -1892,12 +1925,22 @@ def _restore_os_environment(env: dict[str, str]) -> None:
 
 
 def program_environment() -> dict[str, str]:
-    """Environment for CalculiX, ffmpeg, a slicer, and other helper programs."""
+    """Environment for CalculiX, ffmpeg, a slicer, and other helper programs.
 
-    env = scrubbed_environment(None)
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTHONHOME", None)
-    env.pop("PYTHONSTARTUP", None)
+    The helper gets the system PATH and the variables Windows needs to start
+    a process. It does not get the rest of the parent environment.
+    """
+
+    env: dict[str, str] = {
+        "PATH": _system_path(),
+        "PYTHONSAFEPATH": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    for name in ("LANG", "LC_ALL", "LC_CTYPE", "TZ"):
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
+    _restore_os_environment(env)
     return env
 
 
@@ -2365,19 +2408,86 @@ def _sweep_escaped(
     return found
 
 
-def _wait_script(proc: subprocess.Popen, wall: float, sweep) -> tuple[bytes, bytes]:
-    """Wait for ``proc``. On macOS, ``sweep`` runs while the script is still going."""
-    if sweep is None:
-        return proc.communicate(timeout=wall)
-    deadline = time.monotonic() + wall
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise subprocess.TimeoutExpired(proc.args, wall)
+class _OutputCapture:
+    """The tail of a process's pipes. A longer stream is discarded, not stored."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self.proc = proc
+        self._stdout = bytearray()
+        self._stderr = bytearray()
+        self._threads: list[threading.Thread] = []
+
+    def start(self) -> None:
+        for pipe, buf in ((self.proc.stdout, self._stdout), (self.proc.stderr, self._stderr)):
+            if pipe is None:
+                continue
+            thread = threading.Thread(
+                target=self._drain,
+                args=(pipe, buf),
+                name="aicad-output",
+                daemon=True,
+            )
+            thread.start()
+            self._threads.append(thread)
+
+    def _drain(self, pipe, buf: bytearray) -> None:
         try:
-            return proc.communicate(timeout=min(0.05, remaining))
-        except subprocess.TimeoutExpired:
-            sweep()
+            while True:
+                block = pipe.read(65536)
+                if not block:
+                    return
+                buf.extend(block)
+                extra = len(buf) - _SCRIPT_OUTPUT_CAP
+                if extra > 0:
+                    del buf[:extra]
+        except (OSError, ValueError):
+            return
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def finish(self, timeout: float = 5) -> None:
+        for thread in self._threads:
+            thread.join(timeout=timeout)
+
+    def stdout(self) -> bytes:
+        return bytes(self._stdout)
+
+    def stderr(self) -> bytes:
+        return bytes(self._stderr)
+
+
+def _wait_script(proc: subprocess.Popen, wall: float, sweep) -> tuple[bytes, bytes]:
+    """Wait for ``proc``. On macOS, ``sweep`` runs while the script is still going.
+
+    Standard output and standard error are drained while the process runs.
+    Only the last ``_SCRIPT_OUTPUT_CAP`` bytes of each are kept.
+    """
+    deadline = time.monotonic() + wall
+    capture = _OutputCapture(proc)
+    capture.start()
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(proc.args, wall)
+            step = min(0.05, remaining) if sweep is not None else remaining
+            try:
+                proc.wait(timeout=step)
+            except subprocess.TimeoutExpired:
+                if sweep is not None:
+                    sweep()
+                if deadline - time.monotonic() <= 0:
+                    raise subprocess.TimeoutExpired(proc.args, wall) from None
+                continue
+            break
+        capture.finish()
+        return capture.stdout(), capture.stderr()
+    except BaseException:
+        capture.finish(timeout=0.2)
+        raise
 
 
 def _exited(pid: int, expected: tuple[int, int] | None) -> bool:
@@ -2682,14 +2792,19 @@ def _snapshot_files(root: Path) -> dict[str, int]:
 
 
 def _process_write_bytes(pid: int) -> int | None:
-    """Bytes this process has written, or None when the system will not say."""
+    """Logical bytes this process has written, or None when the system will not say.
+
+    On Linux this is ``wchar``, the bytes passed to write. A file removed
+    before the next directory look is still included. ``write_bytes`` is only
+    what has reached storage, so it misses that file.
+    """
     if sys.platform.startswith("linux"):
         try:
             text = Path(f"/proc/{pid}/io").read_text(encoding="utf-8")
         except OSError:
             return None
         for line in text.splitlines():
-            if line.startswith("write_bytes:"):
+            if line.startswith("wchar:"):
                 try:
                     return int(line.split(":", 1)[1].strip())
                 except ValueError:
@@ -2719,6 +2834,17 @@ class _DiskWatch:
         self.io_peak = 0
         self._lock = threading.Lock()
 
+    def baseline(self, pid: int) -> None:
+        """Remember bytes already written, so only later writes count.
+
+        A process that was not seen here counts from zero on the first sample.
+        That sample is not itself a baseline.
+        """
+        current = _process_write_bytes(pid)
+        with self._lock:
+            if pid not in self._io_base:
+                self._io_base[pid] = 0 if current is None else current
+
     def note_io(self, pids: set[int]) -> None:
         total = 0
         for pid in pids:
@@ -2728,8 +2854,8 @@ class _DiskWatch:
             with self._lock:
                 base = self._io_base.get(pid)
                 if base is None:
-                    self._io_base[pid] = current
-                    base = current
+                    base = 0
+                    self._io_base[pid] = 0
             total += max(0, current - base)
         with self._lock:
             self.io_peak = max(self.io_peak, total)
@@ -2865,14 +2991,14 @@ def _watch_descendants(
                 process_hit.set()
             _kill_process_tree(leader, seen, lock, extra=found)
             return
+        if disk is not None:
+            disk.note_io({leader, *found})
+            disk.note_files()
+            if disk.hit.is_set():
+                _kill_process_tree(leader, seen, lock, extra=found)
+                return
         if time.monotonic() >= next_sample:
             next_sample = time.monotonic() + _MEMORY_POLL_SECONDS
-            if disk is not None:
-                disk.note_io({leader, *found})
-                disk.note_files()
-                if disk.hit.is_set():
-                    _kill_process_tree(leader, seen, lock, extra=found)
-                    return
             if memory_cap is not None:
                 used = _tree_resident_bytes(leader, found)
                 if used is not None and used > memory_cap:
@@ -2940,13 +3066,15 @@ def _stop_child(proc: subprocess.Popen, seen: set[int], seen_lock: threading.Loc
     child that does not die cannot hold the test until the job is cancelled.
     """
     _kill_process_tree(proc.pid, seen, seen_lock)
+    # Close the pipes instead of reading them. A long stream would be stored
+    # by communicate(), and the child can exit once the write end is gone.
+    _close_child_pipes(proc)
     try:
-        proc.communicate(timeout=reap_seconds)
+        proc.wait(timeout=reap_seconds)
         return
     except subprocess.TimeoutExpired:
         pass
     _kill_process_tree(proc.pid, seen, seen_lock)
-    _close_child_pipes(proc)
     try:
         proc.wait(timeout=reap_seconds)
     except subprocess.TimeoutExpired:
@@ -2994,11 +3122,19 @@ class _DesignRecord:
         calls = self.job / "calls"
         calls.mkdir(mode=0o700)
         descriptor, name = tempfile.mkstemp(prefix="aicad-design-checks-", suffix=".json")
-        os.close(descriptor)
+        try:
+            self._start_record_process(descriptor, name)
+        finally:
+            os.close(descriptor)
+            self._record_fd = None
+
+    def _start_record_process(self, descriptor: int, name: str) -> None:
+        os.set_inheritable(descriptor, True)
         self.record = Path(name)
-        info = os.lstat(self.record)
+        info = os.fstat(descriptor)
         self._device = info.st_dev
         self._inode = info.st_ino
+        self._record_fd = descriptor
         log_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             log_flags |= os.O_NOFOLLOW
@@ -3017,26 +3153,39 @@ class _DesignRecord:
             env.pop("PYTHONPATH", None)
         from aicad.thread_stack import child_inherits_geometry_stack
 
+        command = [
+            sys.executable,
+            "-P",
+            "-B",
+            "-u",
+            str(_sandbox_runner()),
+            "--model",
+            str(self.job),
+            str(self.record),
+        ]
+        popen_kwargs: dict = {
+            "cwd": str(self.workspace),
+            "env": env,
+            "stdin": subprocess.DEVNULL,
+            "stdout": log_fd,
+            "stderr": subprocess.STDOUT,
+            "start_new_session": True,
+            "close_fds": True,
+        }
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle = int(msvcrt.get_osfhandle(descriptor))
+            command.append(str(handle))
+            startup = subprocess.STARTUPINFO()
+            startup.lpAttributeList = {"handle_list": [handle]}
+            popen_kwargs["startupinfo"] = startup
+        else:
+            command.append(str(descriptor))
+            popen_kwargs["pass_fds"] = (descriptor,)
         try:
             with child_inherits_geometry_stack():
-                self.proc = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-P",
-                        "-B",
-                        "-u",
-                        str(_sandbox_runner()),
-                        "--model",
-                        str(self.job),
-                        str(self.record),
-                    ],
-                    cwd=str(self.workspace),
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log_fd,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
+                self.proc = subprocess.Popen(command, **popen_kwargs)
         finally:
             os.close(log_fd)
 
@@ -3300,6 +3449,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
 
         with child_inherits_geometry_stack():
             proc = subprocess.Popen(command, **popen_kwargs)
+        disk.baseline(proc.pid)
         if account is not None and sentinel_path is not None:
             identity = process_identity(proc.pid)
             if identity is not None:

@@ -701,6 +701,15 @@ def test_plan_research_cannot_redefine_tools(tmp_path, isolated):
     _assert_absent(canary)
 
 
+def _project_data(text: str) -> str:
+    """Return the JSON inside a project-data marker."""
+
+    end = "<<<END UNTRUSTED PROJECT DATA>>>"
+    if text.startswith("<<<UNTRUSTED PROJECT DATA") and text.endswith(end):
+        return text.split("\n", 1)[1].rsplit("\n", 1)[0]
+    return text
+
+
 def test_mcp_tool_list_ignores_project_notes_and_resources(tmp_path, isolated):
     canary = _canary(tmp_path)
     project = _poisoned_project(tmp_path, canary)
@@ -734,7 +743,7 @@ def test_mcp_tool_list_ignores_project_notes_and_resources(tmp_path, isolated):
         body = asyncio.run(resource.read())
         text = body.decode("utf-8") if isinstance(body, bytes) else str(body)
         if str(resource.uri) == "aicad://session":
-            saved = json.loads(text)
+            saved = json.loads(_project_data(text))
             assert "tools" not in saved
             assert "mcp" not in saved
             assert saved["parts"][0]["script"]

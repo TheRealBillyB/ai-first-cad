@@ -107,8 +107,15 @@ def analyze_print(
     mesh = kernel.tessellate(shape)
     scores = [_score(mesh, name, threshold) for name in _ORIENTATIONS]
     requested = str(setup.get("orientation") or "best").lower().replace("-", "_").replace(" ", "_")
+    wanted = setup.get("printer")
+    printer = lookup_printer(str(wanted)) if wanted else None
     if requested in ("best", "auto", ""):
-        chosen = min(scores, key=lambda row: (row["support_area_mm2"], row["height_mm"]))
+        ranked = scores
+        if printer is not None:
+            fitting = [row for row in scores if _fits(row["size_mm"], printer["size_mm"])]
+            if fitting:
+                ranked = fitting
+        chosen = min(ranked, key=lambda row: (row["support_area_mm2"], row["height_mm"]))
         chosen_name = chosen["orientation"]
         automatic = True
     elif requested in _ORIENTATIONS:
@@ -118,11 +125,9 @@ def analyze_print(
     else:
         known = ", ".join(("best", *_ORIENTATIONS))
         raise GeometryError(f"Orientation {requested!r} is unknown. Use {known}.")
-    printers = _printer_rows(chosen)
-    wanted = setup.get("printer")
+    printers = _printer_rows(chosen, scores)
     focus = None
-    if wanted:
-        printer = lookup_printer(str(wanted))
+    if printer is not None:
         focus = next(row for row in printers if row["id"] == printer["id"])
     views = []
     if out_dir is not None and setup.get("render", True):
@@ -173,11 +178,17 @@ def analyze_print(
     )
 
 
-def orientation_size(shape: kernel.Shape, orientation: str) -> dict:
-    """Oriented size without pictures. Used by the printer requirement."""
-    name = str(orientation or "z_up").lower()
+def orientation_size(shape: kernel.Shape, orientation: str, printer: str | None = None) -> dict:
+    """Oriented size without pictures. Used by the printer requirement.
+
+    ``best`` with a printer prefers a pose that fits that bed.
+    """
+    name = str(orientation or "z_up").lower().replace("-", "_").replace(" ", "_")
     if name in ("best", "auto"):
-        report = analyze_print(shape, {"orientation": "best", "render": False, "slice": False})
+        setup: dict = {"orientation": "best", "render": False, "slice": False}
+        if printer:
+            setup["printer"] = printer
+        report = analyze_print(shape, setup)
         return {"orientation": report["orientation"], "size_mm": report["size_mm"], "height_mm": report["height_mm"]}
     if name not in _ORIENTATIONS:
         known = ", ".join(_ORIENTATIONS)
@@ -200,6 +211,27 @@ def fits_printer(size_mm: list[float], printer_name: str) -> dict:
     }
 
 
+def _real_output_dir(path: Path) -> None:
+    """Create ``path``. Do not follow a symlink or a junction to do it."""
+
+    import errno
+    import os
+
+    from aicad.paths import is_reparse
+
+    raw = Path(os.path.abspath(path))
+    current = Path(raw.anchor)
+    for part in raw.relative_to(current).parts:
+        current = current / part
+        if is_reparse(current) or current.is_symlink():
+            raise OSError(errno.ELOOP, f"{path} is a link and was not followed.")
+        if current.exists():
+            if not current.is_dir():
+                raise OSError(errno.ENOTDIR, f"{path} is not a folder.")
+            continue
+        current.mkdir()
+
+
 def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price_per_kg=None) -> dict:
     executables = find_slicers()
     if not executables:
@@ -213,7 +245,7 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
             ),
             "assumptions": ["No slicer ran. Time and grams are not estimated."],
         }
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _real_output_dir(out_dir)
     stl = out_dir / "oriented.stl"
     gcode = out_dir / "print.gcode"
     _write_stl(vertices, triangles, stl)
@@ -232,10 +264,13 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
 
             completed = subprocess.run(
                 command,
+                cwd=str(Path(executable).resolve().parent),
                 capture_output=True,
                 text=True,
+                stdin=subprocess.DEVNULL,
                 timeout=180,
                 check=False,
+                close_fds=True,
                 env=program_environment(),
             )
             last = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
@@ -362,17 +397,36 @@ def _areas(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     return 0.5 * np.linalg.norm(np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]), axis=1)
 
 
-def _printer_rows(chosen: dict) -> list[dict]:
+def _printer_rows(chosen: dict, scores: list[dict] | None = None) -> list[dict]:
     rows = []
+    others = scores or []
     for key, printer in PRINTERS.items():
         fits = _fits(chosen["size_mm"], printer["size_mm"])
+        if fits:
+            note = "Fits in this orientation, turning in the plane if that helps."
+        else:
+            alternatives = [
+                row["orientation"]
+                for row in others
+                if row["orientation"] != chosen["orientation"] and _fits(row["size_mm"], printer["size_mm"])
+            ]
+            if alternatives:
+                note = (
+                    "Taller or wider than this bed in this orientation. "
+                    + ", ".join(alternatives)
+                    + " fits this bed."
+                )
+            elif others:
+                note = "Every axis orientation is taller or wider than this bed."
+            else:
+                note = "Taller or wider than this bed in this orientation."
         rows.append(
             {
                 "id": key,
                 "name": printer["name"],
                 "bed_mm": printer["size_mm"],
                 "fits": fits,
-                "note": "Fits in this orientation, turning in the plane if that helps." if fits else "Taller or wider than this bed in this orientation.",
+                "note": note,
             }
         )
     return rows
@@ -484,7 +538,7 @@ def _assumptions(threshold: float) -> list[str]:
         f"Support is required when a triangle leans more than {threshold:g}° from vertical. Straight down is 90°. A vertical wall is 0°.",
         "The face on the bed is not counted as support. Anything within 0.4 mm of the lowest point is treated as sitting on the plate.",
         "The six orientations put one modeled axis up. They do not try a diagonal pose.",
-        "Best means the smallest support area, and the shorter part when two poses tie.",
+        "Best means the smallest support area, and the shorter part when two poses tie. When a printer is named, a pose that fits that bed is preferred over a shorter pose that does not.",
         "A printer fits when the oriented height is inside the bed height and the footprint fits, swapping X and Y if that helps.",
         "Printer sizes are the published volumes: A1 and P1 and X1 are 256 mm cubes, A1 mini is 180, MK4 is 250×210×220, Ender 3 is 220×220×250.",
         "The slicer, when it is installed, uses its own default profile for layer height and infill. Filament density is passed as 1.24 g/cm³ so the gram comment is not zero.",

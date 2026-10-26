@@ -10,6 +10,7 @@ import errno
 import json
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -340,27 +341,50 @@ def _serve_one(directory: Path, document, calls: list[dict], before: dict, live:
         return
 
 
-def model_main(job: Path, record_path: Path) -> int:
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while len(view):
+        count = os.write(descriptor, view)
+        if count <= 0:
+            raise OSError(errno.EIO, "could not write the design record")
+        view = view[count:]
+    os.fsync(descriptor)
+
+
+def _adopt_record(record_fd: int) -> int:
+    """Use the file the parent already opened.
+
+    On Windows ``record_fd`` is the inherited handle, not a C runtime descriptor.
+    """
+
+    if sys.platform == "win32":
+        import msvcrt
+
+        return msvcrt.open_osfhandle(int(record_fd), os.O_WRONLY | getattr(os, "O_BINARY", 0))
+    if record_fd < 0:
+        raise OSError(errno.EBADF, "design record is not open")
+    return int(record_fd)
+
+
+def model_main(job: Path, record_path: Path, record_fd: int | None = None) -> int:
     """Run document calls for one design script. This process is not the script."""
     from aicad.document import Document
+    from aicad.file_access import open_inplace
 
     workspace = Path(os.environ["AICAD_WORKSPACE"]).resolve()
     document = Document(workspace)
     before = {row["name"]: row for row in document.session_payload().get("parts", [])}
     calls: list[dict] = []
     report = serve_calls(job / "calls", document, calls, before)
-    text = json.dumps(report) + "\n"
-    # The parent recorded this file's identity. Writing in place keeps that
-    # identity. Replacing the name would make the record look swapped.
-    flags = os.O_WRONLY | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    descriptor = os.open(record_path, flags)
+    text = (json.dumps(report) + "\n").encode("utf-8")
+    # The parent recorded this file's identity. Writing to the open file keeps
+    # that identity. Opening the path is only the fallback for a direct caller.
+    if record_fd is None:
+        descriptor = open_inplace(record_path)
+    else:
+        descriptor = _adopt_record(record_fd)
     try:
-        os.write(descriptor, text.encode("utf-8"))
-        os.fsync(descriptor)
+        _write_all(descriptor, text)
     finally:
         os.close(descriptor)
     return 0

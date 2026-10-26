@@ -2,15 +2,18 @@
 
 Meshes stay in millimeters and are scaled by 0.001 in the robot file, so a
 simulator sees meters. Mass is kilograms and inertia is about the center of
-mass in kg·m². A joint's origin is the pose at value 0. Gear, linkage, and
-cylinder relations are comments: a URDF tree cannot enforce them. A name is
-escaped so a quote stays inside its attribute and both files stay one XML
-document.
+mass in kg·m². A joint's origin is the pose at value 0. A revolute, prismatic,
+or fixed child link frame sits on the incoming pin, so the next joint is the
+parent anchor measured in that frame. Gear, linkage, and cylinder relations
+are comments: a URDF tree cannot enforce them. A name is escaped so a quote
+stays inside its attribute and both files stay one XML document.
 """
 
 from __future__ import annotations
 
 import math
+import shutil
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -45,7 +48,7 @@ def export_robot(spec: dict, shapes: dict, out_dir: Path) -> dict:
             written[part] = filename
         links.append(_link(instance, shapes[part], written[part]))
     _apply_child_offsets(spec, links)
-    joints = _joints(spec)
+    joints = _joints(spec, links)
     name = str(spec["name"])
     from aicad.paths import publish_text
 
@@ -164,8 +167,15 @@ def _apply_child_offsets(spec: dict, links: list[dict]) -> None:
         by_name[joint["child"]]["offset_m"] = [-anchor[0], -anchor[1], -anchor[2]]
 
 
-def _joints(spec: dict) -> list[dict]:
-    """Structural joints at value 0, plus a fixed joint from world to each grounded part."""
+def _joints(spec: dict, links: list[dict] | None = None) -> list[dict]:
+    """Structural joints at value 0, plus a fixed joint from world to each grounded part.
+
+    A child link frame sits on the incoming pin. The next joint's origin is the
+    parent anchor in that frame, so a pin away from the part origin does not
+    shorten the following link. A grounded part and a parent held by a
+    cylindrical joint keep the part frame, and that offset is zero.
+    """
+    offsets = {link["name"]: link["offset_m"] for link in (links or [])}
     children = {joint["child"] for joint in spec["joints"]}
     rows = []
     for instance in spec["instances"]:
@@ -188,13 +198,14 @@ def _joints(spec: dict) -> list[dict]:
             }
         )
     for joint in spec["joints"]:
-        rows.extend(_one_joint(joint))
+        rows.extend(_one_joint(joint, offsets.get(joint["parent"], [0.0, 0.0, 0.0])))
     return rows
 
 
-def _one_joint(joint: dict) -> list[dict]:
+def _one_joint(joint: dict, parent_offset: list[float] | None = None) -> list[dict]:
     axis = [float(value) for value in joint["axis"]]
-    anchor = [float(value) / 1000.0 for value in joint["parent_anchor"]]
+    shift = [float(value) for value in (parent_offset or (0.0, 0.0, 0.0))]
+    anchor = [float(joint["parent_anchor"][index]) / 1000.0 + shift[index] for index in range(3)]
     child_anchor = [float(value) / 1000.0 for value in joint["child_anchor"]]
     kind = joint["type"]
     if kind == "fixed":
@@ -407,40 +418,163 @@ def _mjcf_body(joint: dict, by_parent: dict, links: dict, indent: int) -> list[s
 
 def _try_mujoco(path: Path) -> dict:
     try:
-        import mujoco
-    except ImportError:
-        return {
-            "status": "skipped",
-            "note": "mujoco is not installed. pip install 'aicad[robot]' loads this MJCF and steps it.",
-        }
-    try:
-        model = mujoco.MjModel.from_xml_path(str(path))
-        data = mujoco.MjData(model)
-        for _ in range(5):
-            mujoco.mj_step(model, data)
-    except Exception as exc:
+        staged = _stage_model(path, mjcf=True)
+    except GeometryError as exc:
         return {"status": "failed", "note": str(exc)}
-    return {"status": "loaded", "nq": int(model.nq), "nbody": int(model.nbody), "steps": 5}
+    try:
+        try:
+            import mujoco
+        except ImportError:
+            return {
+                "status": "skipped",
+                "note": "mujoco is not installed. pip install 'aicad[robot]' loads this MJCF and steps it.",
+            }
+        try:
+            model = mujoco.MjModel.from_xml_path(str(staged))
+            data = mujoco.MjData(model)
+            for _ in range(5):
+                mujoco.mj_step(model, data)
+        except Exception as exc:
+            return {"status": "failed", "note": _simulator_note(exc)}
+        return {"status": "loaded", "nq": int(model.nq), "nbody": int(model.nbody), "steps": 5}
+    finally:
+        shutil.rmtree(staged.parent, ignore_errors=True)
 
 
 def _try_pybullet(path: Path) -> dict:
     try:
-        import pybullet as bullet
-    except ImportError:
-        return {
-            "status": "skipped",
-            "note": "pybullet is not installed. The URDF is still written.",
-        }
-    client = bullet.connect(bullet.DIRECT)
-    try:
-        bullet.loadURDF(str(path), useFixedBase=True, physicsClientId=client)
-        for _ in range(5):
-            bullet.stepSimulation(physicsClientId=client)
-    except Exception as exc:
+        staged = _stage_model(path, mjcf=False)
+    except GeometryError as exc:
         return {"status": "failed", "note": str(exc)}
+    try:
+        try:
+            import pybullet as bullet
+        except ImportError:
+            return {
+                "status": "skipped",
+                "note": "pybullet is not installed. The URDF is still written.",
+            }
+        client = bullet.connect(bullet.DIRECT)
+        try:
+            bullet.loadURDF(str(staged), useFixedBase=True, physicsClientId=client)
+            for _ in range(5):
+                bullet.stepSimulation(physicsClientId=client)
+        except Exception as exc:
+            return {"status": "failed", "note": _simulator_note(exc)}
+        finally:
+            bullet.disconnect(client)
+        return {"status": "loaded", "steps": 5}
     finally:
-        bullet.disconnect(client)
-    return {"status": "loaded", "steps": 5}
+        shutil.rmtree(staged.parent, ignore_errors=True)
+
+
+_MAX_MODEL_BYTES = 64 * 1024 * 1024
+
+
+def _simulator_note(exc: Exception) -> str:
+    text = str(exc).replace("\n", " ").strip()
+    if len(text) > 300:
+        text = text[:300]
+    return text or "The simulator did not load the robot."
+
+
+def _model_bytes(root: Path, relative: Path) -> bytes:
+    """Read one robot file from ``root``. A link is not followed."""
+    from aicad.file_access import read_from_root
+    from aicad.paths import _TooLarge
+
+    try:
+        return read_from_root(Path(root), Path(relative), _MAX_MODEL_BYTES)
+    except _TooLarge as exc:
+        raise GeometryError(f"{Path(relative).name} is too large.") from exc
+    except OSError as exc:
+        raise GeometryError(f"{Path(relative).name} was not opened.") from exc
+
+
+def _one_component(name: str) -> None:
+    if (
+        not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or ":" in name
+        or "\x00" in name
+    ):
+        raise GeometryError("A mesh file was not opened.")
+
+
+def _refuse_external(element: ET.Element) -> None:
+    tag = element.tag.rsplit("}", 1)[-1].lower()
+    if tag in {"include", "import", "external"}:
+        raise GeometryError("A mesh file was not opened.")
+    for value in element.attrib.values():
+        if not isinstance(value, str):
+            continue
+        if "://" in value or value.startswith(("/", "\\")) or ".." in value or "\x00" in value:
+            raise GeometryError("A mesh file was not opened.")
+
+
+def _mesh_components(data: bytes, *, mjcf: bool) -> list[str]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeError as exc:
+        raise GeometryError("The robot file was not opened.") from exc
+    lowered = text.lower()
+    if "<!doctype" in lowered or "<!entity" in lowered:
+        raise GeometryError("The robot file was not opened.")
+    try:
+        document = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise GeometryError("The robot file was not opened.") from exc
+    names: list[str] = []
+    for element in document.iter():
+        _refuse_external(element)
+        tag = element.tag.rsplit("}", 1)[-1]
+        if mjcf and tag == "compiler" and element.attrib.get("meshdir", "meshes") != "meshes":
+            raise GeometryError("A mesh file was not opened.")
+        if tag != "mesh":
+            continue
+        if mjcf:
+            component = element.attrib.get("file", "")
+            _one_component(component)
+            names.append(component)
+            continue
+        filename = element.attrib.get("filename", "")
+        prefix = "meshes/"
+        if not filename.startswith(prefix):
+            raise GeometryError("A mesh file was not opened.")
+        component = filename[len(prefix) :]
+        _one_component(component)
+        names.append(component)
+    return names
+
+
+def _stage_model(path: Path, *, mjcf: bool) -> Path:
+    """Copy the model and its meshes into a private directory.
+
+    The simulator then opens that copy. A link in the export folder is not
+    followed, and a mesh name has to be one file under ``meshes``.
+    """
+    path = Path(path)
+    root = path.parent
+    data = _model_bytes(root, Path(path.name))
+    names = _mesh_components(data, mjcf=mjcf)
+    temporary = Path(tempfile.mkdtemp(prefix="aicad-robot-"))
+    try:
+        (temporary / "meshes").mkdir()
+        destination = temporary / path.name
+        destination.write_bytes(data)
+        seen: set[str] = set()
+        for name in names:
+            if name in seen:
+                continue
+            seen.add(name)
+            mesh = _model_bytes(root, Path("meshes") / name)
+            (temporary / "meshes" / name).write_bytes(mesh)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return destination
 
 
 def _with_payload(mass, center, inertia, payload, at_mm):
@@ -608,4 +742,15 @@ def _xyz(values) -> str:
 
 
 def urdf_root(path: Path) -> ET.Element:
-    return ET.parse(path).getroot()
+    """The URDF document. The file is read from its directory, and a link is not followed."""
+    data = _model_bytes(Path(path).parent, Path(path.name))
+    try:
+        text = data.decode("utf-8")
+    except UnicodeError as exc:
+        raise GeometryError("The robot file was not opened.") from exc
+    if "<!doctype" in text.lower() or "<!entity" in text.lower():
+        raise GeometryError("The robot file was not opened.")
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise GeometryError("The robot file was not opened.") from exc

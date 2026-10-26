@@ -1002,12 +1002,19 @@ def _current_user_sid() -> str | None:
     if _user_sid_checked:
         return _user_sid
     _user_sid_checked = True
-    completed = subprocess.run(
-        ["whoami", "/user", "/fo", "csv", "/nh"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+        "stdin": subprocess.DEVNULL,
+        "timeout": 10,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = _CREATE_NO_WINDOW
+    try:
+        completed = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], **kwargs)
+    except (OSError, subprocess.TimeoutExpired):
+        return _user_sid
     line = (completed.stdout or "").strip()
     if completed.returncode == 0 and "," in line:
         sid = line.rsplit(",", 1)[-1].strip().strip('"')
@@ -1302,11 +1309,12 @@ def _process_is_appcontainer(kernel32, advapi32, process: int) -> tuple[bool, st
             kernel32.CloseHandle(token)
 
 
-def _commit_suspended(kernel32, advapi32, job: int, process: _ProcessInformation) -> None:
+def _commit_suspended(kernel32, advapi32, job: int, process: _ProcessInformation) -> int | None:
     """Put a suspended process in the job, require the container, then resume it.
 
     A process that is not in the job, or whose token is not an AppContainer,
-    is terminated. It is not resumed.
+    is terminated. It is not resumed. The return value is bytes the job had
+    already written, or None when that total could not be read.
     """
 
     assigned = bool(kernel32.AssignProcessToJobObject(job, process.hProcess))
@@ -1325,9 +1333,12 @@ def _commit_suspended(kernel32, advapi32, job: int, process: _ProcessInformation
             + "; ".join(reasons)
             + "). The script was not started."
         )
+    # Read the job before the process runs, so only later writes count.
+    baseline = _job_bytes_written(job, kernel32)
     if kernel32.ResumeThread(process.hThread) == 0xFFFFFFFF:
         kernel32.TerminateProcess(process.hProcess, 1)
         raise OSError(_win_error("Could not resume the sandboxed script"))
+    return baseline
 
 
 def _launch(
@@ -1341,7 +1352,7 @@ def _launch(
     network: bool,
     stdout_path: Path,
     stderr_path: Path,
-) -> _ProcessInformation:
+) -> tuple[_ProcessInformation, int | None]:
     kernel32 = _kernel32()
     advapi32 = _advapi32()
     command, env = _command_for_container(command, env)
@@ -1383,12 +1394,12 @@ def _launch(
                 process,
             )
             try:
-                _commit_suspended(kernel32, advapi32, job, process)
+                baseline = _commit_suspended(kernel32, advapi32, job, process)
             except Exception:
                 kernel32.CloseHandle(process.hThread)
                 kernel32.CloseHandle(process.hProcess)
                 raise
-            return process
+            return process, baseline
         finally:
             # CreateProcess has copied the attribute pointers. The buffers in
             # ``alive`` stay reachable until this function returns.
@@ -1403,12 +1414,15 @@ def _launch(
 
 
 def _read_text(path: Path) -> str:
+    """The end of a script output file. A longer file is not read in full."""
     try:
-        from aicad.file_access import read_text
+        from aicad.file_access import read_tail
+        from aicad.sandbox import _SCRIPT_OUTPUT_CAP
 
-        return read_text(path, maximum=8 * 1024 * 1024, errors="replace")
+        data = read_tail(path, _SCRIPT_OUTPUT_CAP)
     except OSError:
         return ""
+    return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 class _JobBasicAndIo(ctypes.Structure):
@@ -1424,10 +1438,14 @@ class _JobBasicAndIo(ctypes.Structure):
 _JobObjectBasicAndIoAccountingInformation = 8
 
 
-def _job_bytes_written(job: wintypes.HANDLE) -> int | None:
+def _job_bytes_written(job: wintypes.HANDLE, kernel32=None) -> int | None:
+    kernel32 = _kernel32() if kernel32 is None else kernel32
+    query = getattr(kernel32, "QueryInformationJobObject", None)
+    if query is None:
+        return None
     info = _JobBasicAndIo()
     returned = wintypes.DWORD(0)
-    if not _kernel32().QueryInformationJobObject(
+    if not query(
         job,
         _JobObjectBasicAndIoAccountingInformation,
         ctypes.byref(info),
@@ -1436,6 +1454,20 @@ def _job_bytes_written(job: wintypes.HANDLE) -> int | None:
     ):
         return None
     return int(info.IoInfo.WriteTransferCount)
+
+
+def _account_job_io(disk, job: wintypes.HANDLE, baseline: int | None) -> None:
+    """Count the job's writes so far.
+
+    The job keeps that total after the process exits, until the job handle is closed.
+    """
+
+    if disk is None:
+        return
+    written = _job_bytes_written(job)
+    if written is None:
+        return
+    disk.note_job_io(written, baseline)
 
 
 def _job_memory_killed(job: wintypes.HANDLE, memory_bytes: int) -> bool:
@@ -2210,7 +2242,7 @@ def spawn(
             # then checks that the connection is refused.
             _hold_network_block(sid_text)
             held_block = True
-        process = _launch(
+        process, io_base = _launch(
             command,
             cwd=cwd,
             env=env,
@@ -2221,10 +2253,11 @@ def spawn(
             stdout_path=stdout_path,
             stderr_path=stderr_path,
         )
+        if io_base is None:
+            io_base = _job_bytes_written(job)
         wait_ms = max(1, int(timeout_seconds * 1000))
         spent = 0
         finished = False
-        io_base = _job_bytes_written(job)
         while spent < wait_ms:
             step = min(100, wait_ms - spent)
             waited = _kernel32().WaitForSingleObject(process.hProcess, step)
@@ -2232,9 +2265,7 @@ def spawn(
                 finished = True
                 break
             spent += step
-            written = _job_bytes_written(job)
-            if disk is not None and written is not None:
-                disk.note_job_io(written, io_base)
+            _account_job_io(disk, job, io_base)
             if disk is not None and disk.hit.is_set():
                 _kernel32().TerminateJobObject(job, 1)
                 _kernel32().WaitForSingleObject(process.hProcess, 5000)
@@ -2245,6 +2276,8 @@ def spawn(
         if timed_out:
             _kernel32().TerminateJobObject(job, 1)
             _kernel32().WaitForSingleObject(process.hProcess, 5000)
+        # The process may already have exited. The job still has the write total.
+        _account_job_io(disk, job, io_base)
         code = wintypes.DWORD(0)
         _kernel32().GetExitCodeProcess(process.hProcess, ctypes.byref(code))
         # The stored code is unsigned. A kill shows up above the normal exit range.
@@ -2337,7 +2370,7 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
                 stderr_path = root / "stderr.txt"
                 _hold_network_block(sid_text)
                 held_block = True
-                process = _launch(
+                process, _io_base = _launch(
                     _probe_command(root),
                     cwd=str(root),
                     env=_probe_env(root),

@@ -1,6 +1,7 @@
 """Install hints for CalculiX. The solver stays a separate program."""
 
 import importlib.util
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -181,7 +182,63 @@ def test_windows_does_not_set_cflags(monkeypatch):
     module = _load_install()
     monkeypatch.setattr(module.sys, "platform", "win32")
     monkeypatch.delenv("CFLAGS", raising=False)
+    monkeypatch.delenv("CC", raising=False)
     assert "CFLAGS" not in module._pip_env()
+
+
+def test_windows_gcc_compiles_the_solver_as_c11(monkeypatch):
+    module = _load_install()
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.delenv("CFLAGS", raising=False)
+    monkeypatch.setenv("CC", "x86_64-w64-mingw32-gcc")
+    assert module._pip_env()["CFLAGS"] == "-std=gnu11"
+    monkeypatch.setenv("CC", "clang")
+    assert module._pip_env()["CFLAGS"] == "-std=gnu11"
+    monkeypatch.setenv("CFLAGS", "-O2 -std=c17")
+    assert module._pip_env()["CFLAGS"] == "-O2 -std=c17"
+
+
+def test_macos_solver_c_is_compiled_as_c11(monkeypatch):
+    module = _load_install()
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.delenv("CFLAGS", raising=False)
+    assert module._pip_env()["CFLAGS"] == "-std=gnu11"
+
+
+@pytest.mark.parametrize("standard", ["c23", "gnu23", "c2x", "gnu2x"])
+def test_a_c23_standard_is_replaced_with_c11(monkeypatch, standard):
+    module = _load_install()
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.setenv("CFLAGS", f"-O2 -std={standard} -Wall")
+    assert module._pip_env()["CFLAGS"] == "-O2 -std=gnu11 -Wall"
+
+
+def test_atomic_var_init_compiles_as_c11(tmp_path):
+    gcc = shutil.which("gcc")
+    if gcc is None:
+        pytest.skip("gcc is not installed")
+    source = tmp_path / "atomic.c"
+    source.write_text(
+        "#include <stdatomic.h>\n"
+        "static atomic_int ready = ATOMIC_VAR_INIT(0);\n"
+        "int main(void) { return (int)atomic_load(&ready); }\n",
+        encoding="utf-8",
+    )
+    newer = subprocess.run(
+        [gcc, "-std=gnu2x", "-c", str(source), "-o", str(tmp_path / "newer.o")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if "ATOMIC_VAR_INIT" in (newer.stderr or ""):
+        assert newer.returncode != 0
+    current = subprocess.run(
+        [gcc, "-std=gnu11", "-c", str(source), "-o", str(tmp_path / "c11.o")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert current.returncode == 0, current.stderr
 
 
 def test_install_script_help_runs_without_installing():

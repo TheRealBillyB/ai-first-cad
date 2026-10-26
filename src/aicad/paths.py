@@ -165,16 +165,18 @@ def prepare_geometry_import() -> None:
     Those libraries read ``ezdxf.ini`` from the working directory. A project
     is often that directory, and the file can name a font folder outside the
     project. ``EZDXF_CONFIG_FILE`` points at the file shipped with aicad, and
-    the working-directory file is not read. The image library asks to enter
-    the interpreter directory while it loads. That request is refused, so a
-    relative path in the project still opens.
+    the working-directory file is not read. Variables that name a font, Gmsh,
+    or OpenCascade configuration are removed before those libraries load. The
+    image library asks to enter the interpreter directory while it loads. That
+    request is refused, so a relative path in the project still opens.
     """
+    from aicad.sandbox import scrub_library_environment
+
+    scrub_library_environment()
     pin_interpreter_directory()
     global _FINDER_INSTALLED
     packaged = packaged_font_config()
-    current = os.environ.get("EZDXF_CONFIG_FILE", "")
-    if not current or _is_project_ini(Path(current)):
-        os.environ["EZDXF_CONFIG_FILE"] = str(packaged)
+    os.environ["EZDXF_CONFIG_FILE"] = str(packaged)
     if not _FINDER_INSTALLED:
         sys.meta_path.insert(0, _EzdxfOptionsFinder())
         _FINDER_INSTALLED = True
@@ -260,6 +262,7 @@ def require_export_path(root: Path, raw: str | Path, label: str, error: type[Exc
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
     if _export_blocked(expanded, root_resolved):
         raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+    refuse_short_name_components(text, label, error)
     if not Path(text).is_absolute():
         refuse_windows_aliases(root_resolved, text, label, error)
     candidate = Path(expanded)
@@ -370,6 +373,27 @@ def is_reserved_device_name(component: str) -> bool:
 
 
 _SHORT_NAME = re.compile(r"^[A-Za-z0-9]{1,6}~\d(?:\.[A-Za-z0-9]{1,3})?$")
+
+
+def refuse_short_name_components(text: str, label: str, error: type[Exception]) -> None:
+    """Refuse an 8.3 short name, a trailing dot or space, or a stream name.
+
+    The drive prefix of an absolute path is not a file name, so ``C:`` is
+    kept. Every later component is checked, on every system.
+    """
+
+    raw = text.replace("\\", "/")
+    if len(raw) > 180:
+        raise error(f"{label} is too long for a project path.")
+    windows = PureWindowsPath(text)
+    parts = [part for part in raw.split("/") if part not in {"", ".", ".."}]
+    if windows.drive and parts:
+        drive = windows.drive.replace("\\", "/").strip("/")
+        if parts[0].lower() == drive.lower() or parts[0].endswith(":"):
+            parts = parts[1:]
+    for part in parts:
+        if ":" in part or _SHORT_NAME.match(part) or part.endswith((" ", ".")):
+            raise error(f"{label} {part!r} is not a file name.")
 
 
 def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Exception]) -> None:
@@ -724,9 +748,34 @@ def _windows_dacl_text(path: Path) -> str:
         kernel32.LocalFree(descriptor)
 
 
+def _long_path(path: Path) -> Path:
+    """The long form of a path. On Windows an 8.3 name expands."""
+
+    if os.name != "nt":
+        return path
+    try:
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get = kernel32.GetLongPathNameW
+        get.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        get.restype = wintypes.DWORD
+        text = os.fspath(path)
+        size = int(get(text, None, 0))
+        if size <= 0:
+            return path
+        buffer = ctypes.create_unicode_buffer(size)
+        written = int(get(text, buffer, size))
+        if written <= 0:
+            return path
+        return Path(buffer.value)
+    except OSError:
+        return path
+
+
 def _is_inside(path: Path, root: Path) -> bool:
     try:
-        path.relative_to(root)
+        _long_path(path).relative_to(_long_path(root))
     except ValueError:
         return False
     return True
@@ -834,6 +883,41 @@ def is_reparse(path: Path) -> bool:
         except (OSError, ValueError):
             return False
     return _windows_mount_point(path)
+
+
+def _unlink_reparse(path: Path) -> None:
+    """Remove a symlink or junction. The directory it points at stays."""
+    try:
+        if path.is_symlink():
+            path.unlink()
+            return
+    except OSError:
+        pass
+    os.rmdir(path)
+
+
+def remove_tree(path: Path, *, ignore_errors: bool = False) -> None:
+    """Remove a file or directory. A symlink or junction is not followed."""
+
+    def remove(target: Path) -> None:
+        if is_reparse(target):
+            _unlink_reparse(target)
+            return
+        if target.is_dir():
+            for child in list(target.iterdir()):
+                remove(child)
+            target.rmdir()
+            return
+        target.unlink()
+
+    try:
+        candidate = Path(path)
+        if not candidate.exists() and not candidate.is_symlink():
+            return
+        remove(candidate)
+    except OSError:
+        if not ignore_errors:
+            raise
 
 
 def stays_inside(root: Path, path: Path) -> bool:

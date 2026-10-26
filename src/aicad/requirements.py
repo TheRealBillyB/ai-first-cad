@@ -123,7 +123,7 @@ def _one(document, item: dict, cache: dict[str, dict], run: bool) -> dict:
         if not printer:
             raise GeometryError(f"{item['id']}: fits_printer needs a printer, such as bambu_a1 or prusa_mk4.")
         orientation = str(item.get("orientation") or "best")
-        sized = orientation_size(document._get(part).shape, orientation)  # noqa: SLF001
+        sized = orientation_size(document._get(part).shape, orientation, str(printer))  # noqa: SLF001
         fit = fits_printer(sized["size_mm"], str(printer))
         detail = (
             f"{part} in orientation {sized['orientation']} is "

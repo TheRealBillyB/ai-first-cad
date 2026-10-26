@@ -85,6 +85,31 @@ def open_relative(root: Path, relative: str | Path, *, create: bool = False) -> 
     return _posix_open_relative(root, relative, create=create)
 
 
+def open_inplace(path: str | Path) -> int:
+    """Open an existing file so it can be rewritten. A link is refused.
+
+    The caller closes the descriptor. The file is truncated.
+    """
+
+    file = Path(path)
+    if sys.platform == "win32":
+        return _windows_open_inplace(file)
+    flags = os.O_WRONLY | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    descriptor = os.open(file, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "not an ordinary file", str(file))
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def replace_file(root: Path, relative: str | Path, write, *, private: bool = False) -> None:
     """Replace ``root / relative`` without following a link in any component."""
     if sys.platform == "win32":
@@ -112,17 +137,116 @@ def read_from_root(root: Path, relative: Path, maximum: int) -> bytes:
         os.close(descriptor)
 
 
-def read_file(path: str | Path, *, maximum: int) -> bytes:
-    """Read one file from its parent directory. A link at that name is refused."""
-    from aicad.paths import _before_nofollow, _finish_read
-
+def _absolute_file(path: str | Path) -> Path:
     file = Path(path)
     if not file.is_absolute():
         file = Path.cwd() / file
-    parent = file.parent
-    relative = Path(file.name)
-    _before_nofollow(parent, relative)
-    return _finish_read(parent, relative, maximum, file.name, OSError)
+    return file
+
+
+def _marks_project(directory: Path) -> bool:
+    """True when ``directory`` has a ``session.json`` name.
+
+    A link at that name still marks the directory. The marker is not read.
+    """
+    from aicad.paths import is_reparse
+
+    marker = directory / "session.json"
+    try:
+        if is_reparse(marker):
+            return True
+        return marker.is_file()
+    except OSError:
+        return False
+
+
+def _session_project(file: Path) -> Path | None:
+    """Nearest ancestor with ``session.json`` that is not reached through a link.
+
+    A directory link is skipped. A marker found only by following that link
+    does not make the link the project.
+    """
+    from aicad.paths import is_reparse
+
+    chain: list[Path] = []
+    probe = file.parent
+    seen: set[str] = set()
+    while True:
+        key = os.path.normcase(os.path.abspath(probe))
+        if key in seen:
+            return None
+        seen.add(key)
+        chain.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    linked: list[bool] = []
+    for candidate in chain:
+        try:
+            linked.append(is_reparse(candidate))
+        except OSError:
+            linked.append(True)
+    ancestor_linked = [False] * len(chain)
+    crossed = False
+    for index in range(len(chain) - 1, -1, -1):
+        ancestor_linked[index] = crossed
+        if linked[index]:
+            crossed = True
+    for index, candidate in enumerate(chain):
+        if linked[index] or ancestor_linked[index]:
+            continue
+        if _marks_project(candidate):
+            return candidate
+    return None
+
+
+def _read_anchor(file: Path) -> tuple[Path, Path]:
+    """Directory to open, and the file's path under that directory.
+
+    A file inside a project is opened from the project directory, so a
+    directory link in the middle of the path is not followed. Any other file
+    is opened from its parent directory.
+    """
+    from aicad.paths import _lexical_inside, _project_containing, _relative_within, is_reparse
+
+    holder = _project_containing(file)
+    if holder is not None and _lexical_inside(file, holder):
+        try:
+            if not is_reparse(holder):
+                return holder, _relative_within(holder, file)
+        except OSError:
+            pass
+    found = _session_project(file)
+    if found is not None:
+        try:
+            return found, _relative_within(found, file)
+        except OSError:
+            pass
+    return file.parent, Path(file.name)
+
+
+def _open_read(file: Path) -> int:
+    """Open ``file`` for reading. The caller closes the descriptor."""
+    from aicad.paths import _before_nofollow, _open_file_fallback, _open_file_relative
+
+    root, relative = _read_anchor(file)
+    _before_nofollow(root, relative)
+    if sys.platform == "win32":
+        return _windows_open_file(root, relative)
+    if available():
+        return _open_file_relative(root, relative)
+    return _open_file_fallback(root, relative)
+
+
+def read_file(path: str | Path, *, maximum: int) -> bytes:
+    """Read one file. A link in a project path is not followed."""
+    from aicad.paths import _before_nofollow, _finish_read
+
+    file = _absolute_file(path)
+    root, relative = _read_anchor(file)
+    _before_nofollow(root, relative)
+    return _finish_read(root, relative, maximum, file.name, OSError)
 
 
 def read_text(path: str | Path, *, maximum: int, errors: str = "strict") -> str:
@@ -134,23 +258,7 @@ def read_text(path: str | Path, *, maximum: int, errors: str = "strict") -> str:
 
 def read_tail(path: str | Path, maximum: int) -> bytes:
     """The last ``maximum`` bytes. A link is not followed. A longer file is not read in full."""
-    from aicad.paths import _before_nofollow
-
-    file = Path(path)
-    if not file.is_absolute():
-        file = Path.cwd() / file
-    parent = file.parent
-    relative = Path(file.name)
-    _before_nofollow(parent, relative)
-    if sys.platform == "win32":
-        descriptor = _windows_open_file(parent, relative)
-    else:
-        from aicad.paths import _open_file_fallback, _open_file_relative
-
-        if available():
-            descriptor = _open_file_relative(parent, relative)
-        else:
-            descriptor = _open_file_fallback(parent, relative)
+    descriptor = _open_read(_absolute_file(path))
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
@@ -166,23 +274,7 @@ def read_tail(path: str | Path, maximum: int) -> bytes:
 
 def read_prefix(path: str | Path, count: int, *, maximum: int) -> bytes:
     """The first ``count`` bytes. A file past ``maximum`` is refused before the read."""
-    from aicad.paths import _before_nofollow
-
-    file = Path(path)
-    if not file.is_absolute():
-        file = Path.cwd() / file
-    parent = file.parent
-    relative = Path(file.name)
-    _before_nofollow(parent, relative)
-    if sys.platform == "win32":
-        descriptor = _windows_open_file(parent, relative)
-    else:
-        from aicad.paths import _open_file_fallback, _open_file_relative
-
-        if available():
-            descriptor = _open_file_relative(parent, relative)
-        else:
-            descriptor = _open_file_fallback(parent, relative)
+    descriptor = _open_read(_absolute_file(path))
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
@@ -296,6 +388,35 @@ def _windows_open_child(parent: int, name: str, *, create: bool, write: bool) ->
     except Exception:
         _close_handle(handle)
         raise
+
+
+def _windows_open_inplace(path: Path) -> int:
+    directory = open_directory(path.parent)
+    handle = None
+    descriptor = -1
+    try:
+        handle = _nt_open(
+            _os_handle(directory),
+            path.name,
+            access=_FILE_WRITE_ACCESS,
+            directory=False,
+            create=False,
+        )
+        _refuse_reparse(handle, path.name)
+        if _attributes(handle) & _FILE_ATTRIBUTE_DIRECTORY:
+            raise OSError(errno.EINVAL, "not an ordinary file", str(path))
+        descriptor = _descriptor(handle, os.O_WRONLY | getattr(os, "O_BINARY", 0))
+        handle = None
+        os.ftruncate(descriptor, 0)
+        return descriptor
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    finally:
+        if handle is not None:
+            _close_handle(handle)
+        os.close(directory)
 
 
 def _windows_open_file(root: Path, relative: Path) -> int:

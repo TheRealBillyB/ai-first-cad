@@ -423,6 +423,15 @@ def test_windows_suspended_process_is_resumed_only_in_the_job_and_container():
         win._commit_suspended(stuck, stuck, 0x55, process)
     assert stuck.calls.index("ResumeThread") < stuck.calls.index("TerminateProcess")
 
+    class Counting(Api):
+        def QueryInformationJobObject(self, job, klass, info, size, returned):
+            self.calls.append("QueryInformationJobObject")
+            return 0
+
+    counting = Counting()
+    assert win._commit_suspended(counting, counting, 0x55, process) is None
+    assert counting.calls.index("QueryInformationJobObject") < counting.calls.index("ResumeThread")
+
     class Creator:
         def __init__(self, codes):
             self.codes = list(codes)
@@ -462,6 +471,54 @@ def test_windows_suspended_process_is_resumed_only_in_the_job_and_container():
             win._ProcessInformation(),
         )
     assert len(other.flags) == 1
+
+
+def test_a_stuck_whoami_does_not_hold_the_parent(monkeypatch):
+    import subprocess
+
+    from aicad import sandbox_windows as win
+
+    monkeypatch.setattr(win, "_user_sid", None)
+    monkeypatch.setattr(win, "_user_sid_checked", False)
+    calls = {"n": 0}
+
+    def stuck(*_args, **_kwargs):
+        calls["n"] += 1
+        raise subprocess.TimeoutExpired(cmd="whoami", timeout=10)
+
+    monkeypatch.setattr(win.subprocess, "run", stuck)
+    assert win._current_user_sid() is None
+    assert win._current_user_sid() is None
+    assert calls["n"] == 1
+
+    monkeypatch.setattr(win, "_user_sid", None)
+    monkeypatch.setattr(win, "_user_sid_checked", False)
+
+    def missing(*_args, **_kwargs):
+        raise OSError("whoami missing")
+
+    monkeypatch.setattr(win.subprocess, "run", missing)
+    assert win._current_user_sid() is None
+
+    monkeypatch.setattr(win, "_user_sid", None)
+    monkeypatch.setattr(win, "_user_sid_checked", False)
+    seen: dict = {}
+
+    class Completed:
+        returncode = 0
+        stdout = '"computer\\user","S-1-5-21-1"\n'
+
+    def ok(command, **kwargs):
+        seen["command"] = command
+        seen["timeout"] = kwargs.get("timeout")
+        seen["stdin"] = kwargs.get("stdin")
+        return Completed()
+
+    monkeypatch.setattr(win.subprocess, "run", ok)
+    assert win._current_user_sid() == "S-1-5-21-1"
+    assert seen["command"][0] == "whoami"
+    assert seen["timeout"] == 10
+    assert seen["stdin"] is subprocess.DEVNULL
 
 
 def test_windows_script_starts_from_the_base_interpreter(monkeypatch):

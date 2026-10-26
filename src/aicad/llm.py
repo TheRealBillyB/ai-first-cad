@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -345,10 +346,65 @@ def _anthropic(settings: dict, transcript: list[dict]) -> dict:
     return {"role": "assistant", "content": "\n".join(text).strip(), "tool_calls": calls}
 
 
+_URL_OPEN = urllib.request.urlopen
+
+
+def _packaged_trust() -> tuple[str | None, str | None, bytes | None]:
+    """Trust paths compiled into OpenSSL, plus the Windows store.
+
+    ``openssl_cafile`` and ``openssl_capath`` are the packaged locations.
+    ``SSL_CERT_FILE`` and ``SSL_CERT_DIR`` are not consulted.
+    """
+
+    paths = ssl.get_default_verify_paths()
+    cafile = paths.openssl_cafile if paths.openssl_cafile and os.path.isfile(paths.openssl_cafile) else None
+    capath = paths.openssl_capath if paths.openssl_capath and os.path.isdir(paths.openssl_capath) else None
+    if os.name != "nt":
+        return cafile, capath, None
+    purpose = ssl.Purpose.SERVER_AUTH
+    blob = bytearray()
+    for storename in ("CA", "ROOT"):
+        for cert, encoding, trust in ssl.enum_certificates(storename):
+            if encoding == "x509_asn" and (trust is True or purpose.oid in trust):
+                blob.extend(cert)
+    return cafile, capath, bytes(blob) or None
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """A TLS context that does not use certificate paths from the environment."""
+
+    cafile, capath, cadata = _packaged_trust()
+    if cafile or capath or cadata:
+        return ssl.create_default_context(cafile=cafile, capath=capath, cadata=cadata)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+def open_assistant_url(request: urllib.request.Request, timeout: float):
+    """Open an assistant URL. Proxy and certificate variables are not used.
+
+    A test double installed on ``urllib.request.urlopen`` still receives the
+    request. The real opener has an empty proxy map and a TLS context from
+    the packaged trust store. The process environment is not changed.
+    """
+
+    urlopen = urllib.request.urlopen
+    if urlopen is not _URL_OPEN:
+        return urlopen(request, timeout=timeout)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+    )
+    return opener.open(request, timeout=timeout)
+
+
 def _post(url: str, body: dict, headers: dict) -> dict:
     request = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with open_assistant_url(request, timeout=120) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
