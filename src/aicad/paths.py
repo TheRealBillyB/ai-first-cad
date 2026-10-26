@@ -818,6 +818,41 @@ def is_reparse(path: Path) -> bool:
     return _windows_mount_point(path)
 
 
+def _unlink_reparse(path: Path) -> None:
+    """Remove a symlink or junction. The directory it points at stays."""
+    try:
+        if path.is_symlink():
+            path.unlink()
+            return
+    except OSError:
+        pass
+    os.rmdir(path)
+
+
+def remove_tree(path: Path, *, ignore_errors: bool = False) -> None:
+    """Remove a file or directory. A symlink or junction is not followed."""
+
+    def remove(target: Path) -> None:
+        if is_reparse(target):
+            _unlink_reparse(target)
+            return
+        if target.is_dir():
+            for child in list(target.iterdir()):
+                remove(child)
+            target.rmdir()
+            return
+        target.unlink()
+
+    try:
+        candidate = Path(path)
+        if not candidate.exists() and not candidate.is_symlink():
+            return
+        remove(candidate)
+    except OSError:
+        if not ignore_errors:
+            raise
+
+
 def stays_inside(root: Path, path: Path) -> bool:
     """True when ``path`` resolves inside ``root``."""
     try:
