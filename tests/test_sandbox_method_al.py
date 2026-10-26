@@ -6,6 +6,8 @@ directory, and an output folder that is a link is not used.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +49,16 @@ def test_a_slicer_does_not_run_in_the_project(tmp_path, monkeypatch):
     seen = tmp_path / "seen.txt"
     script = _slicer(tools, witness, seen)
     monkeypatch.setattr("aicad.printprep.find_slicers", lambda: [str(script)])
+    if os.name == "nt":
+        # Windows will not start a shebang script. The interpreter runs the
+        # same file. The working directory still comes from the slicer path.
+        from aicad.printprep import _slice_command
+
+        def command(executable, gcode, stl, price_per_kg, export):
+            built = _slice_command(executable, gcode, stl, price_per_kg, export)
+            return [sys.executable, *built]
+
+        monkeypatch.setattr("aicad.printprep._slice_command", command)
     monkeypatch.chdir(project)
     out = project / "slice"
     vertices, triangles = _mesh()
