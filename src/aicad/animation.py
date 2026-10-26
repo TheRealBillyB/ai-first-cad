@@ -19,7 +19,6 @@ Output paths stay inside the project.
 from __future__ import annotations
 
 import math
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -34,6 +33,7 @@ from aicad.motion_study import posed_at, study_by_name
 from aicad.paths import (
     is_reparse,
     output_dir,
+    remove_tree,
     output_path,
     publish_file,
     refuse_reserved_device,
@@ -863,7 +863,7 @@ def _remove_frames(folder: Path, root: Path) -> None:
         return
     if is_reparse(resolved):
         return
-    shutil.rmtree(resolved, ignore_errors=True)
+    remove_tree(folder, ignore_errors=True)
 
 
 def write_frames(

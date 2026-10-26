@@ -13,7 +13,6 @@ import copy
 import hashlib
 import json
 import re
-import shutil
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -256,18 +255,13 @@ class Document:
         with self._lock:
             self._get(name)
             renders = self.workspace / "renders" / name
-            remove_link = False
             if renders.exists() or renders.is_symlink():
-                from aicad.paths import is_reparse
-
-                remove_link = is_reparse(renders)
                 _project_resolved(self.workspace, renders, "Render")
             del self._parts[name]
             if renders.exists() or renders.is_symlink():
-                if remove_link:
-                    renders.unlink()
-                else:
-                    shutil.rmtree(renders)
+                from aicad.paths import remove_tree
+
+                remove_tree(renders)
             # The copied STEP file stays so undo can rebuild an imported part.
             self._save()
 
