@@ -108,20 +108,18 @@ def write_agent_token(port: int, token: str) -> None:
     """Remember the assistant's session for this port. The file is the user's."""
     path = _token_path(port)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, token.encode("utf-8"))
-    finally:
-        os.close(fd)
-    from aicad.paths import restrict_private_file
+    from aicad.paths import publish_text, restrict_private_file
 
+    publish_text(path, token, root=path.parent)
     restrict_private_file(path)
 
 
 def read_agent_token(port: int) -> str:
     path = _token_path(port)
     try:
-        token = path.read_text(encoding="utf-8").strip()
+        from aicad.file_access import read_text
+
+        token = read_text(path, maximum=4096).strip()
     except OSError as exc:
         raise GeometryError(
             "Could not find the workspace session for that app. Start aicad app, then connect."
@@ -442,7 +440,9 @@ def _handler(session: Workspace):
                 raise RequestRejected("Only the person at this workspace can do that.")
 
         def _page(self) -> None:
-            text = (_STATIC / "index.html").read_text(encoding="utf-8")
+            from aicad.file_access import read_text
+
+            text = read_text(_STATIC / "index.html", maximum=2_000_000)
             if "__AICAD_TOKEN__" not in text:
                 self._error(500, "The workspace page is missing its session slot.")
                 return
@@ -605,7 +605,13 @@ def _handler(session: Workspace):
             self._bytes(path, mime)
 
         def _bytes(self, path: Path, mime: str, *, cache: str = "no-cache") -> None:
-            data = path.read_bytes()
+            from aicad.file_access import read_file
+
+            try:
+                data = read_file(path, maximum=8 * 1024 * 1024)
+            except OSError:
+                self._error(404, "Not found.")
+                return
             self.send_response(200)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(data)))

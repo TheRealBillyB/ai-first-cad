@@ -1089,12 +1089,10 @@ def _opt_file() -> Path:
 
 def _read_opt() -> dict:
     path = _opt_file()
-    if not path.is_file() or path.is_symlink():
-        return {"projects": {}}
     try:
-        if path.stat().st_size > 1_000_000:
-            return {"projects": {}}
-        data = json.loads(path.read_text(encoding="utf-8"))
+        from aicad.file_access import read_text
+
+        data = json.loads(read_text(path, maximum=1_000_000))
     except (OSError, json.JSONDecodeError, UnicodeError):
         return {"projects": {}}
     if not isinstance(data, dict) or not isinstance(data.get("projects"), dict):
@@ -1105,10 +1103,14 @@ def _read_opt() -> dict:
 def _write_opt(data: dict) -> None:
     path = _opt_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps({"projects": data.get("projects", {})}, indent=2) + "\n", encoding="utf-8")
+    from aicad.paths import publish_text
+
+    publish_text(
+        path,
+        json.dumps({"projects": data.get("projects", {})}, indent=2) + "\n",
+        root=path.parent,
+    )
     try:
-        temporary.chmod(0o600)
+        path.chmod(0o600)
     except OSError:
         pass
-    temporary.replace(path)

@@ -626,7 +626,9 @@ def _read_recent() -> list[dict]:
     if not path.is_file():
         return []
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        from aicad.file_access import read_text
+
+        payload = json.loads(read_text(path, maximum=1_000_000))
     except (OSError, json.JSONDecodeError):
         return []
     projects = payload.get("projects") if isinstance(payload, dict) else None
@@ -639,7 +641,9 @@ def _write_recent(projects: list[dict]) -> None:
     path = recent_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"projects": projects}, indent=2) + "\n", encoding="utf-8")
+        from aicad.paths import publish_text
+
+        publish_text(path, json.dumps({"projects": projects}, indent=2) + "\n", root=path.parent)
     except OSError:
         return
 

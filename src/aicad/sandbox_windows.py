@@ -966,7 +966,9 @@ def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = 
     marker = _marker_path()
     already = False
     try:
-        already = marker.is_file() and marker.read_text(encoding="utf-8").strip() == sid
+        from aicad.file_access import read_text
+
+        already = read_text(marker, maximum=4096).strip() == sid
     except OSError:
         already = False
     if not already:
@@ -974,7 +976,9 @@ def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = 
             _grant_tree(path, sid, "(OI)(CI)RX")
             _grant_traverse(path, sid, package_sid)
         try:
-            marker.write_text(sid, encoding="utf-8")
+            from aicad.paths import publish_text
+
+            publish_text(marker, sid, root=marker.parent)
         except OSError:
             pass
 
@@ -1400,7 +1404,9 @@ def _launch(
 
 def _read_text(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        from aicad.file_access import read_text
+
+        return read_text(path, maximum=8 * 1024 * 1024, errors="replace")
     except OSError:
         return ""
 
@@ -1998,7 +2004,9 @@ def _recorded_rules_sid() -> str | None:
     if path is None:
         return None
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        from aicad.file_access import read_text
+
+        text = read_text(path, maximum=4096).strip()
     except OSError:
         return None
     if _PACKAGE_SID_TEXT.fullmatch(text) is None:
@@ -2012,7 +2020,9 @@ def _record_rules_sid(sid: str) -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(sid.upper() + "\n", encoding="utf-8")
+        from aicad.paths import publish_text
+
+        publish_text(path, sid.upper() + "\n", root=path.parent)
     except OSError:
         return
 
@@ -2299,7 +2309,9 @@ def _probe_command(workspace: Path) -> list[str]:
     # The real script imports aicad. A probe that only prints can succeed in a
     # container that then fails to load the geometry libraries. The same
     # confinement check the script uses has to pass before this counts.
-    script.write_text(_probe_source(), encoding="utf-8")
+    from aicad.paths import publish_text
+
+    publish_text(script, _probe_source(), root=script.parent)
     # -P keeps the project folder, which is both the working directory and the
     # script directory, off sys.path. The script path is absolute.
     return [sys.executable, "-P", "-B", "-u", str(script.resolve())]
