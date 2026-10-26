@@ -1892,12 +1892,22 @@ def _restore_os_environment(env: dict[str, str]) -> None:
 
 
 def program_environment() -> dict[str, str]:
-    """Environment for CalculiX, ffmpeg, a slicer, and other helper programs."""
+    """Environment for CalculiX, ffmpeg, a slicer, and other helper programs.
 
-    env = scrubbed_environment(None)
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTHONHOME", None)
-    env.pop("PYTHONSTARTUP", None)
+    The helper gets the system PATH and the variables Windows needs to start
+    a process. It does not get the rest of the parent environment.
+    """
+
+    env: dict[str, str] = {
+        "PATH": _system_path(),
+        "PYTHONSAFEPATH": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    for name in ("LANG", "LC_ALL", "LC_CTYPE", "TZ"):
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
+    _restore_os_environment(env)
     return env
 
 
