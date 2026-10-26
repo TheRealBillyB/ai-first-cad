@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -153,19 +154,48 @@ def _ensure_venv() -> Path:
     return python
 
 
+# C23 removed ATOMIC_VAR_INIT. These spellings select that language.
+_C23_STANDARD = re.compile(r"-std=(?:gnu23|c23|gnu2x|c2x)(?![\w.])")
+
+
+def _compiler_needs_c11(env: dict[str, str]) -> bool:
+    """True when this compiler builds the solver's C files as GCC or Clang would.
+
+    MSVC does not read ``CFLAGS``. Leaving it unset avoids passing ``-std``
+    to ``cl``. MinGW and Clang on Windows do read it.
+    """
+
+    if sys.platform != "win32":
+        return True
+    compiler = env.get("CC", "").lower()
+    return any(name in compiler for name in ("gcc", "clang", "mingw"))
+
+
+def _c11_flags(flags: str) -> str:
+    """CFLAGS that compile the solver as C11.
+
+    An explicit C11 or C17 choice is kept. A C23 choice is replaced, because
+    that language no longer provides the macro the solver uses.
+    """
+
+    if _C23_STANDARD.search(flags):
+        return _C23_STANDARD.sub("-std=gnu11", flags)
+    if "-std=" not in flags:
+        return (flags + " -std=gnu11").strip()
+    return flags
+
+
 def _pip_env() -> dict[str, str]:
     """Environment for the pip install that compiles python-solvespace.
 
     That package ships a C11 mimalloc. It initializes an atomic with
     ATOMIC_VAR_INIT, which C23 removed. Current GCC defaults to C23, so the
-    C files are compiled as C11 unless the caller already chose a standard.
+    C files are compiled as C11 unless the caller already chose C11 or C17.
     """
     env = os.environ.copy()
-    if sys.platform == "win32":
+    if not _compiler_needs_c11(env):
         return env
-    flags = env.get("CFLAGS", "")
-    if "-std=" not in flags:
-        env["CFLAGS"] = (flags + " -std=gnu11").strip()
+    env["CFLAGS"] = _c11_flags(env.get("CFLAGS", ""))
     return env
 
 
