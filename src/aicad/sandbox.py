@@ -1842,6 +1842,36 @@ def _trusted_pythonpath(workspace: Path | None) -> str:
     return os.pathsep.join(roots)
 
 
+_LIBRARY_PREFIXES = ("CSF_", "GMSH_", "FONTCONFIG_")
+_LIBRARY_NAMES = frozenset(
+    {
+        "CASROOT",
+        "MMGT_OPT",
+        "MMGT_CLEAR",
+        "MMGT_REENTRANT",
+        "FREETYPE_PROPERTIES",
+        "MPLCONFIGDIR",
+    }
+)
+
+
+def library_env_steers(name: str) -> bool:
+    """True when ``name`` points a geometry or font library at a config."""
+
+    upper = name.upper()
+    if upper in _LIBRARY_NAMES:
+        return True
+    return upper.startswith(_LIBRARY_PREFIXES)
+
+
+def scrub_library_environment() -> None:
+    """Drop geometry and font configuration variables from this process."""
+
+    for key in list(os.environ):
+        if library_env_steers(key):
+            os.environ.pop(key, None)
+
+
 def scrubbed_environment(workspace: Path | None = None) -> dict[str, str]:
     """An environment for a child. Loader and startup variables are omitted."""
 
@@ -1850,7 +1880,7 @@ def scrubbed_environment(workspace: Path | None = None) -> dict[str, str]:
         upper = key.upper()
         if upper.startswith("LD_") or upper.startswith("DYLD_") or upper == "PATH":
             continue
-        if upper in _DROPPED_ENV:
+        if upper in _DROPPED_ENV or library_env_steers(key):
             continue
         if any(part in upper for part in _SECRET_PARTS):
             continue
