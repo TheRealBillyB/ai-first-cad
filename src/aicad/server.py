@@ -415,9 +415,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         except ToolError:
             raise
         except AICADError as exc:
-            raise ToolError(str(exc)) from exc
+            raise ToolError(_hide_client_path(client, str(exc))) from exc
         except Exception as exc:
-            raise ToolError(f"{type(exc).__name__}: {exc}") from exc
+            raise ToolError(_hide_client_path(client, f"{type(exc).__name__}: {exc}")) from exc
 
     def resource_guard(fn):
         try:
@@ -425,9 +425,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         except ResourceError:
             raise
         except AICADError as exc:
-            raise ResourceError(str(exc)) from exc
+            raise ResourceError(_hide_client_path(client, str(exc))) from exc
         except Exception as exc:
-            raise ResourceError(f"{type(exc).__name__}: {exc}") from exc
+            raise ResourceError(_hide_client_path(client, f"{type(exc).__name__}: {exc}")) from exc
 
     @mcp.tool()
     def list_parts() -> dict:
@@ -1613,6 +1613,15 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     register_mcp(mcp, run, guard)
     return mcp
+
+
+def _hide_client_path(client: object, text: str) -> str:
+    from aicad.paths import hide_project_path
+
+    root = getattr(client, "root", None)
+    if root is None:
+        return text
+    return hide_project_path(text, root)
 
 
 def _images(payload: dict) -> list[str | Image]:
