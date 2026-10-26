@@ -1454,10 +1454,11 @@ def output_path(
     """A file path to create or replace without following a link out of ``root``.
 
     A relative path, and an absolute path that is lexically inside the project,
-    must still be inside after links are followed. An absolute path that is
-    already outside the project is returned unchanged when
-    ``allow_absolute_outside`` is set, so a caller can write a file the person
-    named explicitly.
+    must still be inside after links are followed. The parent directory is the
+    path as written, so a link in that path is not followed, including a link
+    that stays inside the project. An absolute path that is already outside
+    the project is returned unchanged when ``allow_absolute_outside`` is set,
+    so a caller can write a file the person named explicitly.
     """
     root_resolved = Path(root).resolve()
     raw = Path(path)
@@ -1491,8 +1492,10 @@ def output_path(
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
     if not nofollow_writes() and _reparse_between(root_resolved, raw):
         raise error(f"Could not create {label} {path}. {path} is a link and was not followed.")
-    parent = output_dir(root_resolved, resolved.parent, label, error)
-    name = resolved.name
+    # ``resolved`` has followed links. Creating that parent would make the
+    # directory through a link that stays inside the project.
+    parent = output_dir(root_resolved, raw.parent, label, error)
+    name = raw.name
     if _refused_file_name(name) or _windows_reserved_punctuation(name):
         raise error(f"{label} {path} is outside the project folder {root_resolved}.")
     return parent / name
