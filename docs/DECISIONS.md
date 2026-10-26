@@ -23,6 +23,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A sandbox setup failure has no traceback | A failure while the sandbox is starting is one error line in the job result. The traceback stays out of that result and out of the child's error stream. |
 | A script cannot write more than its disk quota | One run stops at 512 MiB of writes, and one file still stops at 512 MiB. The parent enforces both on every system, including Windows, where a file-size limit is not available. |
 | A script is not run when it cannot enter its process cgroup | A failed move would leave the script outside `pids.max`, so the script is not run. |
+| A script log is not read past 1 MiB | Appending a row reads only the newest part of the log. A failure note reads only its last 500 bytes. |
 | A script report does not repeat the project path | Design-script status, a script error, and the script log use a path relative to the project. The open project's own path stays available to the workspace. |
 | A script solid is read only from the file named for that script | The file is `.aicad/geometry/<name>-<script hash>.step`. Another path is not the solid that script built, so it is not opened. |
 | A shared STEP file and a served project file have a size cap | The host returns an error past that cap. A mesh stops at a fixed triangle count, and the macOS file helper uses the same cap as the script. |

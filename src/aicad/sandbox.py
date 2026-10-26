@@ -102,6 +102,7 @@ FILE_BYTES = 512 * 1024 * 1024
 DISK_BYTES = FILE_BYTES
 SCRIPT_MAX_CHARS = 200_000
 STDOUT_MAX = 64_000
+_MAX_SCRIPT_LOG_BYTES = 1_000_000
 
 _REAL_IMPORT = builtins.__import__
 _GUARD = False
@@ -550,6 +551,24 @@ def script_log_path(workspace: Path) -> Path:
     return Path(workspace) / ".aicad" / "script_log.jsonl"
 
 
+def _read_log_tail(path: Path, maximum: int) -> str:
+    """The end of a log, at most ``maximum`` bytes. The rest is not read."""
+    try:
+        info = path.stat()
+    except OSError:
+        return ""
+    try:
+        with path.open("rb") as handle:
+            if info.st_size > maximum:
+                handle.seek(max(0, info.st_size - maximum))
+            data = handle.read(maximum + 1)
+    except OSError:
+        return ""
+    if len(data) > maximum:
+        data = data[-maximum:]
+    return data.decode("utf-8", errors="replace")
+
+
 def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> None:
     """Append one design-script row. A log path that leaves the project is skipped.
 
@@ -571,7 +590,7 @@ def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> No
     row = {"time": _now(), "kind": "design", "ok": ok, "error": shown, "script": script}
     line = json.dumps(row) + "\n"
     try:
-        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        existing = _read_log_tail(path, _MAX_SCRIPT_LOG_BYTES) if path.is_file() else ""
     except OSError:
         return
     try:
@@ -2895,7 +2914,7 @@ class _DesignRecord:
         if proc is None or proc.poll() in (0, None) or self._log is None:
             return ""
         try:
-            text = self._log.read_text(encoding="utf-8", errors="replace").strip()
+            text = _read_log_tail(self._log, 500).strip()
         except OSError:
             return ""
         if len(text) > 500:
