@@ -112,11 +112,14 @@ def test_a_relative_import_path_is_not_read_from_the_project(tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PYTHONPATH", "vendor_hooks")
     env = _child_env(project, project / "job", False)
-    assert env["PYTHONPATH"] == str((tmp_path / "vendor_hooks").resolve())
+    pythonpath = env.get("PYTHONPATH", "").split(os.pathsep)
+    assert str((tmp_path / "vendor_hooks").resolve()) not in pythonpath
     monkeypatch.chdir(project)
     monkeypatch.setenv("PYTHONPATH", "vendor_hooks")
     env = _child_env(project, project / "job", False)
-    assert "PYTHONPATH" not in env
+    pythonpath = env.get("PYTHONPATH", "").split(os.pathsep)
+    assert str((project / "vendor_hooks").resolve()) not in pythonpath
+    assert str(project.resolve()) not in pythonpath
 
 
 def test_a_relative_import_path_cannot_run_code_from_the_project(tmp_path, config_home, monkeypatch):

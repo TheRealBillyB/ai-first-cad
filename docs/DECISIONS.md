@@ -12,6 +12,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | --- | --- |
 | A bill of materials keeps text as text | A route name and a material are written as text in the bill of materials. A plain part name is unchanged. |
 | A busy process cgroup is removed on a later stop | A directory that is still busy after the script stops is remembered and removed the next time a cgroup is prepared or released. |
+| A child process does not inherit the parent loader environment | Loader variables, startup variables, and the parent's PATH and PYTHONPATH are replaced before a script, CalculiX, ffmpeg, or a slicer starts. |
 | A cylinder stroke uses the in-plane length | The barrel joint cannot tilt, so the stroke is the pin distance in the barrel plane. A side offset is how far the eye misses the clevis. |
 | A gear on a planetary carrier is not a second load | The following mesh already applies the carrier torque. An extra external load leaves the output torque free. |
 | A gear or linkage adds the driven load | The driver load gains ratio times the driven load, with ratio d(driven)/d(driver), so a reversing pair cancels equal moments and a chain is followed to its end. |
@@ -24,6 +25,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A sandbox setup failure has no traceback | A failure while the sandbox is starting is one error line in the job result. The traceback stays out of that result and out of the child's error stream. |
 | A script cannot write more than its disk quota | One run stops at 512 MiB of writes, and one file still stops at 512 MiB. The parent enforces both on every system, including Windows, where a file-size limit is not available. |
 | A script is not run when it cannot enter its process cgroup | A failed move would leave the script outside `pids.max`, so the script is not run. |
+| A script log is not read past 1 MiB | Appending a row reads only the newest part of the log. A failure note reads only its last 500 bytes. |
 | A script report does not repeat the project path | Design-script status, a script error, and the script log use a path relative to the project. The open project's own path stays available to the workspace. |
 | A script solid is read only from the file named for that script | The file is `.aicad/geometry/<name>-<script hash>.step`. Another path is not the solid that script built, so it is not opened. |
 | A shared STEP file and a served project file have a size cap | The host returns an error past that cap. A mesh stops at a fixed triangle count, and the macOS file helper uses the same cap as the script. |
