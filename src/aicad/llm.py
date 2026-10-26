@@ -364,6 +364,9 @@ def _trust_env_name(name: str) -> bool:
     return name.upper() in _TRUST_ENV
 
 
+_URL_OPEN = urllib.request.urlopen
+
+
 def _ssl_context() -> ssl.SSLContext:
     """A TLS context that does not use certificate paths from the environment."""
 
@@ -375,13 +378,25 @@ def _ssl_context() -> ssl.SSLContext:
 
 
 def open_assistant_url(request: urllib.request.Request, timeout: float):
-    """Open an assistant URL. Proxy and certificate variables are not used."""
+    """Open an assistant URL. Proxy and certificate variables are not used.
 
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        urllib.request.HTTPSHandler(context=_ssl_context()),
-    )
-    return opener.open(request, timeout=timeout)
+    A test double installed on ``urllib.request.urlopen`` still receives the
+    request. The real opener uses an empty proxy map and a TLS context built
+    while certificate variables are unset.
+    """
+
+    urlopen = urllib.request.urlopen
+    if urlopen is not _URL_OPEN:
+        return urlopen(request, timeout=timeout)
+    saved = {key: os.environ.pop(key) for key in list(os.environ) if _trust_env_name(key)}
+    try:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+        )
+        return opener.open(request, timeout=timeout)
+    finally:
+        os.environ.update(saved)
 
 
 def _post(url: str, body: dict, headers: dict) -> dict:
