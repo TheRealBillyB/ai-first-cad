@@ -1587,7 +1587,7 @@ def _write_step_impl(impl, temporary: Path) -> bool:
 def _step_file_volume(path: Path) -> float:
     """Volume of a STEP file this process just wrote. A shell reads as zero."""
     try:
-        loaded = _read_step_shape(path)
+        loaded = _read_step_bytes(path, read_step_bytes(path))
     except (GeometryError, OSError, RuntimeError):
         return 0.0
     return _volume(loaded)
