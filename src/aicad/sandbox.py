@@ -2001,6 +2001,70 @@ def program_environment() -> dict[str, str]:
     return env
 
 
+# Locale and clock names a script needs in order to format text and time.
+# Anything else in the parent environment stays there.
+_SCRIPT_LOCALE = (
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_COLLATE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "TZ",
+)
+
+# The child applies these with the same caps the parent already read.
+# An empty value is left unset so the child uses its default.
+_SCRIPT_LIMITS = (
+    "AICAD_SCRIPT_CPU_SECONDS",
+    "AICAD_SCRIPT_MEMORY_MB",
+    "AICAD_SCRIPT_FILE_BYTES",
+)
+
+# Text encoding for the script's own output. Copied only when the parent set one.
+_SCRIPT_TEXT = ("PYTHONUTF8", "PYTHONIOENCODING")
+
+# The confined process cannot read the account database, so Python resolves
+# the home directory from this variable.
+_SCRIPT_HOME = ("HOME",)
+
+# Windows refuses to start a process whose environment omits these session
+# names. They are the operating system's own names, copied only when set.
+_WINDOWS_SESSION = (
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "COMMONPROGRAMFILES",
+    "COMMONPROGRAMFILES(X86)",
+    "COMPUTERNAME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PROCESSOR_LEVEL",
+    "PROCESSOR_REVISION",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "PUBLIC",
+    "USERDOMAIN",
+    "USERNAME",
+    "USERPROFILE",
+)
+
+
+def _copy_set(env: dict[str, str], names: tuple[str, ...]) -> None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
+
+
 def _child_env(
     workspace: Path,
     job: Path,
@@ -2008,15 +2072,40 @@ def _child_env(
     tmp: Path | None = None,
     cache: Path | None = None,
 ) -> dict[str, str]:
-    env = scrubbed_environment(workspace)
-    # Do not prepend the working directory to sys.path. The working directory
-    # is the project, and a module there would run before the sandbox.
-    env["PYTHONSAFEPATH"] = "1"
-    env["AICAD_SANDBOX_CHILD"] = "1"
-    env["AICAD_WORKSPACE"] = str(workspace)
-    env["AICAD_JOB"] = str(job)
-    env["AICAD_NETWORK"] = "1" if network else "0"
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    """Environment for one script. Names that are not listed here are omitted.
+
+    The script gets the system PATH, a trusted import path, the job
+    variables, locale names, and the variables Windows needs in order to
+    start. Temporary files stay in the project. A limit the parent set is
+    passed through so this process applies that same limit.
+    """
+
+    env: dict[str, str] = {
+        "PATH": _system_path(),
+        # Do not prepend the working directory to sys.path. The working
+        # directory is the project, and a module there would run before
+        # the sandbox.
+        "PYTHONSAFEPATH": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "AICAD_SANDBOX_CHILD": "1",
+        "AICAD_WORKSPACE": str(workspace),
+        "AICAD_JOB": str(job),
+        "AICAD_NETWORK": "1" if network else "0",
+    }
+    pythonpath = _trusted_pythonpath(workspace)
+    if pythonpath:
+        env["PYTHONPATH"] = pythonpath
+    _copy_set(env, _SCRIPT_LOCALE)
+    _copy_set(env, _SCRIPT_TEXT)
+    _copy_set(env, _SCRIPT_LIMITS)
+    _copy_set(env, _SCRIPT_HOME)
+    if sys.platform == "win32":
+        # The network check reads the receivers the parent is listening on.
+        # USERPROFILE is copied as the account profile. Pointing it at the
+        # project cache made every script fail with STATUS_INVALID_HANDLE.
+        _copy_set(env, ("AICAD_WIN_NET_RECEIVERS",))
+        _copy_set(env, _WINDOWS_SESSION)
+    _restore_os_environment(env)
     tmp_path = tmp if tmp is not None else workspace / ".aicad" / "tmp"
     tmp_text = str(tmp_path)
     env["TMPDIR"] = tmp_text
@@ -2024,8 +2113,7 @@ def _child_env(
     env["TEMP"] = tmp_text
     if sys.platform == "win32":
         # ezdxf and matplotlib otherwise stat the real user profile. An
-        # AppContainer is denied that path. Do not redirect USERPROFILE:
-        # that made every script fail with STATUS_INVALID_HANDLE.
+        # AppContainer is denied that path.
         # The font list is built once in the Python install. The other
         # caches stay in the project, which the container can write.
         cache_path = cache if cache is not None else workspace / ".aicad" / "cache"
