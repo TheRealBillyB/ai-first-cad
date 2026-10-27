@@ -268,10 +268,18 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
     _drop_link(gcode)
     last = ""
     last_name = Path(executables[-1]).name
-    from aicad.paths import private_tool_directory, publish_bytes
+    from aicad.paths import publish_bytes
+    from aicad.tool_directory import (
+        held_is_file,
+        held_read_bytes,
+        held_run_kwargs,
+        held_subprocess_directory,
+        held_unlink,
+        held_write_bytes,
+    )
 
-    with private_tool_directory() as work:
-        _write_stl(vertices, triangles, work / "oriented.stl")
+    with held_subprocess_directory() as work:
+        held_write_bytes(work, "oriented.stl", _stl_bytes(vertices, triangles))
         for executable in executables:
             last_name = Path(executable).name
             commands = [
@@ -283,17 +291,16 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
 
                 completed = subprocess.run(
                     command,
-                    cwd=str(work),
                     capture_output=True,
                     text=True,
                     stdin=subprocess.DEVNULL,
                     timeout=180,
                     check=False,
-                    close_fds=True,
                     env=program_environment(),
+                    **held_run_kwargs(work),
                 )
                 last = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
-                payload = _read_tool_output(work / "print.gcode")
+                payload = held_read_bytes(work, "print.gcode", maximum=64 * 1024 * 1024)
                 if payload:
                     publish_bytes(gcode, payload)
                     gcode_text = payload.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
@@ -312,9 +319,8 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
                         "Cost is the slicer's filament cost when the gcode has one, otherwise grams times price_per_kg / 1000.",
                     ]
                     return parsed
-                private_gcode = work / "print.gcode"
-                if private_gcode.is_file():
-                    private_gcode.unlink()
+                if held_is_file(work, "print.gcode"):
+                    held_unlink(work, "print.gcode")
     return {
         "status": "failed",
         "slicer": last_name,
@@ -681,19 +687,7 @@ def _drop_link(path: Path) -> None:
         path.unlink()
 
 
-def _read_tool_output(path: Path) -> bytes:
-    """Bytes written by a helper in its private folder. A missing file is empty."""
-    from aicad.file_access import read_file
-
-    try:
-        return read_file(path, maximum=64 * 1024 * 1024)
-    except OSError:
-        return b""
-
-
-def _write_stl(vertices: np.ndarray, triangles: np.ndarray, path: Path) -> None:
-    from aicad.paths import publish_bytes
-
+def _stl_bytes(vertices: np.ndarray, triangles: np.ndarray) -> bytes:
     payload = bytearray(b"aicad oriented" + b"\0" * 66)
     payload += struct.pack("<I", len(triangles))
     for triangle in triangles:
@@ -702,7 +696,7 @@ def _write_stl(vertices: np.ndarray, triangles: np.ndarray, path: Path) -> None:
         length = float(np.linalg.norm(normal))
         normal = normal / length if length > 1e-12 else np.array([0.0, 0.0, 1.0])
         payload += struct.pack("<12fH", *normal, *a, *b, *c, 0)
-    publish_bytes(path, bytes(payload))
+    return bytes(payload)
 
 
 def _parse_duration(text: str) -> int | None:
