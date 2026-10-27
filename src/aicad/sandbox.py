@@ -2459,30 +2459,53 @@ class _OutputCapture:
         return bytes(self._stderr)
 
 
-def _wait_script(proc: subprocess.Popen, wall: float, sweep) -> tuple[bytes, bytes]:
+def _wait_script(
+    proc: subprocess.Popen,
+    wall: float,
+    sweep,
+    *,
+    before_reap=None,
+) -> tuple[bytes, bytes]:
     """Wait for ``proc``. On macOS, ``sweep`` runs while the script is still going.
 
     Standard output and standard error are drained while the process runs.
     Only the last ``_SCRIPT_OUTPUT_CAP`` bytes of each are kept.
+
+    ``before_reap`` runs once the process has exited and before it is
+    collected. The write counter is still available then. Collecting the
+    process first drops it.
     """
     deadline = time.monotonic() + wall
     capture = _OutputCapture(proc)
     capture.start()
     try:
         while True:
+            exited = _exited_unreaped(proc.pid)
+            if exited is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(proc.args, wall)
+                step = min(0.05, remaining) if sweep is not None else remaining
+                try:
+                    proc.wait(timeout=step)
+                except subprocess.TimeoutExpired:
+                    if sweep is not None:
+                        sweep()
+                    if deadline - time.monotonic() <= 0:
+                        raise subprocess.TimeoutExpired(proc.args, wall) from None
+                    continue
+                break
+            if exited:
+                if before_reap is not None:
+                    before_reap()
+                proc.wait(timeout=5)
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(proc.args, wall)
-            step = min(0.05, remaining) if sweep is not None else remaining
-            try:
-                proc.wait(timeout=step)
-            except subprocess.TimeoutExpired:
-                if sweep is not None:
-                    sweep()
-                if deadline - time.monotonic() <= 0:
-                    raise subprocess.TimeoutExpired(proc.args, wall) from None
-                continue
-            break
+            if sweep is not None:
+                sweep()
+            time.sleep(min(0.02, remaining))
         capture.finish()
         return capture.stdout(), capture.stderr()
     except BaseException:
@@ -2791,30 +2814,76 @@ def _snapshot_files(root: Path) -> dict[str, int]:
     return sizes
 
 
+def _wchar_from_text(text: str) -> int | None:
+    """The ``wchar`` total in a Linux ``/proc/<pid>/io`` snapshot."""
+    for line in text.splitlines():
+        if line.startswith("wchar:"):
+            try:
+                return int(line.split(":", 1)[1].strip())
+            except ValueError:
+                return None
+    return None
+
+
 def _process_write_bytes(pid: int) -> int | None:
     """Logical bytes this process has written, or None when the system will not say.
 
     On Linux this is ``wchar``, the bytes passed to write. A file removed
     before the next directory look is still included. ``write_bytes`` is only
-    what has reached storage, so it misses that file.
+    what has reached storage, so it misses that file. Opening that file after
+    the process has exited fails, so the caller keeps a descriptor from while
+    the process was alive and reads it again at exit.
     """
     if sys.platform.startswith("linux"):
         try:
             text = Path(f"/proc/{pid}/io").read_text(encoding="utf-8")
         except OSError:
             return None
-        for line in text.splitlines():
-            if line.startswith("wchar:"):
-                try:
-                    return int(line.split(":", 1)[1].strip())
-                except ValueError:
-                    return None
-        return None
+        return _wchar_from_text(text)
     if sys.platform == "darwin":
         from aicad.sandbox_macos import bytes_written
 
         return bytes_written(pid)
     return None
+
+
+def _release_write_fd(holder: list[int | None]) -> None:
+    """Write one byte and close the pipe that holds a script at startup.
+
+    An empty read is the same signal. Closing the write end does that when
+    this process goes away before it can write.
+    """
+    descriptor = holder[0]
+    if descriptor is None:
+        return
+    holder[0] = None
+    try:
+        os.write(descriptor, b"\n")
+    except OSError:
+        pass
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _exited_unreaped(pid: int) -> bool | None:
+    """Whether ``pid`` has exited and has not been collected.
+
+    None means this system cannot answer without collecting the process.
+    A normal wait collects it, and the write counter is gone after that.
+    """
+    waitid = getattr(os, "waitid", None)
+    exited = getattr(os, "WEXITED", None)
+    nohang = getattr(os, "WNOHANG", None)
+    nowait = getattr(os, "WNOWAIT", None)
+    if waitid is None or None in (exited, nohang, nowait):
+        return None
+    try:
+        status = waitid(os.P_PID, pid, exited | nohang | nowait)
+    except (AttributeError, ChildProcessError, OSError):
+        return None
+    return status is not None
 
 
 class _DiskWatch:
@@ -2831,8 +2900,59 @@ class _DiskWatch:
         self.disk_cap = disk_cap
         self.hit = threading.Event()
         self._io_base: dict[int, int] = {}
+        self._io_fds: dict[int, int] = {}
         self.io_peak = 0
         self._lock = threading.Lock()
+
+    def hold_counter(self, pid: int) -> None:
+        """Keep this process's write counter readable after it exits.
+
+        On Linux, ``/proc/<pid>/io`` cannot be opened for a zombie, and it
+        disappears once the process is collected. A descriptor opened while
+        the process is alive still returns ``wchar`` until then.
+        """
+        if pid <= 0 or not sys.platform.startswith("linux"):
+            return
+        with self._lock:
+            if pid in self._io_fds:
+                return
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            descriptor = os.open(f"/proc/{pid}/io", flags)
+        except OSError:
+            return
+        with self._lock:
+            if pid in self._io_fds:
+                os.close(descriptor)
+                return
+            self._io_fds[pid] = descriptor
+
+    def close_counters(self) -> None:
+        with self._lock:
+            descriptors = list(self._io_fds.values())
+            self._io_fds.clear()
+        for descriptor in descriptors:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+    def _counter(self, pid: int) -> int | None:
+        with self._lock:
+            descriptor = self._io_fds.get(pid)
+            if descriptor is not None:
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    data = os.read(descriptor, 4096)
+                except OSError:
+                    data = b""
+                if data:
+                    value = _wchar_from_text(data.decode("utf-8", "replace"))
+                    if value is not None:
+                        return value
+        return _process_write_bytes(pid)
 
     def baseline(self, pid: int) -> None:
         """Remember bytes already written, so only later writes count.
@@ -2840,7 +2960,7 @@ class _DiskWatch:
         A process that was not seen here counts from zero on the first sample.
         That sample is not itself a baseline.
         """
-        current = _process_write_bytes(pid)
+        current = self._counter(pid)
         with self._lock:
             if pid not in self._io_base:
                 self._io_base[pid] = 0 if current is None else current
@@ -2848,7 +2968,7 @@ class _DiskWatch:
     def note_io(self, pids: set[int]) -> None:
         total = 0
         for pid in pids:
-            current = _process_write_bytes(pid)
+            current = self._counter(pid)
             if current is None:
                 continue
             with self._lock:
@@ -2992,7 +3112,10 @@ def _watch_descendants(
             _kill_process_tree(leader, seen, lock, extra=found)
             return
         if disk is not None:
-            disk.note_io({leader, *found})
+            watched = {leader, *found}
+            for pid in watched:
+                disk.hold_counter(pid)
+            disk.note_io(watched)
             disk.note_files()
             if disk.hit.is_set():
                 _kill_process_tree(leader, seen, lock, extra=found)
@@ -3058,23 +3181,36 @@ def _join_reaper(stop_watch: threading.Event | None, watcher: threading.Thread |
     return not watcher.is_alive()
 
 
-def _stop_child(proc: subprocess.Popen, seen: set[int], seen_lock: threading.Lock, *, reap_seconds: float = 5) -> None:
+def _stop_child(
+    proc: subprocess.Popen,
+    seen: set[int],
+    seen_lock: threading.Lock,
+    *,
+    reap_seconds: float = 5,
+    before_reap=None,
+) -> None:
     """Kill a sandbox child and do not wait forever for it to disappear.
 
     The first signal is the process group. If the process is still alive, it
     is signalled again and the pipes are closed. The waits are bounded, so a
     child that does not die cannot hold the test until the job is cancelled.
+    ``before_reap`` runs after the signal and before the process is collected,
+    while its write counter can still be read.
     """
     _kill_process_tree(proc.pid, seen, seen_lock)
     # Close the pipes instead of reading them. A long stream would be stored
     # by communicate(), and the child can exit once the write end is gone.
     _close_child_pipes(proc)
+    if before_reap is not None:
+        before_reap()
     try:
         proc.wait(timeout=reap_seconds)
         return
     except subprocess.TimeoutExpired:
         pass
     _kill_process_tree(proc.pid, seen, seen_lock)
+    if before_reap is not None:
+        before_reap()
     try:
         proc.wait(timeout=reap_seconds)
     except subprocess.TimeoutExpired:
@@ -3353,6 +3489,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds()
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
+    quota_hold: list[int | None] = [None]
     disk_stop = threading.Event()
     stop_watch: threading.Event | None = None
     watcher: threading.Thread | None = None
@@ -3447,9 +3584,37 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             account = _Account()
         from aicad.thread_stack import child_inherits_geometry_stack
 
-        with child_inherits_geometry_stack():
-            proc = subprocess.Popen(command, **popen_kwargs)
+        # The script waits on this pipe. The counter is opened and baselined
+        # before the byte is written, so a script that writes and exits cannot
+        # finish before the first reading exists.
+        hold_read, hold_write = os.pipe()
+        quota_hold[0] = hold_write
+        try:
+            os.set_inheritable(hold_read, True)
+            env["AICAD_QUOTA_HOLD"] = str(hold_read)
+            inherited = tuple(popen_kwargs.get("pass_fds", ()))
+            popen_kwargs["pass_fds"] = (*inherited, hold_read)
+            popen_kwargs["close_fds"] = True
+            with child_inherits_geometry_stack():
+                proc = subprocess.Popen(command, **popen_kwargs)
+        finally:
+            os.close(hold_read)
+        disk.hold_counter(proc.pid)
         disk.baseline(proc.pid)
+        _release_write_fd(quota_hold)
+
+        def _read_disk_at_exit() -> None:
+            with seen_lock:
+                pids = set(seen)
+            pids.add(proc.pid)
+            try:
+                pids.update(_descendants(proc.pid))
+            except OSError:
+                pass
+            for pid in pids:
+                disk.hold_counter(pid)
+            disk.note_io(pids)
+
         if account is not None and sentinel_path is not None:
             identity = process_identity(proc.pid)
             if identity is not None:
@@ -3458,7 +3623,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             try:
                 _require_pids_cgroup(pids_cgroup, proc.pid)
             except ScriptError:
-                _stop_child(proc, seen, seen_lock)
+                _stop_child(proc, seen, seen_lock, before_reap=_read_disk_at_exit)
                 shutil.rmtree(job, ignore_errors=True)
                 raise
         stop_watch = threading.Event()
@@ -3486,11 +3651,16 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             _sweep_escaped(proc.pid, sentinel_path, account, seen, seen_lock)
 
         try:
-            stdout_b, stderr_b = _wait_script(proc, wall, sweep if account is not None else None)
+            stdout_b, stderr_b = _wait_script(
+                proc,
+                wall,
+                sweep if account is not None else None,
+                before_reap=_read_disk_at_exit,
+            )
         except subprocess.TimeoutExpired:
             if account is not None and not _join_reaper(stop_watch, watcher):
                 account.fail()
-            _stop_child(proc, seen, seen_lock)
+            _stop_child(proc, seen, seen_lock, before_reap=_read_disk_at_exit)
             if account is not None and sentinel_path is not None:
                 try:
                     _reap_macos(proc.pid, sentinel_path, account, seen, seen_lock)
@@ -3527,10 +3697,12 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         keep_job = True
         return payload
     finally:
+        _release_write_fd(quota_hold)
         if stop_watch is not None:
             stop_watch.set()
         if watcher is not None:
             watcher.join(timeout=1)
+        disk.close_counters()
         _release_pids_cgroup(pids_cgroup)
         if profile_path is not None:
             profile_path.unlink(missing_ok=True)

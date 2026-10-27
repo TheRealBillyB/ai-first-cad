@@ -287,6 +287,28 @@ def test_job_io_is_counted_from_the_baseline(tmp_path, monkeypatch):
     assert not quiet.hit.is_set()
 
 
+def test_a_script_that_exits_immediately_still_counts_a_removed_file(tmp_path, monkeypatch):
+    supported, reason = sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+    monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
+    monkeypatch.setenv("AICAD_SCRIPT_DISK_BYTES", "200000")
+    monkeypatch.setenv("AICAD_SCRIPT_FILE_BYTES", str(512 * 1024 * 1024))
+    monkeypatch.delenv("AICAD_SCRIPT_NETWORK", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    script = (
+        "from pathlib import Path\n"
+        "path = Path('gone.bin')\n"
+        "path.write_bytes(b'x' * 500000)\n"
+        "path.unlink()\n"
+        "raise SystemExit\n"
+    )
+    with pytest.raises(ScriptError, match="wrote more than"):
+        run_part_script(script, project)
+    assert not (project / "gone.bin").exists()
+
+
 def test_a_removed_file_still_counts_toward_the_disk_quota(tmp_path, monkeypatch):
     supported, reason = sandbox_supported()
     if not supported:
