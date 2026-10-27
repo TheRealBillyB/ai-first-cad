@@ -372,7 +372,9 @@ def is_reserved_device_name(component: str) -> bool:
     return len(stem) == 4 and stem[:3] in {"com", "lpt"} and stem[3] in "123456789"
 
 
-_SHORT_NAME = re.compile(r"^[A-Za-z0-9]{1,6}~\d(?:\.[A-Za-z0-9]{1,3})?$")
+# The digit run is the generated suffix. Windows uses more than one digit
+# once nine short names already share the stem, and the stem gets shorter.
+_SHORT_NAME = re.compile(r"^[A-Za-z0-9]{1,6}~\d{1,6}(?:\.[A-Za-z0-9]{1,3})?$")
 
 
 def refuse_short_name_components(text: str, label: str, error: type[Exception]) -> None:
