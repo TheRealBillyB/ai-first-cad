@@ -1613,6 +1613,8 @@ class Document:
     def check_print(self, name: str, setup: dict | None = None) -> dict:
         """Overhang map, a suggested orientation, printer fit, and an optional slicer estimate.
 
+        A down-facing span held along an edge is a bridge, not support, up to
+        ``bridge_mm`` (default 5). A face with no path to the bed still counts.
         An assembly is checked in its stored pose, as one print, without
         uniting the solids.
         """
