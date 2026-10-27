@@ -97,7 +97,7 @@ That stops another website, including one that tries to reach this computer by a
 
 - **E.** A directory link is unlinked when a project folder is removed, and the directory it points at is left in place.
 - A design script's job file, script file, and result are not opened when that name is a link.
-- **AL.** A slicer runs with the program directory as its working directory. An output folder that is a symlink or junction is not used.
+- **AL.** A slicer, ffmpeg, and CalculiX each run in a private folder outside the project and see only file names from that folder. Results are copied back into the project. An output folder that is a symlink or junction is not used.
 
 - A token, a design-script opt-in, a session record, and saved assistant settings are created readable by this user only.
 - **AM.** A request to the model API or the workspace app does not follow a redirect, and it does not open a file URL. The workspace app refuses a request line that names another host. A host or origin is accepted only as ``localhost`` or ``127.0.0.1`` with the decimal port it bound.
