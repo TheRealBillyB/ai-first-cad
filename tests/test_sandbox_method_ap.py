@@ -11,17 +11,22 @@ import sys
 
 import pytest
 
-from aicad.sandbox import _OS_ENV, _SCRIPT_LIMITS, _SCRIPT_LOCALE, _SCRIPT_TEXT, _child_env
+from aicad.sandbox import (
+    _OS_ENV,
+    _SCRIPT_HOME,
+    _SCRIPT_LIMITS,
+    _SCRIPT_LOCALE,
+    _SCRIPT_TEXT,
+    _WINDOWS_SESSION,
+    _child_env,
+)
 
 _MARKER = "CANARY_ENV_MARKER_VALUE"
 
 _DROPPED = (
     "ORDINARY_PARENT",
-    "HOME",
     "USER",
     "LOGNAME",
-    "APPDATA",
-    "LOCALAPPDATA",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "ALL_PROXY",
@@ -55,12 +60,13 @@ def _allowed_names() -> set[str]:
         *_SCRIPT_LOCALE,
         *_SCRIPT_TEXT,
         *_SCRIPT_LIMITS,
+        *_SCRIPT_HOME,
         *_OS_ENV,
     }
     if sys.platform == "win32":
+        names.update(_WINDOWS_SESSION)
         names.update(
             {
-                "USERPROFILE",
                 "AICAD_WIN_NET_RECEIVERS",
                 "XDG_CACHE_HOME",
                 "XDG_CONFIG_HOME",
@@ -86,8 +92,10 @@ def test_a_script_environment_is_an_allowlist(tmp_path, monkeypatch):
     monkeypatch.setenv("AICAD_SCRIPT_CPU_SECONDS", "1")
     monkeypatch.setenv("AICAD_SCRIPT_MEMORY_MB", "256")
     monkeypatch.setenv("AICAD_SCRIPT_FILE_BYTES", "2048")
+    monkeypatch.setenv("HOME", str(outside / "home"))
     monkeypatch.setenv("AICAD_WIN_NET_RECEIVERS", "127.0.0.1:9:9")
     monkeypatch.setenv("USERPROFILE", str(outside / "profile"))
+    monkeypatch.setenv("APPDATA", str(outside / "appdata"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(outside / "config"))
     monkeypatch.setenv("TEMP", str(outside / "temp"))
     monkeypatch.setenv("TMP", str(outside / "temp"))
@@ -111,15 +119,17 @@ def test_a_script_environment_is_an_allowlist(tmp_path, monkeypatch):
     assert env["TEMP"] == str(project / ".aicad" / "tmp")
     assert env["TMP"] == str(project / ".aicad" / "tmp")
     assert env["TMPDIR"] == str(project / ".aicad" / "tmp")
+    assert env["HOME"] == str(outside / "home")
     if sys.platform == "win32":
         assert env["USERPROFILE"] == str(outside / "profile")
+        assert env["APPDATA"] == str(outside / "appdata")
         assert env["AICAD_WIN_NET_RECEIVERS"] == "127.0.0.1:9:9"
         assert env["XDG_CONFIG_HOME"] == str(project / ".aicad" / "cache")
     else:
         assert "USERPROFILE" not in env
+        assert "APPDATA" not in env
         assert "AICAD_WIN_NET_RECEIVERS" not in env
         assert "XDG_CONFIG_HOME" not in env
-        assert "HOME" not in env
 
 
 def test_windows_script_environment_keeps_the_profile_and_receivers(tmp_path, monkeypatch):
@@ -136,9 +146,9 @@ def test_windows_script_environment_keeps_the_profile_and_receivers(tmp_path, mo
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setenv("ORDINARY_PARENT", _MARKER)
-    monkeypatch.setenv("HOME", _MARKER)
-    monkeypatch.setenv("APPDATA", _MARKER)
-    monkeypatch.setenv("LOCALAPPDATA", _MARKER)
+    monkeypatch.setenv("HOME", str(outside / "home"))
+    monkeypatch.setenv("APPDATA", str(outside / "appdata"))
+    monkeypatch.setenv("LOCALAPPDATA", str(outside / "local"))
     monkeypatch.setenv("USERPROFILE", str(outside / "profile"))
     monkeypatch.setenv("AICAD_WIN_NET_RECEIVERS", "10.0.0.1:80:80")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(outside / "config"))
@@ -153,9 +163,11 @@ def test_windows_script_environment_keeps_the_profile_and_receivers(tmp_path, mo
     assert env["XDG_DATA_HOME"] == cache
     assert env["MPLCONFIGDIR"] == cache
     assert "ORDINARY_PARENT" not in env
-    assert "HOME" not in env
-    assert "APPDATA" not in env
-    assert "LOCALAPPDATA" not in env
+    assert env["HOME"] == str(outside / "home")
+    assert env["APPDATA"] == str(outside / "appdata")
+    assert env["LOCALAPPDATA"] == str(outside / "local")
+    assert env["USERPROFILE"] != cache
+    assert env["APPDATA"] != cache
     assert _MARKER not in env.values()
 
 
