@@ -2618,7 +2618,8 @@ def _wait_script(
 
     ``before_reap`` runs once the process has exited and before it is
     collected. The write counter is still available then. Collecting the
-    process first drops it.
+    process first drops it. A system that cannot report the exit without
+    collecting the process is not collected until that reading has run.
     """
     deadline = time.monotonic() + wall
     capture = _OutputCapture(proc)
@@ -2627,23 +2628,14 @@ def _wait_script(
         while True:
             exited = _exited_unreaped(proc.pid)
             if exited is None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired(proc.args, wall)
-                step = min(0.05, remaining) if sweep is not None else remaining
-                try:
-                    proc.wait(timeout=step)
-                except subprocess.TimeoutExpired:
-                    if sweep is not None:
-                        sweep()
-                    if deadline - time.monotonic() <= 0:
-                        raise subprocess.TimeoutExpired(proc.args, wall) from None
-                    continue
-                break
+                exited = _exited_for_reading(proc)
             if exited:
                 if before_reap is not None:
                     before_reap()
-                proc.wait(timeout=5)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    continue
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -2656,6 +2648,60 @@ def _wait_script(
     except BaseException:
         capture.finish(timeout=0.2)
         raise
+
+
+def _exited_for_reading(proc: subprocess.Popen) -> bool | None:
+    """Whether ``proc`` has exited, without collecting it.
+
+    None means this system cannot tell a running process from a zombie.
+    True means it is a zombie or already gone. The caller reads the write
+    counter before collecting the process.
+    """
+    pid = proc.pid
+    if pid is None or pid <= 0:
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return None
+        close = text.rfind(")")
+        if close < 0 or close + 2 >= len(text):
+            return None
+        return text[close + 2] == "Z"
+    if sys.platform == "darwin":
+        from aicad.sandbox_macos import process_runtime
+
+        runtime = process_runtime(pid)
+        if runtime is not None:
+            return bool(runtime[1])
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError as exc:
+            if exc.errno == errno.ESRCH:
+                return True
+            return None
+        return None
+    if sys.platform == "win32":
+        handle = getattr(proc, "_handle", None)
+        if not handle:
+            return None
+        from ctypes import wintypes
+
+        code = wintypes.DWORD()
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.GetExitCodeProcess.restype = wintypes.BOOL
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return None
+        # 259 is STILL_ACTIVE. Any other code means the process has exited
+        # and has not been collected.
+        return int(code.value) != 259
+    return None
 
 
 def _exited(pid: int, expected: tuple[int, int] | None) -> bool:

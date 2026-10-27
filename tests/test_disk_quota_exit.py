@@ -162,3 +162,34 @@ def test_the_exit_reading_happens_before_the_process_is_collected():
             proc.wait(timeout=5)
     assert seen["still_listed"] is True
     assert not Path(f"/proc/{proc.pid}").exists()
+
+
+def test_the_exit_reading_runs_when_waitid_is_unavailable(monkeypatch):
+    monkeypatch.setattr("aicad.sandbox._exited_unreaped", lambda pid: None)
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.2)"])
+    seen: dict[str, object] = {}
+
+    def before_reap() -> None:
+        # The process is still uncollected. returncode is set only by wait.
+        seen["returncode"] = proc.returncode
+        if sys.platform.startswith("linux"):
+            text = Path(f"/proc/{proc.pid}/stat").read_text(encoding="utf-8")
+            close = text.rfind(")")
+            seen["zombie"] = close >= 0 and close + 2 < len(text) and text[close + 2] == "Z"
+        elif sys.platform == "darwin":
+            from aicad.sandbox_macos import process_runtime
+
+            runtime = process_runtime(proc.pid)
+            seen["zombie"] = runtime is not None and runtime[1]
+        else:
+            seen["zombie"] = True
+
+    try:
+        _wait_script(proc, 30, None, before_reap=before_reap)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+    assert seen["returncode"] is None
+    assert seen["zombie"] is True
+    assert proc.returncode is not None
