@@ -391,7 +391,39 @@ def _early_thread_stack():
     return module
 
 
+def _wait_for_quota_hold() -> None:
+    """Block until the parent has opened the write counter.
+
+    The script has not run yet. Bytes written after this returns are the
+    script's. A missing descriptor, or a closed pipe, means there is nothing
+    to wait for.
+    """
+    raw = os.environ.pop("AICAD_QUOTA_HOLD", "")
+    if raw.strip() == "":
+        return
+    try:
+        held = int(raw)
+    except ValueError:
+        return
+    if held < 0:
+        return
+    try:
+        while True:
+            try:
+                os.read(held, 1)
+            except InterruptedError:
+                continue
+            break
+    except OSError:
+        pass
+    try:
+        os.close(held)
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _wait_for_quota_hold()
     stack = _early_thread_stack()
     if stack is not None:
         stack.prepare_geometry_thread_stack()
