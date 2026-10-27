@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-27
+
+| Decision | Rationale |
+| --- | --- |
+| A Windows directory is created from its parent handle | Creating the directory and opening that name are one request on the parent handle, so a link at the name is not followed. |
+
 ## 2026-10-26
 
 | Decision | Rationale |

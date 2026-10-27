@@ -99,3 +99,4 @@ That stops another website, including one that tries to reach this computer by a
 - **AL.** A slicer runs with the program directory as its working directory. An output folder that is a symlink or junction is not used.
 
 - A token, a design-script opt-in, a session record, and saved assistant settings are created readable by this user only.
+- **AM.** A directory created on Windows is one request on the parent directory handle. A link at that name is not followed.
