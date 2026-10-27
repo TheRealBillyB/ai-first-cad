@@ -1692,7 +1692,7 @@ _add(Command(
 ))
 _add(Command(
     "run_motion",
-    "Sweep a joint or play keyframes. Reports collisions and renders an isometric frame for each sample.",
+    "Sweep a joint from its stops, or between start and end, or play keyframes. Reports collisions and renders an isometric frame for each sample.",
     _MOTION,
     _cmd_run_motion,
 ))

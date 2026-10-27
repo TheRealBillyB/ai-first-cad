@@ -347,8 +347,8 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `inspect_part` renders front, back, left, right, top, bottom, and isometric views.
 - `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
-- `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
-- `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
+- `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. Omit start and end to sweep from the joint's min stop to its max stop. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
+- `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds), keyframes, or `range` true to sweep from the joint's min stop to its max stop. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
 - `solve_kinematics` solves the chain from the grounded part to `tool`. Pass `joints` for a forward pose. Pass `target` (`position`, `rotation_deg`, or `matrix`) for inverse kinematics. A planar elbow returns both bends. A spherical wrist returns each shoulder, elbow, and wrist branch that reaches. An unreachable, singular, or out-of-limit target is reported, and a value past a stop is not a solution. Pass `path` (`kind` `line` or `waypoints`) to step the tool and reuse the motion study for collisions and joint limits. The record is `kinematics.v1`.
 - `check_position_error` budgets the tip position error of that chain. `sources` maps a joint to `encoder`, `backlash`, and `stiffness`. Encoder `resolution_deg` or `counts` uses half a step. Backlash is the full gap: `deg`, `arcmin`, `mm` with `radius_mm`, or `mesh` (a spur, helical, or bevel pair; the circumferential arc divided by the operating pitch radius). Stiffness is `torque_nmm` over `nmm_per_rad`, or `force_n` over `n_per_mm`. `links` maps an instance to a stated `translation_mm` and `rotation_rad`, or to `fea` (the same setup as `solve_mechanics`). Pass `poses` or `path`. The pass is the worst case against `tolerance_mm`. Root-sum-square is reported and does not grant a pass. Read assumptions and limits. The record is `position_error.v1`.
 - `check_cables` routes polylines through waypoints fixed on parts, and tendons through anchors, pulleys, guides, and an end anchor. It reports length change, slack or stretch, strain, bend-radius violations, wrap angle, capstan tension from `actuator_force_n`, and pinching or collision. A tendon length includes the wrap arc. `sequence` may name a motion study. It does not simulate a flexible body.
@@ -947,8 +947,10 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
         sequence names a study stored on the assembly. study is an inline
         timeline: duration_s, steps, clearance_mm, drivers, and couplings.
-        A driver is {joint, expression} with t in seconds, or
-        {joint, keyframes: [{time_s, value}]}. A cylindrical joint may also
+        A driver is {joint, expression} with t in seconds,
+        {joint, keyframes: [{time_s, value}]}, or {joint, range: true} to sweep
+        from the joint's min stop to its max stop. range may be {start, end}.
+        A cylindrical joint may also
         set slide. A coupling is {type: gear, driver, driven, ratio, offset}
         and means driven = ratio * driver + offset.
         The record schema is motion_study.v1. Each step has the pose matrix
