@@ -2,8 +2,9 @@
 
 The build direction is +Z after the part is turned. A triangle needs support
 when it faces down more steeply than the threshold, and when it is not the
-face sitting on the bed. A slicer is optional: if OrcaSlicer or PrusaSlicer
-is not on PATH, the report says so and the other checks still stand.
+face sitting on the bed. A short span held along an edge is a bridge and is
+not counted. A slicer is optional: if OrcaSlicer or PrusaSlicer is not on
+PATH, the report says so and the other checks still stand.
 """
 
 from __future__ import annotations
@@ -58,6 +59,13 @@ _ORIENTATIONS = {
     "y_down": ((0.0, -1.0, 0.0), "Turn it so modeled −Y is up."),
 }
 _SLICERS = ("orca-slicer", "orcaslicer", "OrcaSlicer", "prusa-slicer", "prusaslicer", "PrusaSlicer")
+# Faces this close to the lowest point are the bed, not an overhang.
+_BED_MM = 0.05
+# A down-facing span no wider than this, held along an edge, prints as a bridge.
+_DEFAULT_BRIDGE_MM = 5.0
+# Vertices closer than this are the same point when a mesh splits a shared edge.
+_WELD_MM = 0.02
+_BRIDGE_PAIR_LIMIT = 4_000_000
 _TIME = re.compile(r"estimated printing time[^=]*=\s*([^\n]+)", re.IGNORECASE)
 _GRAMS = re.compile(r"filament used \[g\]\s*=\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
 _COST = re.compile(r"(?:total )?filament cost\s*=\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
@@ -104,8 +112,9 @@ def analyze_print(
     threshold = float(setup.get("threshold_deg") if setup.get("threshold_deg") is not None else 45.0)
     if not 0 < threshold < 90:
         raise GeometryError("threshold_deg is how far from vertical a face may lean before it needs support, between 0 and 90.")
+    bridge_mm = _bridge_span(setup.get("bridge_mm", _DEFAULT_BRIDGE_MM))
     mesh = kernel.tessellate(shape)
-    scores = [_score(mesh, name, threshold) for name in _ORIENTATIONS]
+    scores = [_score(mesh, name, threshold, bridge_mm) for name in _ORIENTATIONS]
     requested = str(setup.get("orientation") or "best").lower().replace("-", "_").replace(" ", "_")
     wanted = setup.get("printer")
     printer = lookup_printer(str(wanted)) if wanted else None
@@ -131,7 +140,7 @@ def analyze_print(
         focus = next(row for row in printers if row["id"] == printer["id"])
     views = []
     if out_dir is not None and setup.get("render", True):
-        views = _render(mesh, chosen_name, threshold, Path(out_dir), part_name or "part")
+        views = _render(mesh, chosen_name, threshold, bridge_mm, Path(out_dir), part_name or "part")
     slicer = {"status": "not_requested"}
     if setup.get("slice"):
         slicer = slice_mesh(
@@ -154,6 +163,9 @@ def analyze_print(
         "threshold_deg": threshold,
         "support_area_mm2": chosen["support_area_mm2"],
         "support_fraction": chosen["support_fraction"],
+        "bridge_area_mm2": chosen["bridge_area_mm2"],
+        "bridge_mm": chosen["bridge_mm"],
+        "bed_band_mm": chosen["bed_band_mm"],
         "height_mm": chosen["height_mm"],
         "footprint_mm": chosen["footprint_mm"],
         "size_mm": chosen["size_mm"],
@@ -162,7 +174,7 @@ def analyze_print(
         "printer": focus,
         "slicer": slicer,
         "views": views,
-        "assumptions": _assumptions(threshold),
+        "assumptions": _assumptions(threshold, bridge_mm),
         "note": _headline(chosen, automatic, focus, slicer),
     }
     return finish(
@@ -172,7 +184,12 @@ def analyze_print(
         what="Overhang, support area, and printer fit are rough estimates. A slicer time, when present, uses that slicer's default profile.",
         limits=[
             "Only the six axis-up orientations are tried. A diagonal pose is not searched.",
-            "The bed face, within 0.4 mm of the lowest point, is not counted as support.",
+            f"The bed face, within {_BED_MM:g} mm of the lowest point, is not counted as support.",
+            (
+                "A down-facing span held along an edge is a bridge, not support, when twice "
+                f"its farthest distance to that edge is at most {bridge_mm:g} mm. "
+                "A face with no path to the bed still counts."
+            ),
             "Time and grams follow the slicer's default profile. A missing slicer skips those numbers.",
         ],
     )
@@ -342,28 +359,208 @@ def parse_gcode(text: str) -> dict:
     }
 
 
-def _score(mesh, name: str, threshold: float) -> dict:
+def _bridge_span(value) -> float:
+    try:
+        span = float(value)
+    except (TypeError, ValueError) as exc:
+        raise GeometryError(
+            "bridge_mm is the span, in millimeters, that still counts as a bridge. Use 0 to count every overhang."
+        ) from exc
+    if not math.isfinite(span) or span < 0:
+        raise GeometryError(
+            "bridge_mm is the span, in millimeters, that still counts as a bridge. Use 0 to count every overhang."
+        )
+    return span
+
+
+def _score(mesh, name: str, threshold: float, bridge_mm: float = _DEFAULT_BRIDGE_MM) -> dict:
     vertices, triangles, normals = _oriented_arrays(mesh, name)
-    areas = _areas(vertices, triangles)
-    centroids = vertices[triangles].mean(axis=1)
-    min_z = float(vertices[:, 2].min()) if len(vertices) else 0.0
-    on_bed = centroids[:, 2] <= min_z + 0.4
-    # A face that leans phi from vertical has normal z of -sin(phi).
-    # Straight down is 90 degrees and a vertical wall is 0.
-    limit = -math.sin(math.radians(threshold))
-    overhang = (normals[:, 2] < limit) & ~on_bed
+    areas, _on_bed, overhang, bridge = _classify(vertices, triangles, normals, threshold, bridge_mm)
     total = float(areas.sum()) or 1.0
-    support = float(areas[overhang].sum())
+    support_mask = overhang & ~bridge
+    support = float(areas[support_mask].sum())
     size = vertices.max(axis=0) - vertices.min(axis=0) if len(vertices) else np.zeros(3)
     return {
         "orientation": name,
         "note": _ORIENTATIONS[name][1],
         "support_area_mm2": round(support, 2),
         "support_fraction": round(support / total, 4),
+        "bridge_area_mm2": round(float(areas[bridge].sum()), 2),
+        "bridge_mm": bridge_mm,
+        "bed_band_mm": _BED_MM,
         "height_mm": round(float(size[2]), 3),
         "footprint_mm": [round(float(size[0]), 3), round(float(size[1]), 3)],
         "size_mm": [round(float(value), 3) for value in size],
     }
+
+
+def _classify(vertices, triangles, normals, threshold: float, bridge_mm: float):
+    """Bed faces, down-facing faces, and the down-facing faces that are bridges."""
+    areas = _areas(vertices, triangles)
+    min_z = float(vertices[:, 2].min()) if len(vertices) else 0.0
+    centroids = vertices[triangles].mean(axis=1)
+    on_bed = centroids[:, 2] <= min_z + _BED_MM
+    # A face that leans phi from vertical has normal z of -sin(phi).
+    # Straight down is 90 degrees and a vertical wall is 0.
+    limit = -math.sin(math.radians(threshold))
+    overhang = (normals[:, 2] < limit) & ~on_bed
+    bridge = _bridge_mask(vertices, triangles, overhang, on_bed, bridge_mm)
+    return areas, on_bed, overhang, bridge
+
+
+def _bridge_mask(vertices, triangles, overhang, on_bed, bridge_mm: float) -> np.ndarray:
+    """Down-facing triangles that span at most ``bridge_mm`` from a supported edge.
+
+    A patch counts only when it shares an edge with a face that itself reaches
+    the bed without crossing a down-facing face. The span is twice the farthest
+    sample from that edge, so a tongue held at one end is as long as the tongue.
+    """
+    count = len(triangles)
+    mask = np.zeros(count, dtype=bool)
+    if bridge_mm <= 0 or count == 0 or not bool(np.any(overhang)):
+        return mask
+    verts, faces = _weld_faces(vertices, triangles)
+    edge_map = _edge_map(faces)
+    grounded = _grounded(faces, edge_map, on_bed, overhang)
+    parent = list(range(count))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left, right = find(left), find(right)
+        if left != right:
+            parent[right] = left
+
+    for members in edge_map.values():
+        hanging = [item for item in members if overhang[item]]
+        for other in hanging[1:]:
+            union(hanging[0], other)
+    groups: dict[int, list[int]] = {}
+    for index in np.flatnonzero(overhang):
+        groups.setdefault(find(int(index)), []).append(int(index))
+    for members in groups.values():
+        segments = _attachment_segments(verts, faces, edge_map, members, grounded)
+        if not segments:
+            continue
+        points = _span_samples(verts, faces, members)
+        if _bridge_span_mm(points, verts, segments) <= bridge_mm + 1e-6:
+            mask[members] = True
+    return mask
+
+
+def _weld_faces(vertices, triangles):
+    keys = np.round(vertices / _WELD_MM).astype(np.int64)
+    mapping: dict[tuple[int, int, int], int] = {}
+    remap = np.empty(len(vertices), dtype=np.int32)
+    fresh: list[np.ndarray] = []
+    for index, key in enumerate(keys):
+        token = (int(key[0]), int(key[1]), int(key[2]))
+        slot = mapping.get(token)
+        if slot is None:
+            slot = len(fresh)
+            mapping[token] = slot
+            fresh.append(vertices[index])
+        remap[index] = slot
+    return np.asarray(fresh, dtype=np.float64), remap[triangles]
+
+
+def _edge_key(left: int, right: int) -> tuple[int, int]:
+    return (left, right) if left < right else (right, left)
+
+
+def _edge_map(faces) -> dict[tuple[int, int], list[int]]:
+    edges: dict[tuple[int, int], list[int]] = {}
+    for index, face in enumerate(faces):
+        a, b, c = int(face[0]), int(face[1]), int(face[2])
+        if a == b or b == c or c == a:
+            continue
+        for key in (_edge_key(a, b), _edge_key(b, c), _edge_key(c, a)):
+            edges.setdefault(key, []).append(index)
+    return edges
+
+
+def _grounded(faces, edge_map, on_bed, overhang) -> np.ndarray:
+    """Non-overhang triangles that touch the bed, or touch one that does."""
+    grounded = np.array(on_bed, dtype=bool, copy=True)
+    stack = [int(index) for index in np.flatnonzero(grounded)]
+    while stack:
+        current = stack.pop()
+        face = faces[current]
+        a, b, c = int(face[0]), int(face[1]), int(face[2])
+        if a == b or b == c or c == a:
+            continue
+        for key in (_edge_key(a, b), _edge_key(b, c), _edge_key(c, a)):
+            for other in edge_map.get(key, ()):
+                if grounded[other] or overhang[other]:
+                    continue
+                grounded[other] = True
+                stack.append(other)
+    return grounded
+
+
+def _attachment_segments(verts, faces, edge_map, members, grounded) -> list[tuple[int, int]]:
+    """Edges where a down-facing patch meets a face that continues below that edge.
+
+    A side wall of the same tongue shares the patch's outline but stands above
+    it, so that outline is not a support.
+    """
+    hanging = set(members)
+    found: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for tri in members:
+        face = faces[tri]
+        a, b, c = int(face[0]), int(face[1]), int(face[2])
+        for key in (_edge_key(a, b), _edge_key(b, c), _edge_key(c, a)):
+            if key in seen or key[0] == key[1]:
+                continue
+            midpoint = float(verts[key[0], 2] + verts[key[1], 2]) * 0.5
+            for other in edge_map.get(key, ()):
+                if not grounded[other] or other in hanging:
+                    continue
+                centroid = float(verts[faces[other], 2].mean())
+                if centroid < midpoint - 1e-3:
+                    seen.add(key)
+                    found.append(key)
+                    break
+    return found
+
+
+def _span_samples(verts, faces, members) -> np.ndarray:
+    chunks = [verts[np.unique(faces[members].reshape(-1)), :2]]
+    mids = []
+    cents = []
+    for tri in members:
+        a, b, c = (int(value) for value in faces[tri])
+        pa, pb, pc = verts[a, :2], verts[b, :2], verts[c, :2]
+        mids.append((pa + pb) * 0.5)
+        mids.append((pb + pc) * 0.5)
+        mids.append((pc + pa) * 0.5)
+        cents.append((pa + pb + pc) / 3.0)
+    chunks.append(np.asarray(mids, dtype=np.float64))
+    chunks.append(np.asarray(cents, dtype=np.float64))
+    return np.vstack(chunks)
+
+
+def _bridge_span_mm(points, verts, segments) -> float:
+    origin = np.array([verts[a, :2] for a, _b in segments], dtype=np.float64)
+    dest = np.array([verts[b, :2] for _a, b in segments], dtype=np.float64)
+    if len(points) * len(origin) > _BRIDGE_PAIR_LIMIT:
+        stride = int(math.ceil((len(points) * len(origin)) / _BRIDGE_PAIR_LIMIT))
+        points = points[::stride]
+    ab = dest - origin
+    length2 = np.sum(ab * ab, axis=1)
+    zero = length2 < 1e-18
+    length2 = np.where(zero, 1.0, length2)
+    diff = points[:, None, :] - origin[None, :, :]
+    factor = np.clip(np.sum(diff * ab[None, :, :], axis=2) / length2, 0.0, 1.0)
+    factor[:, zero] = 0.0
+    closest = origin[None, :, :] + factor[:, :, None] * ab[None, :, :]
+    distance = np.linalg.norm(points[:, None, :] - closest, axis=2)
+    return float(2.0 * distance.min(axis=1).max())
 
 
 def _oriented_arrays(mesh, name: str):
@@ -440,14 +637,13 @@ def _fits(size_mm, bed) -> bool:
     return (x <= bx + 1e-6 and y <= by + 1e-6) or (x <= by + 1e-6 and y <= bx + 1e-6)
 
 
-def _render(mesh, name: str, threshold: float, out_dir: Path, part_name: str):
+def _render(mesh, name: str, threshold: float, bridge_mm: float, out_dir: Path, part_name: str):
     vertices, triangles, normals = _oriented_arrays(mesh, name)
     angle = np.degrees(np.arccos(np.clip(normals[:, 2], -1.0, 1.0))) - 90.0
     angle = np.clip(angle, 0.0, 90.0)
-    centroids = vertices[triangles].mean(axis=1)
-    on_bed = centroids[:, 2] <= float(vertices[:, 2].min()) + 0.4
+    _areas, on_bed, _overhang, bridge = _classify(vertices, triangles, normals, threshold, bridge_mm)
     angle = angle.copy()
-    angle[on_bed] = 0.0
+    angle[on_bed | bridge] = 0.0
     # Vertex color is the mean overhang of the triangles that meet there.
     scalars = np.zeros(len(vertices))
     counts = np.zeros(len(vertices))
@@ -533,10 +729,15 @@ def _slicer_note(parsed: dict, price_per_kg) -> str:
     return " ".join(bits)
 
 
-def _assumptions(threshold: float) -> list[str]:
+def _assumptions(threshold: float, bridge_mm: float) -> list[str]:
     return [
         f"Support is required when a triangle leans more than {threshold:g}° from vertical. Straight down is 90°. A vertical wall is 0°.",
-        "The face on the bed is not counted as support. Anything within 0.4 mm of the lowest point is treated as sitting on the plate.",
+        f"The face on the bed is not counted as support. Anything within {_BED_MM:g} mm of the lowest point is treated as sitting on the plate.",
+        (
+            "A connected down-facing patch is a bridge when it shares an edge with a face "
+            f"that reaches the bed, and twice its farthest distance to that edge is at most {bridge_mm:g} mm. "
+            "bridge_mm 0 counts every overhang as support."
+        ),
         "The six orientations put one modeled axis up. They do not try a diagonal pose.",
         "Best means the smallest support area, and the shorter part when two poses tie. When a printer is named, a pose that fits that bed is preferred over a shorter pose that does not.",
         "A printer fits when the oriented height is inside the bed height and the footprint fits, swapping X and Y if that helps.",

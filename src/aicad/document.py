@@ -1609,7 +1609,11 @@ class Document:
         return fatigue_check(spec)
 
     def check_print(self, name: str, setup: dict | None = None) -> dict:
-        """Overhang map, a suggested orientation, printer fit, and an optional slicer estimate."""
+        """Overhang map, a suggested orientation, printer fit, and an optional slicer estimate.
+
+        A down-facing span held along an edge is a bridge, not support, up to
+        ``bridge_mm`` (default 5). A face with no path to the bed still counts.
+        """
         with self._lock:
             part = self._get(name)
             out_dir = _project_directory(self.workspace, self.workspace / "renders" / name, "Render")

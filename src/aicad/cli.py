@@ -345,6 +345,12 @@ def build_parser() -> argparse.ArgumentParser:
     printed.add_argument("--orientation", default="best", help="best, z_up, z_down, x_up, x_down, y_up, or y_down.")
     printed.add_argument("--printer", default=None, help="bambu_a1, prusa_mk4, ender_3, and the other known beds.")
     printed.add_argument("--threshold", type=float, default=45.0, help="Degrees from vertical before a face needs support.")
+    printed.add_argument(
+        "--bridge",
+        type=float,
+        default=None,
+        help="Span in millimeters that still counts as a bridge. 0 counts every overhang.",
+    )
     printed.add_argument("--slice", action="store_true", help="Ask OrcaSlicer or PrusaSlicer for time and grams.")
     printed.add_argument("--price-per-kg", type=float, default=None, help="Used when the gcode has no filament cost.")
 
@@ -888,6 +894,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             "threshold_deg": args.threshold,
             "slice": bool(args.slice),
         }
+        if args.bridge is not None:
+            setup["bridge_mm"] = args.bridge
         if args.printer:
             setup["printer"] = args.printer
         if args.price_per_kg is not None:
