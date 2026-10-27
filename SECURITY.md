@@ -115,4 +115,6 @@ That stops another website, including one that tries to reach this computer by a
 
 - **AP.** A junction is removed the same way as a symlink before a slicer writes. A junction in a plan folder is not entered or removed when orphan sheets are cleaned up.
 
+- **AQ.** A STEP import is read from the bytes already taken from that file. The reader is not given a temporary name to open.
+
 - **AQ.** The design-record log is created from its parent directory handle. A link at that name is not followed.
