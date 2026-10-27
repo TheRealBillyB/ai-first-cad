@@ -19,11 +19,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _dispatch(args)
     except AICADError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
     except (OSError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
+
+
+def _print_error(exc: BaseException) -> None:
+    """Print a failure. Control characters in the message are not sent."""
+
+    from aicad.labels import strip_hidden
+
+    print(f"error: {strip_hidden(str(exc))}", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:

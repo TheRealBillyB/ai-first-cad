@@ -4,6 +4,11 @@
 class AICADError(Exception):
     """An expected failure. The message is meant for a person or an assistant."""
 
+    def __str__(self) -> str:
+        from aicad.labels import strip_hidden
+
+        return strip_hidden(super().__str__())
+
 
 class ScriptError(AICADError):
     """A part script did not produce a usable solid."""
