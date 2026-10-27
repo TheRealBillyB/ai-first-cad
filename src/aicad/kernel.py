@@ -1577,16 +1577,79 @@ def _prepare_export_parent(path: Path) -> None:
         raise GeometryError(f"Could not write {path}.") from exc
 
 
+def _volume_of_step_bytes(data: bytes) -> float:
+    """Volume of STEP bytes. A shell or a file this reader rejects is zero."""
+    if not data or len(data) > MAX_STEP_BYTES:
+        return 0.0
+    try:
+        loaded = _read_step_bytes(Path("part.step"), data)
+    except (GeometryError, OSError, RuntimeError):
+        return 0.0
+    return _volume(loaded)
+
+
+def _step_bytes(impl, *, write_pcurves: bool) -> bytes | None:
+    """STEP bytes for ``impl`` when they read back as a solid."""
+    buffer = io.BytesIO()
+    try:
+        written = bool(export_step(impl, buffer, write_pcurves=write_pcurves))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not written:
+        return None
+    data = buffer.getvalue()
+    if _volume_of_step_bytes(data) <= 0:
+        return None
+    return data
+
+
+def _solid_step_bytes(impl) -> bytes | None:
+    """Bytes of a solid.
+
+    The writer builds the file in memory and the volume check reads those
+    bytes. A path is not opened for either step. Parametric curves are tried
+    first. A shell is sewn and, if it is still empty, written again without
+    those curves. A box is left unchanged.
+    """
+    data = _step_bytes(impl, write_pcurves=True)
+    if data is not None:
+        return data
+    cleaned = _sewn_solid(impl)
+    if cleaned is not None:
+        data = _step_bytes(cleaned, write_pcurves=True)
+        if data is not None:
+            return data
+    data = _step_bytes(impl, write_pcurves=False)
+    if data is not None:
+        return data
+    if cleaned is None:
+        return None
+    return _step_bytes(cleaned, write_pcurves=False)
+
+
+def _sewn_solid(impl):
+    """Sew a solid whose faces are valid in memory but write as an empty shell.
+
+    A flat-bottomed loft fused with a cylinder that sits tangent to that face
+    is one of those solids. ``clean`` sews the shared face. A box is unchanged.
+    """
+    try:
+        cleaned = impl.clean()
+    except Exception:
+        return None
+    if cleaned is None or _volume(cleaned) <= 0:
+        return None
+    return cleaned
+
+
 def export_step_file(shape: Shape, path: Path) -> None:
     from aicad.paths import nofollow_writes, publish_file
 
     def write(temporary: Path) -> None:
-        try:
-            written = export_step(shape.impl, temporary)
-        except (OSError, RuntimeError) as exc:
-            raise GeometryError(f"Could not write STEP file {path}.") from exc
-        if not written:
+        data = _solid_step_bytes(shape.impl)
+        if data is None:
             raise GeometryError(f"Could not write STEP file {path}.")
+        temporary.write_bytes(data)
 
     if not nofollow_writes():
         _prepare_export_parent(path)
