@@ -1656,7 +1656,16 @@ def import_step_file(path: Path) -> Shape:
     Only this file is opened. A name inside it that points at another file is
     not followed, so a shared part cannot read or write outside the project
     by naming some other path. A file past the size cap is not read.
+
+    A glTF, OBJ, or COLLADA file is read the same way. An external buffer, image,
+    or material library is opened only when it is one file in the same folder,
+    and only through the shared file reader. The project path is not given to
+    a geometry reader.
     """
+    if path.suffix.lower() in {".gltf", ".glb", ".obj", ".dae"}:
+        from aicad.mesh_import import import_mesh_file
+
+        return import_mesh_file(path)
     if not path.is_file():
         raise GeometryError(f"STEP file not found: {path}")
     return import_step_bytes(path, read_step_bytes(path))
