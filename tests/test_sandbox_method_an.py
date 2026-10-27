@@ -53,4 +53,6 @@ def test_a_normalized_file_is_not_replaced_by_the_other_spelling(tmp_path):
     with pytest.raises(GeometryError, match="existing name"):
         require_export_path(project, f"exports/{nfc}", "Export path", GeometryError)
     assert stored.read_text(encoding="utf-8") == "kept\n"
-    assert not (exports / nfc).exists()
+    other = exports / nfc
+    if other.exists():
+        assert other.samefile(stored)
