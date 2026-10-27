@@ -204,12 +204,57 @@ def _session_project(file: Path) -> Path | None:
     return None
 
 
+def _project_link_anchor(file: Path) -> tuple[Path, Path] | None:
+    """A linked project directory, and the file's path under that link.
+
+    The outermost directory link is the one closest to the root. When that
+    link's target is a project, the file is opened from the target. A link
+    under the project is a component of that open and is not followed.
+    """
+    from aicad.paths import _relative_within, is_reparse
+
+    chain: list[Path] = []
+    # abspath collapses "." and ".." and does not follow a directory link.
+    # A parent segment is not a link, and the walk stops if it repeats.
+    probe = Path(os.path.abspath(file.parent))
+    seen: set[str] = set()
+    while True:
+        key = os.path.normcase(os.fspath(probe))
+        if key in seen:
+            break
+        seen.add(key)
+        chain.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    outermost: Path | None = None
+    for candidate in reversed(chain):
+        try:
+            linked = is_reparse(candidate)
+        except OSError:
+            linked = True
+        if linked:
+            outermost = candidate
+            break
+    if outermost is None or not _marks_project(outermost):
+        return None
+    try:
+        resolved = outermost.resolve()
+        if is_reparse(resolved) or not resolved.is_dir():
+            raise OSError(errno.ELOOP, "is a link")
+        return resolved, _relative_within(outermost, file)
+    except OSError as exc:
+        raise OSError(errno.ELOOP, "is a link") from exc
+
+
 def _read_anchor(file: Path) -> tuple[Path, Path]:
     """Directory to open, and the file's path under that directory.
 
     A file inside a project is opened from the project directory, so a
-    directory link in the middle of the path is not followed. Any other file
-    is opened from its parent directory.
+    directory link in the middle of the path is not followed. A project
+    folder that is itself a link is opened from the directory it points at.
+    Any other file is opened from its parent directory.
     """
     from aicad.paths import _lexical_inside, _project_containing, _relative_within, is_reparse
 
@@ -226,6 +271,9 @@ def _read_anchor(file: Path) -> tuple[Path, Path]:
             return found, _relative_within(found, file)
         except OSError:
             pass
+    anchored = _project_link_anchor(file)
+    if anchored is not None:
+        return anchored
     return file.parent, Path(file.name)
 
 
