@@ -65,9 +65,9 @@ These checks use a marker file outside the project. A project file is data. The 
 - **AA.** A plan, a plugin manifest, and a command-line file that is a link is not opened.
 - **AB.** A STEP file that is exported and imported again stays geometry. A session replay does not run the recorded commands, and opening a project does not run a script stored in the session.
 - **AC.** A bidi control, a zero-width character, or a Latin lookalike does not change the title, file name, or note that is stored and shown.
-- **AD.** Solver text and errors shown to the assistant are marked as data. Tessellation and meshing stay inside the triangle budget.
+- **AD.** Solver text and errors shown to the assistant are marked as data. Text that already starts with the marker is still wrapped, and a tool result keeps this program's marker sentence. Tessellation and meshing stay inside the triangle budget.
 
-- **AE.** A resource or session handed to the assistant is marked as data. A bidi control or a Latin lookalike in a sheet, a research note, or receipt text is not shown as a different string.
+- **AE.** A resource or session handed to the assistant is marked as data. Text that already starts with the marker is still wrapped. A bidi control or a Latin lookalike in a sheet, a research note, or receipt text is not shown as a different string.
 
 Master documents are generated from the entry files in the repository. A symlink or junction on that path is not followed, and a file with another name is not read or written. Generating the masters does not run an entry as code.
 
@@ -91,6 +91,7 @@ That stops another website, including one that tries to reach this computer by a
 - **AJ.** A copy, an export, a render, and a picture response do not follow a symlink or junction, and do not send bytes from outside the project.
 
 - **R.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
+- A file a script removes is still counted at the size it reached, including toward the per-file cap.
 - A design script's check record is written to the file the parent opened. A different file at that path is not the record.
 - **AK.** A request to the model API or the local workspace app does not use a proxy or a certificate file named by the environment. Those variables stay in the process environment.
 
