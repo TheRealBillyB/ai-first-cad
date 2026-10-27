@@ -60,6 +60,8 @@ def test_a_design_script_gets_an_empty_library_home(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(home))
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
     allow_design_scripts(project)
     payload = run_design_script(

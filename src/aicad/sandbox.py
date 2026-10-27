@@ -1597,8 +1597,10 @@ def _use_private_library_home(workspace: Path, private: Path) -> None:
 
     Gmsh, fontconfig, and ezdxf read a fixed path under the home directory.
     That home is now this folder, which is emptied first so a project cannot
-    leave a config there. ``USERPROFILE`` stays the account profile. Plugin
-    consent uses the home remembered before this replacement.
+    leave a config there. The process is started with the account profile.
+    Python on Windows resolves ``~`` from ``USERPROFILE``, so the running
+    script uses this folder. Plugin consent uses the home remembered before
+    this replacement.
     """
     from aicad.paths import is_reparse, output_dir, remove_tree
 
@@ -1613,6 +1615,10 @@ def _use_private_library_home(workspace: Path, private: Path) -> None:
     os.environ["HOME"] = _LIBRARY_HOME
     os.environ["XDG_CONFIG_HOME"] = _LIBRARY_HOME
     os.environ["MPLCONFIGDIR"] = _LIBRARY_HOME
+    if sys.platform == "win32":
+        os.environ["USERPROFILE"] = _LIBRARY_HOME
+    # A lookup of a directory that is not there yet is not a script error.
+    ctypes.set_errno(0)
 
 
 _LIBRARY_HOME: str | None = None
