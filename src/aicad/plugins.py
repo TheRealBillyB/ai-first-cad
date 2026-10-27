@@ -404,7 +404,14 @@ def consent_file() -> Path:
     from aicad.sandbox_state import in_sandbox
 
     if in_sandbox():
-        return Path.home() / ".config" / "aicad" / "plugins.json"
+        from aicad.sandbox_state import account_home
+
+        # The script home is a clean directory. Consent stays on the account
+        # home that was remembered before that directory was installed.
+        home = account_home()
+        if home is None:
+            home = Path.home()
+        return home / ".config" / "aicad" / "plugins.json"
     override = os.environ.get("AICAD_PLUGIN_CONSENT", "").strip()
     if override:
         return Path(override)

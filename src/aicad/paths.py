@@ -54,6 +54,47 @@ def _is_project_ini(path: Path) -> bool:
         return False
 
 
+def _config_roots() -> list[Path]:
+    """Homes whose fixed config paths must not be opened."""
+    roots: list[Path] = []
+    try:
+        roots.append(Path.home())
+    except OSError:
+        pass
+    from aicad.sandbox_state import account_home
+
+    remembered = account_home()
+    if remembered is not None:
+        roots.append(Path(remembered))
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg:
+        roots.append(Path(xdg).expanduser())
+    return roots
+
+
+def _is_home_ini(path: Path) -> bool:
+    """True for an ezdxf config reached through the account home or XDG config."""
+    if path.name.lower() != "ezdxf.ini":
+        return False
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except OSError:
+        return True
+    try:
+        if resolved == packaged_font_config().resolve():
+            return False
+    except OSError:
+        pass
+    for root in _config_roots():
+        try:
+            folder = root.resolve()
+        except OSError:
+            return True
+        if resolved == folder or folder in resolved.parents:
+            return True
+    return False
+
+
 def _filtered_config_files(original):
     def config_files():
         packaged = packaged_font_config()
@@ -62,7 +103,7 @@ def _filtered_config_files(original):
         seen: set[str] = set()
         for item in original():
             path = Path(item)
-            if _is_project_ini(path):
+            if _is_project_ini(path) or _is_home_ini(path):
                 continue
             key = os.fspath(path)
             if key in seen:
@@ -100,7 +141,8 @@ class _ProjectIniUnread:
         def guarded(file, *args, **kwargs):
             if getattr(_BLOCK_PROJECT_INI, "on", False):
                 try:
-                    if _is_project_ini(Path(os.fspath(file))):
+                    candidate = Path(os.fspath(file))
+                    if _is_project_ini(candidate) or _is_home_ini(candidate):
                         raise FileNotFoundError(os.fspath(file))
                 except (TypeError, ValueError):
                     pass
@@ -164,13 +206,15 @@ class _EzdxfOptionsFinder:
 def prepare_geometry_import() -> None:
     """Use the packaged font config before the geometry libraries are imported.
 
-    Those libraries read ``ezdxf.ini`` from the working directory. A project
-    is often that directory, and the file can name a font folder outside the
-    project. ``EZDXF_CONFIG_FILE`` points at the file shipped with aicad, and
-    the working-directory file is not read. Variables that name a font, Gmsh,
-    or OpenCascade configuration are removed before those libraries load. The
-    image library asks to enter the interpreter directory while it loads. That
-    request is refused, so a relative path in the project still opens.
+    Those libraries read ``ezdxf.ini`` from the working directory and from the
+    account home. A project is often that directory, and either file can name
+    a font folder outside the project. ``EZDXF_CONFIG_FILE`` points at the file
+    shipped with aicad. The working-directory file and the home file are not
+    read. Variables that name a font, Gmsh, or OpenCascade configuration are
+    removed before those libraries load. Matplotlib uses a private config
+    directory. The image library asks to enter the interpreter directory while
+    it loads. That request is refused, so a relative path in the project still
+    opens.
     """
     from aicad.sandbox import scrub_library_environment
 
@@ -187,8 +231,16 @@ def prepare_geometry_import() -> None:
         return
     _install_config_filter(module)
     loaded = list(module.options.loaded_config_files)
-    if any(_is_project_ini(Path(item)) for item in loaded):
+    packaged = packaged_font_config()
+    if any(_outside_packaged_ini(Path(item), packaged) for item in loaded):
         _rebuild_options(module)
+
+
+def _outside_packaged_ini(path: Path, packaged: Path) -> bool:
+    try:
+        return path.expanduser().resolve() != packaged.resolve()
+    except OSError:
+        return True
 
 
 def session_path_escapes(text: str) -> bool:
