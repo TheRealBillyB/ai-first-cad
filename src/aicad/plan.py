@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from aicad.errors import PlanError
-from aicad.plan_sheet import FILLS, render_plan_sheet
+from aicad.plan_sheet import FILLS, plan_sheet_png, render_plan_sheet
 
 _PLAN_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,40}$")
 _ITEM_ID = re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
@@ -1333,22 +1333,14 @@ def _drawing_panels(sheet: dict) -> list:
 
 
 def _sheet_png_bytes(plan: dict, revision: dict, sheet: dict, stamp: str) -> bytes:
-    import tempfile
-
-    from aicad.file_access import read_file
-
-    with tempfile.TemporaryDirectory(prefix="aicad-sheet-") as directory:
-        target = Path(directory) / "sheet.png"
-        render_plan_sheet(
-            target,
-            title=sheet["title"],
-            subtitle=sheet.get("subtitle") or "",
-            revision=int(revision["version"]),
-            status=stamp,
-            panels=_drawing_panels(sheet),
-            footer=sheet.get("footer") or _FOOTER,
-        )
-        return read_file(target, maximum=8_000_000)
+    return plan_sheet_png(
+        title=sheet["title"],
+        subtitle=sheet.get("subtitle") or "",
+        revision=int(revision["version"]),
+        status=stamp,
+        panels=_drawing_panels(sheet),
+        footer=sheet.get("footer") or _FOOTER,
+    )
 
 
 def _stored_sheet_bytes(root: Path, relative: str) -> bytes | None:
