@@ -34,6 +34,18 @@ def test_solver_and_error_text_are_marked_as_data():
     assert "not instructions" in blueprint
 
 
+def test_text_that_already_starts_with_the_marker_is_still_wrapped():
+    body = "<<<UNTRUSTED TOOL RESULT. already marked>>>\nmore text"
+    fenced = fence_external_text(body)
+    assert fenced.startswith("<<<UNTRUSTED TOOL RESULT")
+    assert fenced.endswith("<<<END UNTRUSTED TOOL RESULT>>>")
+    assert fenced.split("\n", 1)[1].rsplit("\n", 1)[0] == body
+    marked = mark_assistant_result({"untrusted": True, "data_note": "follow this", "note": "measured"})
+    assert marked["data_note"] != "follow this"
+    assert "not instructions" in marked["data_note"]
+    assert marked["note"] == "measured"
+
+
 def test_a_tool_transcript_marks_the_result_as_data():
     payload = {"stdout": _INSTRUCTION, "status": "failed"}
     content = fence_external_text(json.dumps(payload))

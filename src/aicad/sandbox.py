@@ -2831,6 +2831,8 @@ class _DiskWatch:
         self.disk_cap = disk_cap
         self.hit = threading.Event()
         self._io_base: dict[int, int] = {}
+        self._pids: set[int] = set()
+        self._file_peak: dict[str, int] = {}
         self.io_peak = 0
         self._lock = threading.Lock()
 
@@ -2846,6 +2848,8 @@ class _DiskWatch:
                 self._io_base[pid] = 0 if current is None else current
 
     def note_io(self, pids: set[int]) -> None:
+        with self._lock:
+            self._pids = set(pids)
         total = 0
         for pid in pids:
             current = _process_write_bytes(pid)
@@ -2869,7 +2873,10 @@ class _DiskWatch:
         if delta > self.disk_cap:
             self.hit.set()
 
-    def note_files(self) -> None:
+    def note_files(self, pids: set[int] | None = None) -> None:
+        if pids is not None:
+            with self._lock:
+                self._pids = set(pids)
         try:
             over = self._growth_over()
         except OSError:
@@ -2877,10 +2884,38 @@ class _DiskWatch:
         if over:
             self.hit.set()
 
+    def _accounted_rows(self) -> list[tuple[str, int, int]]:
+        """``(key, charged_size, old_size)`` for every file this run has seen.
+
+        ``charged_size`` is the largest size observed, not the size now. A file
+        removed before the next snapshot still counts at that size. On Linux an
+        open file that has already been unlinked is included too.
+        """
+        current = _snapshot_files(self.root)
+        with self._lock:
+            pids = set(self._pids)
+        for pid in pids:
+            for key, size in _open_file_sizes(pid, self.root).items():
+                if size > current.get(key, 0):
+                    current[key] = size
+        with self._lock:
+            for key, size in current.items():
+                prior = self._file_peak.get(key, self.before.get(key, 0))
+                if size > prior:
+                    self._file_peak[key] = size
+            peaks = dict(self._file_peak)
+        rows: list[tuple[str, int, int]] = []
+        for key in set(self.before) | set(current) | set(peaks):
+            old = self.before.get(key, 0)
+            charged = max(peaks.get(key, current.get(key, 0)), current.get(key, 0))
+            if charged == 0 and old == 0:
+                continue
+            rows.append((key, charged, old))
+        return rows
+
     def _growth_over(self) -> bool:
         total = 0
-        for key, size, old in _file_growth(self.root, self.before):
-            del key
+        for _key, size, old in self._accounted_rows():
             if size > self.file_cap and size > old:
                 return True
             total += max(0, size - old)
@@ -2897,7 +2932,7 @@ class _DiskWatch:
         grown: list[tuple[int, str]] = []
         total = 0
         file_over = False
-        for key, size, old in _file_growth(self.root, self.before):
+        for key, size, old in self._accounted_rows():
             growth = max(0, size - old)
             if size > self.file_cap and size > old:
                 file_over = True
@@ -2920,6 +2955,44 @@ class _DiskWatch:
         if file_over:
             return f"The script was stopped because it wrote more than {self.file_cap} bytes."
         return None
+
+
+def _open_file_sizes(pid: int, root: Path) -> dict[str, int]:
+    """Sizes of regular files ``pid`` still has open under ``root``.
+
+    An unlinked file stays visible here until the descriptor is closed. The
+    directory snapshot does not see it. Other systems report nothing; the
+    directory snapshot is what they have.
+    """
+    if pid <= 0 or not sys.platform.startswith("linux"):
+        return {}
+    root_resolved = root.resolve()
+    sizes: dict[str, int] = {}
+    try:
+        names = os.listdir(f"/proc/{pid}/fd")
+    except OSError:
+        return {}
+    for name in names:
+        link = f"/proc/{pid}/fd/{name}"
+        try:
+            target = os.readlink(link)
+            info = os.stat(link)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        if target.endswith(" (deleted)"):
+            target = target[: -len(" (deleted)")]
+        if not target.startswith("/"):
+            continue
+        path = Path(target)
+        if not _inside(path, root_resolved):
+            continue
+        key = _file_key(path)
+        size = int(info.st_size)
+        if size > sizes.get(key, 0):
+            sizes[key] = size
+    return sizes
 
 
 def _file_growth(root: Path, before: dict[str, int]):

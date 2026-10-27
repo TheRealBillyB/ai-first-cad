@@ -1593,6 +1593,52 @@ def export_step_file(shape: Shape, path: Path) -> None:
     publish_file(path, write)
 
 
+def export_3mf_file(bodies: list[tuple[str, Shape]], path: Path) -> None:
+    """Write one 3MF with a separate mesh object for each solid.
+
+    The solids are not united, so a gap between them stays in the file.
+    """
+    from aicad.paths import nofollow_writes, publish_file
+
+    def write(temporary: Path) -> None:
+        _write_3mf(bodies, temporary)
+
+    if not nofollow_writes():
+        _prepare_export_parent(path)
+    publish_file(path, write)
+
+
+def _write_3mf(bodies: list[tuple[str, Shape]], path: Path) -> None:
+    import copy
+    import io
+
+    from build123d import Mesher
+
+    if not bodies:
+        raise GeometryError("There is no solid to export.")
+    mesher = Mesher()
+    for name, shape in bodies:
+        impl = copy.deepcopy(shape.impl)
+        label = str(name)
+        try:
+            impl.label = label
+        except Exception:
+            label = ""
+        mesher.add_shape(
+            impl,
+            linear_deflection=0.05,
+            angular_deflection=0.2,
+            part_number=label or None,
+        )
+    # The publish path may be a file descriptor name, which has no ".3mf" suffix.
+    buffer = io.BytesIO()
+    try:
+        mesher.write_stream(buffer, "3mf")
+        path.write_bytes(buffer.getvalue())
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise GeometryError(f"Could not write 3MF file {path}.") from exc
+
+
 def export_stl_file(
     shape: Shape,
     path: Path,
@@ -1974,7 +2020,12 @@ def tessellation_linear(size_x: float, size_y: float, size_z: float, diagonal: f
 
 
 def tessellate(shape: Shape) -> TriangleMesh:
-    """Mesh the solid and discretize its edges for rendering."""
+    """Mesh the solid and discretize its edges for rendering.
+
+    Texture coordinates are not packed into an atlas. Print checks and
+    pictures discard them, and the packer overflows on a solid with many
+    faces, such as two gears in a housing.
+    """
     impl = shape.impl
     _refuse_face_count(len(list(impl.faces())))
     box = impl.bounding_box()
@@ -1983,7 +2034,7 @@ def tessellate(shape: Shape) -> TriangleMesh:
     linear = tessellation_linear(float(size.X), float(size.Y), float(size.Z), diagonal)
     linear = linear_for_surface(_surface_area(impl), linear)
     vertices, triangles, normals, _uvs = impl.tessellate_with_uvs(
-        linear, angular_tolerance=0.18
+        linear, angular_tolerance=0.18, atlas_packing=False
     )
     if not triangles:
         raise GeometryError("The solid produced an empty mesh and cannot be rendered.")
