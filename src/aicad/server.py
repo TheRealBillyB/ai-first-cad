@@ -1686,42 +1686,48 @@ _IMAGE_FORMATS = {"png": "png", "jpg": "jpeg", "jpeg": "jpeg", "gif": "gif", "we
 
 
 def _image_root(file: Path) -> Path | None:
-    """Project directory that lexically contains ``file``, when there is one."""
-    from aicad.paths import _project_containing, _project_holding, is_reparse
+    """Directory a picture is opened from, when the file is in a project.
+
+    A project folder that is a link uses the directory that link points at.
+    """
+    from aicad.file_access import _project_link_anchor
+    from aicad.paths import _lexical_inside, _project_containing, _project_holding, is_reparse
 
     holder = _project_containing(file)
-    if holder is not None:
+    if holder is not None and _lexical_inside(file, holder):
         try:
             if not is_reparse(holder):
                 return holder
         except OSError:
             return None
     found = _project_holding(file)
-    if found is None:
-        return None
-    try:
-        if is_reparse(found):
+    if found is not None:
+        try:
+            if not is_reparse(found):
+                return found
+        except OSError:
             return None
+    try:
+        anchored = _project_link_anchor(file)
     except OSError:
         return None
-    return found
+    if anchored is None:
+        return None
+    return anchored[0]
 
 
 def _attach_image(path: str) -> Image | str:
     """Read a picture from its project. The picture library is not given the path."""
-    from aicad.paths import read_checked_bytes
+    from aicad.paths import read_nofollow_bytes
 
     file = Path(path)
     if not file.is_absolute():
         file = Path.cwd() / file
     name = file.name
-    root = _image_root(file)
-    if root is None:
+    if _image_root(file) is None:
         return f"{name} was not opened."
     try:
-        data = read_checked_bytes(
-            root, file, maximum=_MAX_IMAGE_BYTES, label=name, error=OSError
-        )
+        data = read_nofollow_bytes(file, maximum=_MAX_IMAGE_BYTES, label=name, error=OSError)
     except OSError as exc:
         message = str(exc).replace("\n", " ").strip()
         if not message or len(message) > 200 or "\x00" in message:
