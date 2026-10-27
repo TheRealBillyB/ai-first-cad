@@ -10,6 +10,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A session path and a STEP import do not follow a directory link | A directory link is refused when it stays inside the project, the same way other project reads refuse it. |
 | A Windows directory is created from its parent handle | Creating the directory and opening that name are one request on the parent handle, so a link at the name is not followed. |
 
 ## 2026-10-26

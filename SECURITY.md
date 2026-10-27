@@ -100,3 +100,5 @@ That stops another website, including one that tries to reach this computer by a
 
 - A token, a design-script opt-in, a session record, and saved assistant settings are created readable by this user only.
 - **AM.** A directory created on Windows is one request on the parent directory handle. A link at that name is not followed.
+
+- **AN.** A session path and a STEP import do not follow a directory link, including one whose target stays inside the project.
