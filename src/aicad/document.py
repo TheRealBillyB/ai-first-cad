@@ -1615,6 +1615,17 @@ class Document:
             out_dir = _project_directory(self.workspace, self.workspace / "renders" / name, "Render")
             return analyze_print(part.shape, setup or {}, out_dir, name)
 
+    def check_print_clearance(self, name: str, setup: dict | None = None) -> dict:
+        """Gap between parts of an assembly that print as one piece.
+
+        Joint pairs are measured. Motion collisions skip those pairs, so a pin
+        that fills its bore is not a collision there. Overlap, a gap under the
+        fuse line, or a gap the export mesh can close, fails the check.
+        """
+        with self._lock:
+            spec = copy.deepcopy(self._get_assembly(name))
+            return assembly.print_clearance(spec, self._assembly_shapes(spec), setup or {})
+
     def list_printers(self) -> dict:
         return printer_catalog()
 

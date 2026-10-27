@@ -103,6 +103,168 @@ def loose_mounts(
     return loose
 
 
+# A gap under this, or any overlap, is treated as one body after printing.
+# The STL chord error is about 0.05 mm on each surface, so 0.10 mm can close
+# in the mesh. 0.15 mm stays above that and is the usual fuse line for a
+# 0.4 mm nozzle.
+_DEFAULT_FUSE_MM = 0.15
+_DEFAULT_PRINT_CLEARANCE_MM = 0.2
+_DEFAULT_MESH_DEFLECTION_MM = 0.05
+_PRINT_KEYS = {"fuse_mm", "min_clearance_mm", "pose", "joints", "mesh_deflection_mm"}
+
+
+def print_clearance(spec: dict, shapes: dict[str, kernel.Shape], setup: dict | None = None) -> dict:
+    """Gap between parts that print as one piece, including pairs a motion skips.
+
+    Motion collisions leave out the two solids of a joint, so a pin that fills
+    its bore is reported clear there. This check measures those pairs. Overlap,
+    a gap under ``fuse_mm``, or a gap the export mesh can close, is fused. A
+    larger gap under ``min_clearance_mm`` is tight. Other pairs are included
+    when they are at least that close.
+    """
+    setup = setup or {}
+    if not isinstance(setup, dict):
+        raise GeometryError("A print clearance check is an object.")
+    unknown = set(setup) - _PRINT_KEYS
+    if unknown:
+        raise GeometryError(
+            "A print clearance check has unknown fields: " + ", ".join(sorted(unknown)) + "."
+        )
+    fuse_mm = _DEFAULT_FUSE_MM if setup.get("fuse_mm") is None else _nonnegative(setup.get("fuse_mm"), "fuse_mm")
+    minimum = (
+        _DEFAULT_PRINT_CLEARANCE_MM
+        if setup.get("min_clearance_mm") is None
+        else _nonnegative(setup.get("min_clearance_mm"), "min_clearance_mm")
+    )
+    if fuse_mm > minimum + 1e-12:
+        raise GeometryError("fuse_mm cannot be larger than min_clearance_mm.")
+    deflection = (
+        _DEFAULT_MESH_DEFLECTION_MM
+        if setup.get("mesh_deflection_mm") is None
+        else _nonnegative(setup.get("mesh_deflection_mm"), "mesh_deflection_mm")
+    )
+    if deflection <= 0:
+        raise GeometryError("mesh_deflection_mm must be positive.")
+    posed = spec
+    pose_name = setup.get("pose")
+    if pose_name not in (None, ""):
+        if not isinstance(pose_name, str):
+            raise GeometryError("pose must be the name of a stored pose.")
+        posed = apply_pose(spec, pose_name)
+    overrides = setup.get("joints")
+    if overrides is not None and not isinstance(overrides, dict):
+        raise GeometryError("joints is an object of joint values for this check only.")
+    solved, placed = posed_shapes(posed, shapes, overrides)
+    joint_of = {
+        tuple(sorted((joint["parent"], joint["child"]))): joint["name"] for joint in solved["joints"]
+    }
+    mesh_limit = 2.0 * deflection
+    names = sorted(placed)
+    rows = []
+    for index, left in enumerate(names):
+        for right in names[index + 1 :]:
+            key = tuple(sorted((left, right)))
+            joint_name = joint_of.get(key)
+            box_gap = kernel.aabb_gap_lower_bound(placed[left], placed[right])
+            if joint_name is None and box_gap > minimum + 1e-9:
+                continue
+            overlap, distance, point_a, point_b = kernel.clearance_between(placed[left], placed[right])
+            fused_solid = overlap > 1e-4
+            gap = 0.0 if fused_solid else distance
+            mesh_closes = (not fused_solid) and gap + 1e-9 < mesh_limit
+            if fused_solid or gap + 1e-9 < fuse_mm or mesh_closes:
+                state = "fused"
+            elif gap + 1e-9 < minimum:
+                state = "tight"
+            else:
+                state = "clear"
+            at = point_a or point_b
+            rows.append(
+                {
+                    "a": left,
+                    "b": right,
+                    "joint": joint_name,
+                    "gap_mm": gap,
+                    "overlap_mm3": overlap,
+                    "mesh_closes": mesh_closes,
+                    "status": state,
+                    "at_mm": None if at is None else [at.x, at.y, at.z],
+                }
+            )
+    rows.sort(key=lambda row: (row["gap_mm"], row["a"], row["b"]))
+    fused = [row for row in rows if row["status"] == "fused"]
+    tight = [row for row in rows if row["status"] == "tight"]
+    if fused:
+        status = "fail"
+    elif tight:
+        status = "review"
+    else:
+        status = "pass"
+    worst = rows[0] if rows else None
+    report = {
+        "assembly": solved["name"],
+        "status": status,
+        "pose": None if pose_name in (None, "") else pose_name,
+        "fuse_mm": fuse_mm,
+        "min_clearance_mm": minimum,
+        "mesh_deflection_mm": deflection,
+        "pair_count": len(rows),
+        "fused_count": len(fused),
+        "tight_count": len(tight),
+        "min_gap_mm": None if worst is None else worst["gap_mm"],
+        "min_gap_pair": None if worst is None else [worst["a"], worst["b"]],
+        "pairs": rows,
+        "note": _print_note(status, fused, tight, fuse_mm, minimum),
+        "assumptions": [
+            f"A pair is fused when the solids overlap, when the gap is under {fuse_mm:g} mm, or when the gap is under {mesh_limit:g} mm so a mesh of deflection {deflection:g} mm can close it.",
+            f"A pair is tight when the gap is at least the fuse line and under {minimum:g} mm.",
+            "Joint pairs are always measured. Other pairs are measured when their boxes are within the minimum gap.",
+            "The gap is the minimum distance between the two solids at this pose. It is not a section through a full turn.",
+            "The stored assembly is not moved. pose and joints apply to this check only.",
+            "This is not a slicer extrusion and not a contact force.",
+        ],
+    }
+    return finish(
+        report,
+        kind=VERIFIED_CHECK,
+        name="Print clearance",
+        what=(
+            "The gap is the kernel distance between the posed solids, and overlap is their boolean intersection. "
+            "A joint pair is included."
+        ),
+        limits=[
+            "Only this pose is measured. A clash at another angle is not seen.",
+            "The mesh rule is two chord errors. A coarser export than mesh_deflection_mm can still close a wider gap.",
+            "A pair whose boxes are farther apart than the minimum gap is not measured, except a joint pair.",
+            "This is not a printed trial.",
+        ],
+    )
+
+
+def _nonnegative(value, label: str) -> float:
+    number = kernel.finite_number(value, label)
+    if number < 0:
+        raise GeometryError(f"{label} cannot be negative.")
+    return number
+
+
+def _print_note(status: str, fused: list[dict], tight: list[dict], fuse_mm: float, minimum: float) -> str:
+    if status == "fail":
+        shown = ", ".join(f"{row['a']}/{row['b']}" for row in fused[:4])
+        extra = "" if len(fused) <= 4 else f" and {len(fused) - 4} more"
+        return (
+            f"{len(fused)} pair{'s' if len(fused) != 1 else ''} will fuse when printed as one piece "
+            f"({shown}{extra}). The fuse line is {fuse_mm:g} mm."
+        )
+    if status == "review":
+        shown = ", ".join(f"{row['a']}/{row['b']}" for row in tight[:4])
+        return (
+            f"{len(tight)} pair{'s' if len(tight) != 1 else ''} are tighter than {minimum:g} mm ({shown}). "
+            "None are under the fuse line."
+        )
+    return f"Every measured pair is at least {minimum:g} mm apart."
+
+
 def collisions(solved: dict, placed: dict[str, kernel.Shape], ignore: list[list[str]] | None = None) -> list[dict]:
     skip = set()
     for pair in ignore or []:

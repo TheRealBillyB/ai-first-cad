@@ -343,6 +343,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `check_wall_thickness` reports a ray estimate and a section estimate, and which one won.
 - `section_part` shows internal geometry that the outside views hide.
 - `check_clearance` on two parts reports interference, or the gap if they are apart.
+- `check_print_clearance` measures an assembly that prints as one piece, including the two solids of a joint. Overlap, a gap under the fuse line, or a gap the export mesh can close, is fused.
 - `check_packaging` checks that parts fit inside an envelope. The envelope is a part, a primitive (`shape` box, cylinder, or sphere), or an `outline` extruded along an axis. Pass `assembly`, and optionally `pose` or `joints`, to use the posed solids without changing the stored pose. The report has pass or fail per part, the parts that stick out (how far, and a point), the minimum signed wall clearance, and part-to-part overlap inside the envelope.
 - `inspect_part` renders front, back, left, right, top, bottom, and isometric views.
 - `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
@@ -1176,6 +1177,17 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         nut walk under vibration. Read assumptions and the countermeasures.
         """
         return guard(lambda: run("check_bolts", spec=spec))
+
+    @mcp.tool()
+    def check_print_clearance(name: str, setup: dict[str, Any] | None = None) -> dict:
+        """Gap between parts of an assembly that print as one piece.
+
+        Joint pairs are included. Motion collisions skip those pairs.
+        setup.fuse_mm defaults to 0.15. setup.min_clearance_mm defaults to 0.2.
+        setup.pose and setup.joints apply to this check only.
+        setup.mesh_deflection_mm defaults to 0.05, and a gap under twice that can close in the mesh.
+        """
+        return guard(lambda: run("check_print_clearance", name=name, setup=setup))
 
     @mcp.tool()
     def check_print(name: str, setup: dict[str, Any] | None = None) -> list[str | Image]:
