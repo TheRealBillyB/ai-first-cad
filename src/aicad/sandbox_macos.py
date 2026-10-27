@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import ctypes
 import os
+import stat
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -575,3 +577,299 @@ def close_sentinel(fd: int, path: str) -> None:
         os.unlink(path)
     except OSError:
         pass
+
+
+# libproc flavors. The layouts are the LP64 ones from <libproc.h>.
+_PROC_PIDLISTFDS = 1
+_PROC_PIDFDVNODEPATHINFO = 2
+_PROX_FDTYPE_VNODE = 1
+_MAXPATHLEN = 1024
+
+
+class _ProcFdInfo(ctypes.Structure):
+    _fields_ = [
+        ("proc_fd", ctypes.c_int32),
+        ("proc_fdtype", ctypes.c_uint32),
+    ]
+
+
+class _ProcFileInfo(ctypes.Structure):
+    _fields_ = [
+        ("fi_openflags", ctypes.c_uint32),
+        ("fi_status", ctypes.c_uint32),
+        ("fi_offset", ctypes.c_int64),
+        ("fi_type", ctypes.c_int32),
+        ("fi_guardflags", ctypes.c_uint32),
+    ]
+
+
+class _VinfoStat(ctypes.Structure):
+    _fields_ = [
+        ("vst_dev", ctypes.c_uint32),
+        ("vst_mode", ctypes.c_uint16),
+        ("vst_nlink", ctypes.c_uint16),
+        ("vst_ino", ctypes.c_uint64),
+        ("vst_uid", ctypes.c_uint32),
+        ("vst_gid", ctypes.c_uint32),
+        ("vst_atime", ctypes.c_int64),
+        ("vst_atimensec", ctypes.c_int64),
+        ("vst_mtime", ctypes.c_int64),
+        ("vst_mtimensec", ctypes.c_int64),
+        ("vst_ctime", ctypes.c_int64),
+        ("vst_ctimensec", ctypes.c_int64),
+        ("vst_birthtime", ctypes.c_int64),
+        ("vst_birthtimensec", ctypes.c_int64),
+        ("vst_size", ctypes.c_int64),
+        ("vst_blocks", ctypes.c_int64),
+        ("vst_blksize", ctypes.c_int32),
+        ("vst_flags", ctypes.c_uint32),
+        ("vst_gen", ctypes.c_uint32),
+        ("vst_rdev", ctypes.c_int32),
+        ("vst_qspare", ctypes.c_int64 * 2),
+    ]
+
+
+class _VnodeInfo(ctypes.Structure):
+    _fields_ = [
+        ("vi_stat", _VinfoStat),
+        ("vi_type", ctypes.c_int),
+        ("vi_pad", ctypes.c_int),
+        ("vi_fsid", ctypes.c_int32 * 2),
+    ]
+
+
+class _VnodeInfoPath(ctypes.Structure):
+    _fields_ = [
+        ("vip_vi", _VnodeInfo),
+        ("vip_path", ctypes.c_char * _MAXPATHLEN),
+    ]
+
+
+class _VnodeFdInfoWithPath(ctypes.Structure):
+    _fields_ = [
+        ("pfi", _ProcFileInfo),
+        ("pvip", _VnodeInfoPath),
+    ]
+
+
+class _Kevent(ctypes.Structure):
+    _fields_ = [
+        ("ident", ctypes.c_uint64),
+        ("filter", ctypes.c_int16),
+        ("flags", ctypes.c_uint16),
+        ("fflags", ctypes.c_uint32),
+        ("data", ctypes.c_int64),
+        ("udata", ctypes.c_void_p),
+    ]
+
+
+class _TimeSpec(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+
+def open_file_sizes(pid: int, root: Path) -> dict[str, int]:
+    """Sizes of regular files ``pid`` has open under ``root``.
+
+    An unlinked file stays visible until its descriptor is closed. The path
+    is the one the process opened. A file outside ``root`` is not counted.
+    """
+    if pid <= 0 or sys.platform != "darwin":
+        return {}
+    lib = _proc_pidinfo()
+    if lib is None or not hasattr(lib, "proc_pidfdinfo"):
+        return {}
+    try:
+        lib.proc_pidfdinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidfdinfo.restype = ctypes.c_int
+    except AttributeError:
+        return {}
+    count = 64
+    used = 0
+    infos = None
+    while count <= 8192:
+        infos = (_ProcFdInfo * count)()
+        try:
+            used = int(lib.proc_pidinfo(pid, _PROC_PIDLISTFDS, 0, ctypes.byref(infos), ctypes.sizeof(infos)))
+        except (OSError, ctypes.ArgumentError):
+            return {}
+        if used <= 0:
+            return {}
+        if used < ctypes.sizeof(infos):
+            break
+        count *= 2
+    if infos is None or used <= 0:
+        return {}
+    root_resolved = root.resolve()
+    sizes: dict[str, int] = {}
+    slots = used // ctypes.sizeof(_ProcFdInfo)
+    for index in range(slots):
+        item = infos[index]
+        if int(item.proc_fdtype) != _PROX_FDTYPE_VNODE or int(item.proc_fd) < 0:
+            continue
+        info = _VnodeFdInfoWithPath()
+        try:
+            written = int(
+                lib.proc_pidfdinfo(
+                    pid,
+                    int(item.proc_fd),
+                    _PROC_PIDFDVNODEPATHINFO,
+                    ctypes.byref(info),
+                    ctypes.sizeof(info),
+                )
+            )
+        except (OSError, ctypes.ArgumentError):
+            continue
+        if written <= 0:
+            continue
+        mode = int(info.pvip.vip_vi.vi_stat.vst_mode)
+        if not stat.S_ISREG(mode):
+            continue
+        raw = bytes(info.pvip.vip_path).split(b"\x00", 1)[0]
+        text = os.fsdecode(raw)
+        if text.endswith(" (deleted)"):
+            text = text[: -len(" (deleted)")]
+        if not text.startswith("/"):
+            continue
+        path = Path(text)
+        try:
+            path.resolve().relative_to(root_resolved)
+        except (OSError, ValueError):
+            continue
+        key = os.path.normcase(os.path.abspath(text))
+        size = int(info.pvip.vip_vi.vi_stat.vst_size)
+        if size > sizes.get(key, 0):
+            sizes[key] = size
+    return sizes
+
+
+def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None:
+    """Watch ``root`` until ``stop`` is set.
+
+    A new file is reported as soon as its directory changes, so a name that
+    is gone before the next timer is still opened and measured.
+    """
+    if sys.platform != "darwin":
+        mark(False)
+        return
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    libc.kqueue.argtypes = []
+    libc.kqueue.restype = ctypes.c_int
+    libc.kevent.argtypes = [
+        ctypes.c_int,
+        ctypes.POINTER(_Kevent),
+        ctypes.c_int,
+        ctypes.POINTER(_Kevent),
+        ctypes.c_int,
+        ctypes.POINTER(_TimeSpec),
+    ]
+    libc.kevent.restype = ctypes.c_int
+    queue = int(libc.kqueue())
+    if queue < 0:
+        mark(False)
+        return
+    # EV_ADD | EV_ENABLE | EV_CLEAR | EV_RECEIPT. EVFILT_VNODE is -4.
+    flags = 0x0001 | 0x0004 | 0x0020 | 0x0040
+    note = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020 | 0x0040
+    directories: dict[str, int] = {}
+    known: dict[str, set[str]] = {}
+
+    def watch_dir(directory: Path) -> None:
+        key = str(directory)
+        if key in directories:
+            return
+        open_flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            open_flags |= os.O_CLOEXEC
+        if hasattr(os, "O_DIRECTORY"):
+            open_flags |= os.O_DIRECTORY
+        try:
+            descriptor = os.open(key, open_flags)
+        except OSError:
+            return
+        change = _Kevent(ident=descriptor, filter=-4, flags=flags, fflags=note)
+        reported = _Kevent()
+        zero = _TimeSpec(tv_sec=0, tv_nsec=0)
+        result = int(libc.kevent(queue, ctypes.byref(change), 1, ctypes.byref(reported), 1, ctypes.byref(zero)))
+        # EV_RECEIPT reports EV_ERROR even when the watch was added. data is
+        # the errno, and zero means the watch is in place.
+        if result < 0 or (int(reported.flags) & 0x4000 and int(reported.data) != 0):
+            os.close(descriptor)
+            return
+        directories[key] = descriptor
+
+    def rescan() -> None:
+        pending = list(directories)
+        visited: set[str] = set()
+        while pending:
+            directory = pending.pop()
+            if directory in visited:
+                continue
+            visited.add(directory)
+            previous = known.get(directory)
+            live: set[str] = set()
+            try:
+                entries = list(os.scandir(directory))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                child = Path(entry.path)
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                    is_file = entry.is_file(follow_symlinks=False)
+                except OSError:
+                    continue
+                if is_dir:
+                    before = set(directories)
+                    watch_dir(child)
+                    if str(child) not in before and str(child) in directories:
+                        pending.append(str(child))
+                elif is_file:
+                    live.add(entry.path)
+                    if previous is not None and entry.path not in previous:
+                        retain(child)
+            if previous is not None:
+                for gone in previous - live:
+                    release(Path(gone))
+            known[directory] = live
+
+    try:
+        watch_dir(root)
+        for dirpath, dirnames, _names in os.walk(root, followlinks=False):
+            current = Path(dirpath)
+            if current.is_symlink():
+                dirnames.clear()
+                continue
+            dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
+            watch_dir(current)
+        if not directories:
+            mark(False)
+            return
+        rescan()
+        mark(True)
+        timeout = _TimeSpec(tv_sec=0, tv_nsec=20_000_000)
+        events = (_Kevent * 64)()
+        no_changes = ctypes.POINTER(_Kevent)()
+        while not stop.is_set():
+            count = int(libc.kevent(queue, no_changes, 0, events, len(events), ctypes.byref(timeout)))
+            if count > 0:
+                rescan()
+            reread()
+            scan()
+    finally:
+        for descriptor in directories.values():
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            os.close(queue)
+        except OSError:
+            pass

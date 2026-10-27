@@ -3046,6 +3046,11 @@ class _DiskWatch:
         self._io_fds: dict[int, int] = {}
         self._pids: set[int] = set()
         self._file_peak: dict[str, int] = {}
+        self._held: dict[str, int] = {}
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._event_thread: threading.Thread | None = None
+        self._watch_ok = False
         self.io_peak = 0
         self._lock = threading.Lock()
 
@@ -3075,14 +3080,289 @@ class _DiskWatch:
             self._io_fds[pid] = descriptor
 
     def close_counters(self) -> None:
+        self._stop.set()
+        thread = self._event_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2)
         with self._lock:
+            held = list(self._held.items())
+            self._held.clear()
             descriptors = list(self._io_fds.values())
             self._io_fds.clear()
+        for key, descriptor in held:
+            try:
+                info = os.fstat(descriptor)
+            except OSError:
+                info = None
+            if info is not None and stat.S_ISREG(info.st_mode):
+                self.note_size(key, int(info.st_size))
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         for descriptor in descriptors:
             try:
                 os.close(descriptor)
             except OSError:
                 pass
+
+    def note_size(self, key: str, size: int) -> None:
+        """Remember ``size`` for ``key`` even if that file is gone later."""
+        if isinstance(size, bool):
+            return
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            return
+        if size < 0:
+            return
+        with self._lock:
+            old = self.before.get(key, 0)
+            prior = self._file_peak.get(key, old)
+            if size > prior:
+                self._file_peak[key] = size
+            peaks = dict(self._file_peak)
+            before = self.before
+            file_cap = self.file_cap
+            disk_cap = self.disk_cap
+        charged = max(peaks.get(key, 0), size)
+        if charged > file_cap and charged > old:
+            self.hit.set()
+            return
+        total = 0
+        for item in set(before) | set(peaks):
+            previous = before.get(item, 0)
+            total += max(0, max(peaks.get(item, 0), previous) - previous)
+            if total > disk_cap:
+                self.hit.set()
+                return
+
+    def retain(self, path: Path) -> None:
+        """Open ``path`` and keep its size after the name is removed.
+
+        The directory change is what finds the name. The descriptor is what
+        still has the size once that name is gone.
+        """
+        from aicad.paths import is_reparse
+
+        try:
+            if path.is_symlink() or is_reparse(path) or not _inside(path, self.root):
+                return
+        except OSError:
+            return
+        key = _file_key(path)
+        with self._lock:
+            held = self._held.get(key)
+        if held is not None:
+            self._note_descriptor(key, held)
+            return
+        descriptor = _open_retained(path)
+        if descriptor is None:
+            self._note_linked(path)
+            return
+        try:
+            info = os.fstat(descriptor)
+        except OSError:
+            os.close(descriptor)
+            return
+        if not stat.S_ISREG(info.st_mode):
+            os.close(descriptor)
+            return
+        self.note_size(key, int(info.st_size))
+        with self._lock:
+            current = self._held.get(key)
+            if current is not None or len(self._held) >= 256:
+                drop = descriptor
+            else:
+                self._held[key] = descriptor
+                drop = None
+        if drop is not None:
+            os.close(drop)
+
+    def release(self, path: Path) -> None:
+        """Read a retained file one last time and close it."""
+        key = _file_key(path)
+        with self._lock:
+            descriptor = self._held.pop(key, None)
+        if descriptor is None:
+            return
+        self._note_descriptor(key, descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+    def _note_linked(self, path: Path) -> None:
+        try:
+            info = path.lstat()
+        except OSError:
+            return
+        if stat.S_ISREG(info.st_mode):
+            self.note_size(_file_key(path), int(info.st_size))
+
+    def _note_descriptor(self, key: str, descriptor: int) -> None:
+        try:
+            info = os.fstat(descriptor)
+        except OSError:
+            return
+        if stat.S_ISREG(info.st_mode):
+            self.note_size(key, int(info.st_size))
+
+    def _reread_held(self) -> None:
+        with self._lock:
+            held = list(self._held.items())
+        for key, descriptor in held:
+            self._note_descriptor(key, descriptor)
+
+    def arm(self) -> bool:
+        """Watch the project directory until :meth:`close_counters`.
+
+        False when this system could not install the watch. A timer sample
+        still runs in that case.
+        """
+        if self._event_thread is not None:
+            self._ready.wait(timeout=2)
+            return self._watch_ok
+        thread = threading.Thread(target=self._event_main, name="aicad-files", daemon=True)
+        self._event_thread = thread
+        thread.start()
+        self._ready.wait(timeout=2)
+        return self._watch_ok
+
+    def _mark_watch(self, ok: bool) -> None:
+        self._watch_ok = ok
+        self._ready.set()
+
+    def _event_main(self) -> None:
+        try:
+            if sys.platform.startswith("linux"):
+                self._linux_directory_watch()
+            elif sys.platform == "darwin":
+                from aicad.sandbox_macos import run_directory_watch
+
+                run_directory_watch(
+                    self.root,
+                    self.retain,
+                    self.release,
+                    self._reread_held,
+                    self.note_files,
+                    self._stop,
+                    self._mark_watch,
+                )
+            elif sys.platform == "win32":
+                from aicad.sandbox_windows import run_directory_watch
+
+                run_directory_watch(
+                    self.root,
+                    self.retain,
+                    self.release,
+                    self._reread_held,
+                    self.note_files,
+                    self._stop,
+                    self._mark_watch,
+                )
+            else:
+                self._mark_watch(False)
+        except Exception:
+            self._mark_watch(False)
+        if self._watch_ok:
+            return
+        while not self._stop.is_set():
+            try:
+                self.note_files()
+            except OSError:
+                pass
+            if self.hit.is_set():
+                return
+            self._stop.wait(0.02)
+
+    def _linux_directory_watch(self) -> None:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.inotify_init1.argtypes = [ctypes.c_int]
+        libc.inotify_init1.restype = ctypes.c_int
+        libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        libc.inotify_add_watch.restype = ctypes.c_int
+        init_flags = 0x00080000 | 0x00000800  # IN_CLOEXEC | IN_NONBLOCK
+        descriptor = int(libc.inotify_init1(init_flags))
+        if descriptor < 0:
+            self._mark_watch(False)
+            return
+        # CREATE through DELETE, plus a move into or out of the directory.
+        mask = 0x00000002 | 0x00000008 | 0x00000040 | 0x00000080 | 0x00000100 | 0x00000200
+        watches: dict[int, Path] = {}
+
+        def add_watch(directory: Path) -> None:
+            watch = int(libc.inotify_add_watch(descriptor, os.fsencode(directory), mask | 0x01000000))
+            if watch >= 0:
+                watches[watch] = directory
+
+        try:
+            from aicad.paths import is_reparse
+
+            for dirpath, dirnames, _names in os.walk(self.root, followlinks=False):
+                current = Path(dirpath)
+                if current.is_symlink() or is_reparse(current):
+                    dirnames.clear()
+                    continue
+                dirnames[:] = [
+                    name
+                    for name in dirnames
+                    if not (current / name).is_symlink() and not is_reparse(current / name)
+                ]
+                add_watch(current)
+        except OSError:
+            os.close(descriptor)
+            self._mark_watch(False)
+            return
+        if not watches:
+            os.close(descriptor)
+            self._mark_watch(False)
+            return
+        self._mark_watch(True)
+        try:
+            while not self._stop.is_set():
+                readable, _, _ = select.select([descriptor], [], [], 0.02)
+                if self._stop.is_set():
+                    break
+                if readable:
+                    self._read_inotify(descriptor, watches, add_watch)
+                self._reread_held()
+        finally:
+            os.close(descriptor)
+
+    def _read_inotify(self, descriptor: int, watches: dict[int, Path], add_watch) -> None:
+        try:
+            data = os.read(descriptor, 65536)
+        except OSError:
+            return
+        offset = 0
+        while offset + 16 <= len(data):
+            watch = int.from_bytes(data[offset : offset + 4], "little", signed=True)
+            event_mask = int.from_bytes(data[offset + 4 : offset + 8], "little")
+            name_len = int.from_bytes(data[offset + 12 : offset + 16], "little")
+            raw = data[offset + 16 : offset + 16 + name_len].split(b"\x00", 1)[0]
+            offset += 16 + name_len
+            if event_mask & 0x00004000:  # overflow: look at the tree directly
+                self.note_files()
+                continue
+            if event_mask & 0x00008000:
+                watches.pop(watch, None)
+                continue
+            directory = watches.get(watch)
+            if directory is None:
+                continue
+            if not raw:
+                self.note_files()
+                continue
+            path = directory / os.fsdecode(raw)
+            if event_mask & 0x40000000 and event_mask & 0x00000100:
+                add_watch(path)
+                continue
+            if event_mask & (0x00000200 | 0x00000040):
+                self.release(path)
+                continue
+            if event_mask & (0x00000100 | 0x00000002 | 0x00000008 | 0x00000080):
+                self.retain(path)
 
     def _counter(self, pid: int) -> int | None:
         with self._lock:
@@ -3137,6 +3417,7 @@ class _DiskWatch:
             self.hit.set()
 
     def note_files(self, pids: set[int] | None = None) -> None:
+        self._reread_held()
         if pids is not None:
             with self._lock:
                 self._pids = set(pids)
@@ -3220,14 +3501,33 @@ class _DiskWatch:
         return None
 
 
+def _open_retained(path: Path) -> int | None:
+    """A read-only descriptor that does not follow a link, or None."""
+    flags = os.O_RDONLY
+    for name in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+        flag = getattr(os, name, 0)
+        if flag:
+            flags |= flag
+    try:
+        return os.open(os.fspath(path), flags)
+    except OSError:
+        return None
+
+
 def _open_file_sizes(pid: int, root: Path) -> dict[str, int]:
     """Sizes of regular files ``pid`` still has open under ``root``.
 
     An unlinked file stays visible here until the descriptor is closed. The
-    directory snapshot does not see it. Other systems report nothing; the
-    directory snapshot is what they have.
+    directory snapshot does not see it. Linux reads ``/proc/<pid>/fd``. macOS
+    reads the same fact from libproc.
     """
-    if pid <= 0 or not sys.platform.startswith("linux"):
+    if pid <= 0:
+        return {}
+    if sys.platform == "darwin":
+        from aicad.sandbox_macos import open_file_sizes
+
+        return open_file_sizes(pid, root)
+    if not sys.platform.startswith("linux"):
         return {}
     root_resolved = root.resolve()
     sizes: dict[str, int] = {}
@@ -3704,7 +4004,6 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     wall = wall_seconds()
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
     quota_hold: list[int | None] = [None]
-    disk_stop = threading.Event()
     stop_watch: threading.Event | None = None
     watcher: threading.Thread | None = None
     seen: set[int] = set()
@@ -3720,23 +4019,16 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     sentinel_path: str | None = None
     keep_job = False
     try:
+        # The watch is in place before the script starts, so a file that
+        # appears and disappears between timer samples is still counted.
+        disk.arm()
         if kind == "design":
             design_record = _DesignRecord(workspace, job)
             design_record.start()
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
 
-            def _watch_windows_files() -> None:
-                while not disk_stop.is_set():
-                    disk.note_files()
-                    if disk.hit.is_set():
-                        return
-                    disk_stop.wait(0.1)
-
-            windows_files = threading.Thread(target=_watch_windows_files, name="aicad-disk", daemon=True)
-            windows_files.start()
-            try:
-                code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
+            code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
                     command,
                     cwd=str(workspace),
                     env=_child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir),
@@ -3750,9 +4042,6 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                     stderr_path=job / "stderr.txt",
                     disk=disk,
                 )
-            finally:
-                disk_stop.set()
-                windows_files.join(timeout=1)
             if timed_out:
                 detail = design_record.failure_detail() if design_record is not None else ""
                 shutil.rmtree(job, ignore_errors=True)
