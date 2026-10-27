@@ -1,0 +1,49 @@
+name: solver source
+
+# Ubuntu runs on every push and pull request. Windows and macOS run on every
+# pull request, on every push to main, and when the workflow is started manually.
+# A wheel is never used. The job compiles python-solvespace with install.py's flags.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a pull request cancels the run it replaced. Push and manual
+# runs each keep their own id, so they do not cancel each other or a pull request.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu:
+    name: solver source (ubuntu-latest)
+    uses: ./.github/workflows/solver-source-suite.yml
+    with:
+      os: ubuntu-latest
+      python-version: "3.12"
+      job-timeout: 30
+
+  cross:
+    name: solver source (${{ matrix.os }})
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event_name == 'pull_request'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python: "3.11"
+            job-timeout: 40
+          - os: macos-latest
+            python: "3.11"
+            job-timeout: 40
+    uses: ./.github/workflows/solver-source-suite.yml
+    with:
+      os: ${{ matrix.os }}
+      python-version: ${{ matrix.python }}
+      job-timeout: ${{ matrix.job-timeout }}

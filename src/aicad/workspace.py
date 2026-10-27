@@ -844,6 +844,14 @@ def _cmd_bolts(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("bolts", workspace.document.check_bolts(spec))
 
 
+def _cmd_print_clearance(workspace: Workspace, arguments: dict) -> dict:
+    setup = arguments.get("setup") or {}
+    if not isinstance(setup, dict):
+        raise GeometryError("check_print_clearance setup is an object with fuse_mm and min_clearance_mm.")
+    report = workspace.document.check_print_clearance(arguments["name"], setup)
+    return workspace._remember_panel("print_clearance", report)
+
+
 def _cmd_print(workspace: Workspace, arguments: dict) -> dict:
     setup = arguments.get("setup") or {}
     if not isinstance(setup, dict):
@@ -1565,6 +1573,21 @@ _add(Command(
     _cmd_bolts,
 ))
 _add(Command(
+    "check_print_clearance",
+    "Gap between parts of an assembly that print as one piece, including the two solids of a joint. Overlap or a gap under the fuse line fails.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "setup": {
+                "type": "object",
+                "description": "fuse_mm, min_clearance_mm, pose, joints, and mesh_deflection_mm. The stored assembly is left unchanged.",
+            },
+        },
+        ["name"],
+    ),
+    _cmd_print_clearance,
+))
+_add(Command(
     "check_print",
     "Overhang map for one orientation, a suggested orientation, and whether the part fits a named printer. A slicer estimate is included when slice is true and OrcaSlicer or PrusaSlicer is installed.",
     _obj(
@@ -1698,7 +1721,7 @@ _add(Command(
 ))
 _add(Command(
     "run_motion_study",
-    "Drive joints through a timeline of expressions or keyframes, with gear couplings, and report collisions and joint-limit violations.",
+    "Drive joints through a timeline of expressions or keyframes, with gear couplings, and report collisions, joint-limit violations, and joint pairs whose solids overlap.",
     _obj(
         {
             "name": _string("Assembly name."),

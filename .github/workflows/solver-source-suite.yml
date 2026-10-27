@@ -1,0 +1,57 @@
+name: solver source suite
+
+# Called from solver-source.yml. This workflow does not start on its own.
+# It compiles python-solvespace. The pytest jobs install a wheel and do not.
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: Runner image
+        required: true
+        type: string
+      python-version:
+        description: Python version to install
+        required: true
+        type: string
+      job-timeout:
+        description: Whole-job timeout passed to timeout-minutes
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: solver source (${{ inputs.os }})
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: ${{ inputs.job-timeout }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install a C++ compiler
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v g++ >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends g++
+          fi
+
+      - name: Compile the solver from source
+        shell: bash
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: |
+          # No pip cache. --no-binary is inside the script, and this venv is empty.
+          python -m venv "${RUNNER_TEMP}/solver-venv"
+          if [ -x "${RUNNER_TEMP}/solver-venv/bin/python" ]; then
+            PY="${RUNNER_TEMP}/solver-venv/bin/python"
+          else
+            PY="${RUNNER_TEMP}/solver-venv/Scripts/python.exe"
+          fi
+          "$PY" -m pip install --upgrade pip
+          "$PY" .github/scripts/build_solver_from_source.py

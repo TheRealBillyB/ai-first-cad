@@ -295,29 +295,38 @@ def get(name: str) -> PluginOffer:
     return matches[0]
 
 
+def _shown(value: object) -> str:
+    """One printed line from a manifest or from package metadata."""
+
+    from aicad.labels import plain_line
+
+    return plain_line(value if isinstance(value, str) else "")
+
+
 def warning_text(offer: PluginOffer) -> str:
     """The warning aicad shows before a third-party plugin can run.
 
     The text is built from the manifest. A plugin has no hook to replace it.
+    Names and the summary are one line each.
     """
     if offer.problem:
         return (
-            f"Plugin {offer.name!r} cannot run.\n"
-            f"{offer.problem}\n"
+            f"Plugin {_shown(offer.name)!r} cannot run.\n"
+            f"{_shown(offer.problem)}\n"
             "Nothing was imported.\n"
         )
     if offer.third_party:
-        header = f"Third-party plugin {offer.name!r} runs only after you allow it."
+        header = f"Third-party plugin {_shown(offer.name)!r} runs only after you allow it."
     else:
-        header = f"Plugin {offer.name!r} ships with aicad. It runs only when you ask for it."
+        header = f"Plugin {_shown(offer.name)!r} ships with aicad. It runs only when you ask for it."
     asked = _human_permissions(offer.permissions)
     withheld = [item for item in PERMISSIONS if item not in offer.permissions]
     lines = [
         header,
         "",
-        f"Publisher: {offer.publisher}",
-        f"Package: {offer.distribution} {offer.version}",
-        f"The publisher's summary: {offer.summary}",
+        f"Publisher: {_shown(offer.publisher)}",
+        f"Package: {_shown(offer.distribution)} {_shown(offer.version)}",
+        f"The publisher's summary: {_shown(offer.summary)}",
         f"It adds: {_human_provides(offer.provides)}.",
         f"It asked for: {asked}.",
     ]
@@ -341,7 +350,7 @@ def warning_text(offer: PluginOffer) -> str:
             [
                 "",
                 "To allow this exact package version and these declared permissions:",
-                f"  aicad plugins allow {offer.name} --yes",
+                f"  aicad plugins allow {_shown(offer.name)} --yes",
             ]
         )
     lines.append("")
@@ -1110,6 +1119,12 @@ def _validate_manifest(manifest: dict, entry_name: str) -> tuple[str | None, dic
         return ("aicad.plugin.json needs a summary, so the warning can say what the pack is.", None)
     if len(publisher) > 200 or len(summary) > 400:
         return ("The publisher or the summary in aicad.plugin.json is too long.", None)
+    publisher = _shown(publisher)
+    summary = _shown(summary)
+    if not publisher:
+        return ("aicad.plugin.json needs a publisher, so the warning can say who published the pack.", None)
+    if not summary:
+        return ("aicad.plugin.json needs a summary, so the warning can say what the pack is.", None)
     permissions = _choice_list(manifest.get("permissions"), PERMISSIONS, "permissions")
     if isinstance(permissions, str):
         return (permissions, None)

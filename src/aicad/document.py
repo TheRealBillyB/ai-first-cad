@@ -1642,6 +1642,17 @@ class Document:
             f"No part or assembly named {name!r}. Parts: {parts}. Assemblies: {assemblies}."
         )
 
+    def check_print_clearance(self, name: str, setup: dict | None = None) -> dict:
+        """Gap between parts of an assembly that print as one piece.
+
+        Joint pairs are measured. Motion collisions skip those pairs, so a pin
+        that fills its bore is not a collision there. Overlap, a gap under the
+        fuse line, or a gap the export mesh can close, fails the check.
+        """
+        with self._lock:
+            spec = copy.deepcopy(self._get_assembly(name))
+            return assembly.print_clearance(spec, self._assembly_shapes(spec), setup or {})
+
     def list_printers(self) -> dict:
         return printer_catalog()
 
@@ -2473,23 +2484,28 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
     """The file ``import_step`` reads.
 
     An absolute path is a file the person chose. A relative path stays inside
-    the project after the link is followed. A file in the project that has
+    the project. A directory link in that path is not followed, including one
+    whose target stays inside the project. A file in the project that has
     another name is not opened.
     """
-    from aicad.paths import shared_file, stays_inside
+    from aicad.paths import _reparse_between, shared_file, stays_inside
 
     original = Path(raw)
     given = original if original.is_absolute() else root / original
-    source = given.resolve()
     root_resolved = root.resolve()
     try:
         given.absolute().relative_to(root_resolved)
         lexical_inside = ".." not in given.parts
     except ValueError:
         lexical_inside = False
+    source = given.resolve()
     if not original.is_absolute() or lexical_inside:
         if not stays_inside(root_resolved, source):
             raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
+        lexical = given if given.is_absolute() else root_resolved / given
+        # A directory link whose target stays inside the project is still a link.
+        if _reparse_between(root_resolved, lexical):
+            raise DocumentError(f"STEP file {raw} is a link and was not followed.")
         if shared_file(source):
             raise DocumentError(f"STEP file {raw} has another name and was not opened.")
     return source
