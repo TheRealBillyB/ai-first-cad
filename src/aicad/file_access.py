@@ -238,9 +238,9 @@ def _session_project(file: Path) -> Path | None:
 def _project_link_anchor(file: Path) -> tuple[Path, Path] | None:
     """A linked project directory, and the file's path under that link.
 
-    The outermost directory link is the one closest to the root. When that
-    link's target is a project, the file is opened from the target. A link
-    under the project is a component of that open and is not followed.
+    The outermost directory link whose target is a project is the one used.
+    A directory link further out that is not a project does not hide it.
+    A link under the project is a component of that open and is not followed.
     """
     from aicad.paths import _relative_within, is_reparse
 
@@ -265,10 +265,10 @@ def _project_link_anchor(file: Path) -> tuple[Path, Path] | None:
             linked = is_reparse(candidate)
         except OSError:
             linked = True
-        if linked:
+        if linked and _marks_project(candidate):
             outermost = candidate
             break
-    if outermost is None or not _marks_project(outermost):
+    if outermost is None:
         return None
     try:
         resolved = outermost.resolve()
