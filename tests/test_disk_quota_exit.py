@@ -36,10 +36,10 @@ def test_the_quota_hold_waits_until_the_parent_releases(monkeypatch):
         thread.join(2)
         assert finished.is_set()
     finally:
+        # The waiter closes the read end. Closing it again can close a
+        # descriptor that was opened after that one.
         os.close(write_fd)
-        if thread.is_alive():
-            os.close(read_fd)
-            thread.join(2)
+        thread.join(2)
 
 
 def test_a_closed_quota_hold_does_not_block(monkeypatch):
