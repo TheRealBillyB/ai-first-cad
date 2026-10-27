@@ -501,17 +501,29 @@ def _windows_open_inplace(path: Path) -> int:
 
 
 def _windows_create_new(directory: Path, name: str) -> int:
-    """Create ``name`` in ``directory``. An existing link is not opened."""
+    """Create ``name`` in ``directory``. An existing link is not opened.
+
+    The new file is readable and writable by its owner only.
+    """
+    from aicad import paths
+
     parent = _windows_open_root(directory, write=True)
     handle = None
+    security = None
+    kernel32 = None
     try:
+        security, kernel32 = paths._owner_only_descriptor()
         handle = _nt_open(
             _os_handle(parent),
             name,
             access=_FILE_WRITE_ACCESS,
             directory=False,
             create=True,
+            security=int(security.value),
         )
+        held = security
+        security = None
+        kernel32.LocalFree(held)
         _refuse_reparse(handle, name)
         descriptor = _descriptor(handle, os.O_WRONLY | getattr(os, "O_BINARY", 0))
         handle = None
@@ -520,6 +532,8 @@ def _windows_create_new(directory: Path, name: str) -> int:
         if handle is not None:
             _close_handle(handle)
         os.close(parent)
+        if security is not None and kernel32 is not None:
+            kernel32.LocalFree(security)
 
 
 def _windows_open_file(root: Path, relative: Path) -> int:

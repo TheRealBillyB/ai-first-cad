@@ -175,6 +175,7 @@ def test_create_file_creates_a_private_file(tmp_path):
     import stat
 
     from aicad.file_access import create_file
+    from aicad.paths import file_is_user_private
 
     descriptor = create_file(tmp_path, "fresh.log")
     try:
@@ -183,6 +184,7 @@ def test_create_file_creates_a_private_file(tmp_path):
             assert stat.S_IMODE(os.fstat(descriptor).st_mode) == 0o600
     finally:
         os.close(descriptor)
+    assert file_is_user_private(tmp_path / "fresh.log")
     assert (tmp_path / "fresh.log").read_text(encoding="utf-8") == "ok\n"
     with pytest.raises(OSError):
         create_file(tmp_path, "fresh.log")
