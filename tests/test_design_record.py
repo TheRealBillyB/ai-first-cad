@@ -149,6 +149,10 @@ def test_the_parent_passes_the_open_record(tmp_path, monkeypatch):
         def poll(self):
             return 0
 
+    if sys.platform != "win32":
+        from aicad.paths import _libc
+
+        _libc()
     monkeypatch.setattr("aicad.sandbox.subprocess.Popen", Fake)
     job = tmp_path / "job"
     job.mkdir()
@@ -163,6 +167,86 @@ def test_the_parent_passes_the_open_record(tmp_path, monkeypatch):
             assert token in handles
         else:
             assert token in captured["pass_fds"]
+    finally:
+        record.close()
+
+
+def test_create_file_creates_a_private_file(tmp_path):
+    import stat
+
+    from aicad.file_access import create_file
+
+    descriptor = create_file(tmp_path, "fresh.log")
+    try:
+        os.write(descriptor, b"ok\n")
+        if os.name != "nt":
+            assert stat.S_IMODE(os.fstat(descriptor).st_mode) == 0o600
+    finally:
+        os.close(descriptor)
+    assert (tmp_path / "fresh.log").read_text(encoding="utf-8") == "ok\n"
+    with pytest.raises(OSError):
+        create_file(tmp_path, "fresh.log")
+    assert (tmp_path / "fresh.log").read_text(encoding="utf-8") == "ok\n"
+
+
+def test_create_file_does_not_follow_a_link(tmp_path):
+    from aicad.file_access import create_file
+
+    target = tmp_path / "target.log"
+    target.write_text("CANARY_HIT\n", encoding="utf-8")
+    link = tmp_path / "name.log"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    with pytest.raises(OSError):
+        create_file(tmp_path, link.name)
+    assert target.read_text(encoding="utf-8") == "CANARY_HIT\n"
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(real, target_is_directory=True)
+    except OSError:
+        return
+    with pytest.raises(OSError):
+        create_file(linked, "fresh.log")
+    assert not (real / "fresh.log").exists()
+
+
+def test_the_design_record_log_is_opened_from_its_directory(tmp_path, monkeypatch):
+    from aicad import file_access
+    from aicad.sandbox import _DesignRecord
+
+    seen: list[tuple[Path, str]] = []
+    real = file_access.create_file
+
+    def spy(directory: Path, name: str) -> int:
+        seen.append((Path(directory), name))
+        return real(directory, name)
+
+    class Fake:
+        def __init__(self, command, **kwargs):
+            del command, kwargs
+
+        def poll(self):
+            return 0
+
+    if sys.platform != "win32":
+        from aicad.paths import _libc
+
+        _libc()
+    monkeypatch.setattr(file_access, "create_file", spy)
+    monkeypatch.setattr("aicad.sandbox.subprocess.Popen", Fake)
+    job = tmp_path / "job"
+    job.mkdir()
+    record = _DesignRecord(tmp_path, job)
+    record.start()
+    try:
+        assert len(seen) == 1
+        directory, name = seen[0]
+        assert name.endswith(".log")
+        assert (directory / name).is_file()
     finally:
         record.close()
 

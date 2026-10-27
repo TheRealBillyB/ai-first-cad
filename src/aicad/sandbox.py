@@ -3135,13 +3135,11 @@ class _DesignRecord:
         self._device = info.st_dev
         self._inode = info.st_ino
         self._record_fd = descriptor
-        log_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            log_flags |= os.O_NOFOLLOW
-        if hasattr(os, "O_CLOEXEC"):
-            log_flags |= os.O_CLOEXEC
-        log_fd = os.open(name + ".log", log_flags, 0o600)
-        self._log = Path(name + ".log")
+        from aicad.file_access import create_file
+
+        log_path = Path(name + ".log")
+        log_fd = create_file(log_path.parent, log_path.name)
+        self._log = log_path
         env = _child_env(self.workspace, self.job, network=False)
         # This process runs the calls. It is not the confined script.
         # It still does not inherit loader variables or the parent PYTHONPATH.
