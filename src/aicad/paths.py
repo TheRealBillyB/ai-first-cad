@@ -458,6 +458,16 @@ def refuse_short_name_components(text: str, label: str, error: type[Exception]) 
             raise error(f"{label} {part!r} is not a file name.")
 
 
+def _windows_file_key(name: str) -> str:
+    """A comparison key for names Windows stores as one file.
+
+    The file-system upcase table maps U+0131 LATIN SMALL LETTER DOTLESS I to
+    I. Python's case fold does not. The same key is used on every system.
+    """
+    folded = unicodedata.normalize("NFC", name).replace("\u0131", "i")
+    return folded.casefold()
+
+
 def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Exception]) -> None:
     """Refuse Windows path forms that name a different file than they show.
 
@@ -466,7 +476,8 @@ def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Except
     that differs only by case from an existing entry is the same file on a
     case-insensitive volume, so it is refused too. A name that is the same
     after Unicode normalization is the same file on a normalization-insensitive
-    volume, so it is refused too.
+    volume, so it is refused too. A name the Windows file-system upcase table
+    stores as an existing name is refused too.
     """
 
     raw = text.replace("\\", "/")
@@ -491,6 +502,7 @@ def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Except
         except OSError:
             return
         match = None
+        wanted = _windows_file_key(part)
         for entry in entries:
             if entry.name == part:
                 match = entry
@@ -498,6 +510,8 @@ def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Except
             if entry.name.casefold() == folded:
                 raise error(f"{label} {part!r} differs only by case from an existing name.")
             if unicodedata.normalize("NFC", entry.name).casefold() == normalized:
+                raise error(f"{label} {part!r} matches an existing name.")
+            if _windows_file_key(entry.name) == wanted:
                 raise error(f"{label} {part!r} matches an existing name.")
         current = match if match is not None else current / part
 
