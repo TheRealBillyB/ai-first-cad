@@ -1698,7 +1698,7 @@ _add(Command(
 ))
 _add(Command(
     "run_motion_study",
-    "Drive joints through a timeline of expressions or keyframes, with gear couplings, and report collisions and joint-limit violations.",
+    "Drive joints through a timeline of expressions or keyframes, with gear couplings, and report collisions, joint-limit violations, and joint pairs whose solids overlap.",
     _obj(
         {
             "name": _string("Assembly name."),

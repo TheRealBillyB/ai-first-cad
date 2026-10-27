@@ -249,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     motion_study = commands.add_parser(
         "motion-study",
         parents=[common],
-        help="Drive joints over time and report collisions and joint-limit violations.",
+        help="Drive joints over time and report collisions, joint limits, and overlapping joint solids.",
     )
     motion_study.add_argument("name")
     motion_study.add_argument("--sequence", default=None, help="Study stored on the assembly.")
