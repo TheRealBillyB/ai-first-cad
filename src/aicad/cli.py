@@ -346,6 +346,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fatigue.add_argument("--file", type=Path, required=True, help="JSON with material and stress_amplitude_mpa.")
 
+    print_clearance = commands.add_parser(
+        "print-clearance",
+        parents=[common],
+        help="Gap between parts of an assembly that print as one piece.",
+    )
+    print_clearance.add_argument("name")
+    print_clearance.add_argument("--fuse", dest="fuse_mm", type=float, default=None, help="Gap in mm under which a pair is fused.")
+    print_clearance.add_argument(
+        "--min",
+        dest="min_clearance",
+        type=float,
+        default=None,
+        help="Gap in mm under which a pair is tight.",
+    )
+    print_clearance.add_argument("--pose", default=None, help="Named pose. The stored assembly is left unchanged.")
+    print_clearance.add_argument("--joints", default=None, help="JSON object of joint values for this check only.")
+    print_clearance.add_argument(
+        "--mesh-deflection",
+        dest="mesh_deflection",
+        type=float,
+        default=None,
+        help="Chord error in mm used to decide whether the export mesh can close the gap.",
+    )
+
     printed = commands.add_parser(
         "print", parents=[common], help="Overhang map, orientation, and printer fit."
     )
@@ -890,6 +914,22 @@ def _dispatch(args: argparse.Namespace) -> int:
         return emit(document.check_bolts(spec))
     if args.command == "fatigue":
         return emit(document.check_fatigue(json.loads(_read_named_file(args.file))))
+    if args.command == "print-clearance":
+        setup = {}
+        if args.fuse_mm is not None:
+            setup["fuse_mm"] = args.fuse_mm
+        if args.min_clearance is not None:
+            setup["min_clearance_mm"] = args.min_clearance
+        if args.pose:
+            setup["pose"] = args.pose
+        if args.joints:
+            parsed = json.loads(args.joints)
+            if not isinstance(parsed, dict):
+                raise GeometryError("joints must be a JSON object.")
+            setup["joints"] = parsed
+        if args.mesh_deflection is not None:
+            setup["mesh_deflection_mm"] = args.mesh_deflection
+        return emit(document.check_print_clearance(args.name, setup))
     if args.command == "print":
         setup = {
             "orientation": args.orientation,
