@@ -338,3 +338,46 @@ def test_a_file_outside_a_project_is_read_from_its_parent(tmp_path):
     link = tmp_path / "link"
     _link(link, tmp_path / "real", directory=True)
     assert read_text(link / "sub" / "note.txt", maximum=100) == "keep\n"
+
+
+def test_a_nested_link_under_a_linked_project_is_not_opened_from_the_parent(tmp_path):
+    outside = tmp_path / "outside"
+    nested = outside / "sub"
+    nested.mkdir(parents=True)
+    canary = nested / "note.txt"
+    canary.write_text(_CANARY_TEXT, encoding="utf-8")
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "session.json").write_text("{}\n", encoding="utf-8")
+    (real / "kept.txt").write_bytes(b"keep\n")
+    notes = real / "notes"
+    notes.mkdir()
+    (notes / "kept.txt").write_text("keep\n", encoding="utf-8")
+    _link(real / "docs", outside, directory=True)
+    link = tmp_path / "link"
+    _link(link, real, directory=True)
+    hidden = link / "docs" / "sub" / "note.txt"
+    with pytest.raises(OSError):
+        read_text(hidden, maximum=100)
+    with pytest.raises(OSError):
+        read_tail(hidden, 100)
+    from aicad.paths import read_nofollow_bytes
+
+    with pytest.raises(OSError):
+        read_nofollow_bytes(hidden, maximum=100, label="note", error=OSError)
+    assert canary.read_text(encoding="utf-8") == _CANARY_TEXT
+    assert read_text(link / "kept.txt", maximum=100) == "keep\n"
+    assert read_text(link / "notes" / "kept.txt", maximum=100) == "keep\n"
+    assert read_nofollow_bytes(link / "kept.txt", maximum=100, label="note", error=OSError) == b"keep\n"
+
+
+def test_a_parent_segment_is_not_treated_as_a_directory_link(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "note.txt").write_bytes(b"keep\n")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    from aicad.paths import read_nofollow_bytes
+
+    path = nested / ".." / "outside" / "note.txt"
+    assert read_nofollow_bytes(path, maximum=100, label="note", error=OSError) == b"keep\n"
