@@ -120,6 +120,37 @@ def replace_file(root: Path, relative: str | Path, write, *, private: bool = Fal
     _posix_replace_file(root, relative, write, private=private)
 
 
+def create_file(directory: Path, name: str) -> int:
+    """Create a new file in ``directory``. A link is not followed.
+
+    The name is created only when it is absent. The caller closes the
+    descriptor. The file is owner read and write.
+    """
+    _check_component(name)
+    if sys.platform == "win32":
+        return _windows_create_new(Path(directory), name)
+    return _posix_create_new(Path(directory), name)
+
+
+def _posix_create_new(directory: Path, name: str) -> int:
+    from aicad.paths import _call, _libc
+
+    dirfd = open_directory(directory)
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor = _call(_libc().openat(dirfd, os.fsencode(name), flags, 0o600), name)
+    finally:
+        os.close(dirfd)
+    try:
+        os.fchmod(descriptor, 0o600)
+    except OSError:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def read_from_root(root: Path, relative: Path, maximum: int) -> bytes:
     """Read a regular file from ``root``. A link is not followed."""
     if sys.platform == "win32":
@@ -417,6 +448,28 @@ def _windows_open_inplace(path: Path) -> int:
         if handle is not None:
             _close_handle(handle)
         os.close(directory)
+
+
+def _windows_create_new(directory: Path, name: str) -> int:
+    """Create ``name`` in ``directory``. An existing link is not opened."""
+    parent = _windows_open_root(directory, write=True)
+    handle = None
+    try:
+        handle = _nt_open(
+            _os_handle(parent),
+            name,
+            access=_FILE_WRITE_ACCESS,
+            directory=False,
+            create=True,
+        )
+        _refuse_reparse(handle, name)
+        descriptor = _descriptor(handle, os.O_WRONLY | getattr(os, "O_BINARY", 0))
+        handle = None
+        return descriptor
+    finally:
+        if handle is not None:
+            _close_handle(handle)
+        os.close(parent)
 
 
 def _windows_open_file(root: Path, relative: Path) -> int:
