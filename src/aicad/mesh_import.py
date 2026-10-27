@@ -1,9 +1,10 @@
 """glTF, OBJ, and COLLADA imports that stay in the file's folder.
 
 The bytes are read with the shared file reader. A buffer, image, or material
-library is used only when it is embedded or is one file name in the same
-folder. A path that leaves the folder is refused before it is opened. The
-solid is built from those bytes. No geometry reader is given the project path.
+library is used only when it is embedded or is a relative path inside that
+folder, including a subfolder. A path that leaves the folder is refused
+before it is opened. The solid is built from those bytes. No geometry reader
+is given the project path.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from aicad.paths import is_reserved_device_name
 
 _MAX_TRIANGLES = 1_000_000
 _MAX_FILES = 16
+_MAX_RELATIVE_PARTS = 8
 _OUTSIDE = "it refers to a file outside its folder. It was not read."
 
 
@@ -74,7 +76,7 @@ def _fail(name: str, reason: str) -> GeometryError:
 
 
 def _classify(reference: str) -> _Embedded | _Sibling:
-    """An embedded reference, or one file name in the same folder."""
+    """An embedded reference, or a relative path inside the mesh folder."""
     if _trim_escape(reference):
         raise GeometryError(_OUTSIDE)
     text = reference.strip()
@@ -91,9 +93,10 @@ def _classify(reference: str) -> _Embedded | _Sibling:
     if file_part == "":
         return _Embedded(None)
     name = unquote(file_part)
-    if _leaves_folder(name):
+    parts = _inside_parts(name)
+    if parts is None:
         raise GeometryError(_OUTSIDE)
-    return _Sibling(name)
+    return _Sibling("/".join(parts))
 
 
 def _trim_escape(reference: str) -> bool:
@@ -108,24 +111,37 @@ def _trim_escape(reference: str) -> bool:
     return False
 
 
-def _leaves_folder(name: str) -> bool:
-    if name in {"", ".", ".."}:
-        return True
-    if any(char in name for char in "/\\:\x00"):
-        return True
+def _inside_parts(name: str) -> list[str] | None:
+    """Path parts that stay inside the mesh folder. None when the path leaves it."""
+
     if any(ord(char) < 32 for char in name):
-        return True
-    if name != name.rstrip(" ."):
-        return True
-    if len(name) > 255:
-        return True
-    if "://" in name or name.startswith("//"):
-        return True
-    return is_reserved_device_name(name)
+        return None
+    if "://" in name or name.startswith("//") or name.startswith("\\\\"):
+        return None
+    if len(name) >= 2 and name[1] == ":":
+        return None
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/"):
+        return None
+    parts = normalized.split("/")
+    if not parts or len(parts) > _MAX_RELATIVE_PARTS:
+        return None
+    for part in parts:
+        if part in {"", ".", ".."}:
+            return None
+        if any(char in part for char in "/\\:\x00"):
+            return None
+        if part != part.rstrip(" ."):
+            return None
+        if len(part) > 255:
+            return None
+        if is_reserved_device_name(part):
+            return None
+    return parts
 
 
 def _load_named(folder: Path, names: list[str], main: str) -> dict[str, bytes]:
-    """Read same-folder files. A name that leaves the folder was already refused."""
+    """Read files inside the mesh folder. A path that leaves it was already refused."""
     loaded: dict[str, bytes] = {}
     queue = list(names)
     while queue:
