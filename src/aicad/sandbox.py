@@ -1919,14 +1919,227 @@ def scrub_library_environment() -> None:
 
 
 def _private_matplotlib_dir() -> Path:
-    """A new config directory. It is not the account home and not a project file."""
+    """A new config directory. It is not the account home and not a project file.
+
+    The directory is opened by its handle. The returned path stays on that
+    directory when the system can name an open directory.
+    """
     global _MATPLOTLIB_CONFIG
-    if _MATPLOTLIB_CONFIG is not None and _MATPLOTLIB_CONFIG.is_dir():
+    if _MATPLOTLIB_CONFIG is not None:
         return _MATPLOTLIB_CONFIG
+    _MATPLOTLIB_CONFIG = open_matplotlib_directory().public
+    return _MATPLOTLIB_CONFIG
+
+
+class MatplotlibDirectory:
+    """One config directory kept open for the process."""
+
+    def __init__(self, original: Path, public: Path, descriptor: int, windows_handle: int | None) -> None:
+        self.original = original
+        self.public = public
+        self.descriptor = descriptor
+        self.windows_handle = windows_handle
+
+
+def open_matplotlib_directory() -> MatplotlibDirectory:
+    """Create a private config directory and open it before returning its path."""
     import tempfile
 
-    _MATPLOTLIB_CONFIG = Path(tempfile.mkdtemp(prefix="aicad-mpl-"))
-    return _MATPLOTLIB_CONFIG
+    original = Path(tempfile.mkdtemp(prefix="aicad-mpl-"))
+    try:
+        if os.name == "nt":
+            handle = _open_windows_config_directory(original)
+            return MatplotlibDirectory(original, original, -1, handle)
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor = os.open(os.fspath(original), flags)
+    except Exception:
+        shutil.rmtree(original, ignore_errors=True)
+        raise
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode):
+            raise OSError(errno.ENOTDIR, "not a directory", os.fspath(original))
+        public = _config_directory_path(descriptor, original)
+        return MatplotlibDirectory(original, public, descriptor, None)
+    except Exception:
+        os.close(descriptor)
+        shutil.rmtree(original, ignore_errors=True)
+        raise
+
+
+def close_matplotlib_directory(held: MatplotlibDirectory) -> None:
+    """Close a config directory and remove it when its name still refers to it."""
+    info = None
+    current: Path | None = None
+    if held.descriptor >= 0:
+        try:
+            info = os.fstat(held.descriptor)
+        except OSError:
+            info = None
+        current = _directory_path_from_descriptor(held.descriptor)
+        os.close(held.descriptor)
+        held.descriptor = -1
+    if held.windows_handle:
+        _close_windows_config_handle(held.windows_handle)
+        held.windows_handle = None
+    if current is not None and info is not None:
+        try:
+            found = os.lstat(current)
+        except OSError:
+            found = None
+        if found is not None and stat.S_ISDIR(found.st_mode) and os.path.samestat(info, found):
+            shutil.rmtree(current, ignore_errors=True)
+        try:
+            if held.original.is_symlink():
+                held.original.unlink()
+        except OSError:
+            pass
+        return
+    shutil.rmtree(held.original, ignore_errors=True)
+
+
+def _config_directory_path(descriptor: int, original: Path) -> Path:
+    proc = Path(f"/proc/self/fd/{descriptor}")
+    try:
+        if proc.parent.is_dir():
+            return proc
+    except OSError:
+        pass
+    volfs = _volfs_config_directory(descriptor)
+    if volfs is not None:
+        return volfs
+    return original
+
+
+def _volfs_config_directory(descriptor: int) -> Path | None:
+    """A directory path addressed by its id, when listing and creating both work."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        info = os.fstat(descriptor)
+    except OSError:
+        return None
+    directory = Path(f"/.vol/{info.st_dev}/{info.st_ino}")
+    probe = f".aicad-probe-{os.getpid()}-{uuid.uuid4().hex}"
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        raw = os.open(probe, flags, 0o600, dir_fd=descriptor)
+    except OSError:
+        return None
+    os.close(raw)
+    try:
+        listed = probe in os.listdir(directory)
+    except OSError:
+        listed = False
+    try:
+        os.unlink(probe, dir_fd=descriptor)
+    except OSError:
+        pass
+    if not listed:
+        return None
+    return directory
+
+
+def _directory_path_from_descriptor(descriptor: int) -> Path | None:
+    proc = f"/proc/self/fd/{descriptor}"
+    try:
+        if os.path.isdir(os.path.dirname(proc)):
+            return Path(os.readlink(proc))
+    except OSError:
+        pass
+    if sys.platform != "darwin":
+        return None
+    import fcntl
+
+    buffer = ctypes.create_string_buffer(4 * 1024)
+    command = getattr(fcntl, "F_GETPATH", 50)
+    try:
+        fcntl.fcntl(descriptor, command, buffer)
+    except OSError:
+        return None
+    raw = buffer.raw.split(b"\x00", 1)[0]
+    if not raw:
+        return None
+    return Path(os.fsdecode(raw))
+
+
+def _open_windows_config_directory(original: Path) -> int:
+    """Keep the directory open without sharing delete, so its name stays put."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create.restype = ctypes.c_void_p
+    handle = create(
+        os.fspath(original),
+        0x1 | 0x80,
+        0x1 | 0x2,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if not handle or handle == invalid:
+        error = ctypes.get_last_error()
+        raise OSError(None, None, os.fspath(original), error or errno.EIO)
+    try:
+        if _windows_config_handle_is_reparse(kernel32, handle):
+            raise OSError(errno.ELOOP, "is a link", os.fspath(original))
+        kept = int(handle)
+        handle = None
+        return kept
+    finally:
+        if handle:
+            _close_windows_config_handle(handle)
+
+
+def _windows_config_handle_is_reparse(kernel32, handle) -> bool:
+    class _FileTime(ctypes.Structure):
+        _fields_ = (("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32))
+
+    class _ByHandle(ctypes.Structure):
+        _fields_ = (
+            ("dwFileAttributes", ctypes.c_uint32),
+            ("ftCreationTime", _FileTime),
+            ("ftLastAccessTime", _FileTime),
+            ("ftLastWriteTime", _FileTime),
+            ("dwVolumeSerialNumber", ctypes.c_uint32),
+            ("nFileSizeHigh", ctypes.c_uint32),
+            ("nFileSizeLow", ctypes.c_uint32),
+            ("nNumberOfLinks", ctypes.c_uint32),
+            ("nFileIndexHigh", ctypes.c_uint32),
+            ("nFileIndexLow", ctypes.c_uint32),
+        )
+
+    info = _ByHandle()
+    get = kernel32.GetFileInformationByHandle
+    get.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ByHandle)]
+    get.restype = ctypes.c_int
+    if not get(handle, ctypes.byref(info)):
+        raise OSError(errno.EIO, "could not read the directory")
+    if not info.dwFileAttributes & 0x10:
+        raise OSError(errno.ENOTDIR, "not a directory")
+    return bool(info.dwFileAttributes & 0x400)
+
+
+def _close_windows_config_handle(handle) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close = kernel32.CloseHandle
+    close.argtypes = [ctypes.c_void_p]
+    close.restype = ctypes.c_int
+    close(handle)
 
 
 _MATPLOTLIB_CONFIG: Path | None = None
