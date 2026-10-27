@@ -211,12 +211,14 @@ def _project_link_anchor(file: Path) -> tuple[Path, Path] | None:
     from aicad.paths import _relative_within, is_reparse
 
     chain: list[Path] = []
-    probe = file.parent
+    # abspath collapses "." and ".." and does not follow a directory link.
+    # A parent segment is not a link, and the walk stops if it repeats.
+    probe = Path(os.path.abspath(file.parent))
     seen: set[str] = set()
     while True:
-        key = os.path.normcase(os.path.abspath(probe))
+        key = os.path.normcase(os.fspath(probe))
         if key in seen:
-            raise OSError(errno.ELOOP, "is a link")
+            break
         seen.add(key)
         chain.append(probe)
         parent = probe.parent

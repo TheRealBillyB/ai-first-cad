@@ -329,7 +329,7 @@ def test_a_nested_link_under_a_linked_project_is_not_opened_from_the_parent(tmp_
     real = tmp_path / "real"
     real.mkdir()
     (real / "session.json").write_text("{}\n", encoding="utf-8")
-    (real / "kept.txt").write_text("keep\n", encoding="utf-8")
+    (real / "kept.txt").write_bytes(b"keep\n")
     notes = real / "notes"
     notes.mkdir()
     (notes / "kept.txt").write_text("keep\n", encoding="utf-8")
@@ -349,3 +349,15 @@ def test_a_nested_link_under_a_linked_project_is_not_opened_from_the_parent(tmp_
     assert read_text(link / "kept.txt", maximum=100) == "keep\n"
     assert read_text(link / "notes" / "kept.txt", maximum=100) == "keep\n"
     assert read_nofollow_bytes(link / "kept.txt", maximum=100, label="note", error=OSError) == b"keep\n"
+
+
+def test_a_parent_segment_is_not_treated_as_a_directory_link(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "note.txt").write_bytes(b"keep\n")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    from aicad.paths import read_nofollow_bytes
+
+    path = nested / ".." / "outside" / "note.txt"
+    assert read_nofollow_bytes(path, maximum=100, label="note", error=OSError) == b"keep\n"
