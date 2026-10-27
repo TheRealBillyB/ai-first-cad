@@ -5,6 +5,7 @@ forwards MCP tools to that same command layer, so an external assistant and
 the person edit one document and the viewport updates either way.
 
 The server listens only on loopback. It answers ``localhost`` and ``127.0.0.1`` on the port it bound. A peer that is not loopback is refused.
+A request line that names another host is refused. The assistant client does not follow a redirect.
 A command has to name that origin. A read that names some other origin is
 refused; the page's own reads often send no origin at all. Every API call
 carries the session for this launch. The token in the page is the person
@@ -145,28 +146,56 @@ def _token_matches(presented: str, expected: str) -> bool:
         return False
 
 
+def _port_number(text: str) -> int | None:
+    """A decimal port, written the way a browser sends it.
+
+    ``int`` accepts underscores and trailing spaces. Those spellings are not
+    the port on this server.
+    """
+
+    if not text.isascii() or not text.isdigit():
+        return None
+    try:
+        number = int(text)
+    except ValueError:
+        return None
+    if text != str(number) or number > 65535:
+        return None
+    return number
+
+
 def _split_host(value: str) -> tuple[str, int | None]:
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return "", None
     text = value.strip()
     if text.startswith("["):
         return "", None
     host, separator, port_text = text.rpartition(":")
     if not separator:
         return text.lower(), None
-    try:
-        return host.lower(), int(port_text)
-    except ValueError:
-        return host.lower(), None
+    return host.lower(), _port_number(port_text)
 
 
 def _origin_is_local(origin: str, port: int) -> bool:
+    if any(ord(char) < 32 or ord(char) == 127 for char in origin):
+        return False
     parsed = urlparse(origin)
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        return False
     host = (parsed.hostname or "").lower()
+    netloc = parsed.netloc
+    _host, separator, raw_port = netloc.rpartition(":")
+    if not separator or _port_number(raw_port) != port:
+        return False
     return (
         parsed.scheme == "http"
         and host in _LOCAL_HOSTS
-        and parsed.port == port
+        and parsed_port == port
         and parsed.path in ("", "/")
         and not parsed.username
+        and not parsed.password
         and not parsed.query
         and not parsed.fragment
     )
@@ -199,10 +228,23 @@ class HttpCommandClient:
     def __init__(self, base_url: str):
         self.base = base_url.rstrip("/")
         parsed = urlparse(self.base)
-        if parsed.scheme != "http" or (parsed.hostname or "").lower() not in _LOCAL_HOSTS or not parsed.port:
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if (
+            parsed.scheme != "http"
+            or (parsed.hostname or "").lower() not in _LOCAL_HOSTS
+            or port is None
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in ("", "/")
+        ):
             raise GeometryError("Connect to the workspace app at http://127.0.0.1:8765.")
-        self._origin = f"http://{parsed.hostname}:{parsed.port}"
-        self._token = read_agent_token(parsed.port)
+        self._origin = f"http://{parsed.hostname}:{port}"
+        self._token = read_agent_token(port)
 
     def execute(self, name: str, arguments: dict | None = None, source: str = "agent") -> dict:
         del source
@@ -384,6 +426,7 @@ def _handler(session: Workspace):
                 self._error(500, str(exc))
 
         def _guard(self) -> None:
+            self._check_target()
             self._check_host()
             path = urlparse(self.path).path
             if path.startswith("/api/"):
@@ -393,6 +436,11 @@ def _handler(session: Workspace):
                 self._check_token()
             else:
                 self._check_origin(required=False)
+
+        def _check_target(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.scheme or parsed.netloc or parsed.path.startswith("//") or "\\" in parsed.path:
+                raise RequestRejected("This workspace only answers to localhost.")
 
         def _check_host(self) -> None:
             peer = self.client_address[0] if self.client_address else ""

@@ -841,14 +841,22 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
         raise RuntimeError("ffmpeg did not finish") from exc
     output = frame_dir / produced
     if completed.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
-        reason = (completed.stderr or b"").decode("utf-8", "replace").strip().replace("\n", " ")
-        if len(reason) > 300:
-            reason = reason[-300:]
-        raise RuntimeError(reason or f"exit {completed.returncode}")
+        raise RuntimeError(_encoder_reason(completed.stderr or b"", completed.returncode))
     from aicad.file_access import read_file
     from aicad.paths import publish_bytes
 
     publish_bytes(destination, read_file(output, maximum=512 * 1024 * 1024))
+
+
+def _encoder_reason(stderr: bytes, code: int) -> str:
+    """One line from an encoder. A terminal sequence in that text is not shown."""
+
+    from aicad.labels import plain_line
+
+    reason = plain_line(stderr.decode("utf-8", "replace"))
+    if len(reason) > 300:
+        reason = reason[-300:]
+    return reason or f"exit {code}"
 
 
 def _remove_frames(folder: Path, root: Path) -> None:
