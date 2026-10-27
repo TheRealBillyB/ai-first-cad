@@ -841,12 +841,20 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("ffmpeg did not finish") from exc
         if completed.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
-            reason = (completed.stderr or b"").decode("utf-8", "replace").strip().replace("\n", " ")
-            if len(reason) > 300:
-                reason = reason[-300:]
-            raise RuntimeError(reason or f"exit {completed.returncode}")
+            raise RuntimeError(_encoder_reason(completed.stderr or b"", completed.returncode))
 
     publish_file(destination, write)
+
+
+def _encoder_reason(stderr: bytes, code: int) -> str:
+    """One line from an encoder. A terminal sequence in that text is not shown."""
+
+    from aicad.labels import plain_line
+
+    reason = plain_line(stderr.decode("utf-8", "replace"))
+    if len(reason) > 300:
+        reason = reason[-300:]
+    return reason or f"exit {code}"
 
 
 def _remove_frames(folder: Path, root: Path) -> None:

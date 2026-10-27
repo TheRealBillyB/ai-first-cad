@@ -1,258 +1,290 @@
-"""glTF, OBJ, and COLLADA imports do not open a path outside the file.
+"""Redirects and odd host spellings do not reach another machine.
 
-The marker is CANARY_HIT. Embedded data and one same-folder file are read
-through the shared file reader. Any other buffer, image, or material library
-is refused.
+The marker is CANARY_HIT. A second local server records any request that
+should not have been sent. The marker file is not opened.
 """
 
 from __future__ import annotations
 
-import base64
 import json
-import struct
-from pathlib import Path
+import socket
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from aicad.app import HttpCommandClient, make_server, write_agent_token
 from aicad.errors import GeometryError
-from aicad.kernel import import_step_file
-
-_MARKER = "CANARY_HIT\n"
-_TETRA = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
-_FACES = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
+from aicad.llm import _post
 
 
-def _project(tmp_path: Path) -> tuple[Path, Path]:
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    marker = outside / "marker.bin"
-    marker.write_text(_MARKER, encoding="utf-8")
-    project = tmp_path / "project"
-    project.mkdir()
-    return project, marker
+@pytest.fixture
+def server(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    monkeypatch.setenv("AICAD_SERVER_TOKENS", str(tmp_path / "tokens"))
+    monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    running = make_server(workspace, "127.0.0.1", 0)
+    thread = threading.Thread(target=running.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield running
+    finally:
+        running.shutdown()
+        running.server_close()
 
 
-def _assert_closed(marker: Path, opened: list[str]) -> None:
-    assert marker.read_text(encoding="utf-8") == _MARKER
-    assert all(str(marker) not in item for item in opened)
+def _exchange(server, method, path, body=None, headers=None, token="page", origin=True):
+    from http.client import HTTPConnection
+
+    host, port = server.server_address
+    connection = HTTPConnection(host, port, timeout=30)
+    sent = dict(headers or {})
+    if origin is True:
+        sent.setdefault("Origin", f"http://127.0.0.1:{port}")
+    elif origin:
+        sent["Origin"] = origin
+    if token == "page":
+        sent.setdefault("X-Aicad-Token", server.page_token)
+    elif token == "agent":
+        sent.setdefault("X-Aicad-Token", server.agent_token)
+    if body is not None and "Content-Type" not in sent:
+        sent["Content-Type"] = "application/json"
+    connection.request(method, path, body=body, headers=sent)
+    response = connection.getresponse()
+    payload = response.read()
+    status = response.status
+    connection.close()
+    return status, payload
 
 
-def _watch(monkeypatch) -> list[str]:
-    import os
-
-    opened: list[str] = []
-    real = os.open
-
-    def spy(path, flags, *args, **kwargs):
-        opened.append(os.fspath(path))
-        return real(path, flags, *args, **kwargs)
-
-    monkeypatch.setattr(os, "open", spy)
-    return opened
-
-
-def _volume(path: Path) -> float:
-    shape = import_step_file(path)
-    return float(shape.impl.volume)
-
-
-def _tetra_bytes() -> bytes:
-    blob = bytearray()
-    for point in _TETRA:
-        blob += struct.pack("<3f", *point)
-    for triangle in _FACES:
-        blob += struct.pack("<3H", *triangle)
-    return bytes(blob)
+def _raw(server, head: str, body: bytes = b"") -> tuple[int, bytes]:
+    host, port = server.server_address
+    sock = socket.create_connection((host, port), timeout=30)
+    try:
+        sock.sendall(head.encode("ascii") + body)
+        chunks = []
+        while True:
+            block = sock.recv(65536)
+            if not block:
+                break
+            chunks.append(block)
+    finally:
+        sock.close()
+    data = b"".join(chunks)
+    status = int(data.split(b" ", 2)[1])
+    return status, data
 
 
-def _gltf(buffers: list[dict], images: list[dict] | None = None) -> dict:
-    positions = 48
-    document = {
-        "buffers": buffers,
-        "bufferViews": [
-            {"buffer": 0, "byteOffset": 0, "byteLength": positions},
-            {"buffer": 0, "byteOffset": positions, "byteLength": 24},
-        ],
-        "accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"},
-            {"bufferView": 1, "componentType": 5123, "count": 12, "type": "SCALAR"},
-        ],
-        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
-    }
-    if images is not None:
-        document["images"] = images
-    return document
+class _Record:
+    def __init__(self):
+        self.hits: list[dict[str, str]] = []
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def _handler(self):
+        record = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _take(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                record.hits.append({key.lower(): value for key, value in self.headers.items()})
+                body = b'{"ok": true, "choices": [{"message": {"content": "CANARY_HIT"}}]}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = _take
+            do_POST = _take
+
+            def log_message(self, _format, *_args) -> None:
+                return
+
+        return Handler
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server.server_address[1]}/taken"
 
 
-def _obj() -> str:
-    lines = [f"v {x} {y} {z}" for x, y, z in _TETRA]
-    lines.append("mtllib mat.mtl")
-    for face in _FACES:
-        lines.append("f " + " ".join(str(index + 1) for index in face))
-    return "\n".join(lines) + "\n"
+def _redirector(location: str) -> tuple[ThreadingHTTPServer, threading.Thread]:
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_GET = _send
+        do_POST = _send
+
+        def log_message(self, _format, *_args) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
 
 
-def _collada(image: str | None = None, library: str | None = None) -> str:
-    points = " ".join(str(value) for point in _TETRA for value in point)
-    corners = " ".join(str(index) for face in _FACES for index in face)
-    image_xml = ""
-    if image is not None:
-        image_xml = f"<library_images><image id='pix'><init_from>{image}</init_from></image></library_images>"
-    library_xml = ""
-    if library is not None:
-        library_xml = f"<library_effects><effect id='e'><instance_effect url='{library}'/></effect></library_effects>"
-    return (
-        "<COLLADA>"
-        f"{image_xml}{library_xml}"
-        "<library_geometries><geometry id='tetra'><mesh>"
-        f"<source id='pos'><float_array id='pos-array' count='12'>{points}</float_array>"
-        "<technique_common><accessor source='#pos-array' count='4' stride='3'/></technique_common></source>"
-        "<vertices id='verts'><input semantic='POSITION' source='#pos'/></vertices>"
-        f"<triangles count='4'><input semantic='VERTEX' source='#verts' offset='0'/><p>{corners}</p></triangles>"
-        "</mesh></geometry></library_geometries></COLLADA>"
+def test_a_redirect_does_not_receive_the_session(tmp_path, monkeypatch):
+    canary = tmp_path / "SANDBOX_CANARY.txt"
+    canary.write_text("CANARY_HIT\n", encoding="utf-8")
+    collector = _Record()
+    redirector, _thread = _redirector(collector.url)
+    try:
+        port = redirector.server_address[1]
+        with pytest.raises(GeometryError):
+            _post(
+                f"http://127.0.0.1:{port}/chat/completions",
+                {"ping": True},
+                {"Authorization": "Bearer CANARY_HIT", "Content-Type": "application/json"},
+            )
+        monkeypatch.setenv("AICAD_SERVER_TOKENS", str(tmp_path / "tokens"))
+        write_agent_token(port, "CANARY_HIT")
+        client = HttpCommandClient(f"http://127.0.0.1:{port}")
+        with pytest.raises(GeometryError):
+            client.execute("list_parts", {})
+    finally:
+        redirector.shutdown()
+        redirector.server_close()
+        collector.close()
+    assert collector.hits == []
+    assert canary.read_text(encoding="utf-8") == "CANARY_HIT\n"
+
+
+def test_a_file_url_is_not_opened(tmp_path):
+    canary = tmp_path / "SANDBOX_CANARY.txt"
+    canary.write_text("CANARY_HIT\n", encoding="utf-8")
+    with pytest.raises(GeometryError):
+        _post(canary.as_uri(), {"ping": True}, {"Authorization": "Bearer CANARY_HIT"})
+    assert canary.read_text(encoding="utf-8") == "CANARY_HIT\n"
+
+
+def test_another_host_on_the_request_line_is_refused(server):
+    port = int(server.server_address[1])
+    body = json.dumps({"name": "list_parts"}).encode("utf-8")
+    head = (
+        f"POST http://evil.example/api/command HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        f"Origin: http://127.0.0.1:{port}\r\n"
+        f"X-Aicad-Token: {server.page_token}\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
     )
+    status, payload = _raw(server, head, body)
+    assert status == 403
+    assert server.page_token.encode("utf-8") not in payload
+    assert b"CANARY_HIT" not in payload
 
-
-def test_a_gltf_same_folder_buffer_is_read_by_the_helper(tmp_path):
-    project, marker = _project(tmp_path)
-    (project / "positions.bin").write_bytes(_tetra_bytes())
-    (project / "part.gltf").write_text(
-        json.dumps(_gltf([{"uri": "positions.bin", "byteLength": 72}])),
-        encoding="utf-8",
+    head = (
+        f"GET //evil.example/ HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
     )
-    assert _volume(project / "part.gltf") == pytest.approx(1 / 6)
-    assert marker.read_text(encoding="utf-8") == _MARKER
+    status, payload = _raw(server, head)
+    assert status in {403, 404}
+    assert b'"ok": true' not in payload.lower()
+    assert b"CANARY_HIT" not in payload
 
 
-def test_a_gltf_buffer_outside_the_folder_is_not_opened(tmp_path, monkeypatch):
-    project, marker = _project(tmp_path)
-    opened = _watch(monkeypatch)
-    mesh = project / "part.gltf"
-    for uri in (
-        str(marker),
-        "../outside/marker.bin",
-        "textures/marker.bin",
-        "./positions.bin",
-        "http://example.test/marker.bin",
-        "C:/marker.bin",
-        "%2e%2e/outside/marker.bin",
-        "positions.bin ",
-        "NUL.bin",
+def test_odd_host_and_origin_spellings_are_refused(server):
+    port = int(server.server_address[1])
+    digits = str(port)
+    underscored = digits[0] + "_" + digits[1:] if len(digits) > 1 else digits + "_0"
+    refused = [
+        {"headers": {"Host": f"2130706433:{port}"}},
+        {"headers": {"Host": f"0177.0.0.1:{port}"}},
+        {"headers": {"Host": f"127.1:{port}"}},
+        {"headers": {"Host": f"localhost.:{port}"}},
+        {"headers": {"Host": f"127.0.0.1.:{port}"}},
+        {"headers": {"Host": f"[::1]:{port}"}},
+        {"headers": {"Host": f"[::ffff:127.0.0.1]:{port}"}},
+        {"headers": {"Host": f"127.0.0.1:{underscored}"}},
+        {"headers": {"Host": f"127.0.0.1:+{port}"}},
+        {"headers": {"Host": f"127.0.0.1:0{port}"}},
+        {"origin": f"http://2130706433:{port}"},
+        {"origin": f"http://127.0.0.1.:{port}"},
+        {"origin": f"http://localhost.:{port}"},
+        {"origin": f"http://evil.example@127.0.0.1:{port}"},
+        {"origin": f"http://127.0.0.1:{port}@evil.example"},
+        {"origin": f"http://127.0.0.1:0{port}"},
+        {"origin": f"http://127.0.0.1:{port}%00.evil.example"},
+        {"origin": f"http://[::ffff:127.0.0.1]:{port}"},
+        {"origin": f"http://127.0.0.1:{port}/extra"},
+    ]
+    for item in refused:
+        status, payload = _exchange(
+            server,
+            "POST",
+            "/api/command",
+            body=json.dumps({"name": "list_parts"}),
+            headers=item.get("headers"),
+            origin=item.get("origin", True),
+        )
+        assert status == 403, item
+        assert server.page_token.encode("utf-8") not in payload
+        assert server.agent_token.encode("utf-8") not in payload
+
+    status, payload = _raw(
+        server,
+        f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\t\r\nConnection: close\r\n\r\n",
+    )
+    assert status == 403
+    assert server.page_token.encode("utf-8") not in payload
+
+    status, _payload = _exchange(server, "GET", "/", token=None, origin=None)
+    assert status == 200
+
+
+def test_a_forwarded_host_is_not_contacted(server):
+    collector = _Record()
+    try:
+        port = int(server.server_address[1])
+        other = collector.server.server_address[1]
+        status, payload = _exchange(
+            server,
+            "GET",
+            "/",
+            headers={
+                "X-Forwarded-Host": f"evil.example:{other}",
+                "Forwarded": f"host=evil.example:{other}",
+            },
+            token=None,
+            origin=None,
+        )
+        assert status == 200
+    finally:
+        collector.close()
+    assert collector.hits == []
+
+
+def test_the_workspace_client_rejects_a_smuggled_url(server):
+    port = int(server.server_address[1])
+    for base in (
+        f"http://2130706433:{port}",
+        f"http://127.0.0.1:{port}/api",
+        f"http://127.0.0.1:{port}?next=http://evil.example",
+        f"http://127.0.0.1:{port}#@evil.example",
+        f"http://evil.example@{port}",
+        f"http://user@127.0.0.1:{port}",
+        f"file://127.0.0.1:{port}/",
     ):
-        mesh.write_text(json.dumps(_gltf([{"uri": uri, "byteLength": 4}])), encoding="utf-8")
-        with pytest.raises(GeometryError) as raised:
-            import_step_file(mesh)
-        assert "CANARY_HIT" not in str(raised.value)
-        assert "outside its folder" in str(raised.value)
-    _assert_closed(marker, opened)
-
-
-def test_an_embedded_gltf_does_not_open_a_sibling(tmp_path, monkeypatch):
-    project, marker = _project(tmp_path)
-    opened = _watch(monkeypatch)
-    payload = base64.b64encode(_tetra_bytes()).decode("ascii")
-    (project / "positions.bin").write_bytes(b"not-the-mesh")
-    mesh = project / "part.gltf"
-    mesh.write_text(
-        json.dumps(_gltf([{"uri": f"data:application/octet-stream;base64,{payload}", "byteLength": 72}])),
-        encoding="utf-8",
-    )
-    assert _volume(mesh) == pytest.approx(1 / 6)
-    assert all(not item.endswith("positions.bin") for item in opened)
-    _assert_closed(marker, opened)
-
-
-def test_a_glb_uses_its_own_buffer(tmp_path, monkeypatch):
-    project, marker = _project(tmp_path)
-    opened = _watch(monkeypatch)
-    (project / "positions.bin").symlink_to(marker)
-    document = json.dumps(_gltf([{"byteLength": 72}])).encode("utf-8")
-    document += b" " * ((4 - len(document) % 4) % 4)
-    binary = _tetra_bytes()
-    blob = bytearray(b"glTF")
-    blob += struct.pack("<II", 2, 12 + 8 + len(document) + 8 + len(binary))
-    blob += struct.pack("<II", len(document), 0x4E4F534A)
-    blob += document
-    blob += struct.pack("<II", len(binary), 0x004E4942)
-    blob += binary
-    (project / "part.glb").write_bytes(blob)
-    assert _volume(project / "part.glb") == pytest.approx(1 / 6)
-    assert all("positions.bin" not in item for item in opened)
-    _assert_closed(marker, opened)
-
-
-def test_a_gltf_sibling_link_is_not_followed(tmp_path):
-    project, marker = _project(tmp_path)
-    (project / "positions.bin").symlink_to(marker)
-    (project / "part.gltf").write_text(
-        json.dumps(_gltf([{"uri": "positions.bin", "byteLength": 4}])),
-        encoding="utf-8",
-    )
-    with pytest.raises(GeometryError) as raised:
-        import_step_file(project / "part.gltf")
-    assert "link" in str(raised.value)
-    assert marker.read_text(encoding="utf-8") == _MARKER
-
-
-def test_an_obj_material_library_stays_in_the_folder(tmp_path, monkeypatch):
-    project, marker = _project(tmp_path)
-    (project / "mat.mtl").write_text("newmtl clay\nmap_Kd -s 1 1 1 clay.png\n", encoding="utf-8")
-    (project / "clay.png").write_bytes(b"png")
-    (project / "part.obj").write_text(_obj(), encoding="utf-8")
-    assert _volume(project / "part.obj") == pytest.approx(1 / 6)
-    (project / "clay.png").unlink()
-    with pytest.raises(GeometryError) as missing:
-        import_step_file(project / "part.obj")
-    assert "could not be read" in str(missing.value)
-    opened = _watch(monkeypatch)
-    (project / "mat.mtl").write_text(f"map_Kd {marker.as_posix()}\n", encoding="utf-8")
-    with pytest.raises(GeometryError) as outside:
-        import_step_file(project / "part.obj")
-    assert "outside its folder" in str(outside.value)
-    (project / "part.obj").write_text(_obj().replace("mtllib mat.mtl", f"mtllib {marker.as_posix()}"), encoding="utf-8")
-    with pytest.raises(GeometryError) as library:
-        import_step_file(project / "part.obj")
-    assert "outside its folder" in str(library.value)
-    _assert_closed(marker, opened)
-
-
-def test_a_collada_image_and_library_stay_in_the_folder(tmp_path, monkeypatch):
-    project, marker = _project(tmp_path)
-    (project / "pix.bin").write_bytes(b"pix")
-    (project / "lib.dae").write_text("<COLLADA></COLLADA>", encoding="utf-8")
-    mesh = project / "part.dae"
-    mesh.write_text(_collada(image="pix.bin", library="lib.dae#effect"), encoding="utf-8")
-    assert _volume(mesh) == pytest.approx(1 / 6)
-    (project / "pix.bin").unlink()
-    with pytest.raises(GeometryError) as missing:
-        import_step_file(mesh)
-    assert "could not be read" in str(missing.value)
-    opened = _watch(monkeypatch)
-    mesh.write_text(_collada(image=str(marker)), encoding="utf-8")
-    with pytest.raises(GeometryError) as image:
-        import_step_file(mesh)
-    assert "outside its folder" in str(image.value)
-    mesh.write_text(_collada(library="../outside/lib.dae#effect"), encoding="utf-8")
-    with pytest.raises(GeometryError) as library:
-        import_step_file(mesh)
-    assert "outside its folder" in str(library.value)
-    (project / "pix.bin").symlink_to(marker)
-    mesh.write_text(_collada(image="pix.bin"), encoding="utf-8")
-    with pytest.raises(GeometryError) as linked:
-        import_step_file(mesh)
-    assert "link" in str(linked.value)
-    _assert_closed(marker, opened)
-
-
-def test_a_collada_library_that_points_outside_is_not_followed(tmp_path, monkeypatch):
-    project, marker = _project(tmp_path)
-    opened = _watch(monkeypatch)
-    (project / "lib.dae").write_text(
-        f"<COLLADA><library_images><image><init_from>{marker.as_posix()}</init_from></image></library_images></COLLADA>",
-        encoding="utf-8",
-    )
-    (project / "part.dae").write_text(_collada(library="lib.dae#effect"), encoding="utf-8")
-    with pytest.raises(GeometryError) as raised:
-        import_step_file(project / "part.dae")
-    assert "outside its folder" in str(raised.value)
-    _assert_closed(marker, opened)
+        with pytest.raises(GeometryError):
+            HttpCommandClient(base)

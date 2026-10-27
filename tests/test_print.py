@@ -1,5 +1,6 @@
 """Print orientation, overhangs, printer fit, and the slicer skip path."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -182,3 +183,37 @@ def test_a_missing_slicer_is_skipped(tmp_path, monkeypatch):
     report = slice_mesh(__import__("numpy").zeros((1, 3)), __import__("numpy").zeros((0, 3), dtype=int), tmp_path)
     assert report["status"] == "skipped"
     assert "not on PATH" in report["note"]
+
+
+def test_a_reparse_that_is_not_a_symlink_is_removed_before_slicing(tmp_path, monkeypatch):
+    from aicad import paths
+    from aicad.printprep import _drop_link
+
+    path = tmp_path / "print.gcode"
+    path.write_text("keep\n", encoding="utf-8")
+    removed = []
+    monkeypatch.setattr(paths, "is_reparse", lambda candidate: Path(candidate) == path)
+
+    def unlink(candidate: Path) -> None:
+        removed.append(Path(candidate))
+        Path(candidate).unlink()
+
+    monkeypatch.setattr(paths, "_unlink_reparse", unlink)
+    _drop_link(path)
+    assert removed == [path]
+    assert not path.exists()
+
+
+def test_a_slicer_link_still_unlinks_a_symlink_and_leaves_the_target(tmp_path):
+    from aicad.printprep import _drop_link
+
+    target = tmp_path / "target.gcode"
+    target.write_text("CANARY_HIT\n", encoding="utf-8")
+    link = tmp_path / "print.gcode"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("this machine cannot create a symlink")
+    _drop_link(link)
+    assert not link.exists()
+    assert target.read_text(encoding="utf-8") == "CANARY_HIT\n"
