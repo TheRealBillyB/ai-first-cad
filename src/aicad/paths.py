@@ -1200,9 +1200,34 @@ def published_path(path: str | Path) -> str:
 
 
 def ensure_real_directory(path: str | Path) -> Path:
-    """Create a directory. Do not follow a symlink or a junction to do it."""
+    """Create a directory. Do not follow a symlink or a junction to do it.
+
+    Each new component is created from the parent directory's handle. When the
+    project folder is a link, that handle is the directory the link points at.
+    """
 
     raw = Path(os.path.abspath(path))
+    if not nofollow_writes():
+        return _ensure_real_directory_by_path(path, raw)
+    try:
+        root, relative = _directory_create_anchor(raw)
+        if relative.parts:
+            descriptor = open_relative(root, relative, create=True)
+        else:
+            descriptor = open_directory(root)
+    except OSError as exc:
+        if exc.errno in _LINK_ERRNOS or exc.strerror == "is a link":
+            raise OSError(errno.ELOOP, f"{path} is a link and was not followed.") from exc
+        if exc.errno == errno.ENOTDIR:
+            raise OSError(errno.ENOTDIR, f"{path} is not a folder.") from exc
+        raise
+    os.close(descriptor)
+    return raw
+
+
+def _ensure_real_directory_by_path(path: str | Path, raw: Path) -> Path:
+    """Create ``raw`` by path when a directory handle is not available."""
+
     current = Path(raw.anchor)
     relative = raw.relative_to(current)
     for part in relative.parts:
@@ -1215,6 +1240,21 @@ def ensure_real_directory(path: str | Path) -> Path:
             continue
         current.mkdir()
     return raw
+
+
+def _directory_create_anchor(directory: Path) -> tuple[Path, Path]:
+    """Directory handle to create from, and the remaining path under it."""
+
+    from aicad.file_access import _project_link_anchor
+
+    found = _project_link_anchor(directory / "child")
+    if found is not None:
+        root, relative = found
+        parent = relative.parent
+        if parent == Path("."):
+            return root, Path()
+        return root, parent
+    return Path(directory.anchor), directory.relative_to(directory.anchor)
 
 
 def refuse_link_ancestors(path: str | Path, label: str, error: type[Exception]) -> None:
@@ -1836,28 +1876,26 @@ def publish_file(path: Path, write, *, root: Path | None = None, private: bool =
     """Write a temp file beside ``path``, then replace ``path``.
 
     Replacement does not follow a symlink and does not change a hard link's
-    other name. When ``path`` is inside a project and this system can open
-    directories without following links, the project directory is opened once
-    and each component is opened from that descriptor. ``path``'s parent must
-    already be a real directory on systems that cannot do that.
+    other name. When ``path`` is inside a project, or the project folder is a
+    link, this system opens that directory once and each component from that
+    descriptor. ``path``'s parent must already be a real directory on systems
+    that cannot do that.
     """
     path = Path(path)
     chosen = Path(root).resolve() if root is not None else _project_containing(path)
     lexical = path if path.is_absolute() else (chosen / path if chosen is not None else path)
-    if (
-        chosen is not None
-        and nofollow_writes()
-        and _lexical_inside(lexical, chosen)
-    ):
-        relative = _accept_project_file(chosen, lexical)
-        _before_nofollow(chosen, relative)
-        try:
-            replace_file(chosen, relative, write, private=private)
-        except OSError as exc:
-            if exc.errno in _LINK_ERRNOS:
-                raise OSError(exc.errno, f"{path} is a link and was not followed.") from exc
-            raise
-        return path
+    if nofollow_writes():
+        anchored = _publish_anchor(lexical, chosen)
+        if anchored is not None:
+            root_dir, relative = anchored
+            _before_nofollow(root_dir, relative)
+            try:
+                replace_file(root_dir, relative, write, private=private)
+            except OSError as exc:
+                if exc.errno in _LINK_ERRNOS or exc.strerror == "is a link":
+                    raise OSError(exc.errno or errno.ELOOP, f"{path} is a link and was not followed.") from exc
+                raise
+            return path
     temporary = _create_beside(path.parent, path.suffix)
     try:
         if private:
@@ -1873,12 +1911,58 @@ def publish_file(path: Path, write, *, root: Path | None = None, private: bool =
     return path
 
 
+def _publish_anchor(path: Path, chosen: Path | None) -> tuple[Path, Path] | None:
+    """Project directory and relative file for a handle-relative replace.
+
+    A path that is lexically inside a remembered project uses that project.
+    A path through a project folder that is a link uses the directory that
+    link points at. ``None`` means this system should create the file by path.
+    """
+
+    if chosen is not None and _lexical_inside(path, chosen):
+        return chosen, _accept_project_file(chosen, path)
+    from aicad.file_access import _project_link_anchor
+
+    try:
+        found = _project_link_anchor(path)
+    except OSError as exc:
+        raise OSError(errno.ELOOP, f"{path} is a link and was not followed.") from exc
+    if found is None or not found[1].parts:
+        return None
+    return found
+
+
 def _create_beside(directory: Path, suffix: str) -> Path:
     """A new file in ``directory``.
 
     A permission error is raised at once. Checking the directory again after
-    that error can wait on a locked folder.
+    that error can wait on a locked folder. The directory and the new file are
+    created from directory handles when this system can open one.
     """
+
+    if nofollow_writes():
+        ensure_real_directory(directory)
+        from aicad.file_access import create_file
+
+        last: OSError | None = None
+        for _ in range(128):
+            name = f".aicad-{os.getpid()}-{uuid.uuid4().hex}{suffix}"
+            try:
+                descriptor = create_file(directory, name)
+            except FileExistsError as exc:
+                last = exc
+                continue
+            os.close(descriptor)
+            return directory / name
+        if last is not None:
+            raise last
+        raise OSError(errno.EEXIST, "could not create a temporary file")
+    return _create_beside_by_path(directory, suffix)
+
+
+def _create_beside_by_path(directory: Path, suffix: str) -> Path:
+    """A new file in ``directory`` when a directory handle is not available."""
+
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
