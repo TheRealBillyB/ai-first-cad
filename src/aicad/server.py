@@ -573,10 +573,12 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def export_part(name: str, format: str, path: str | None = None) -> dict:
-        """Export a part to STEP or STL. `format` is `step` or `stl`.
+        """Export a part or an assembly to STEP, STL, or 3MF.
 
+        `format` is `step`, `stl`, or `3mf`. An assembly is written in its
+        current pose as one file, and the parts stay separate solids.
         `path` is optional. When omitted, the file is written under the workspace
-        exports directory. STEP is the solid; STL is a triangle mesh for printing.
+        exports directory.
         """
         return guard(lambda: run("export_part", name=name, format=format, path=path))
 
@@ -1181,6 +1183,8 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def check_print(name: str, setup: dict[str, Any] | None = None) -> list[str | Image]:
         """Overhang map, suggested orientation, and printer fit.
 
+        name is a part, or an assembly in its current pose. The assembly is
+        one print and the parts are not united.
         setup.orientation is best or one of z_up, z_down, x_up, x_down, y_up, y_down.
         threshold_deg defaults to 45 (degrees from vertical). printer names a bed
         from list_printers. slice true asks OrcaSlicer or PrusaSlicer for time and

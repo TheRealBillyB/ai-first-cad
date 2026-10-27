@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     export = commands.add_parser("export", parents=[common], help="Write STEP or STL.")
     export.add_argument("name")
-    export.add_argument("--format", "-f", required=True, choices=["step", "stl"])
+    export.add_argument("--format", "-f", required=True, choices=["step", "stl", "3mf"])
     export.add_argument("--out", "-o", type=Path)
 
     wall = commands.add_parser("check-wall", parents=[common], help="Estimate minimum wall thickness.")

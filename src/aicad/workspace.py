@@ -1376,8 +1376,8 @@ _add(Command(
 ))
 _add(Command(
     "export_part",
-    "Write STEP or STL.",
-    _obj({"name": _string("Part name."), "format": _string("step or stl."), "path": _string("Optional output path.")}, ["name", "format"]),
+    "Write STEP, STL, or 3MF. An assembly is one file in its current pose, and the parts stay separate solids.",
+    _obj({"name": _string("Part or assembly name."), "format": _string("step, stl, or 3mf."), "path": _string("Optional output path.")}, ["name", "format"]),
     _cmd_export,
 ))
 _add(Command("feature_report", "How much of each feature was new material or already buried.", _PART, _cmd_features))
@@ -1569,7 +1569,7 @@ _add(Command(
     "Overhang map for one orientation, a suggested orientation, and whether the part fits a named printer. A slicer estimate is included when slice is true and OrcaSlicer or PrusaSlicer is installed.",
     _obj(
         {
-            "name": _string("Part name."),
+            "name": _string("Part name, or an assembly in its current pose."),
             "setup": {
                 "type": "object",
                 "description": "orientation (best or z_up), threshold_deg, printer, slice, price_per_kg.",
