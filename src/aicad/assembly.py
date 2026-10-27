@@ -294,6 +294,34 @@ def collisions(solved: dict, placed: dict[str, kernel.Shape], ignore: list[list[
     return hits
 
 
+def joint_seats(solved: dict, placed: dict[str, kernel.Shape]) -> list[dict]:
+    """Gap and overlap for each joint pair.
+
+    Motion collisions skip these pairs, so a pin that fills its bore is not a
+    collision. Overlap here means the two solids of the joint are one volume.
+    """
+    rows = []
+    for joint in solved["joints"]:
+        overlap, distance, point_a, point_b = kernel.clearance_between(
+            placed[joint["parent"]], placed[joint["child"]]
+        )
+        fused = overlap > 1e-4
+        at = point_a or point_b
+        rows.append(
+            {
+                "joint": joint["name"],
+                "parent": joint["parent"],
+                "child": joint["child"],
+                "type": joint["type"],
+                "gap_mm": 0.0 if fused else distance,
+                "overlap_mm3": overlap,
+                "fused": fused,
+                "at_mm": None if at is None else [at.x, at.y, at.z],
+            }
+        )
+    return rows
+
+
 def run_motion(spec: dict, shapes: dict[str, kernel.Shape], motion: dict, out_dir: Path | None = None) -> dict:
     samples = expand_motion(spec, motion)
     frames = []
@@ -302,6 +330,7 @@ def run_motion(spec: dict, shapes: dict[str, kernel.Shape], motion: dict, out_di
     for sample in samples:
         solved, placed = posed_shapes(spec, shapes, sample["joints"])
         hits = collisions(solved, placed, spec.get("ignore_collisions"))
+        seats = joint_seats(solved, placed)
         any_hit = any_hit or bool(hits)
         frame = {
             "index": sample["index"],
@@ -310,6 +339,7 @@ def run_motion(spec: dict, shapes: dict[str, kernel.Shape], motion: dict, out_di
             "origins_mm": {instance["name"]: instance["origin_mm"] for instance in solved["instances"]},
             "warnings": solved["warnings"],
             "collisions": hits,
+            "joint_seats": seats,
         }
         frames.append(frame)
         if out_dir is not None:
@@ -331,13 +361,16 @@ def run_motion(spec: dict, shapes: dict[str, kernel.Shape], motion: dict, out_di
         "colliding_frames": [frame["index"] for frame in frames if frame["collisions"]],
         "status": "collision" if any_hit else "clear",
         "pictures": pictures,
+        "fused_joints": _fused_joint_names(frames),
         "note": (
             "Collisions are boolean intersections between instances that are not joined to each other "
-            "and are not listed in ignore_collisions. The joint pair itself is allowed to touch."
+            "and are not listed in ignore_collisions. The joint pair itself is allowed to touch. "
+            "Overlap of that pair is fused_joints, because a printed joint with no gap is one body."
         ),
         "assumptions": [
             "Each frame is a posed copy of the CAD solids.",
             "The intersection volume is the kernel boolean. It is not a contact force.",
+            "A joint pair is left out of collisions. joint_seats on each frame is the gap or the overlap of that pair.",
         ],
     }
     return finish(
@@ -347,11 +380,20 @@ def run_motion(spec: dict, shapes: dict[str, kernel.Shape], motion: dict, out_di
         what="Collisions are a verified check of the modeled solids at the sampled frames.",
         limits=[
             "Only the frames in the motion are checked. A hit between frames is not seen.",
-            "Parts joined to each other are allowed to touch.",
+            "Parts joined to each other are allowed to touch. Overlap of that pair is fused_joints, not a collision, and it does not change status.",
             "A room drawn as lines is not a solid, so the check cannot see it.",
             "This is not a contact force.",
         ],
     )
+
+
+def _fused_joint_names(frames: list[dict]) -> list[str]:
+    names = []
+    for frame in frames:
+        for seat in frame.get("joint_seats") or []:
+            if seat["fused"] and seat["joint"] not in names:
+                names.append(seat["joint"])
+    return names
 
 
 def check_cables(

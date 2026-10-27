@@ -955,8 +955,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         The record schema is motion_study.v1. Each step has the pose matrix
         of every instance, collisions with interference volume and penetration
         depth, and any joint that was held at a stop. Parts that share a joint
-        are allowed to touch. Boxes farther apart than the clearance are not
-        intersected.
+        are allowed to touch. Overlap of that pair is fused_joints, not a
+        collision, and it does not change status. Boxes farther apart than
+        the clearance are not intersected.
         """
         return guard(
             lambda: run(
