@@ -202,3 +202,79 @@ def test_a_plan_past_the_cap_is_not_copied_and_undo_leaves_it(tmp_path):
     restore_plan_files(project, {})
     assert huge.read_bytes() == before
     assert not (plans / "extra.json").exists()
+
+
+def test_a_sheet_directory_link_is_not_entered(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = outside / "sheet.png"
+    canary.write_bytes(b"\x89PNG\r\nCANARY_HIT\n")
+    root = tmp_path / "project"
+    version = root / "plans" / "shelf" / "v1"
+    version.mkdir(parents=True)
+    _link_dir(version / "joined", outside)
+    loose = version / "loose.png"
+    loose.write_bytes(b"loose")
+    kept = version / "kept.png"
+    kept.write_bytes(b"kept")
+    empty = version / "empty"
+    empty.mkdir()
+    from aicad.plan import _drop_orphan_sheets
+
+    _drop_orphan_sheets(
+        root,
+        {"id": "shelf", "revisions": [{"sheets": [{"path": "plans/shelf/v1/kept.png"}]}]},
+    )
+    assert canary.read_bytes().startswith(b"\x89PNG")
+    assert (version / "joined").exists()
+    assert not loose.exists()
+    assert kept.read_bytes() == b"kept"
+    assert not empty.exists()
+
+
+def test_a_directory_treated_as_a_junction_keeps_its_sheets(tmp_path, monkeypatch):
+    from aicad import paths
+    from aicad.plan import _drop_orphan_sheets
+
+    root = tmp_path / "project"
+    version = root / "plans" / "shelf" / "v1"
+    joined = version / "joined"
+    joined.mkdir(parents=True)
+    orphan = joined / "gone.png"
+    orphan.write_bytes(b"\x89PNG\r\nCANARY_HIT\n")
+    nested = joined / "nested"
+    nested.mkdir()
+    loose = version / "loose.png"
+    loose.write_bytes(b"loose")
+    real = paths.is_reparse
+
+    def as_junction(candidate: Path) -> bool:
+        if Path(candidate) == joined:
+            return True
+        return real(candidate)
+
+    monkeypatch.setattr(paths, "is_reparse", as_junction)
+    _drop_orphan_sheets(root, {"id": "shelf", "revisions": [{"sheets": []}]})
+    assert orphan.read_bytes().startswith(b"\x89PNG")
+    assert nested.is_dir()
+    assert joined.is_dir()
+    assert not loose.exists()
+
+
+def test_a_missing_reparse_plan_folder_is_not_treated_as_absent(tmp_path, monkeypatch):
+    from aicad import paths
+    from aicad.plan import _drop_orphan_sheets
+
+    root = tmp_path / "project"
+    folder = root / "plans" / "shelf"
+    seen = []
+    real = paths.resolve_in_project
+
+    def record(root_path, path, label, error):
+        seen.append(Path(path))
+        return real(root_path, path, label, error)
+
+    monkeypatch.setattr(paths, "is_reparse", lambda candidate: Path(candidate) == folder)
+    monkeypatch.setattr(paths, "resolve_in_project", record)
+    _drop_orphan_sheets(root, {"id": "shelf", "revisions": []})
+    assert seen == [folder]
