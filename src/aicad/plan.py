@@ -196,7 +196,12 @@ class PlanStore:
         return found
 
     def get(self, name: str) -> dict:
-        return self._public(self._load(name))
+        plan = self._load(name)
+        # Draw every stored sheet again. A picture already on disk is replaced.
+        for revision in plan["revisions"]:
+            if revision.get("sheets"):
+                _render_revision(self.root, plan, revision)
+        return self._public(plan)
 
     def add_research(self, name: str, note: str, source: str, title: str = "") -> dict:
         plan = self._load(name)
