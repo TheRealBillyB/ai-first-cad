@@ -3467,13 +3467,27 @@ class _DesignRecord:
         self.proc: subprocess.Popen | None = None
         self.record: Path | None = None
         self._log: Path | None = None
+        self._directory: Path | None = None
         self._device = None
         self._inode = None
 
     def start(self) -> None:
         calls = self.job / "calls"
         calls.mkdir(mode=0o700)
-        descriptor, name = tempfile.mkstemp(prefix="aicad-design-checks-", suffix=".json")
+        directory = _control_directory()
+        self._directory = directory
+        try:
+            descriptor, name = tempfile.mkstemp(
+                prefix="aicad-design-checks-",
+                suffix=".json",
+                dir=directory,
+            )
+        except OSError:
+            from aicad.paths import remove_tree
+
+            remove_tree(directory, ignore_errors=True)
+            self._directory = None
+            raise
         try:
             self._start_record_process(descriptor, name)
         finally:
@@ -3644,12 +3658,26 @@ class _DesignRecord:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        if self.record is not None:
-            self.record.unlink(missing_ok=True)
-            self.record = None
-        if self._log is not None:
-            self._log.unlink(missing_ok=True)
-            self._log = None
+        directory = self._directory
+        self.record = None
+        self._log = None
+        self._directory = None
+        if directory is not None:
+            from aicad.paths import remove_tree
+
+            remove_tree(directory, ignore_errors=True)
+
+
+def _control_directory() -> Path:
+    """A new folder outside every project.
+
+    A check record and a confinement profile are written here. The process
+    temporary directory is not used when that directory is inside a project.
+    """
+
+    from aicad.paths import _make_private_tool_directory
+
+    return _make_private_tool_directory()
 
 
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
@@ -3688,6 +3716,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     # the working directory.
     command = _child_command(job)
     profile_path: Path | None = None
+    profile_dir: Path | None = None
     if sys.platform == "darwin":
         from aicad.sandbox_macos import build_profile, command_prefix
 
@@ -3696,10 +3725,15 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             [str(workspace)],
             network=network,
         )
-        descriptor, name = tempfile.mkstemp(prefix="aicad-seatbelt-", suffix=".sb")
-        os.close(descriptor)
-        profile_path = Path(name)
-        publish_text(profile_path, profile, root=profile_path.parent)
+        profile_dir = _control_directory()
+        profile_path = profile_dir / "profile.sb"
+        try:
+            publish_text(profile_path, profile, root=profile_dir)
+        except Exception:
+            from aicad.paths import remove_tree
+
+            remove_tree(profile_dir, ignore_errors=True)
+            raise
         command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds()
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
@@ -3918,8 +3952,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             watcher.join(timeout=1)
         disk.close_counters()
         _release_pids_cgroup(pids_cgroup)
-        if profile_path is not None:
-            profile_path.unlink(missing_ok=True)
+        if profile_dir is not None:
+            from aicad.paths import remove_tree
+
+            remove_tree(profile_dir, ignore_errors=True)
         if sentinel_fd is not None and sentinel_path is not None:
             from aicad.sandbox_macos import close_sentinel
 
