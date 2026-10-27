@@ -121,3 +121,5 @@ That stops another website, including one that tries to reach this computer by a
 - **AQ.** The design-record log is created from its parent directory handle. A link at that name is not followed.
 
 - **AS.** A glTF, OBJ, or COLLADA import reads the file through the shared file reader. An external buffer, image, or material library is opened only when it is embedded or is one file in the same folder. A path that leaves the folder is not opened. The project path is not given to a geometry reader.
+
+- **AT.** Geometry libraries do not read a configuration file from the account home. A design script's home and config directory are an empty folder, and Matplotlib uses a private config directory. Plugin consent stays on the account home.
