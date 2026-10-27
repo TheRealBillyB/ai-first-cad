@@ -87,7 +87,7 @@ That stops another website, including one that tries to reach this computer by a
 - **AI.** A name inside a drawing, a 3MF package, or a session frame does not open a file outside the project.
 
 - **E.** A project file is read from the project directory, so a directory link in the middle of the path is not followed.
-- A design script's disk quota counts the bytes it writes, including a file that was removed before the next look.
+- A design script's disk quota counts the bytes it writes, including a file that was removed before the next look. The count is read again when the script exits, so a run that finishes before the next look is still counted.
 - **AJ.** A copy, an export, a render, and a picture response do not follow a symlink or junction, and do not send bytes from outside the project.
 
 - **R.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
