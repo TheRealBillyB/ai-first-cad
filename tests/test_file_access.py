@@ -7,6 +7,7 @@ under test. A link to it, a second name, and a file past the cap are refused.
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import sys
 from pathlib import Path
@@ -70,6 +71,25 @@ def test_the_windows_rename_record_keeps_the_directory_handle_in_place():
     flagged = file_access._rename_information(0x1234, "a.txt", flags=0x2)
     assert int.from_bytes(flagged[:4], "little") == 0x2
     assert flagged[8:] == raw[8:]
+
+
+def test_a_windows_directory_is_opened_or_created_in_one_request(monkeypatch):
+    from aicad import file_access
+
+    calls: list[int] = []
+
+    def fake_nt_open(parent, name, *, access, directory, create, security=None, disposition=None):
+        del parent, name, access, directory, create, security
+        calls.append(file_access._FILE_OPEN if disposition is None else disposition)
+        raise OSError(errno.EIO, "stop")
+
+    monkeypatch.setattr(file_access, "_nt_open", fake_nt_open)
+    monkeypatch.setattr(file_access, "_os_handle", lambda descriptor: descriptor)
+    with pytest.raises(OSError, match="stop"):
+        file_access._windows_open_child(3, "exports", create=True, write=True)
+    with pytest.raises(OSError, match="stop"):
+        file_access._windows_open_child(3, "exports", create=False, write=False)
+    assert calls == [file_access._FILE_OPEN_IF, file_access._FILE_OPEN]
 
 
 def test_a_windows_directory_write_does_not_ask_to_delete_the_directory():
@@ -318,3 +338,46 @@ def test_a_file_outside_a_project_is_read_from_its_parent(tmp_path):
     link = tmp_path / "link"
     _link(link, tmp_path / "real", directory=True)
     assert read_text(link / "sub" / "note.txt", maximum=100) == "keep\n"
+
+
+def test_a_nested_link_under_a_linked_project_is_not_opened_from_the_parent(tmp_path):
+    outside = tmp_path / "outside"
+    nested = outside / "sub"
+    nested.mkdir(parents=True)
+    canary = nested / "note.txt"
+    canary.write_text(_CANARY_TEXT, encoding="utf-8")
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "session.json").write_text("{}\n", encoding="utf-8")
+    (real / "kept.txt").write_bytes(b"keep\n")
+    notes = real / "notes"
+    notes.mkdir()
+    (notes / "kept.txt").write_text("keep\n", encoding="utf-8")
+    _link(real / "docs", outside, directory=True)
+    link = tmp_path / "link"
+    _link(link, real, directory=True)
+    hidden = link / "docs" / "sub" / "note.txt"
+    with pytest.raises(OSError):
+        read_text(hidden, maximum=100)
+    with pytest.raises(OSError):
+        read_tail(hidden, 100)
+    from aicad.paths import read_nofollow_bytes
+
+    with pytest.raises(OSError):
+        read_nofollow_bytes(hidden, maximum=100, label="note", error=OSError)
+    assert canary.read_text(encoding="utf-8") == _CANARY_TEXT
+    assert read_text(link / "kept.txt", maximum=100) == "keep\n"
+    assert read_text(link / "notes" / "kept.txt", maximum=100) == "keep\n"
+    assert read_nofollow_bytes(link / "kept.txt", maximum=100, label="note", error=OSError) == b"keep\n"
+
+
+def test_a_parent_segment_is_not_treated_as_a_directory_link(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "note.txt").write_bytes(b"keep\n")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    from aicad.paths import read_nofollow_bytes
+
+    path = nested / ".." / "outside" / "note.txt"
+    assert read_nofollow_bytes(path, maximum=100, label="note", error=OSError) == b"keep\n"

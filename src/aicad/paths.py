@@ -19,6 +19,7 @@ import stat
 import sys
 import tempfile
 import threading
+import unicodedata
 import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -209,9 +210,10 @@ def session_path_escapes(text: str) -> bool:
 def require_session_file(root: Path, raw: object, label: str, error: type[Exception]) -> Path:
     """A session path that stays inside ``root``. The file is not opened here.
 
-    Win32 removes trailing dots and spaces from each part before it opens the
-    file. ``.. .`` is ``..`` after that, so the trimmed text is judged the same
-    way an export path is.
+    A directory link is refused, including one whose target stays inside the
+    project. Win32 removes trailing dots and spaces from each part before it
+    opens the file. ``.. .`` is ``..`` after that, so the trimmed text is judged
+    the same way an export path is.
     """
     if not isinstance(raw, str) or not raw.strip():
         raise error(f"{label} is missing.")
@@ -227,9 +229,14 @@ def require_session_file(root: Path, raw: object, label: str, error: type[Except
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
     refuse_windows_aliases(root, text, label, error)
     root_resolved = Path(root).resolve()
-    full = (root_resolved / text).resolve()
+    lexical = root_resolved / text
+    full = lexical.resolve()
     if not _is_inside(full, root_resolved):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
+    # A directory link whose target stays inside the project is still a link.
+    # The file opened is the path as written, the same as other project reads.
+    if _reparse_between(root_resolved, lexical):
+        raise error(f"{label} {raw!r} is a link and was not followed.")
     if shared_file(full):
         raise error(f"{label} {raw!r} has another name and was not opened.")
     return full
@@ -372,7 +379,9 @@ def is_reserved_device_name(component: str) -> bool:
     return len(stem) == 4 and stem[:3] in {"com", "lpt"} and stem[3] in "123456789"
 
 
-_SHORT_NAME = re.compile(r"^[A-Za-z0-9]{1,6}~\d(?:\.[A-Za-z0-9]{1,3})?$")
+# The digit run is the generated suffix. Windows uses more than one digit
+# once nine short names already share the stem, and the stem gets shorter.
+_SHORT_NAME = re.compile(r"^[A-Za-z0-9]{1,6}~\d{1,6}(?:\.[A-Za-z0-9]{1,3})?$")
 
 
 def refuse_short_name_components(text: str, label: str, error: type[Exception]) -> None:
@@ -402,7 +411,9 @@ def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Except
     Alternate data streams, 8.3 short names, trailing dots and spaces, and a
     path past the classic length limit are refused on every system. A name
     that differs only by case from an existing entry is the same file on a
-    case-insensitive volume, so it is refused too.
+    case-insensitive volume, so it is refused too. A name that is the same
+    after Unicode normalization is the same file on a normalization-insensitive
+    volume, so it is refused too.
     """
 
     raw = text.replace("\\", "/")
@@ -421,6 +432,7 @@ def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Except
         if not current.is_dir():
             return
         folded = part.casefold()
+        normalized = unicodedata.normalize("NFC", part).casefold()
         try:
             entries = list(current.iterdir())
         except OSError:
@@ -432,6 +444,8 @@ def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Except
                 break
             if entry.name.casefold() == folded:
                 raise error(f"{label} {part!r} differs only by case from an existing name.")
+            if unicodedata.normalize("NFC", entry.name).casefold() == normalized:
+                raise error(f"{label} {part!r} matches an existing name.")
         current = match if match is not None else current / part
 
 
@@ -1422,17 +1436,28 @@ def read_nofollow_bytes(path: str | Path, *, maximum: int, label: str, error: ty
     """Read ``path`` without following a link at that name.
 
     A file inside a project this process has opened is read from that project's
-    directory. Any other file is read from its parent directory.
+    directory. A project folder that is itself a link is opened from the
+    directory it points at, so a nested link is not followed. Any other file
+    is read from its parent directory.
     """
     file = Path(path)
     if not file.is_absolute():
         file = Path.cwd() / file
     holder = _project_containing(file)
     if holder is not None and _lexical_inside(file, holder):
-        return read_checked_bytes(holder, file, maximum=maximum, label=label, error=error)
-    parent = file.parent
-    _before_nofollow(parent, Path(file.name))
-    return _finish_read(parent, Path(file.name), maximum, label, error)
+        try:
+            if not is_reparse(holder):
+                return read_checked_bytes(holder, file, maximum=maximum, label=label, error=error)
+        except OSError:
+            pass
+    from aicad.file_access import _read_anchor
+
+    try:
+        root, relative = _read_anchor(file)
+    except OSError as exc:
+        raise _read_error(label, error, exc) from exc
+    _before_nofollow(root, relative)
+    return _finish_read(root, relative, maximum, label, error)
 
 
 def _finish_read(root: Path, relative: Path, maximum: int, label: str, error: type[Exception]) -> bytes:

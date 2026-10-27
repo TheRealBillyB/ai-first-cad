@@ -12,6 +12,7 @@ import ssl
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Callable
 
 from aicad.errors import AICADError, GeometryError
@@ -383,20 +384,35 @@ def _ssl_context() -> ssl.SSLContext:
     return context
 
 
+class _RedirectRefused(urllib.request.HTTPRedirectHandler):
+    """A 3xx is an error. The next URL is not requested."""
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        raise urllib.error.HTTPError(req.full_url, code, "A redirect was not followed.", headers, fp)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
 def open_assistant_url(request: urllib.request.Request, timeout: float):
     """Open an assistant URL. Proxy and certificate variables are not used.
 
     A test double installed on ``urllib.request.urlopen`` still receives the
     request. The real opener has an empty proxy map and a TLS context from
     the packaged trust store. The process environment is not changed.
+    Only ``http`` and ``https`` are opened. A redirect is not followed, so
+    the API key and the workspace session stay on the first host.
     """
 
+    parsed = urlparse(request.full_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise GeometryError("The assistant only opens an http or https URL.")
     urlopen = urllib.request.urlopen
     if urlopen is not _URL_OPEN:
         return urlopen(request, timeout=timeout)
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         urllib.request.HTTPSHandler(context=_ssl_context()),
+        _RedirectRefused(),
     )
     return opener.open(request, timeout=timeout)
 
