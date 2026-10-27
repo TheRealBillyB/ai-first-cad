@@ -119,3 +119,5 @@ That stops another website, including one that tries to reach this computer by a
 - **AQ.** A STEP import is read from the bytes already taken from that file. The reader is not given a temporary name to open.
 
 - **AQ.** The design-record log is created from its parent directory handle. A link at that name is not followed.
+
+- **AS.** A glTF, OBJ, or COLLADA import reads the file through the shared file reader. An external buffer, image, or material library is opened only when it is embedded or is one file in the same folder. A path that leaves the folder is not opened. The project path is not given to a geometry reader.
