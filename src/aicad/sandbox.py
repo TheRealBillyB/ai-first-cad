@@ -1904,14 +1904,18 @@ def library_env_steers(name: str) -> bool:
 def scrub_library_environment() -> None:
     """Drop geometry and font configuration variables from this process.
 
-    Matplotlib then uses a fresh directory instead of the account home. A
-    design script keeps the empty library directory installed for that script.
+    Matplotlib then uses a fresh directory instead of the account home.
+    Fontconfig uses the file shipped with aicad. A design script keeps the
+    empty library directory installed for that script.
     """
 
     owned = _LIBRARY_HOME
     for key in list(os.environ):
         if library_env_steers(key):
             os.environ.pop(key, None)
+    from aicad.paths import packaged_fontconfig_file
+
+    os.environ["FONTCONFIG_FILE"] = str(packaged_fontconfig_file())
     if owned and Path(owned).is_dir():
         os.environ["MPLCONFIGDIR"] = owned
     else:
