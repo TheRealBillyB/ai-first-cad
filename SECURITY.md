@@ -99,8 +99,14 @@ That stops another website, including one that tries to reach this computer by a
 - **AL.** A slicer runs with the program directory as its working directory. An output folder that is a symlink or junction is not used.
 
 - A token, a design-script opt-in, a session record, and saved assistant settings are created readable by this user only.
+- **AM.** A request to the model API or the workspace app does not follow a redirect, and it does not open a file URL. The workspace app refuses a request line that names another host. A host or origin is accepted only as ``localhost`` or ``127.0.0.1`` with the decimal port it bound.
+
 - **AM.** A directory created on Windows is one request on the parent directory handle. A link at that name is not followed.
 
 - **AN.** A session path and a STEP import do not follow a directory link, including one whose target stays inside the project.
 
 - **AO.** When the project folder is a link, a file under it is opened from the directory that link points at. A nested link is not followed.
+
+- **AP.** A junction is removed the same way as a symlink before a slicer writes. A junction in a plan folder is not entered or removed when orphan sheets are cleaned up.
+
+- **AQ.** The design-record log is created from its parent directory handle. A link at that name is not followed.
