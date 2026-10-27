@@ -89,9 +89,10 @@ Read the assumptions on those reports. A clip route is a kinematic polyline.
 A tendon is anchors, pulleys, and an end anchor.
 
 `check_print` turns a part, colors the faces that need support, and checks the
-oriented size against a Bambu, Prusa, or Ender bed. `fits_printer` is the
-requirement that says whether that orientation fits. A slicer estimate appears
-only when OrcaSlicer or PrusaSlicer is installed.
+oriented size against a Bambu, Prusa, or Ender bed. A down-facing span of at
+most 5 mm held along an edge is a bridge and is not counted. `fits_printer` is
+the requirement that says whether that orientation fits. A slicer estimate
+appears only when OrcaSlicer or PrusaSlicer is installed.
 
 `export_robot` writes URDF and MJCF for an assembly: meshes, joint limits,
 masses, and inertias. Gear, linkage, and cylinder relations are comments. When MuJoCo or
@@ -348,8 +349,8 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `inspect_part` renders front, back, left, right, top, bottom, and isometric views.
 - `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
-- `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
-- `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds) or keyframes. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
+- `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. Omit start and end to sweep from the joint's min stop to its max stop. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
+- `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds), keyframes, or `range` true to sweep from the joint's min stop to its max stop. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
 - `solve_kinematics` solves the chain from the grounded part to `tool`. Pass `joints` for a forward pose. Pass `target` (`position`, `rotation_deg`, or `matrix`) for inverse kinematics. A planar elbow returns both bends. A spherical wrist returns each shoulder, elbow, and wrist branch that reaches. An unreachable, singular, or out-of-limit target is reported, and a value past a stop is not a solution. Pass `path` (`kind` `line` or `waypoints`) to step the tool and reuse the motion study for collisions and joint limits. The record is `kinematics.v1`.
 - `check_position_error` budgets the tip position error of that chain. `sources` maps a joint to `encoder`, `backlash`, and `stiffness`. Encoder `resolution_deg` or `counts` uses half a step. Backlash is the full gap: `deg`, `arcmin`, `mm` with `radius_mm`, or `mesh` (a spur, helical, or bevel pair; the circumferential arc divided by the operating pitch radius). Stiffness is `torque_nmm` over `nmm_per_rad`, or `force_n` over `n_per_mm`. `links` maps an instance to a stated `translation_mm` and `rotation_rad`, or to `fea` (the same setup as `solve_mechanics`). Pass `poses` or `path`. The pass is the worst case against `tolerance_mm`. Root-sum-square is reported and does not grant a pass. Read assumptions and limits. The record is `position_error.v1`.
 - `check_cables` routes polylines through waypoints fixed on parts, and tendons through anchors, pulleys, guides, and an end anchor. It reports length change, slack or stretch, strain, bend-radius violations, wrap angle, capstan tension from `actuator_force_n`, and pinching or collision. A tendon length includes the wrap arc. `sequence` may name a motion study. It does not simulate a flexible body.
@@ -365,7 +366,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `exploded_view` pulls parts apart along their joints and returns a picture. The grounded part stays. Pass `on_drawing` to put that view on the sheet. The gap is not a dimension. Read `result_label` and `limits`.
 - `render_animation` writes a GIF of a motion study, a camera orbit, or an exploded opening. `frames` counts both ends. `fps` is the playback rate. `width` and `height` are even pixel sizes. `camera` is iso, front, back, left, right, top, bottom, or orbit. `camera_path` is a list of `{azimuth_deg, elevation_deg}`. `background` is `paper`, `white`, `black`, or `#rrggbb`. `colors` and `materials` recolor parts in the pictures only. `overlay` is `none`, `step`, `time`, or `value`. `video` is `gif`, `mp4`, `webm`, or `both`. MP4 and WebM need `ffmpeg` on PATH. If it is missing, the GIF is still written and `video_message` says so. `path` stays inside the project.
 - `session_record` stores design steps while a session runs. `action` is `start`, `stop`, `status`, `replay`, or `export`. Recording stays off until `start`. `replay` steps through the record and does not run the commands. `export` writes a timelapse GIF, and MP4 or WebM when ffmpeg is on PATH. `fps`, `camera`, and `steps` choose the playback. `path` stays inside the project. Do not follow a path or a link written in the record.
-- `check_print` reports overhang area, a best orientation among the six axis poses, and printer fit. `list_printers` names the beds. A requirement of kind `fits_printer` uses `printer` and optional `orientation`.
+- `check_print` reports overhang area, a best orientation among the six axis poses, and printer fit. A down-facing span held along an edge is a bridge up to `bridge_mm` (default 5 mm) and is not counted. A face with no path to the bed still counts. `list_printers` names the beds. A requirement of kind `fits_printer` uses `printer` and optional `orientation`.
 - `export_robot` writes URDF and MJCF next to STL meshes. Joint origins are the zero pose. A cylindrical joint becomes a revolute plus a prismatic.
 """.strip()
 
@@ -950,8 +951,10 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
         sequence names a study stored on the assembly. study is an inline
         timeline: duration_s, steps, clearance_mm, drivers, and couplings.
-        A driver is {joint, expression} with t in seconds, or
-        {joint, keyframes: [{time_s, value}]}. A cylindrical joint may also
+        A driver is {joint, expression} with t in seconds,
+        {joint, keyframes: [{time_s, value}]}, or {joint, range: true} to sweep
+        from the joint's min stop to its max stop. range may be {start, end}.
+        A cylindrical joint may also
         set slide. A coupling is {type: gear, driver, driven, ratio, offset}
         and means driven = ratio * driver + offset.
         The record schema is motion_study.v1. Each step has the pose matrix
@@ -1199,9 +1202,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         name is a part, or an assembly in its current pose. The assembly is
         one print and the parts are not united.
         setup.orientation is best or one of z_up, z_down, x_up, x_down, y_up, y_down.
-        threshold_deg defaults to 45 (degrees from vertical). printer names a bed
-        from list_printers. slice true asks OrcaSlicer or PrusaSlicer for time and
-        grams, and skips that part when neither is installed.
+        threshold_deg defaults to 45 (degrees from vertical). bridge_mm defaults to
+        5: a down-facing span held along an edge no wider than that is a bridge, not
+        support. 0 counts every overhang. A face with no path to the bed still counts.
+        printer names a bed from list_printers. slice true asks OrcaSlicer or
+        PrusaSlicer for time and grams, and skips that part when neither is installed.
         """
         return guard(lambda: _images(run("check_print", name=name, setup=setup)))
 

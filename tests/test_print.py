@@ -178,6 +178,72 @@ def test_support_follows_the_angle_from_vertical():
     assert clear == pytest.approx(0)
 
 
+def _span(document: Document, name: str, span: float) -> None:
+    document.create_part_from_ops(
+        name,
+        [
+            {"op": "add", "shape": "box", "size": [4, 10, 8], "center": [2, 0, 4]},
+            {"op": "add", "shape": "box", "size": [span, 10, 2], "center": [4 + span / 2, 0, 7]},
+            {"op": "add", "shape": "box", "size": [4, 10, 8], "center": [6 + span, 0, 4]},
+        ],
+    )
+
+
+def test_a_short_bridge_is_not_support_and_a_longer_span_is(tmp_path):
+    short = Document(tmp_path / "short")
+    _span(short, "deck", 4)
+    report = short.check_print("deck", {"orientation": "z_up", "render": False, "slice": False})
+    assert report["bridge_mm"] == pytest.approx(5)
+    assert report["bed_band_mm"] == pytest.approx(0.05)
+    assert report["bridge_area_mm2"] == pytest.approx(40, abs=8)
+    assert report["support_area_mm2"] == pytest.approx(0, abs=5)
+    counted = short.check_print(
+        "deck", {"orientation": "z_up", "bridge_mm": 0, "render": False, "slice": False}
+    )
+    assert counted["support_area_mm2"] == pytest.approx(40, abs=8)
+    assert counted["bridge_area_mm2"] == pytest.approx(0, abs=1)
+
+    long = Document(tmp_path / "long")
+    _span(long, "deck", 6)
+    wide = long.check_print("deck", {"orientation": "z_up", "render": False, "slice": False})
+    assert wide["support_area_mm2"] == pytest.approx(60, abs=12)
+    assert wide["bridge_area_mm2"] == pytest.approx(0, abs=1)
+
+
+def test_a_floating_face_and_a_one_ended_overhang_need_support(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_ops(
+        "island",
+        [
+            {"op": "add", "shape": "box", "size": [10, 10, 2], "center": [0, 0, 1]},
+            {"op": "add", "shape": "box", "size": [10, 10, 2], "center": [0, 0, 3.2]},
+        ],
+    )
+    near = document.check_print("island", {"orientation": "z_up", "render": False, "slice": False})
+    assert near["support_area_mm2"] == pytest.approx(100, abs=15)
+    document.create_part_from_ops(
+        "higher",
+        [
+            {"op": "add", "shape": "box", "size": [10, 10, 2], "center": [0, 0, 1]},
+            {"op": "add", "shape": "box", "size": [10, 10, 2], "center": [0, 0, 3.5]},
+        ],
+    )
+    far = document.check_print("higher", {"orientation": "z_up", "render": False, "slice": False})
+    assert far["support_area_mm2"] == pytest.approx(100, abs=15)
+
+    document.create_part_from_ops(
+        "tongue",
+        [
+            {"op": "add", "shape": "box", "size": [6, 8, 10], "center": [3, 0, 5]},
+            {"op": "add", "shape": "box", "size": [20, 4, 2], "center": [16, 0, 9]},
+        ],
+    )
+    lip = document.check_print("tongue", {"orientation": "z_up", "render": False, "slice": False})
+    assert lip["support_area_mm2"] > 60
+    with pytest.raises(GeometryError, match="bridge_mm"):
+        document.check_print("tongue", {"bridge_mm": -1, "render": False, "slice": False})
+
+
 def test_a_missing_slicer_is_skipped(tmp_path, monkeypatch):
     monkeypatch.setattr("aicad.printprep.find_slicers", lambda: [])
     report = slice_mesh(__import__("numpy").zeros((1, 3)), __import__("numpy").zeros((0, 3), dtype=int), tmp_path)

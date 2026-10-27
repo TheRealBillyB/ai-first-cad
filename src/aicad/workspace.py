@@ -855,7 +855,7 @@ def _cmd_print_clearance(workspace: Workspace, arguments: dict) -> dict:
 def _cmd_print(workspace: Workspace, arguments: dict) -> dict:
     setup = arguments.get("setup") or {}
     if not isinstance(setup, dict):
-        raise GeometryError("check_print setup is an object with orientation, printer, and threshold_deg.")
+        raise GeometryError("check_print setup is an object with orientation, printer, threshold_deg, and bridge_mm.")
     report = workspace.document.check_print(arguments["name"], setup)
     return workspace._remember_panel("print", report)
 
@@ -1589,13 +1589,13 @@ _add(Command(
 ))
 _add(Command(
     "check_print",
-    "Overhang map for one orientation, a suggested orientation, and whether the part fits a named printer. A slicer estimate is included when slice is true and OrcaSlicer or PrusaSlicer is installed.",
+    "Overhang map for one orientation, a suggested orientation, and whether the part fits a named printer. A short bridge is not counted as support. A slicer estimate is included when slice is true and OrcaSlicer or PrusaSlicer is installed.",
     _obj(
         {
             "name": _string("Part name, or an assembly in its current pose."),
             "setup": {
                 "type": "object",
-                "description": "orientation (best or z_up), threshold_deg, printer, slice, price_per_kg.",
+                "description": "orientation (best or z_up), threshold_deg, bridge_mm, printer, slice, price_per_kg.",
             },
         },
         ["name"],
@@ -1715,7 +1715,7 @@ _add(Command(
 ))
 _add(Command(
     "run_motion",
-    "Sweep a joint or play keyframes. Reports collisions and renders an isometric frame for each sample.",
+    "Sweep a joint from its stops, or between start and end, or play keyframes. Reports collisions and renders an isometric frame for each sample.",
     _MOTION,
     _cmd_run_motion,
 ))

@@ -4,7 +4,9 @@ A study is a timeline. ``duration_s`` is its length in seconds. ``steps`` is
 how many poses are solved, including both ends. Time at step ``i`` is
 ``duration_s * i / (steps - 1)``.
 
-A driver sets one joint from time. An expression is a formula in ``t``
+A driver sets one joint from time. ``range`` true sweeps the joint from its
+``min`` stop to its ``max`` stop. ``range`` may also be ``{start, end}``.
+An expression is a formula in ``t``
 (seconds), for example ``90 * t`` or ``10 * sin(pi * t)``. Names are ``t``,
 ``pi``, ``e``, and ``tau``. Functions are ``sin``, ``cos``, ``tan``, ``asin``,
 ``acos``, ``atan``, ``atan2``, ``sqrt``, ``abs``, ``min``, ``max``, ``hypot``,
@@ -112,7 +114,7 @@ _FUNCTIONS = {
 }
 _CONSTANTS = {"pi": math.pi, "e": math.e, "tau": math.tau}
 _STUDY_KEYS = {"name", "duration_s", "duration_assumed", "steps", "clearance_mm", "drivers", "couplings"}
-_DRIVER_KEYS = {"joint", "expression", "slide", "keyframes"}
+_DRIVER_KEYS = {"joint", "expression", "slide", "keyframes", "range"}
 _KEY_KEYS = {"time_s", "value", "slide"}
 _COUPLING_KEYS = {"name", "type", "driver", "driven", "ratio", "offset"}
 
@@ -409,19 +411,51 @@ def _drivers(raw, study: str, joints: dict[str, dict]) -> list[dict]:
             raise GeometryError(f"Study {study!r} cannot drive fixed joint {joint_name!r}.")
         has_expression = "expression" in driver or "slide" in driver
         has_keys = "keyframes" in driver
+        has_range = "range" in driver
+        if has_range and (has_expression or has_keys):
+            raise GeometryError(
+                f"Study {study!r} driver {joint_name!r} has a range and another way to drive it."
+            )
         if has_expression and has_keys:
             raise GeometryError(
                 f"Study {study!r} driver {joint_name!r} has both an expression and keyframes."
             )
-        if has_keys:
+        if has_range:
+            drivers.append(_range_driver(driver, study, joint))
+        elif has_keys:
             drivers.append(_keyframe_driver(driver, study, joint))
         elif "expression" in driver or "slide" in driver:
             drivers.append(_expression_driver(driver, study, joint))
         else:
             raise GeometryError(
-                f"Study {study!r} driver {joint_name!r} needs an expression or keyframes."
+                f"Study {study!r} driver {joint_name!r} needs an expression, keyframes, or a range."
             )
     return drivers
+
+
+def _range_driver(driver: dict, study: str, joint: dict) -> dict:
+    raw = driver.get("range")
+    label = f"Study {study!r} driver {joint['name']!r}"
+    if raw is True:
+        if joint.get("min") is None or joint.get("max") is None:
+            raise GeometryError(
+                f"{label} cannot sweep through its range. Set min and max, or pass start and end."
+            )
+        start = float(joint["min"])
+        end = float(joint["max"])
+    elif isinstance(raw, dict):
+        unknown = set(raw) - {"start", "end"}
+        if unknown:
+            raise GeometryError(
+                f"{label} range has unknown fields: {', '.join(sorted(unknown))}."
+            )
+        if "start" not in raw or "end" not in raw:
+            raise GeometryError(f"{label} range needs start and end.")
+        start = _number(raw.get("start"), f"Study {study!r} {joint['name']} range start")
+        end = _number(raw.get("end"), f"Study {study!r} {joint['name']} range end")
+    else:
+        raise GeometryError(f"{label} range is true, or an object with start and end.")
+    return {"joint": joint["name"], "range": {"start": start, "end": end}}
 
 
 def _expression_driver(driver: dict, study: str, joint: dict) -> dict:
@@ -588,6 +622,13 @@ def _commands(study: dict, time_s: float) -> dict:
     commands = {}
     for driver in study["drivers"]:
         joint_name = driver["joint"]
+        if "range" in driver:
+            duration = float(study["duration_s"])
+            fraction = 0.0 if duration <= 0 else min(1.0, max(0.0, time_s / duration))
+            start = driver["range"]["start"]
+            end = driver["range"]["end"]
+            commands[joint_name] = start + (end - start) * fraction
+            continue
         if "keyframes" in driver:
             value = _interpolate(driver["keyframes"], time_s, "value")
             if "slide" in driver["keyframes"][0]:

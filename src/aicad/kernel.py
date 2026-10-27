@@ -1577,20 +1577,115 @@ def _prepare_export_parent(path: Path) -> None:
         raise GeometryError(f"Could not write {path}.") from exc
 
 
+def _volume_of_step_bytes(data: bytes) -> float:
+    """Volume of STEP bytes. A shell or a file this reader rejects is zero."""
+    if not data or len(data) > MAX_STEP_BYTES:
+        return 0.0
+    try:
+        loaded = _read_step_bytes(Path("part.step"), data)
+    except (GeometryError, OSError, RuntimeError):
+        return 0.0
+    return _volume(loaded)
+
+
+def _step_bytes(impl, *, write_pcurves: bool) -> bytes | None:
+    """STEP bytes for ``impl`` when they read back as a solid."""
+    buffer = io.BytesIO()
+    try:
+        written = bool(export_step(impl, buffer, write_pcurves=write_pcurves))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not written:
+        return None
+    data = buffer.getvalue()
+    if _volume_of_step_bytes(data) <= 0:
+        return None
+    return data
+
+
+def _solid_step_bytes(impl) -> bytes | None:
+    """Bytes of a solid.
+
+    The writer builds the file in memory and the volume check reads those
+    bytes. A path is not opened for either step. Parametric curves are tried
+    first. A shell is sewn and, if it is still empty, written again without
+    those curves. A box is left unchanged.
+    """
+    data = _step_bytes(impl, write_pcurves=True)
+    if data is not None:
+        return data
+    cleaned = _sewn_solid(impl)
+    if cleaned is not None:
+        data = _step_bytes(cleaned, write_pcurves=True)
+        if data is not None:
+            return data
+    data = _step_bytes(impl, write_pcurves=False)
+    if data is not None:
+        return data
+    if cleaned is None:
+        return None
+    return _step_bytes(cleaned, write_pcurves=False)
+
+
+def _sewn_solid(impl):
+    """Sew a solid whose faces are valid in memory but write as an empty shell.
+
+    A flat-bottomed loft fused with a cylinder that sits tangent to that face
+    is one of those solids. ``clean`` sews the shared face. A box is unchanged.
+    """
+    try:
+        cleaned = impl.clean()
+    except Exception:
+        return None
+    if cleaned is None or _volume(cleaned) <= 0:
+        return None
+    return cleaned
+
+
 def export_step_file(shape: Shape, path: Path) -> None:
     from aicad.paths import nofollow_writes, publish_file
 
     def write(temporary: Path) -> None:
-        try:
-            written = export_step(shape.impl, temporary)
-        except (OSError, RuntimeError) as exc:
-            raise GeometryError(f"Could not write STEP file {path}.") from exc
-        if not written:
+        data = _solid_step_bytes(shape.impl)
+        if data is None:
             raise GeometryError(f"Could not write STEP file {path}.")
+        temporary.write_bytes(data)
 
     if not nofollow_writes():
         _prepare_export_parent(path)
     publish_file(path, write)
+
+
+def _without_hairline_edges(impl):
+    """Drop edges too short to triangulate.
+
+    A cylinder that sits tangent to a planar face leaves an edge at the
+    contact point. The mesher then skips that face, or rejects the mesh.
+    Edges under 0.01 mm are removed. A heal that changes the volume by more
+    than a small fraction is discarded.
+    """
+    from build123d.topology import Shape as BuildShape
+    from OCP.ShapeFix import ShapeFix_Wireframe
+
+    try:
+        original = float(impl.volume)
+    except Exception:
+        return impl
+    try:
+        fixer = ShapeFix_Wireframe(impl.wrapped)
+        fixer.SetPrecision(0.01)
+        fixer.FixSmallEdges()
+        healed = BuildShape.cast(fixer.Shape())
+    except Exception:
+        return impl
+    if healed is None:
+        return impl
+    try:
+        if abs(float(healed.volume) - original) > max(0.5, abs(original) * 0.002):
+            return impl
+    except Exception:
+        return impl
+    return healed
 
 
 def export_3mf_file(bodies: list[tuple[str, Shape]], path: Path) -> None:
@@ -1618,7 +1713,7 @@ def _write_3mf(bodies: list[tuple[str, Shape]], path: Path) -> None:
         raise GeometryError("There is no solid to export.")
     mesher = Mesher()
     for name, shape in bodies:
-        impl = copy.deepcopy(shape.impl)
+        impl = _without_hairline_edges(copy.deepcopy(shape.impl))
         label = str(name)
         try:
             impl.label = label
@@ -1648,12 +1743,15 @@ def export_stl_file(
     from aicad.paths import nofollow_writes, publish_file
 
     def write(temporary: Path) -> None:
-        area = _surface_area(shape.impl)
-        _refuse_face_count(len(list(shape.impl.faces())))
+        import copy
+
+        impl = _without_hairline_edges(copy.deepcopy(shape.impl))
+        area = _surface_area(impl)
+        _refuse_face_count(len(list(impl.faces())))
         linear = linear_for_surface(area, linear_tolerance)
         angular = _floor_angular(angular_tolerance)
         if not export_stl(
-            shape.impl,
+            impl,
             temporary,
             tolerance=linear,
             angular_tolerance=angular,
