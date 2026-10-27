@@ -102,24 +102,30 @@ That stops another website, including one that tries to reach this computer by a
 - A token, a design-script opt-in, a session record, and saved assistant settings are created readable by this user only.
 - **AM.** A request to the model API or the workspace app does not follow a redirect, and it does not open a file URL. The workspace app refuses a request line that names another host. A host or origin is accepted only as ``localhost`` or ``127.0.0.1`` with the decimal port it bound.
 
-- **AM.** A directory created on Windows is one request on the parent directory handle. A link at that name is not followed.
-
 - **AN.** A path that matches an existing name after Unicode normalization is refused.
-
-- **AN.** A session path and a STEP import do not follow a directory link, including one whose target stays inside the project.
 
 - **AO.** An 8.3 short name is refused, including a numeric suffix of more than one digit.
 
-- **AO.** When the project folder is a link, a file under it is opened from the directory that link points at. A nested link is not followed.
-
 - **AP.** Text that is shown or stored from a name, a note, a plugin warning, or an error does not contain a terminal sequence or a hidden control character.
-
-- **AP.** A junction is removed the same way as a symlink before a slicer writes. A junction in a plan folder is not entered or removed when orphan sheets are cleaned up.
 
 - **AQ.** A STEP import is read from the bytes already taken from that file. The reader is not given a temporary name to open.
 
-- **AQ.** The design-record log is created from its parent directory handle. A link at that name is not followed.
+- **AR.** A file that is not a STEP exchange, or a STEP list nested past the limit, is not given to the STEP reader.
 
 - **AS.** A glTF, OBJ, or COLLADA import reads the file through the shared file reader. An external buffer, image, or material library is opened only when it is embedded or is one file in the same folder. A path that leaves the folder is not opened. The project path is not given to a geometry reader.
 
+- **AW.** A directory created on Windows is one request on the parent directory handle. A link at that name is not followed.
+
 - **AT.** Geometry libraries do not read a configuration file from the account home. A design script's home and config directory are an empty folder, and Matplotlib uses a private config directory. Plugin consent stays on the account home.
+
+- **AX.** A session path and a STEP import do not follow a directory link, including one whose target stays inside the project.
+
+- **AU.** A design script receives an allowlist of environment variables. Ordinary parent variables are not copied. The account home is included so the script can resolve it, and Windows also receives the session variables it needs to start. The sandbox on Linux, macOS, and Windows is unchanged.
+
+- **AY.** When the project folder is a link, a file under it is opened from the directory that link points at. A nested link is not followed.
+
+- **AV.** Opening a plan draws each sheet from the plan data. A picture already on disk is shown only when it is that drawing.
+
+- **AZ.** A junction is removed the same way as a symlink before a slicer writes. A junction in a plan folder is not entered or removed when orphan sheets are cleaned up.
+
+- **BA.** The design-record log is created from its parent directory handle. A link at that name is not followed.
