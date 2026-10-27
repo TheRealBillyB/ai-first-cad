@@ -286,6 +286,8 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
                     cwd=str(work),
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     stdin=subprocess.DEVNULL,
                     timeout=180,
                     check=False,
@@ -301,7 +303,9 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
                     parsed["status"] = "sliced" if parsed.get("grams") is not None or parsed.get("seconds") is not None else "unparsed"
                     parsed["slicer"] = Path(executable).name
                     parsed["gcode"] = str(gcode.resolve())
-                    parsed["note"] = _slicer_note(parsed, price_per_kg)
+                    from aicad.labels import plain_line
+
+                    parsed["note"] = plain_line(_slicer_note(parsed, price_per_kg))
                     if parsed.get("grams") and price_per_kg is not None and not parsed.get("cost"):
                         parsed["cost"] = round(float(parsed["grams"]) * float(price_per_kg) / 1000.0, 2)
                         parsed["cost_source"] = "price_per_kg"
@@ -315,10 +319,12 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
                 private_gcode = work / "print.gcode"
                 if private_gcode.is_file():
                     private_gcode.unlink()
+    from aicad.labels import plain_line
+
     return {
         "status": "failed",
         "slicer": last_name,
-        "note": "The slicer ran and did not write gcode. " + " ".join(last.split()),
+        "note": plain_line("The slicer ran and did not write gcode. " + last),
         "assumptions": ["The slicer is installed, but this headless command did not produce a toolpath."],
     }
 
