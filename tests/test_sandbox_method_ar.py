@@ -62,13 +62,13 @@ def test_other_formats_do_not_reach_the_step_reader(tmp_path, monkeypatch):
     project.mkdir()
     called = False
 
-    def reader(path):
+    def reader(path, data):
         nonlocal called
         called = True
         marker.write_text(_MARKER, encoding="utf-8")
         raise GeometryError(f"Could not read STEP file {path}.")
 
-    monkeypatch.setattr("aicad.kernel._read_step_shape", reader)
+    monkeypatch.setattr("aicad.kernel._read_step_bytes", reader)
     for name, payload in _payloads():
         path = project / name
         path.write_bytes(payload)
@@ -86,13 +86,13 @@ def test_a_deep_step_list_does_not_reach_the_reader(tmp_path, monkeypatch):
     project.mkdir()
     called = False
 
-    def reader(path):
+    def reader(path, data):
         nonlocal called
         called = True
         marker.write_text(_MARKER, encoding="utf-8")
         raise GeometryError(f"Could not read STEP file {path}.")
 
-    monkeypatch.setattr("aicad.kernel._read_step_shape", reader)
+    monkeypatch.setattr("aicad.kernel._read_step_bytes", reader)
     deep = project / "deep.step"
     deep.write_bytes(b"ISO-10303-21;\nDATA;\n" + b"(" * 33 + b");\nEND-ISO-10303-21;\n")
     with pytest.raises(GeometryError) as raised:
@@ -102,12 +102,12 @@ def test_a_deep_step_list_does_not_reach_the_reader(tmp_path, monkeypatch):
     assert called is False
     assert marker.read_text(encoding="utf-8") == "untouched\n"
 
-    def counted(path):
+    def counted(path, data):
         nonlocal called
         called = True
         raise GeometryError(f"Could not read STEP file {path}.")
 
-    monkeypatch.setattr("aicad.kernel._read_step_shape", counted)
+    monkeypatch.setattr("aicad.kernel._read_step_bytes", counted)
     quoted = project / "quoted.step"
     quoted.write_bytes(b"ISO-10303-21;\nDATA;\n#1=X('" + b"(" * 40 + b"');\nEND-ISO-10303-21;\n")
     with pytest.raises(GeometryError) as raised:

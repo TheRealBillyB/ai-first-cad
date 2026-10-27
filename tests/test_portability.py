@@ -94,6 +94,39 @@ def test_step_file_windows_forms_are_not_imported(tmp_path, step_file):
     assert list(victim.rglob("hidden.step")) == []
 
 
+def _directory_link(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        import subprocess
+
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            pytest.skip("this machine cannot create a junction")
+        return
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot create a directory symlink")
+
+
+def test_a_session_step_through_a_directory_link_inside_the_project_is_not_read(tmp_path):
+    step = _outside_step(tmp_path)
+    project = tmp_path / "project"
+    kept = project / "kept"
+    kept.mkdir(parents=True)
+    (kept / "hidden.step").write_bytes(step.read_bytes())
+    _directory_link(project / "alias", kept)
+    reopened = _session(project, "alias/hidden.step")
+    info = reopened.list_parts()[0]
+    assert info.built is False
+    assert any("link" in problem and "not followed" in problem for problem in reopened.problems)
+    assert (kept / "hidden.step").read_bytes() == step.read_bytes()
+
+
 def test_a_relative_step_inside_the_project_still_imports(tmp_path):
     step = _outside_step(tmp_path)
     project = tmp_path / "project"
