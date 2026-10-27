@@ -1592,6 +1592,32 @@ def _refuse_foreign_kill() -> None:
     os.kill = kill  # type: ignore[method-assign]
 
 
+def _use_private_library_home(workspace: Path, private: Path) -> None:
+    """Point library config at an empty folder. The account home is unchanged.
+
+    Gmsh, fontconfig, and ezdxf read a fixed path under the home directory.
+    That home is now this folder, which is emptied first so a project cannot
+    leave a config there. ``USERPROFILE`` stays the account profile. Plugin
+    consent uses the home remembered before this replacement.
+    """
+    from aicad.paths import is_reparse, output_dir, remove_tree
+
+    folder = private / "library-config"
+    if is_reparse(folder):
+        folder.unlink()
+    elif folder.exists():
+        remove_tree(folder)
+    created = output_dir(workspace, private / "library-config", "Library config", ScriptError)
+    global _LIBRARY_HOME
+    _LIBRARY_HOME = str(created)
+    os.environ["HOME"] = _LIBRARY_HOME
+    os.environ["XDG_CONFIG_HOME"] = _LIBRARY_HOME
+    os.environ["MPLCONFIGDIR"] = _LIBRARY_HOME
+
+
+_LIBRARY_HOME: str | None = None
+
+
 def apply_sandbox(
     workspace: Path,
     network: bool,
@@ -1607,9 +1633,10 @@ def apply_sandbox(
     is set when a thread existed before this module was imported.
     """
     from aicad.plugins import seal_sandbox_plugins
-    from aicad.sandbox_state import mark_sandboxed
+    from aicad.sandbox_state import mark_sandboxed, remember_account_home
 
     mark_sandboxed()
+    remember_account_home(Path.home())
     seal_sandbox_plugins()
     _refuse_foreign_kill()
     workspace = workspace.resolve()
@@ -1617,6 +1644,7 @@ def apply_sandbox(
 
     private = output_dir(workspace, workspace / ".aicad", "Project data", ScriptError)
     temporary = output_dir(workspace, private / "tmp", "Temporary files", ScriptError)
+    _use_private_library_home(workspace, private)
     os.environ["TMPDIR"] = str(temporary)
     os.environ["TMP"] = str(temporary)
     os.environ["TEMP"] = str(temporary)
@@ -1868,11 +1896,34 @@ def library_env_steers(name: str) -> bool:
 
 
 def scrub_library_environment() -> None:
-    """Drop geometry and font configuration variables from this process."""
+    """Drop geometry and font configuration variables from this process.
 
+    Matplotlib then uses a fresh directory instead of the account home. A
+    design script keeps the empty library directory installed for that script.
+    """
+
+    owned = _LIBRARY_HOME
     for key in list(os.environ):
         if library_env_steers(key):
             os.environ.pop(key, None)
+    if owned and Path(owned).is_dir():
+        os.environ["MPLCONFIGDIR"] = owned
+    else:
+        os.environ["MPLCONFIGDIR"] = str(_private_matplotlib_dir())
+
+
+def _private_matplotlib_dir() -> Path:
+    """A new config directory. It is not the account home and not a project file."""
+    global _MATPLOTLIB_CONFIG
+    if _MATPLOTLIB_CONFIG is not None and _MATPLOTLIB_CONFIG.is_dir():
+        return _MATPLOTLIB_CONFIG
+    import tempfile
+
+    _MATPLOTLIB_CONFIG = Path(tempfile.mkdtemp(prefix="aicad-mpl-"))
+    return _MATPLOTLIB_CONFIG
+
+
+_MATPLOTLIB_CONFIG: Path | None = None
 
 
 def scrubbed_environment(workspace: Path | None = None) -> dict[str, str]:
