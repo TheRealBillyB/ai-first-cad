@@ -1,197 +1,143 @@
-"""A design script receives an allowlist, not the parent environment.
+"""Text that is shown or stored does not carry a terminal sequence.
 
-The marker is CANARY_ENV_MARKER_VALUE. A script that can read its own
-environment writes that marker only when the name was copied.
+The marker is the word CANARY_HIT inside ordinary text. A file outside the
+project is not changed. Nothing is sent to another machine.
 """
 
 from __future__ import annotations
 
-import os
-import sys
-
 import pytest
 
-from aicad.sandbox import (
-    _OS_ENV,
-    _SCRIPT_HOME,
-    _SCRIPT_LIMITS,
-    _SCRIPT_LOCALE,
-    _SCRIPT_TEXT,
-    _WINDOWS_SESSION,
-    _child_env,
-)
+from aicad.animation import _encoder_reason
+from aicad.cli import main
+from aicad.errors import GeometryError
+from aicad.fea import _ccx_error
+from aicad.labels import plain_line, strip_hidden
+from aicad.paths import require_export_path
+from aicad.plugins import API_VERSION, PluginOffer, _validate_manifest, warning_text
+from aicad.workspace import Workspace
 
-_MARKER = "CANARY_ENV_MARKER_VALUE"
-
-_DROPPED = (
-    "ORDINARY_PARENT",
-    "USER",
-    "LOGNAME",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE",
-    "LD_PRELOAD",
-    "PYTHONSTARTUP",
-    "FONTCONFIG_FILE",
-    "GMSH_HOME",
-    "AICAD_CONFIG",
-    "AICAD_SETTINGS",
-    "SECRET_TOKEN",
-)
+_OSC = "\x1b]8;;http://127.0.0.1/CANARY_HIT\x1b\\"
+_CSI = "\x1b[2J"
+_C1 = "\x9b31m"
 
 
-def _allowed_names() -> set[str]:
-    names = {
-        "PATH",
-        "PYTHONSAFEPATH",
-        "PYTHONDONTWRITEBYTECODE",
-        "PYTHONPATH",
-        "AICAD_SANDBOX_CHILD",
-        "AICAD_WORKSPACE",
-        "AICAD_JOB",
-        "AICAD_NETWORK",
-        "TMPDIR",
-        "TMP",
-        "TEMP",
-        *_SCRIPT_LOCALE,
-        *_SCRIPT_TEXT,
-        *_SCRIPT_LIMITS,
-        *_SCRIPT_HOME,
-        *_OS_ENV,
-    }
-    if sys.platform == "win32":
-        names.update(_WINDOWS_SESSION)
-        names.update(
-            {
-                "AICAD_WIN_NET_RECEIVERS",
-                "XDG_CACHE_HOME",
-                "XDG_CONFIG_HOME",
-                "XDG_DATA_HOME",
-                "MPLCONFIGDIR",
-            }
-        )
-    return names
-
-
-def test_a_script_environment_is_an_allowlist(tmp_path, monkeypatch):
+def _canary(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
-    marker_bin = outside / "bin"
-    marker_bin.mkdir()
+    marker = outside / "SANDBOX_CANARY.txt"
+    marker.write_text("untouched\n", encoding="utf-8")
+    return marker
+
+
+def test_hidden_sequences_are_dropped_and_a_line_break_in_a_note_stays():
+    assert strip_hidden(f"{_OSC}label") == "label"
+    assert strip_hidden(f"before{_CSI}after") == "beforeafter"
+    assert strip_hidden(f"before{_C1}after") == "beforeafter"
+    assert strip_hidden("hole\udcff") == "hole"
+    assert strip_hidden("keep\n\tthis") == "keep\n\tthis"
+    assert plain_line("Counts.\nCANARY_HIT\x1b[31m") == "Counts. CANARY_HIT"
+    assert "\x1b" not in plain_line(f"{_OSC}label")
+
+
+def test_a_path_and_an_error_do_not_show_the_sequence(tmp_path):
+    marker = _canary(tmp_path)
     project = tmp_path / "project"
     project.mkdir()
-    for name in _DROPPED:
-        monkeypatch.setenv(name, _MARKER)
-    monkeypatch.setenv("PATH", str(marker_bin) + os.pathsep + "kept")
-    monkeypatch.setenv("LANG", "C")
-    monkeypatch.setenv("TZ", "UTC")
-    monkeypatch.setenv("AICAD_SCRIPT_CPU_SECONDS", "1")
-    monkeypatch.setenv("AICAD_SCRIPT_MEMORY_MB", "256")
-    monkeypatch.setenv("AICAD_SCRIPT_FILE_BYTES", "2048")
-    monkeypatch.setenv("HOME", str(outside / "home"))
-    monkeypatch.setenv("AICAD_WIN_NET_RECEIVERS", "127.0.0.1:9:9")
-    monkeypatch.setenv("USERPROFILE", str(outside / "profile"))
-    monkeypatch.setenv("APPDATA", str(outside / "appdata"))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(outside / "config"))
-    monkeypatch.setenv("TEMP", str(outside / "temp"))
-    monkeypatch.setenv("TMP", str(outside / "temp"))
-    env = _child_env(project, project / "job", network=False)
-    upper = {key.upper() for key in env}
-    for name in _DROPPED:
-        assert name not in upper
-    assert set(env) <= _allowed_names()
-    assert _MARKER not in env.values()
-    assert str(marker_bin) not in env["PATH"]
-    assert env["LANG"] == "C"
-    assert env["TZ"] == "UTC"
-    assert env["AICAD_SCRIPT_CPU_SECONDS"] == "1"
-    assert env["AICAD_SCRIPT_MEMORY_MB"] == "256"
-    assert env["AICAD_SCRIPT_FILE_BYTES"] == "2048"
-    assert env["AICAD_SANDBOX_CHILD"] == "1"
-    assert env["AICAD_WORKSPACE"] == str(project)
-    assert env["AICAD_JOB"] == str(project / "job")
-    assert env["AICAD_NETWORK"] == "0"
-    assert env["PYTHONSAFEPATH"] == "1"
-    assert env["TEMP"] == str(project / ".aicad" / "tmp")
-    assert env["TMP"] == str(project / ".aicad" / "tmp")
-    assert env["TMPDIR"] == str(project / ".aicad" / "tmp")
-    assert env["HOME"] == str(outside / "home")
-    if sys.platform == "win32":
-        assert env["USERPROFILE"] == str(outside / "profile")
-        assert env["APPDATA"] == str(outside / "appdata")
-        assert env["AICAD_WIN_NET_RECEIVERS"] == "127.0.0.1:9:9"
-        assert env["XDG_CONFIG_HOME"] == str(project / ".aicad" / "cache")
-    else:
-        assert "USERPROFILE" not in env
-        assert "APPDATA" not in env
-        assert "AICAD_WIN_NET_RECEIVERS" not in env
-        assert "XDG_CONFIG_HOME" not in env
+    with pytest.raises(GeometryError) as raised:
+        require_export_path(project, f"exports/box{_CSI}\udcff.step", "Export path", GeometryError)
+    shown = str(raised.value)
+    assert "\x1b" not in shown
+    assert "\udcff" not in shown
+    shown.encode("utf-8")
+    text = str(GeometryError(f"stopped {_CSI}CANARY_HIT"))
+    assert "CANARY_HIT" in text
+    assert "\x1b" not in text
+    text.encode("utf-8")
+    assert marker.read_text(encoding="utf-8") == "untouched\n"
 
 
-def test_windows_script_environment_keeps_the_profile_and_receivers(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
-    from aicad import sandbox as sandbox_mod
-
-    font_cache = tmp_path / "font-cache"
-    font_file = font_cache / "ezdxf" / "font_manager_cache.json"
-    font_file.parent.mkdir(parents=True)
-    font_file.write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(sandbox_mod, "_windows_font_cache_home", lambda: font_cache)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    project = tmp_path / "project"
-    project.mkdir()
-    monkeypatch.setenv("ORDINARY_PARENT", _MARKER)
-    monkeypatch.setenv("HOME", str(outside / "home"))
-    monkeypatch.setenv("APPDATA", str(outside / "appdata"))
-    monkeypatch.setenv("LOCALAPPDATA", str(outside / "local"))
-    monkeypatch.setenv("USERPROFILE", str(outside / "profile"))
-    monkeypatch.setenv("AICAD_WIN_NET_RECEIVERS", "10.0.0.1:80:80")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(outside / "config"))
-    env = sandbox_mod._child_env(project, project / "job", False)
-    cache = str(project / ".aicad" / "cache")
-    assert set(env) <= _allowed_names()
-    assert env["USERPROFILE"] == str(outside / "profile")
-    assert env["USERPROFILE"] != cache
-    assert env["AICAD_WIN_NET_RECEIVERS"] == "10.0.0.1:80:80"
-    assert env["XDG_CACHE_HOME"] == str(font_cache)
-    assert env["XDG_CONFIG_HOME"] == cache
-    assert env["XDG_DATA_HOME"] == cache
-    assert env["MPLCONFIGDIR"] == cache
-    assert "ORDINARY_PARENT" not in env
-    assert env["HOME"] == str(outside / "home")
-    assert env["APPDATA"] == str(outside / "appdata")
-    assert env["LOCALAPPDATA"] == str(outside / "local")
-    assert env["USERPROFILE"] != cache
-    assert env["APPDATA"] != cache
-    assert _MARKER not in env.values()
-
-
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux process environment")
-def test_a_running_script_does_not_see_a_parent_variable(tmp_path, monkeypatch):
-    from aicad.kernel import make_from_script
-    from aicad.sandbox import sandbox_supported
-
-    supported, reason = sandbox_supported()
-    if not supported:
-        pytest.skip(reason)
-    monkeypatch.setenv("ORDINARY_PARENT", _MARKER)
-    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
-    project = tmp_path / "project"
-    project.mkdir()
-    make_from_script(
-        "raw = open('/proc/self/environ', 'rb').read()\n"
-        "open('env.bin', 'wb').write(raw)\n"
-        "part = Box(1, 1, 1)\n",
-        project,
+def test_a_plugin_warning_is_one_plain_block(tmp_path):
+    marker = _canary(tmp_path)
+    offer = PluginOffer(
+        name="volume-note",
+        distribution=f"demo{_CSI}",
+        version="1\r\n0",
+        publisher=f"Pub{_OSC}lisher",
+        summary="Counts.\nCANARY_HIT\x1b[31m",
+        permissions=("checks",),
+        provides=("analysis",),
+        third_party=True,
+        stamp="abc",
+        entry="volume_note",
     )
-    seen = (project / "env.bin").read_bytes()
-    assert _MARKER.encode() not in seen
-    assert b"ORDINARY_PARENT" not in seen
-    assert b"HTTP_PROXY" not in seen
-    assert b"AICAD_SANDBOX_CHILD=1" in seen
-    assert b"AICAD_WORKSPACE=" in seen
+    text = warning_text(offer)
+    assert "not a sandbox" in text
+    assert "CANARY_HIT" in text
+    assert "\x1b" not in text
+    assert "\r" not in text
+    assert "http://127.0.0.1" not in text
+    assert "lisher" in text
+    problem, fields = _validate_manifest(
+        {
+            "api": API_VERSION,
+            "name": "volume-note",
+            "publisher": _CSI,
+            "summary": "Counts.",
+            "permissions": ["checks"],
+            "provides": ["analysis"],
+        },
+        "volume-note",
+    )
+    assert fields is None
+    assert problem
+    _, fields = _validate_manifest(
+        {
+            "api": API_VERSION,
+            "name": "volume-note",
+            "publisher": "A publisher",
+            "summary": "Counts.\nCANARY_HIT\x1b[31m",
+            "permissions": ["checks"],
+            "provides": ["analysis"],
+        },
+        "volume-note",
+    )
+    assert fields is not None
+    assert fields["summary"] == "Counts. CANARY_HIT"
+    assert "\x1b" not in fields["summary"]
+    assert marker.read_text(encoding="utf-8") == "untouched\n"
+
+
+def test_a_command_error_does_not_send_a_terminal_sequence(capsys, monkeypatch):
+    def boom(_args):
+        raise GeometryError(f"stopped {_CSI}CANARY_HIT")
+
+    monkeypatch.setattr("aicad.cli._dispatch", boom)
+    assert main(["plugins", "list"]) == 1
+    error = capsys.readouterr().err
+    assert "CANARY_HIT" in error
+    assert "\x1b" not in error
+    error.encode("utf-8")
+
+
+def test_solver_and_encoder_text_are_one_line():
+    detail = _ccx_error(f"start\n*ERROR {_CSI}CANARY_HIT\nend")
+    assert "CANARY_HIT" in detail
+    assert "\x1b" not in detail
+    assert "\n" not in detail
+    reason = _encoder_reason(f"fail {_OSC}CANARY_HIT\nnext".encode(), 1)
+    assert reason == "fail CANARY_HIT next"
+    assert "\x1b" not in reason
+
+
+def test_a_note_stores_the_visible_text(tmp_path):
+    marker = _canary(tmp_path)
+    workspace = Workspace(tmp_path / "project")
+    original = f"See the hole.{_CSI}\nCANARY_HIT{_OSC}"
+    workspace.execute("write_document", {"name": "notes.md", "markdown": original})
+    stored = (workspace.root / "documents" / "notes.md").read_text(encoding="utf-8")
+    assert stored == strip_hidden(original)
+    assert "\x1b" not in stored
+    assert "CANARY_HIT" in stored
+    assert "\n" in stored
+    assert marker.read_text(encoding="utf-8") == "untouched\n"
