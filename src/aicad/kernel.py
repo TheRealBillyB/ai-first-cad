@@ -1577,16 +1577,51 @@ def _prepare_export_parent(path: Path) -> None:
         raise GeometryError(f"Could not write {path}.") from exc
 
 
+def _write_step_impl(impl, temporary: Path) -> bool:
+    try:
+        return bool(export_step(impl, temporary))
+    except (OSError, RuntimeError):
+        return False
+
+
+def _step_file_volume(path: Path) -> float:
+    """Volume of a STEP file this process just wrote. A shell reads as zero."""
+    try:
+        loaded = _read_step_shape(path)
+    except (GeometryError, OSError, RuntimeError):
+        return 0.0
+    return _volume(loaded)
+
+
+def _sewn_solid(impl):
+    """Sew a solid whose faces are valid in memory but write as an empty shell.
+
+    A flat-bottomed loft fused with a cylinder that sits tangent to that face
+    is one of those solids. ``clean`` sews the shared face. A box is unchanged.
+    """
+    try:
+        cleaned = impl.clean()
+    except Exception:
+        return None
+    if cleaned is None or _volume(cleaned) <= 0:
+        return None
+    return cleaned
+
+
 def export_step_file(shape: Shape, path: Path) -> None:
     from aicad.paths import nofollow_writes, publish_file
 
     def write(temporary: Path) -> None:
-        try:
-            written = export_step(shape.impl, temporary)
-        except (OSError, RuntimeError) as exc:
-            raise GeometryError(f"Could not write STEP file {path}.") from exc
-        if not written:
-            raise GeometryError(f"Could not write STEP file {path}.")
+        if _write_step_impl(shape.impl, temporary) and _step_file_volume(temporary) > 0:
+            return
+        cleaned = _sewn_solid(shape.impl)
+        if (
+            cleaned is not None
+            and _write_step_impl(cleaned, temporary)
+            and _step_file_volume(temporary) > 0
+        ):
+            return
+        raise GeometryError(f"Could not write STEP file {path}.")
 
     if not nofollow_writes():
         _prepare_export_parent(path)
