@@ -246,58 +246,58 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
             "assumptions": ["No slicer ran. Time and grams are not estimated."],
         }
     _real_output_dir(out_dir)
-    stl = out_dir / "oriented.stl"
     gcode = out_dir / "print.gcode"
-    _write_stl(vertices, triangles, stl)
-    # A link at this name is removed so the file is created in this folder.
+    # A link at this name is removed so the copy is created in this folder.
     _drop_link(gcode)
     last = ""
     last_name = Path(executables[-1]).name
-    for executable in executables:
-        last_name = Path(executable).name
-        commands = [
-            _slice_command(executable, gcode, stl, price_per_kg, export=True),
-            _slice_command(executable, gcode, stl, price_per_kg, export=False),
-        ]
-        for command in commands:
-            from aicad.sandbox import program_environment
+    from aicad.paths import private_tool_directory, publish_bytes
 
-            completed = subprocess.run(
-                command,
-                cwd=str(Path(executable).resolve().parent),
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=180,
-                check=False,
-                close_fds=True,
-                env=program_environment(),
-            )
-            last = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
-            from aicad.file_access import read_text
+    with private_tool_directory() as work:
+        _write_stl(vertices, triangles, work / "oriented.stl")
+        for executable in executables:
+            last_name = Path(executable).name
+            commands = [
+                _slice_command(executable, Path("print.gcode"), Path("oriented.stl"), price_per_kg, export=True),
+                _slice_command(executable, Path("print.gcode"), Path("oriented.stl"), price_per_kg, export=False),
+            ]
+            for command in commands:
+                from aicad.sandbox import program_environment
 
-            try:
-                gcode_text = read_text(gcode, maximum=64 * 1024 * 1024, errors="replace")
-            except OSError:
-                gcode_text = ""
-            if gcode_text:
-                parsed = parse_gcode(gcode_text)
-                parsed["status"] = "sliced" if parsed.get("grams") is not None or parsed.get("seconds") is not None else "unparsed"
-                parsed["slicer"] = Path(executable).name
-                parsed["gcode"] = str(gcode.resolve())
-                parsed["note"] = _slicer_note(parsed, price_per_kg)
-                if parsed.get("grams") and price_per_kg is not None and not parsed.get("cost"):
-                    parsed["cost"] = round(float(parsed["grams"]) * float(price_per_kg) / 1000.0, 2)
-                    parsed["cost_source"] = "price_per_kg"
-                parsed["assumptions"] = [
-                    f"Sliced by {parsed['slicer']} with its default profile. Nozzle, layer height, and infill are whatever that profile says.",
-                    "Filament density 1.24 g/cm³ (PLA) is passed so a profile with no density does not report 0 g.",
-                    "Time and grams come from the gcode comments. A different profile changes both.",
-                    "Cost is the slicer's filament cost when the gcode has one, otherwise grams times price_per_kg / 1000.",
-                ]
-                return parsed
-            if gcode.is_file():
-                gcode.unlink()
+                completed = subprocess.run(
+                    command,
+                    cwd=str(work),
+                    capture_output=True,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=180,
+                    check=False,
+                    close_fds=True,
+                    env=program_environment(),
+                )
+                last = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
+                payload = _read_tool_output(work / "print.gcode")
+                if payload:
+                    publish_bytes(gcode, payload)
+                    gcode_text = payload.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+                    parsed = parse_gcode(gcode_text)
+                    parsed["status"] = "sliced" if parsed.get("grams") is not None or parsed.get("seconds") is not None else "unparsed"
+                    parsed["slicer"] = Path(executable).name
+                    parsed["gcode"] = str(gcode.resolve())
+                    parsed["note"] = _slicer_note(parsed, price_per_kg)
+                    if parsed.get("grams") and price_per_kg is not None and not parsed.get("cost"):
+                        parsed["cost"] = round(float(parsed["grams"]) * float(price_per_kg) / 1000.0, 2)
+                        parsed["cost_source"] = "price_per_kg"
+                    parsed["assumptions"] = [
+                        f"Sliced by {parsed['slicer']} with its default profile. Nozzle, layer height, and infill are whatever that profile says.",
+                        "Filament density 1.24 g/cm³ (PLA) is passed so a profile with no density does not report 0 g.",
+                        "Time and grams come from the gcode comments. A different profile changes both.",
+                        "Cost is the slicer's filament cost when the gcode has one, otherwise grams times price_per_kg / 1000.",
+                    ]
+                    return parsed
+                private_gcode = work / "print.gcode"
+                if private_gcode.is_file():
+                    private_gcode.unlink()
     return {
         "status": "failed",
         "slicer": last_name,
@@ -483,6 +483,16 @@ def _drop_link(path: Path) -> None:
         return
     if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
         path.unlink()
+
+
+def _read_tool_output(path: Path) -> bytes:
+    """Bytes written by a helper in its private folder. A missing file is empty."""
+    from aicad.file_access import read_file
+
+    try:
+        return read_file(path, maximum=64 * 1024 * 1024)
+    except OSError:
+        return b""
 
 
 def _write_stl(vertices: np.ndarray, triangles: np.ndarray, path: Path) -> None:

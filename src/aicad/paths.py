@@ -9,6 +9,7 @@ project or touches the file.
 from __future__ import annotations
 
 import builtins
+import contextlib
 import ctypes
 import ctypes.util
 import errno
@@ -908,6 +909,95 @@ def _unlink_reparse(path: Path) -> None:
     except OSError:
         pass
     os.rmdir(path)
+
+
+@contextlib.contextmanager
+def private_tool_directory():
+    """A new folder outside every project. It is removed when the caller finishes.
+
+    A slicer, ffmpeg, and CalculiX run here, on a copy of their inputs. The
+    process temporary directory is not used when that directory is inside a
+    project. The caller passes only names from this folder.
+    """
+    path = _make_private_tool_directory()
+    try:
+        yield path
+    finally:
+        remove_tree(path, ignore_errors=True)
+
+
+def _make_private_tool_directory() -> Path:
+    for root in _tool_temp_roots():
+        try:
+            path = Path(tempfile.mkdtemp(prefix="aicad-tool-", dir=os.fspath(root)))
+        except OSError:
+            continue
+        if _inside_any_project(path):
+            remove_tree(path, ignore_errors=True)
+            continue
+        return path
+    raise OSError(errno.ENOENT, "No folder outside a project is available for a helper program.")
+
+
+def _tool_temp_roots():
+    """Writable folders that are not inside a project."""
+    seeds: list[Path] = []
+    for key in ("TMPDIR", "TEMP", "TMP"):
+        value = os.environ.get(key)
+        if value:
+            seeds.append(Path(value))
+    try:
+        seeds.append(Path(tempfile.gettempdir()))
+    except OSError:
+        pass
+    if os.name == "nt":
+        system = os.environ.get("SYSTEMROOT") or os.environ.get("SystemRoot")
+        if system:
+            seeds.append(Path(system) / "Temp")
+    else:
+        seeds.extend((Path("/tmp"), Path("/var/tmp")))
+    seen: set[str] = set()
+    for seed in seeds:
+        candidate = _directory_outside_projects(seed)
+        if candidate is None:
+            continue
+        key = os.path.normcase(os.path.abspath(candidate))
+        if key in seen:
+            continue
+        seen.add(key)
+        yield candidate
+
+
+def _directory_outside_projects(start: Path) -> Path | None:
+    """``start`` itself, or the nearest ancestor that is not inside a project."""
+    probe = start
+    seen: set[str] = set()
+    while True:
+        key = os.path.normcase(os.path.abspath(probe))
+        if key in seen:
+            return None
+        seen.add(key)
+        try:
+            outside = probe.is_dir() and not is_reparse(probe) and not _inside_any_project(probe)
+        except OSError:
+            outside = False
+        if outside:
+            return probe
+        parent = probe.parent
+        if parent == probe:
+            return None
+        probe = parent
+
+
+def _inside_any_project(path: Path) -> bool:
+    """True when ``path`` sits in a project folder."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    if _project_holding(resolved) is not None:
+        return True
+    return _project_containing(resolved) is not None
 
 
 def remove_tree(path: Path, *, ignore_errors: bool = False) -> None:
