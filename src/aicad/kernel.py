@@ -1584,10 +1584,49 @@ def _write_step_impl(impl, temporary: Path) -> bool:
         return False
 
 
+def _descriptor_on_fd_path(path: Path) -> int | None:
+    """Descriptor number when ``path`` is ``/proc/self/fd/N`` or ``/dev/fd/N``."""
+    text = os.fspath(path).replace("\\", "/")
+    for prefix in ("/proc/self/fd/", "/dev/fd/"):
+        if not text.startswith(prefix):
+            continue
+        number = text[len(prefix) :]
+        if number.isdigit():
+            return int(number)
+    return None
+
+
+def _bytes_just_written(path: Path) -> bytes:
+    """Bytes of a STEP file this process just wrote.
+
+    Inside a project the publisher passes ``/proc/self/fd/N``. That name is a
+    symlink to the descriptor it still holds, so the reader that refuses links
+    will not open it. The descriptor is read directly. Any other path is read
+    as a STEP file.
+    """
+    descriptor = _descriptor_on_fd_path(path)
+    if descriptor is None:
+        return read_step_bytes(path)
+    size = os.fstat(descriptor).st_size
+    if size > MAX_STEP_BYTES:
+        raise GeometryError("STEP file is too large.")
+    if size <= 0:
+        return b""
+    chunks: list[bytes] = []
+    offset = 0
+    while offset < size:
+        block = os.pread(descriptor, min(size - offset, 1024 * 1024), offset)
+        if not block:
+            break
+        chunks.append(block)
+        offset += len(block)
+    return b"".join(chunks)
+
+
 def _step_file_volume(path: Path) -> float:
     """Volume of a STEP file this process just wrote. A shell reads as zero."""
     try:
-        loaded = _read_step_bytes(path, read_step_bytes(path))
+        loaded = _read_step_bytes(path, _bytes_just_written(path))
     except (GeometryError, OSError, RuntimeError):
         return 0.0
     return _volume(loaded)

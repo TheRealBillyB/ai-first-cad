@@ -93,3 +93,18 @@ def test_box_step_export_is_unchanged(tmp_path):
     export_step_file(shape, path)
     loaded = import_step_file(path)
     assert abs(loaded.impl.volume - 320.0) < 1e-6
+
+
+def test_step_export_inside_a_project_writes_a_solid(tmp_path):
+    from aicad import paths
+
+    root = tmp_path.resolve()
+    paths.remember_project(root)
+    try:
+        shape = make_from_ops([{"op": "add", "shape": "box", "size": [10, 8, 4]}])
+        path = root / "box.step"
+        export_step_file(shape, path)
+        loaded = import_step_file(path)
+        assert abs(loaded.impl.volume - 320.0) < 1e-6
+    finally:
+        paths._PROJECTS.discard(root)  # noqa: SLF001
