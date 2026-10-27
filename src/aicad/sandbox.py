@@ -3046,6 +3046,9 @@ class _DiskWatch:
         self._io_fds: dict[int, int] = {}
         self._pids: set[int] = set()
         self._file_peak: dict[str, int] = {}
+        self._folded: set[int] = set()
+        self._child_extra = 0
+        self.child_report: Path | None = None
         self.io_peak = 0
         self._lock = threading.Lock()
 
@@ -3113,21 +3116,98 @@ class _DiskWatch:
     def note_io(self, pids: set[int]) -> None:
         with self._lock:
             self._pids = set(pids)
+            folded = set(self._folded)
         total = 0
+        live: dict[int, int] = {}
         for pid in pids:
+            if pid in folded:
+                continue
             current = self._counter(pid)
             if current is None:
                 continue
             with self._lock:
+                if pid in self._folded:
+                    continue
                 base = self._io_base.get(pid)
                 if base is None:
                     base = 0
                     self._io_base[pid] = 0
-            total += max(0, current - base)
+            delta = max(0, current - base)
+            live[pid] = delta
+            total += delta
         with self._lock:
+            # A child collected while this sample was reading is owned by the
+            # report. Drop the live delta so that child is not added twice.
+            for pid, delta in live.items():
+                if pid in self._folded:
+                    total -= delta
+            total += self._child_extra
             self.io_peak = max(self.io_peak, total)
         if total > self.disk_cap:
             self.hit.set()
+
+    def account_io(self, pids: set[int]) -> None:
+        """Read a child report, then the live counters, as one sample."""
+        self.absorb_child_report()
+        self.note_io(pids)
+
+    def note_reported_children(self, amounts: dict[int, int]) -> None:
+        """Add logical writes of children that were collected before a counter was opened.
+
+        ``amounts`` maps a pid to the bytes that process had written. A pid
+        already included here is left out of later live samples so it is not
+        counted twice.
+        """
+        extra = 0
+        fresh: set[int] = set()
+        for pid, total in amounts.items():
+            if not isinstance(pid, int) or pid <= 0:
+                continue
+            with self._lock:
+                if pid in self._folded:
+                    continue
+                base = self._io_base.get(pid, 0)
+            try:
+                amount = int(total)
+            except (TypeError, ValueError):
+                continue
+            if amount < 0:
+                continue
+            extra += max(0, amount - base)
+            fresh.add(pid)
+        if not fresh:
+            return
+        with self._lock:
+            self._folded.update(fresh)
+            self._child_extra += extra
+            self.io_peak = max(self.io_peak, self._child_extra)
+        if self.io_peak > self.disk_cap:
+            self.hit.set()
+
+    def absorb_child_report(self) -> None:
+        """Read the script's record of children it collected, when that file exists."""
+        path = self.child_report
+        if path is None:
+            return
+        from aicad.file_access import read_text
+
+        try:
+            text = read_text(path, maximum=1_000_000)
+        except OSError:
+            return
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        amounts: dict[int, int] = {}
+        for key, value in payload.items():
+            try:
+                amounts[int(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        self.note_reported_children(amounts)
 
     def note_job_io(self, written: int, baseline: int | None) -> None:
         delta = written if baseline is None else max(0, written - baseline)
@@ -3331,7 +3411,7 @@ def _watch_descendants(
             watched = {leader, *found}
             for pid in watched:
                 disk.hold_counter(pid)
-            disk.note_io(watched)
+            disk.account_io(watched)
             disk.note_files()
             if disk.hit.is_set():
                 _kill_process_tree(leader, seen, lock, extra=found)
@@ -3703,6 +3783,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds()
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
+    disk.child_report = job / "child-writes.json"
     quota_hold: list[int | None] = [None]
     disk_stop = threading.Event()
     stop_watch: threading.Event | None = None
@@ -3827,7 +3908,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 pass
             for pid in pids:
                 disk.hold_counter(pid)
-            disk.note_io(pids)
+            disk.account_io(pids)
 
         if account is not None and sentinel_path is not None:
             identity = process_identity(proc.pid)
