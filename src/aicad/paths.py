@@ -19,6 +19,7 @@ import stat
 import sys
 import tempfile
 import threading
+import unicodedata
 import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -408,7 +409,9 @@ def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Except
     Alternate data streams, 8.3 short names, trailing dots and spaces, and a
     path past the classic length limit are refused on every system. A name
     that differs only by case from an existing entry is the same file on a
-    case-insensitive volume, so it is refused too.
+    case-insensitive volume, so it is refused too. A name that is the same
+    after Unicode normalization is the same file on a normalization-insensitive
+    volume, so it is refused too.
     """
 
     raw = text.replace("\\", "/")
@@ -427,6 +430,7 @@ def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Except
         if not current.is_dir():
             return
         folded = part.casefold()
+        normalized = unicodedata.normalize("NFC", part).casefold()
         try:
             entries = list(current.iterdir())
         except OSError:
@@ -438,6 +442,8 @@ def refuse_windows_aliases(root: Path, text: str, label: str, error: type[Except
                 break
             if entry.name.casefold() == folded:
                 raise error(f"{label} {part!r} differs only by case from an existing name.")
+            if unicodedata.normalize("NFC", entry.name).casefold() == normalized:
+                raise error(f"{label} {part!r} matches an existing name.")
         current = match if match is not None else current / part
 
 
