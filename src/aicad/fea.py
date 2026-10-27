@@ -967,8 +967,9 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
     order = mesh["order"]
     element_type = "C3D10" if order == 2 else "C3D4"
     width = 10 if order == 2 else 4
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory)
+    from aicad.paths import private_tool_directory
+
+    with private_tool_directory() as path:
         lines = ["*HEADING", "aicad linear static", "*NODE"]
         for index, point in enumerate(points, start=1):
             lines.append(f"{index}, {point[0]:.6f}, {point[1]:.6f}, {point[2]:.6f}")
@@ -1014,7 +1015,7 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
 
         completed = subprocess.run(
             [solver, "-i", "job"],
-            cwd=directory,
+            cwd=str(path),
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,

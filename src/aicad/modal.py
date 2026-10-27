@@ -15,7 +15,6 @@ from __future__ import annotations
 import math
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -716,10 +715,9 @@ def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
 
 
 def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory)
-        from aicad.paths import publish_text
+    from aicad.paths import private_tool_directory, publish_text
 
+    with private_tool_directory() as path:
         publish_text(
             path / "job.inp",
             _frequency_deck(bodies, fixed_nodes, equations, nmodes),
@@ -735,7 +733,7 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
 
         completed = subprocess.run(
             [solver, "-i", "job"],
-            cwd=directory,
+            cwd=str(path),
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
