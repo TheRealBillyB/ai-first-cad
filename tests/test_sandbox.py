@@ -727,6 +727,9 @@ def test_windows_network_block_names_only_that_container():
     package = "S-1-15-2-11-22-33-44-55-66-77"
     script = win._firewall_script(package, install=True)
     assert script.count("New-NetFirewallRule") == 2
+    assert script.index("Count -eq 0") < script.index("New-NetFirewallRule")
+    assert "183" not in script
+    assert "already exists" not in script
     assert script.count("-Action Block") == 2
     assert script.count("-Protocol Any") == 2
     assert "-Direction Outbound" in script
@@ -758,10 +761,10 @@ def test_windows_network_block_names_only_that_container():
         calls.append(text)
 
     def present(sid):
-        # Reuse is allowed only after the rules are read. This test is the
-        # path where that read says they are still installed.
+        # The first read is a missing block, so the rules are installed.
+        # Every later read says the block is already in place, so it is not removed.
         present_calls.append(sid)
-        return True
+        return len(present_calls) != 1
 
     import shutil
     import tempfile
@@ -809,7 +812,7 @@ def test_windows_network_block_names_only_that_container():
         win._network_off_rules_sid = None
         win._hold_network_block(package)
         assert len(calls) == 1
-        assert present_calls == [package.upper()]
+        assert present_calls == [package.upper(), package.upper(), package.upper()]
         win._release_network_block()
         win._hold_network_block(package)
         assert len(calls) == 1
@@ -843,10 +846,16 @@ def test_windows_network_block_names_only_that_container():
         win._wfp_engine = None
 
     spawn = inspect.getsource(win.spawn)
+    assert spawn.index("_acquire_profile_lock") < spawn.index("_appcontainer_sid")
+    assert spawn.index("_appcontainer_sid") < spawn.index("_hold_network_block")
     assert spawn.index("_hold_network_block") < spawn.index("_launch")
     assert spawn.index("TerminateJobObject") < spawn.index("_release_network_block")
+    assert spawn.index("_release_network_block") < spawn.index("_release_profile_lock")
     probe = inspect.getsource(win._probe_mode)
+    assert probe.index("_acquire_profile_lock") < probe.index("_appcontainer_sid")
+    assert probe.index("_appcontainer_sid") < probe.index("_hold_network_block")
     assert probe.index("_hold_network_block") < probe.index("_launch")
+    assert probe.index("_release_network_block") < probe.index("_release_profile_lock")
     hold = inspect.getsource(win._hold_network_block)
     assert hold.index("_firewall_block_is_present") < hold.index("_run_firewall_script")
     assert hold.index("_run_firewall_script") < hold.index("_install_wfp_block")
@@ -890,8 +899,11 @@ def test_windows_network_block_reinstalls_when_the_record_has_no_rules():
         calls.append(text)
         assert win._network_off_holders == 0
 
+    reads = {"n": 0}
+
     def missing(_sid):
-        return False
+        reads["n"] += 1
+        return reads["n"] > 1
 
     def fake_install(sid):
         installed.append(sid)
@@ -951,6 +963,7 @@ def test_windows_network_block_reinstalls_when_the_record_has_no_rules():
         win._network_off_rules_sid = None
         win._wfp_engine = None
         installed.clear()
+        reads["n"] = 0
 
         def refuse(text):
             calls.append(text)
@@ -958,6 +971,24 @@ def test_windows_network_block_reinstalls_when_the_record_has_no_rules():
 
         win._run_firewall_script = refuse
         with pytest.raises(OSError, match="firewall rules were not installed"):
+            win._hold_network_block(package)
+        assert win._network_off_holders == 0
+        assert win._network_off_sid is None
+        assert win._network_off_rules_sid is None
+        assert installed == []
+        assert "New-NetFirewallRule" in calls[-1]
+
+        def still_missing(_sid):
+            return False
+
+        win._run_firewall_script = record
+        win._firewall_block_is_present = still_missing
+        win._network_off_holders = 0
+        win._network_off_sid = None
+        win._network_off_rules_sid = None
+        win._wfp_engine = None
+        installed.clear()
+        with pytest.raises(OSError, match="not in place"):
             win._hold_network_block(package)
         assert win._network_off_holders == 0
         assert win._network_off_sid is None
@@ -992,6 +1023,141 @@ def test_windows_network_block_reinstalls_when_the_record_has_no_rules():
         package=package,
         capabilities=(),
     )
+
+
+def test_windows_stale_profile_is_replaced_before_the_script_starts():
+    """A profile that is already registered is deleted and created with no capabilities.
+
+    The registered profile is not opened. A create that succeeds the first time
+    is kept.
+    """
+
+    import ctypes
+    import inspect
+    import re
+
+    from aicad import sandbox_windows as win
+
+    created = inspect.getsource(win._create_appcontainer_profile)
+    assert re.search(r"None,\s*\n\s*0,", created)
+    body = inspect.getsource(win._appcontainer_sid)
+    assert "DeriveAppContainerSidFromAppContainerName" not in body
+    assert body.count("_create_appcontainer_profile()") == 2
+    assert "_delete_appcontainer_profile()" in body
+    calls = []
+
+    def fail_then_create():
+        calls.append("create")
+        if calls.count("create") == 1:
+            return 0x8000FFFF, ctypes.c_void_p()
+        return 0, ctypes.c_void_p()
+
+    def delete():
+        calls.append("delete")
+        return 0
+
+    def text(_sid):
+        calls.append("text")
+        return "S-1-15-2-11-22-33-44-55-66-77"
+
+    original_create = win._create_appcontainer_profile
+    original_delete = win._delete_appcontainer_profile
+    original_text = win._sid_to_string
+    win._create_appcontainer_profile = fail_then_create
+    win._delete_appcontainer_profile = delete
+    win._sid_to_string = text
+    try:
+        _sid, got = win._appcontainer_sid()
+        assert got == "S-1-15-2-11-22-33-44-55-66-77"
+        assert calls == ["create", "delete", "create", "text"]
+
+        calls.clear()
+
+        def create_ok():
+            calls.append("create")
+            return 0, ctypes.c_void_p()
+
+        win._create_appcontainer_profile = create_ok
+        win._appcontainer_sid()
+        assert calls == ["create", "text"]
+
+        calls.clear()
+
+        def create_fail():
+            calls.append("create")
+            return 0x800700B7, ctypes.c_void_p()
+
+        win._create_appcontainer_profile = create_fail
+        with pytest.raises(OSError, match="could not create an AppContainer profile"):
+            win._appcontainer_sid()
+        assert calls == ["create", "delete", "create"]
+    finally:
+        win._create_appcontainer_profile = original_create
+        win._delete_appcontainer_profile = original_delete
+        win._sid_to_string = original_text
+
+
+def test_windows_stale_firewall_block_is_not_removed():
+    """A block that is already installed stays when the record is missing."""
+
+    import shutil
+    import tempfile
+
+    from aicad import sandbox_windows as win
+
+    package = "S-1-15-2-11-22-33-44-55-66-77"
+    calls = []
+
+    def record(text):
+        calls.append(text)
+
+    def present(sid):
+        assert sid == package
+        return True
+
+    marker_dir = Path(tempfile.mkdtemp())
+    original_marker = win._network_off_marker_path
+    original_run = win._run_firewall_script
+    original_present = win._firewall_block_is_present
+    original_install = win._install_wfp_block
+    original_close = win._close_wfp_block
+    win._network_off_holders = 0
+    win._network_off_sid = None
+    win._network_off_rules_sid = None
+    win._wfp_engine = None
+    win._network_off_marker_path = marker_dir / "sid"
+    win._run_firewall_script = record
+    win._firewall_block_is_present = present
+
+    def fake_install(_sid):
+        win._wfp_engine = 1
+
+    def fake_close():
+        win._wfp_engine = None
+
+    win._install_wfp_block = fake_install
+    win._close_wfp_block = fake_close
+    try:
+        assert win._recorded_rules_sid() is None
+        win._hold_network_block(package)
+        assert calls == []
+        assert win._network_off_holders == 1
+        assert win._recorded_rules_sid() == package
+        win._release_network_block()
+        assert calls == []
+        assert win._network_off_holders == 0
+    finally:
+        win._forget_recorded_rules()
+        win._network_off_marker_path = original_marker
+        shutil.rmtree(marker_dir, ignore_errors=True)
+        win._run_firewall_script = original_run
+        win._firewall_block_is_present = original_present
+        win._install_wfp_block = original_install
+        win._close_wfp_block = original_close
+        win._network_off_holders = 0
+        win._network_off_sid = None
+        win._network_off_rules_sid = None
+        win._wfp_engine = None
 
 
 def test_windows_network_rule_record_is_outside_the_sandbox(tmp_path, monkeypatch):
