@@ -204,7 +204,9 @@ def divert_native_stdio(*, stderr: bool = False):
     try:
         if stderr:
             saved_err = os.dup(2)
-        null_fd = os.open(os.devnull, flags)
+        from aicad.sandbox import open_null_device
+
+        null_fd = open_null_device(flags)
         os.dup2(null_fd, 1)
         if saved_err is not None:
             os.dup2(null_fd, 2)

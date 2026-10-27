@@ -109,6 +109,8 @@ _SCRIPT_OUTPUT_CAP = 1_000_000
 
 _REAL_IMPORT = builtins.__import__
 _GUARD = False
+_REAL_OS_OPEN = None
+_NULL_DEVICE: str | None = None
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 
 _FS_EXECUTE = 1 << 0
@@ -707,13 +709,15 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
     Native libraries still use the kernel rules. This wrapper is the message
     a script sees when it calls open() itself.
     """
-    global _GUARD
+    global _GUARD, _NULL_DEVICE, _REAL_OS_OPEN
     if _GUARD:
         return
     import io
 
     real_open = builtins.open
     real_os_open = os.open
+    _REAL_OS_OPEN = real_os_open
+    _NULL_DEVICE = os.devnull
     root = workspace.resolve()
 
     def py_open(file, mode="r", *args, **kwargs):
@@ -738,6 +742,24 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
     io.open = py_open  # type: ignore[assignment]
     os.open = os_open  # type: ignore[assignment]
     _GUARD = True
+
+
+def open_null_device(flags: int) -> int:
+    """Open the null device so a reader can discard native logs.
+
+    The script file check wraps ``os.open``. The STEP reader uses this instead,
+    and only for the null device recorded when that check was installed. A
+    script that names the device, or any other path, still goes through the check.
+    """
+    target = os.devnull
+    if (
+        _GUARD
+        and _REAL_OS_OPEN is not None
+        and _NULL_DEVICE is not None
+        and os.path.normcase(os.fspath(target)) == os.path.normcase(_NULL_DEVICE)
+    ):
+        return _REAL_OS_OPEN(target, flags)
+    return os.open(target, flags)
 
 
 def _read_roots() -> list[Path]:
