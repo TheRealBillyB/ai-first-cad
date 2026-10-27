@@ -1509,10 +1509,14 @@ def _support_rank(points: np.ndarray) -> int:
 
 
 def _ccx_error(stdout: str) -> str:
-    lines = [line.strip() for line in stdout.splitlines() if "ERROR" in line or "*ERROR" in line]
+    from aicad.labels import plain_line
+
+    text = stdout if isinstance(stdout, str) else ""
+    lines = [plain_line(line) for line in text.splitlines() if "ERROR" in line or "*ERROR" in line]
+    lines = [line for line in lines if line]
     if not lines:
-        tail = " ".join(stdout.splitlines()[-4:])
-        return f"CalculiX failed. {tail[:500]}"
+        tail = plain_line(text)[-500:]
+        return f"CalculiX failed. {tail}" if tail else "CalculiX failed."
     return "CalculiX failed. " + " ".join(lines[-3:])[:500]
 
 

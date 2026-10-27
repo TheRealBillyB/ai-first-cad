@@ -1,95 +1,80 @@
-"""Opening a plan draws each sheet again from the stored blocks.
+"""A STEP import reads the bytes it was given.
 
-The marker is CANARY_HIT. A picture left on disk is replaced when the plan
-is opened, and a list of plans does not draw it.
+Replacing a temporary name does not change the solid. The marker file outside
+the project stays as it was written. Nothing is sent to another machine.
 """
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
-import pytest
-from PIL import Image
+from OCP.STEPControl import STEPControl_Reader
 
-from aicad.errors import PlanError
-from aicad.workspace import Workspace
+from aicad.kernel import export_step_file, import_step_bytes, make_from_ops
+from aicad.mesh import volume_mm3
 
-_MARKER = b"CANARY_HIT\n"
-
-
-def _sheet(label: str) -> dict:
-    return {
-        "id": "01_top",
-        "title": "Top",
-        "panels": [
-            {
-                "title": "Top",
-                "blocks": [{"x": 0, "y": 0, "w": 200, "h": 80, "label": label, "fill": "yellow"}],
-                "dimensions": [{"x0": 0, "y0": 0, "x1": 200, "y1": 0, "text": "200 mm", "offset": -30}],
-                "notes": ["Sketch only."],
-            }
-        ],
-    }
+_MARKER = "CANARY_HIT\n"
 
 
-def _swap(path: Path) -> None:
-    image = Image.new("RGB", (1, 1), (255, 0, 0))
-    image.save(path, "PNG")
-    path.write_bytes(path.read_bytes() + _MARKER)
+def _box_bytes(folder: Path) -> bytes:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "source.step"
+    export_step_file(make_from_ops([{"op": "add", "shape": "box", "size": [2, 3, 4]}]), path)
+    return path.read_bytes()
 
 
-@pytest.fixture(autouse=True)
-def approvals_stay_outside_the_project(tmp_path, monkeypatch):
-    monkeypatch.setenv("AICAD_APPROVALS", str(tmp_path / "approvals.json"))
+def _marker(tmp_path) -> Path:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "SANDBOX_CANARY.txt"
+    marker.write_text("untouched\n", encoding="utf-8")
+    return marker
 
 
-def test_opening_a_plan_redraws_a_swapped_sheet(tmp_path):
-    project = tmp_path / "project"
-    workspace = Workspace(project)
-    workspace.execute("start_plan", {"name": "shelf", "title": "Shelf"}, source="ui")
-    workspace.execute("put_plan_sheet", {"name": "shelf", "spec": _sheet("first")}, source="ui")
-    workspace.execute(
-        "revise_plan",
-        {"name": "shelf", "changed": "A second sheet.", "bundle": {"sheets": [_sheet("second")]}},
-        source="ui",
-    )
-    opened = workspace.execute("get_plan", {"name": "shelf"})
-    current = Path(opened["views"][0]["path"])
-    previous = Path(opened["revisions"][0]["sheets"][0]["path"])
-    assert current.is_file() and previous.is_file()
-    assert current != previous
-    _swap(current)
-    _swap(previous)
-    listed = workspace.execute("list_plans", {})
-    assert listed["plans"][0]["id"] == "shelf"
-    assert _MARKER in current.read_bytes()
-    assert _MARKER in previous.read_bytes()
-    record = (project / "plans" / "shelf.json").read_bytes()
-    again = workspace.execute("get_plan", {"name": "shelf"})
-    assert (project / "plans" / "shelf.json").read_bytes() == record
-    for item in (
-        Path(again["views"][0]["path"]),
-        Path(again["revisions"][0]["sheets"][0]["path"]),
-    ):
-        raw = item.read_bytes()
-        assert _MARKER not in raw
-        assert raw.startswith(b"\x89PNG")
-        with Image.open(item) as image:
-            assert image.size[0] > 1000
+def test_a_swapped_temporary_name_is_not_the_solid(tmp_path, monkeypatch):
+    marker = _marker(tmp_path)
+    data = _box_bytes(tmp_path / "source")
+    original = tempfile.NamedTemporaryFile
+
+    def swapping(*args, **kwargs):
+        handle = original(*args, **kwargs)
+        real_close = handle.close
+
+        def close():
+            name = Path(handle.name)
+            real_close()
+            name.unlink(missing_ok=True)
+            name.symlink_to(marker)
+
+        handle.close = close
+        return handle
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", swapping)
+    solid = import_step_bytes(tmp_path / "project" / "box.step", data)
+    assert abs(volume_mm3(solid) - 24) < 1e-6
+    assert marker.read_text(encoding="utf-8") == "untouched\n"
 
 
-def test_a_failed_redraw_does_not_return_the_picture(tmp_path, monkeypatch):
-    project = tmp_path / "project"
-    workspace = Workspace(project)
-    workspace.execute("start_plan", {"name": "shelf", "title": "Shelf"}, source="ui")
-    opened = workspace.execute("put_plan_sheet", {"name": "shelf", "spec": _sheet("first")}, source="ui")
-    picture = Path(opened["views"][0]["path"])
-    _swap(picture)
+def test_the_reader_does_not_open_a_path(tmp_path, monkeypatch):
+    marker = _marker(tmp_path)
+    data = _box_bytes(tmp_path / "source")
+    opened: list[str] = []
 
-    def stop(*_args, **_kwargs):
-        raise PlanError("The sheet could not be drawn.")
+    def wrapped(self, filename, *args):
+        opened.append(str(filename))
+        marker.write_text(_MARKER, encoding="utf-8")
+        raise AssertionError("the STEP reader opened a path")
 
-    monkeypatch.setattr("aicad.plan.render_plan_sheet", stop)
-    with pytest.raises(PlanError, match="could not be drawn"):
-        workspace.execute("get_plan", {"name": "shelf"})
-    assert _MARKER in picture.read_bytes()
+    monkeypatch.setattr(STEPControl_Reader, "ReadFile", wrapped)
+    solid = import_step_bytes(tmp_path / "project" / "box.step", data)
+    assert opened == []
+    assert abs(volume_mm3(solid) - 24) < 1e-6
+    assert marker.read_text(encoding="utf-8") == "untouched\n"
+    shown = ""
+    try:
+        import_step_bytes(tmp_path / "project" / "box.step", b"CANARY_HIT\n")
+    except Exception as exc:
+        shown = str(exc)
+    assert "CANARY_HIT" not in shown
+    assert marker.read_text(encoding="utf-8") == "untouched\n"

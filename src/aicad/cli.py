@@ -19,11 +19,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _dispatch(args)
     except AICADError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
     except (OSError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
+
+
+def _print_error(exc: BaseException) -> None:
+    """Print a failure. Control characters in the message are not sent."""
+
+    from aicad.labels import strip_hidden
+
+    print(f"error: {strip_hidden(str(exc))}", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     export = commands.add_parser("export", parents=[common], help="Write STEP or STL.")
     export.add_argument("name")
-    export.add_argument("--format", "-f", required=True, choices=["step", "stl"])
+    export.add_argument("--format", "-f", required=True, choices=["step", "stl", "3mf"])
     export.add_argument("--out", "-o", type=Path)
 
     wall = commands.add_parser("check-wall", parents=[common], help="Estimate minimum wall thickness.")
@@ -249,7 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
     motion_study = commands.add_parser(
         "motion-study",
         parents=[common],
-        help="Drive joints over time and report collisions and joint-limit violations.",
+        help="Drive joints over time and report collisions, joint limits, and overlapping joint solids.",
     )
     motion_study.add_argument("name")
     motion_study.add_argument("--sequence", default=None, help="Study stored on the assembly.")
@@ -337,6 +345,30 @@ def build_parser() -> argparse.ArgumentParser:
         "fatigue", parents=[common], help="Goodman check of a stated stress amplitude."
     )
     fatigue.add_argument("--file", type=Path, required=True, help="JSON with material and stress_amplitude_mpa.")
+
+    print_clearance = commands.add_parser(
+        "print-clearance",
+        parents=[common],
+        help="Gap between parts of an assembly that print as one piece.",
+    )
+    print_clearance.add_argument("name")
+    print_clearance.add_argument("--fuse", dest="fuse_mm", type=float, default=None, help="Gap in mm under which a pair is fused.")
+    print_clearance.add_argument(
+        "--min",
+        dest="min_clearance",
+        type=float,
+        default=None,
+        help="Gap in mm under which a pair is tight.",
+    )
+    print_clearance.add_argument("--pose", default=None, help="Named pose. The stored assembly is left unchanged.")
+    print_clearance.add_argument("--joints", default=None, help="JSON object of joint values for this check only.")
+    print_clearance.add_argument(
+        "--mesh-deflection",
+        dest="mesh_deflection",
+        type=float,
+        default=None,
+        help="Chord error in mm used to decide whether the export mesh can close the gap.",
+    )
 
     printed = commands.add_parser(
         "print", parents=[common], help="Overhang map, orientation, and printer fit."
@@ -882,6 +914,22 @@ def _dispatch(args: argparse.Namespace) -> int:
         return emit(document.check_bolts(spec))
     if args.command == "fatigue":
         return emit(document.check_fatigue(json.loads(_read_named_file(args.file))))
+    if args.command == "print-clearance":
+        setup = {}
+        if args.fuse_mm is not None:
+            setup["fuse_mm"] = args.fuse_mm
+        if args.min_clearance is not None:
+            setup["min_clearance_mm"] = args.min_clearance
+        if args.pose:
+            setup["pose"] = args.pose
+        if args.joints:
+            parsed = json.loads(args.joints)
+            if not isinstance(parsed, dict):
+                raise GeometryError("joints must be a JSON object.")
+            setup["joints"] = parsed
+        if args.mesh_deflection is not None:
+            setup["mesh_deflection_mm"] = args.mesh_deflection
+        return emit(document.check_print_clearance(args.name, setup))
     if args.command == "print":
         setup = {
             "orientation": args.orientation,

@@ -1455,17 +1455,40 @@ def _sheet_destination(root: Path, plan: dict, revision: dict, sheet: dict) -> t
     return destination, relative
 
 
+def _plan_tree(folder: Path) -> list[Path]:
+    """Names under ``folder``. A symlink or junction is not entered."""
+    from aicad.paths import is_reparse
+
+    entries: list[Path] = []
+    stack = [folder]
+    while stack:
+        current = stack.pop()
+        try:
+            children = list(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            entries.append(child)
+            if is_reparse(child):
+                continue
+            try:
+                if child.is_dir():
+                    stack.append(child)
+            except OSError:
+                continue
+    return entries
+
+
 def _drop_orphan_sheets(root: Path, plan: dict) -> None:
-    from aicad.paths import resolve_in_project
+    from aicad.paths import is_reparse, resolve_in_project, stays_inside
 
     folder = root / "plans" / plan["id"]
-    if not folder.exists() and not folder.is_symlink():
+    # A broken junction is still a link, the same as a broken symlink.
+    if not folder.exists() and not is_reparse(folder):
         return
     folder = resolve_in_project(root, folder, "Plan", PlanError)
     if not folder.is_dir():
         return
-    from aicad.paths import stays_inside
-
     referenced = set()
     for revision in plan.get("revisions") or []:
         for sheet in revision.get("sheets") or []:
@@ -1473,13 +1496,16 @@ def _drop_orphan_sheets(root: Path, plan: dict) -> None:
                 candidate = root / sheet["path"]
                 if stays_inside(root, candidate):
                     referenced.add(candidate.resolve())
-    for png in folder.rglob("*.png"):
+    entries = _plan_tree(folder)
+    for png in entries:
+        if png.suffix != ".png":
+            continue
         if not stays_inside(root, png):
             continue
         if png.resolve() not in referenced:
             png.unlink()
-    for child in sorted(folder.rglob("*"), reverse=True):
-        if child.is_symlink() or not stays_inside(root, child):
+    for child in sorted(entries, key=lambda item: os.fspath(item), reverse=True):
+        if is_reparse(child) or not stays_inside(root, child):
             continue
         if child.is_dir() and not any(child.iterdir()):
             child.rmdir()

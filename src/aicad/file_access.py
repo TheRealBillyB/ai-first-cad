@@ -33,6 +33,9 @@ _FILE_READ_ACCESS = 0x1 | 0x80 | 0x100000
 _FILE_WRITE_ACCESS = 0x1 | 0x2 | 0x80 | 0x100 | 0x10000 | 0x100000
 _FILE_OPEN = 1
 _FILE_CREATE = 2
+# Open the name or create it in the same request. A second request would
+# check the path and then create it, and the name could change in between.
+_FILE_OPEN_IF = 3
 _FILE_DIRECTORY_FILE = 0x1
 _FILE_NON_DIRECTORY_FILE = 0x40
 _FILE_SYNCHRONOUS_IO_NONALERT = 0x20
@@ -120,6 +123,37 @@ def replace_file(root: Path, relative: str | Path, write, *, private: bool = Fal
     _posix_replace_file(root, relative, write, private=private)
 
 
+def create_file(directory: Path, name: str) -> int:
+    """Create a new file in ``directory``. A link is not followed.
+
+    The name is created only when it is absent. The caller closes the
+    descriptor. The file is owner read and write.
+    """
+    _check_component(name)
+    if sys.platform == "win32":
+        return _windows_create_new(Path(directory), name)
+    return _posix_create_new(Path(directory), name)
+
+
+def _posix_create_new(directory: Path, name: str) -> int:
+    from aicad.paths import _call, _libc
+
+    dirfd = open_directory(directory)
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor = _call(_libc().openat(dirfd, os.fsencode(name), flags, 0o600), name)
+    finally:
+        os.close(dirfd)
+    try:
+        os.fchmod(descriptor, 0o600)
+    except OSError:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def read_from_root(root: Path, relative: Path, maximum: int) -> bytes:
     """Read a regular file from ``root``. A link is not followed."""
     if sys.platform == "win32":
@@ -201,12 +235,57 @@ def _session_project(file: Path) -> Path | None:
     return None
 
 
+def _project_link_anchor(file: Path) -> tuple[Path, Path] | None:
+    """A linked project directory, and the file's path under that link.
+
+    The outermost directory link is the one closest to the root. When that
+    link's target is a project, the file is opened from the target. A link
+    under the project is a component of that open and is not followed.
+    """
+    from aicad.paths import _relative_within, is_reparse
+
+    chain: list[Path] = []
+    # abspath collapses "." and ".." and does not follow a directory link.
+    # A parent segment is not a link, and the walk stops if it repeats.
+    probe = Path(os.path.abspath(file.parent))
+    seen: set[str] = set()
+    while True:
+        key = os.path.normcase(os.fspath(probe))
+        if key in seen:
+            break
+        seen.add(key)
+        chain.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    outermost: Path | None = None
+    for candidate in reversed(chain):
+        try:
+            linked = is_reparse(candidate)
+        except OSError:
+            linked = True
+        if linked:
+            outermost = candidate
+            break
+    if outermost is None or not _marks_project(outermost):
+        return None
+    try:
+        resolved = outermost.resolve()
+        if is_reparse(resolved) or not resolved.is_dir():
+            raise OSError(errno.ELOOP, "is a link")
+        return resolved, _relative_within(outermost, file)
+    except OSError as exc:
+        raise OSError(errno.ELOOP, "is a link") from exc
+
+
 def _read_anchor(file: Path) -> tuple[Path, Path]:
     """Directory to open, and the file's path under that directory.
 
     A file inside a project is opened from the project directory, so a
-    directory link in the middle of the path is not followed. Any other file
-    is opened from its parent directory.
+    directory link in the middle of the path is not followed. A project
+    folder that is itself a link is opened from the directory it points at.
+    Any other file is opened from its parent directory.
     """
     from aicad.paths import _lexical_inside, _project_containing, _relative_within, is_reparse
 
@@ -223,6 +302,9 @@ def _read_anchor(file: Path) -> tuple[Path, Path]:
             return found, _relative_within(found, file)
         except OSError:
             pass
+    anchored = _project_link_anchor(file)
+    if anchored is not None:
+        return anchored
     return file.parent, Path(file.name)
 
 
@@ -369,17 +451,16 @@ def _windows_open_child(parent: int, name: str, *, create: bool, write: bool) ->
     _check_component(name)
     parent_handle = _os_handle(parent)
     access = _DIR_ACCESS if write else _DIR_READ
-    try:
-        handle = _nt_open(parent_handle, name, access=access, directory=True, create=False)
-    except OSError as exc:
-        if exc.errno != errno.ENOENT or not create:
-            raise
-        try:
-            handle = _nt_open(parent_handle, name, access=access, directory=True, create=True)
-        except OSError as created:
-            if created.errno != errno.EEXIST:
-                raise
-            handle = _nt_open(parent_handle, name, access=access, directory=True, create=False)
+    # One request opens the name or creates it. A link at that name is the
+    # object this handle refers to, and the caller refuses it.
+    handle = _nt_open(
+        parent_handle,
+        name,
+        access=access,
+        directory=True,
+        create=create,
+        disposition=_FILE_OPEN_IF if create else _FILE_OPEN,
+    )
     try:
         _refuse_reparse(handle, name)
         if not _attributes(handle) & _FILE_ATTRIBUTE_DIRECTORY:
@@ -417,6 +498,28 @@ def _windows_open_inplace(path: Path) -> int:
         if handle is not None:
             _close_handle(handle)
         os.close(directory)
+
+
+def _windows_create_new(directory: Path, name: str) -> int:
+    """Create ``name`` in ``directory``. An existing link is not opened."""
+    parent = _windows_open_root(directory, write=True)
+    handle = None
+    try:
+        handle = _nt_open(
+            _os_handle(parent),
+            name,
+            access=_FILE_WRITE_ACCESS,
+            directory=False,
+            create=True,
+        )
+        _refuse_reparse(handle, name)
+        descriptor = _descriptor(handle, os.O_WRONLY | getattr(os, "O_BINARY", 0))
+        handle = None
+        return descriptor
+    finally:
+        if handle is not None:
+            _close_handle(handle)
+        os.close(parent)
 
 
 def _windows_open_file(root: Path, relative: Path) -> int:
@@ -574,7 +677,16 @@ def _create_file(path: str, access: int, flags: int):
     return handle
 
 
-def _nt_open(parent, name: str, *, access: int, directory: bool, create: bool, security=None):
+def _nt_open(
+    parent,
+    name: str,
+    *,
+    access: int,
+    directory: bool,
+    create: bool,
+    security=None,
+    disposition: int | None = None,
+):
     ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
     ntdll.NtCreateFile.argtypes = [
         ctypes.POINTER(ctypes.c_void_p),
@@ -606,7 +718,8 @@ def _nt_open(parent, name: str, *, access: int, directory: bool, create: bool, s
     handle = ctypes.c_void_p()
     options = _FILE_OPEN_REPARSE_POINT | _FILE_SYNCHRONOUS_IO_NONALERT
     options |= _FILE_DIRECTORY_FILE if directory else _FILE_NON_DIRECTORY_FILE
-    disposition = _FILE_CREATE if create else _FILE_OPEN
+    if disposition is None:
+        disposition = _FILE_CREATE if create else _FILE_OPEN
     status = int(
         ntdll.NtCreateFile(
             ctypes.byref(handle),
