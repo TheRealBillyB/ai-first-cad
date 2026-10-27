@@ -103,9 +103,15 @@ That stops another website, including one that tries to reach this computer by a
 
 - **AM.** A directory created on Windows is one request on the parent directory handle. A link at that name is not followed.
 
+- **AN.** A path that matches an existing name after Unicode normalization is refused.
+
 - **AN.** A session path and a STEP import do not follow a directory link, including one whose target stays inside the project.
 
+- **AO.** An 8.3 short name is refused, including a numeric suffix of more than one digit.
+
 - **AO.** When the project folder is a link, a file under it is opened from the directory that link points at. A nested link is not followed.
+
+- **AP.** Text that is shown or stored from a name, a note, a plugin warning, or an error does not contain a terminal sequence or a hidden control character.
 
 - **AP.** A junction is removed the same way as a symlink before a slicer writes. A junction in a plan folder is not entered or removed when orphan sheets are cleaned up.
 
