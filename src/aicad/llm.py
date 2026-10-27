@@ -10,6 +10,7 @@ import json
 import os
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
@@ -383,12 +384,41 @@ def _ssl_context() -> ssl.SSLContext:
     return context
 
 
+class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only when it stays on the original scheme, host, and port."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        if not _same_origin(req.full_url, target):
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _same_origin(original: str, target: str) -> bool:
+    left = urllib.parse.urlsplit(original)
+    right = urllib.parse.urlsplit(target)
+    if left.scheme != right.scheme or (left.hostname or "") != (right.hostname or ""):
+        return False
+    return _default_port(left) == _default_port(right)
+
+
+def _default_port(parts: urllib.parse.SplitResult) -> int | None:
+    if parts.port is not None:
+        return parts.port
+    if parts.scheme == "http":
+        return 80
+    if parts.scheme == "https":
+        return 443
+    return None
+
+
 def open_assistant_url(request: urllib.request.Request, timeout: float):
     """Open an assistant URL. Proxy and certificate variables are not used.
 
     A test double installed on ``urllib.request.urlopen`` still receives the
     request. The real opener has an empty proxy map and a TLS context from
-    the packaged trust store. The process environment is not changed.
+    the packaged trust store. A redirect is followed only when it stays on
+    the same scheme, host, and port. The process environment is not changed.
     """
 
     urlopen = urllib.request.urlopen
@@ -397,6 +427,7 @@ def open_assistant_url(request: urllib.request.Request, timeout: float):
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         urllib.request.HTTPSHandler(context=_ssl_context()),
+        _SameOriginRedirect(),
     )
     return opener.open(request, timeout=timeout)
 

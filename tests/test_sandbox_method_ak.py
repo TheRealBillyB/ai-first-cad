@@ -11,7 +11,10 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import pytest
+
 from aicad.app import HttpCommandClient, write_agent_token
+from aicad.errors import GeometryError
 from aicad.llm import _post, _ssl_context
 
 _DURING: list[dict[str, str]] = []
@@ -130,3 +133,75 @@ def test_the_process_environment_stays_in_place(monkeypatch, tmp_path):
         for key, value in before.items():
             assert snapshot.get(key) == value
     assert bad.read_text(encoding="utf-8") == "CANARY_HIT\n"
+
+
+def test_a_cross_origin_redirect_is_not_followed():
+    landed = {"hit": False}
+
+    class Away(_Handler):
+        def do_POST(self):
+            landed["hit"] = True
+            body = b'{"ok":true,"choices":[{"message":{"content":"CANARY_HIT"}}]}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    other = ThreadingHTTPServer(("127.0.0.1", 0), Away)
+    other_thread = threading.Thread(target=other.serve_forever, daemon=True)
+    other_thread.start()
+    origin = _server()
+    try:
+        other_port = other.server_address[1]
+        origin_port = origin.server_address[1]
+
+        class Steer(_Handler):
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{other_port}/landed")
+                self.end_headers()
+
+        origin.RequestHandlerClass = Steer
+        with pytest.raises(GeometryError) as raised:
+            _post(f"http://127.0.0.1:{origin_port}/chat", {"ping": True}, {})
+        assert "CANARY_HIT" not in str(raised.value)
+        assert landed["hit"] is False
+    finally:
+        origin.shutdown()
+        other.shutdown()
+
+
+def test_a_same_origin_redirect_is_followed():
+    server = _server()
+    try:
+        port = server.server_address[1]
+
+        class Local(_Handler):
+            def do_POST(self):
+                if self.path == "/start":
+                    self.send_response(302)
+                    self.send_header("Location", "/chat")
+                    self.end_headers()
+                    return
+                super().do_POST()
+
+            def do_GET(self):
+                body = json.dumps(
+                    {"ok": True, "result": {"pong": True}, "choices": [{"message": {"content": "ok"}}]}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server.RequestHandlerClass = Local
+        payload = _post(
+            f"http://127.0.0.1:{port}/start",
+            {"ping": True},
+            {"Content-Type": "application/json"},
+        )
+        assert payload["ok"] is True
+    finally:
+        server.shutdown()
