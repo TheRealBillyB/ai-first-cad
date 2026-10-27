@@ -7,6 +7,7 @@ under test. A link to it, a second name, and a file past the cap are refused.
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import sys
 from pathlib import Path
@@ -70,6 +71,25 @@ def test_the_windows_rename_record_keeps_the_directory_handle_in_place():
     flagged = file_access._rename_information(0x1234, "a.txt", flags=0x2)
     assert int.from_bytes(flagged[:4], "little") == 0x2
     assert flagged[8:] == raw[8:]
+
+
+def test_a_windows_directory_is_opened_or_created_in_one_request(monkeypatch):
+    from aicad import file_access
+
+    calls: list[int] = []
+
+    def fake_nt_open(parent, name, *, access, directory, create, security=None, disposition=None):
+        del parent, name, access, directory, create, security
+        calls.append(file_access._FILE_OPEN if disposition is None else disposition)
+        raise OSError(errno.EIO, "stop")
+
+    monkeypatch.setattr(file_access, "_nt_open", fake_nt_open)
+    monkeypatch.setattr(file_access, "_os_handle", lambda descriptor: descriptor)
+    with pytest.raises(OSError, match="stop"):
+        file_access._windows_open_child(3, "exports", create=True, write=True)
+    with pytest.raises(OSError, match="stop"):
+        file_access._windows_open_child(3, "exports", create=False, write=False)
+    assert calls == [file_access._FILE_OPEN_IF, file_access._FILE_OPEN]
 
 
 def test_a_windows_directory_write_does_not_ask_to_delete_the_directory():

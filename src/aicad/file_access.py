@@ -33,6 +33,9 @@ _FILE_READ_ACCESS = 0x1 | 0x80 | 0x100000
 _FILE_WRITE_ACCESS = 0x1 | 0x2 | 0x80 | 0x100 | 0x10000 | 0x100000
 _FILE_OPEN = 1
 _FILE_CREATE = 2
+# Open the name or create it in the same request. A second request would
+# check the path and then create it, and the name could change in between.
+_FILE_OPEN_IF = 3
 _FILE_DIRECTORY_FILE = 0x1
 _FILE_NON_DIRECTORY_FILE = 0x40
 _FILE_SYNCHRONOUS_IO_NONALERT = 0x20
@@ -369,17 +372,16 @@ def _windows_open_child(parent: int, name: str, *, create: bool, write: bool) ->
     _check_component(name)
     parent_handle = _os_handle(parent)
     access = _DIR_ACCESS if write else _DIR_READ
-    try:
-        handle = _nt_open(parent_handle, name, access=access, directory=True, create=False)
-    except OSError as exc:
-        if exc.errno != errno.ENOENT or not create:
-            raise
-        try:
-            handle = _nt_open(parent_handle, name, access=access, directory=True, create=True)
-        except OSError as created:
-            if created.errno != errno.EEXIST:
-                raise
-            handle = _nt_open(parent_handle, name, access=access, directory=True, create=False)
+    # One request opens the name or creates it. A link at that name is the
+    # object this handle refers to, and the caller refuses it.
+    handle = _nt_open(
+        parent_handle,
+        name,
+        access=access,
+        directory=True,
+        create=create,
+        disposition=_FILE_OPEN_IF if create else _FILE_OPEN,
+    )
     try:
         _refuse_reparse(handle, name)
         if not _attributes(handle) & _FILE_ATTRIBUTE_DIRECTORY:
@@ -574,7 +576,16 @@ def _create_file(path: str, access: int, flags: int):
     return handle
 
 
-def _nt_open(parent, name: str, *, access: int, directory: bool, create: bool, security=None):
+def _nt_open(
+    parent,
+    name: str,
+    *,
+    access: int,
+    directory: bool,
+    create: bool,
+    security=None,
+    disposition: int | None = None,
+):
     ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
     ntdll.NtCreateFile.argtypes = [
         ctypes.POINTER(ctypes.c_void_p),
@@ -606,7 +617,8 @@ def _nt_open(parent, name: str, *, access: int, directory: bool, create: bool, s
     handle = ctypes.c_void_p()
     options = _FILE_OPEN_REPARSE_POINT | _FILE_SYNCHRONOUS_IO_NONALERT
     options |= _FILE_DIRECTORY_FILE if directory else _FILE_NON_DIRECTORY_FILE
-    disposition = _FILE_CREATE if create else _FILE_OPEN
+    if disposition is None:
+        disposition = _FILE_CREATE if create else _FILE_OPEN
     status = int(
         ntdll.NtCreateFile(
             ctypes.byref(handle),
