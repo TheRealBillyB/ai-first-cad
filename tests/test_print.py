@@ -270,6 +270,36 @@ def test_a_reparse_that_is_not_a_symlink_is_removed_before_slicing(tmp_path, mon
     assert not path.exists()
 
 
+def test_a_support_warning_slices_again_with_supports(tmp_path, monkeypatch):
+    script = tmp_path / "prusa-slicer"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "supported = '--support-material' in args\n"
+        "for arg in args:\n"
+        "    if str(arg).endswith('.gcode'):\n"
+        "        text = '; estimated printing time (normal mode) = 2m\\n'\n"
+        "        text += '; filament used [g] = 1.5\\n'\n"
+        "        text += '; supports\\n' if supported else '; plain\\n'\n"
+        "        Path(arg).write_text(text, encoding='utf-8')\n"
+        "if not supported:\n"
+        "    print('The print has floating regions. Consider enabling supports.', file=sys.stderr)\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr("aicad.printprep.find_slicers", lambda: [str(script)])
+    report = slice_mesh(np.zeros((1, 3)), np.zeros((0, 3), dtype=int), tmp_path / "out")
+    assert report["status"] == "sliced"
+    assert report["supports"] == "on"
+    assert "; supports" in Path(report["gcode"]).read_text(encoding="utf-8")
+    from aicad.printprep import _support_flags
+
+    assert _support_flags("OrcaSlicer") == ["--enable-support=1"]
+    assert _support_flags("prusa-slicer") == ["--support-material"]
+
+
 def test_a_slicer_link_still_unlinks_a_symlink_and_leaves_the_target(tmp_path):
     from aicad.printprep import _drop_link
 
