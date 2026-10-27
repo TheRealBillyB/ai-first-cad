@@ -209,9 +209,10 @@ def session_path_escapes(text: str) -> bool:
 def require_session_file(root: Path, raw: object, label: str, error: type[Exception]) -> Path:
     """A session path that stays inside ``root``. The file is not opened here.
 
-    Win32 removes trailing dots and spaces from each part before it opens the
-    file. ``.. .`` is ``..`` after that, so the trimmed text is judged the same
-    way an export path is.
+    A directory link is refused, including one whose target stays inside the
+    project. Win32 removes trailing dots and spaces from each part before it
+    opens the file. ``.. .`` is ``..`` after that, so the trimmed text is judged
+    the same way an export path is.
     """
     if not isinstance(raw, str) or not raw.strip():
         raise error(f"{label} is missing.")
@@ -227,9 +228,14 @@ def require_session_file(root: Path, raw: object, label: str, error: type[Except
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
     refuse_windows_aliases(root, text, label, error)
     root_resolved = Path(root).resolve()
-    full = (root_resolved / text).resolve()
+    lexical = root_resolved / text
+    full = lexical.resolve()
     if not _is_inside(full, root_resolved):
         raise error(f"{label} {raw!r} is outside the project. It was not read.")
+    # A directory link whose target stays inside the project is still a link.
+    # The file opened is the path as written, the same as other project reads.
+    if _reparse_between(root_resolved, lexical):
+        raise error(f"{label} {raw!r} is a link and was not followed.")
     if shared_file(full):
         raise error(f"{label} {raw!r} has another name and was not opened.")
     return full
