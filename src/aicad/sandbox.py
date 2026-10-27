@@ -2848,19 +2848,17 @@ def _process_write_bytes(pid: int) -> int | None:
 
 
 def _release_write_fd(holder: list[int | None]) -> None:
-    """Write one byte and close the pipe that holds a script at startup.
+    """Close the pipe that holds a script at startup.
 
-    An empty read is the same signal. Closing the write end does that when
-    this process goes away before it can write.
+    The script is waiting to read. Closing the write end makes that read
+    return empty, which lets the script continue. Writing a byte is not
+    used. A spawn that fails has no reader, and that write delivers
+    SIGPIPE and stops this process where the signal is not ignored.
     """
     descriptor = holder[0]
     if descriptor is None:
         return
     holder[0] = None
-    try:
-        os.write(descriptor, b"\n")
-    except OSError:
-        pass
     try:
         os.close(descriptor)
     except OSError:
@@ -3585,8 +3583,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
         from aicad.thread_stack import child_inherits_geometry_stack
 
         # The script waits on this pipe. The counter is opened and baselined
-        # before the byte is written, so a script that writes and exits cannot
-        # finish before the first reading exists.
+        # before the write end is closed. Closing it lets the script continue,
+        # so a run that writes and exits is still counted.
         hold_read, hold_write = os.pipe()
         quota_hold[0] = hold_write
         try:

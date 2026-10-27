@@ -8,13 +8,14 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from aicad.sandbox import _DiskWatch, _exited_unreaped, _wait_script
+from aicad.sandbox import _DiskWatch, _exited_unreaped, _wait_script, sandbox_supported
 from aicad.sandbox_run import _wait_for_quota_hold
 
 
@@ -47,6 +48,48 @@ def test_a_closed_quota_hold_does_not_block(monkeypatch):
     os.close(write_fd)
     monkeypatch.setenv("AICAD_QUOTA_HOLD", str(read_fd))
     _wait_for_quota_hold()
+
+
+def test_a_failed_spawn_does_not_stop_when_sigpipe_is_the_default(tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("SIGPIPE is a Unix signal")
+    supported, reason = sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+    code = textwrap.dedent(
+        """
+        import signal
+        import sys
+        from pathlib import Path
+
+        root = Path(sys.argv[1])
+        from aicad import sandbox as sandbox_mod
+
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+        def boom(*_args, **_kwargs):
+            raise OSError("spawn failed")
+
+        sandbox_mod.subprocess.Popen = boom
+        try:
+            sandbox_mod._spawn(root, "part", "part = Box(1, 1, 1)\\n", False)
+        except OSError as exc:
+            if "spawn failed" not in str(exc):
+                raise
+        else:
+            raise SystemExit("spawn did not fail")
+        jobs = root / ".aicad" / "jobs"
+        if not jobs.is_dir() or list(jobs.iterdir()):
+            raise SystemExit("job directory was left behind")
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux keeps the write counter in /proc")
