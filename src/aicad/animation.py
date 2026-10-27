@@ -778,10 +778,11 @@ def _write_videos(root: Path, targets: dict, images: list[Image.Image], fps: int
     executable = find_program("ffmpeg", project=root)
     if not executable:
         return {}, _FFMPEG_MISSING
-    frame_dir = output_dir(root, targets["frames"], "Render", GeometryError)
+    from aicad.paths import private_tool_directory
+
     videos = {}
     failures = []
-    try:
+    with private_tool_directory() as frame_dir:
         for index, image in enumerate(images):
             _write_png(frame_dir / f"frame_{index:04d}.png", image)
         for fmt in formats:
@@ -793,8 +794,6 @@ def _write_videos(root: Path, targets: dict, images: list[Image.Image], fps: int
                 failures.append(
                     f"ffmpeg could not write the {fmt.upper()} ({reason}). The GIF is the animation."
                 )
-    finally:
-        _remove_frames(frame_dir, root)
     message = " ".join(failures) if failures else None
     if failures and not videos and len(failures) == 1:
         message = failures[0]
@@ -804,49 +803,52 @@ def _write_videos(root: Path, targets: dict, images: list[Image.Image], fps: int
 def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, destination: Path) -> None:
     if fmt == "mp4":
         codec = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23"]
+        produced = "video.mp4"
     else:
         codec = ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "1M"]
+        produced = "video.webm"
+    command = [
+        executable,
+        "-y",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-framerate",
+        str(fps),
+        "-start_number",
+        "0",
+        "-i",
+        "frame_%04d.png",
+        "-frames:v",
+        str(count),
+        "-an",
+        *codec,
+        produced,
+    ]
+    try:
+        from aicad.sandbox import program_environment
 
-    def write(temporary: Path) -> None:
-        command = [
-            executable,
-            "-y",
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-framerate",
-            str(fps),
-            "-start_number",
-            "0",
-            "-i",
-            (frame_dir / "frame_%04d.png").as_posix(),
-            "-frames:v",
-            str(count),
-            "-an",
-            *codec,
-            str(temporary),
-        ]
-        try:
-            from aicad.sandbox import program_environment
+        completed = subprocess.run(
+            command,
+            cwd=str(frame_dir),
+            capture_output=True,
+            timeout=90,
+            check=False,
+            env=program_environment(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("ffmpeg did not finish") from exc
+    output = frame_dir / produced
+    if completed.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
+        reason = (completed.stderr or b"").decode("utf-8", "replace").strip().replace("\n", " ")
+        if len(reason) > 300:
+            reason = reason[-300:]
+        raise RuntimeError(reason or f"exit {completed.returncode}")
+    from aicad.file_access import read_file
+    from aicad.paths import publish_bytes
 
-            completed = subprocess.run(
-                command,
-                cwd=str(Path(executable).resolve().parent),
-                capture_output=True,
-                timeout=90,
-                check=False,
-                env=program_environment(),
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("ffmpeg did not finish") from exc
-        if completed.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
-            reason = (completed.stderr or b"").decode("utf-8", "replace").strip().replace("\n", " ")
-            if len(reason) > 300:
-                reason = reason[-300:]
-            raise RuntimeError(reason or f"exit {completed.returncode}")
-
-    publish_file(destination, write)
+    publish_bytes(destination, read_file(output, maximum=512 * 1024 * 1024))
 
 
 def _remove_frames(folder: Path, root: Path) -> None:
