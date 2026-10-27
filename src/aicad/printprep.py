@@ -471,10 +471,12 @@ def _render(mesh, name: str, threshold: float, out_dir: Path, part_name: str):
 
 
 def _drop_link(path: Path) -> None:
-    """Remove a symlink or extra hard link so the next create stays here."""
+    """Remove a symlink, junction, or extra hard link so the next create stays here."""
+    from aicad.paths import _unlink_reparse, is_reparse
+
     try:
-        if path.is_symlink():
-            path.unlink()
+        if is_reparse(path):
+            _unlink_reparse(path)
             return
         info = path.stat()
     except OSError:
