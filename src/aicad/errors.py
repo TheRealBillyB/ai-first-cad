@@ -1,8 +1,13 @@
 """Failures an assistant can read and act on."""
 
+from aicad.labels import strip_hidden
+
 
 class AICADError(Exception):
     """An expected failure. The message is meant for a person or an assistant."""
+
+    def __str__(self) -> str:
+        return strip_hidden(super().__str__())
 
 
 class ScriptError(AICADError):

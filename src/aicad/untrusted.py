@@ -18,11 +18,13 @@ _NOTE = (
 
 
 def fence_external_text(text: str) -> str:
-    """Wrap ``text`` so an assistant sees it as data."""
+    """Wrap ``text`` so an assistant sees it as data.
+
+    The marker is written every time. Text that already begins with it is
+    still data, so it stays inside the marker this function writes.
+    """
 
     body = text if isinstance(text, str) else ""
-    if body.startswith("<<<UNTRUSTED"):
-        return body
     return f"{_START}\n{body}\n{_END}"
 
 
@@ -34,11 +36,13 @@ _RESOURCE_END = "<<<END UNTRUSTED PROJECT DATA>>>"
 
 
 def fence_resource_text(text: str) -> str:
-    """Wrap a resource or session body so an assistant sees it as data."""
+    """Wrap a resource or session body so an assistant sees it as data.
+
+    The marker is written every time. Text that already begins with it is
+    still data, so it stays inside the marker this function writes.
+    """
 
     body = text if isinstance(text, str) else ""
-    if body.startswith("<<<UNTRUSTED"):
-        return body
     return f"{_RESOURCE_START}\n{body}\n{_RESOURCE_END}"
 
 
@@ -46,8 +50,6 @@ def mark_assistant_result(result: object) -> object:
     """A tool result for the assistant, marked as data."""
 
     if isinstance(result, dict):
-        if result.get("untrusted") is True and "data_note" in result:
-            return result
         marked = dict(result)
         marked["untrusted"] = True
         marked["data_note"] = _NOTE

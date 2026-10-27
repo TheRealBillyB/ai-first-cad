@@ -9,7 +9,14 @@ screen is the text that was stored.
 
 from __future__ import annotations
 
+import re
 import unicodedata
+
+# ESC sequences a terminal would act on. The letter that ends the sequence stays out.
+_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
+_CSI = re.compile(r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]")
+_ESC = re.compile(r"\x1b[@-_]")
+_KEEP_CONTROL = frozenset("\n\t")
 
 # Letters that look like Latin letters. A word in one other script is kept.
 _CONFUSABLES = {
@@ -65,14 +72,33 @@ _CONFUSABLE_MAP = str.maketrans(_CONFUSABLES)
 def strip_hidden(text: str) -> str:
     """Drop format characters and apply compatibility normalization.
 
-    Bidi controls and zero-width characters are format characters. After this,
-    the characters that remain are the ones a reader sees.
+    Bidi controls and zero-width characters are format characters. Control
+    characters, surrogates, and terminal sequences are dropped too. A line
+    feed or a tab is kept. After this, the characters that remain are the
+    ones a reader sees.
     """
 
     if not isinstance(text, str):
         return ""
-    normalized = unicodedata.normalize("NFKC", text)
-    return "".join(char for char in normalized if unicodedata.category(char) != "Cf")
+    cleaned = _OSC.sub("", text)
+    cleaned = _CSI.sub("", cleaned)
+    cleaned = _ESC.sub("", cleaned)
+    normalized = unicodedata.normalize("NFKC", cleaned)
+    kept: list[str] = []
+    for char in normalized:
+        if char in _KEEP_CONTROL:
+            kept.append(char)
+            continue
+        if unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"}:
+            continue
+        kept.append(char)
+    return "".join(kept)
+
+
+def plain_line(text: str) -> str:
+    """One line that can be printed. Line breaks are spaces."""
+
+    return " ".join(strip_hidden(text).split())
 
 
 def spoofs_latin(text: str) -> bool:

@@ -130,6 +130,52 @@ def test_disk_bytes_cannot_be_raised(monkeypatch):
     assert disk_bytes() == 4096
 
 
+def test_a_file_removed_before_the_next_snapshot_stays_in_the_per_file_total(tmp_path):
+    disk = _DiskWatch(tmp_path, {}, file_cap=100_000, disk_cap=5000)
+    (tmp_path / "a.bin").write_bytes(b"a" * 3000)
+    disk.note_files()
+    assert not disk.hit.is_set()
+    (tmp_path / "a.bin").unlink()
+    (tmp_path / "b.bin").write_bytes(b"b" * 3000)
+    disk.note_files()
+    assert disk.hit.is_set()
+    message = disk.settle()
+    assert message is not None
+    assert "wrote more than 5000 bytes" in message
+
+
+def test_a_removed_file_past_the_per_file_cap_is_still_reported(tmp_path):
+    disk = _DiskWatch(tmp_path, {}, file_cap=1000, disk_cap=100_000)
+    (tmp_path / "a.bin").write_bytes(b"a" * 4000)
+    disk.note_files()
+    assert disk.hit.is_set()
+    (tmp_path / "a.bin").unlink()
+    message = disk.settle()
+    assert message is not None
+    assert "wrote more than 1000 bytes" in message
+
+
+def test_an_unlinked_open_file_counts_toward_the_per_file_total(tmp_path):
+    import os
+    import sys
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux reports an unlinked file through the open descriptor")
+    disk = _DiskWatch(tmp_path, {}, file_cap=100_000, disk_cap=4000)
+    descriptor = os.open(tmp_path / "gone.bin", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.write(descriptor, b"x" * 5000)
+        os.unlink(tmp_path / "gone.bin")
+        assert not (tmp_path / "gone.bin").exists()
+        disk.note_files({os.getpid()})
+    finally:
+        os.close(descriptor)
+    assert disk.hit.is_set()
+    message = disk.settle()
+    assert message is not None
+    assert "wrote more than 4000 bytes" in message
+
+
 def test_extra_files_are_removed_when_the_disk_quota_is_passed(tmp_path):
     before = _snapshot_files(tmp_path)
     (tmp_path / "a.bin").write_bytes(b"a" * 1500)
