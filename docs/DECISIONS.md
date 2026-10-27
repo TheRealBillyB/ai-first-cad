@@ -10,6 +10,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A nested link under a linked project is opened from the project | When the project folder is a link, a file under it is opened from the directory that link points at, so a nested link is not followed. |
 | A session path and a STEP import do not follow a directory link | A directory link is refused when it stays inside the project, the same way other project reads refuse it. |
 | A Windows directory is created from its parent handle | Creating the directory and opening that name are one request on the parent handle, so a link at the name is not followed. |
 
