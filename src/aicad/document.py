@@ -556,7 +556,7 @@ class Document:
             from aicad.sandbox import require_in_project
 
             require_in_project(path, self.workspace, writing=True)
-            part = self._get(name)
+            model = self._print_model(name)
             from aicad.paths import refuse_reserved_device, require_export_path
 
             refuse_reserved_device(path, self.workspace, "Export path", GeometryError)
@@ -571,11 +571,13 @@ class Document:
             )
             kind = kind.lower()
             if kind == "step":
-                kernel.export_step_file(part.shape, destination)
+                kernel.export_step_file(model[0], destination)
             elif kind == "stl":
-                kernel.export_stl_file(part.shape, destination)
+                kernel.export_stl_file(model[0], destination)
+            elif kind == "3mf":
+                kernel.export_3mf_file(model[1], destination)
             else:
-                raise GeometryError(f"Unknown export format {kind!r}. Use 'step' or 'stl'.")
+                raise GeometryError(f"Unknown export format {kind!r}. Use 'step', 'stl', or '3mf'.")
             return destination.resolve()
 
     def inspect(
@@ -1609,11 +1611,36 @@ class Document:
         return fatigue_check(spec)
 
     def check_print(self, name: str, setup: dict | None = None) -> dict:
-        """Overhang map, a suggested orientation, printer fit, and an optional slicer estimate."""
+        """Overhang map, a suggested orientation, printer fit, and an optional slicer estimate.
+
+        An assembly is checked in its stored pose, as one print, without
+        uniting the solids.
+        """
         with self._lock:
-            part = self._get(name)
+            shape, _bodies = self._print_model(name)
             out_dir = _project_directory(self.workspace, self.workspace / "renders" / name, "Render")
-            return analyze_print(part.shape, setup or {}, out_dir, name)
+            return analyze_print(shape, setup or {}, out_dir, name)
+
+    def _print_model(self, name: str) -> tuple[kernel.Shape, list[tuple[str, kernel.Shape]]]:
+        """The solid to print, and the named bodies inside it.
+
+        A part is one body. An assembly is the posed parts, kept separate.
+        A part name wins when a part and an assembly share it.
+        """
+        _validate_name(name)
+        if name in self._parts:
+            shape = self._get(name).shape
+            return shape, [(name, shape)]
+        if name in self._assemblies:
+            spec = self._get_assembly(name)
+            _solved, placed = _posed_shapes(spec, self._assembly_shapes(spec))
+            bodies = [(instance["name"], placed[instance["name"]]) for instance in spec["instances"]]
+            return kernel.compound([shape for _name, shape in bodies]), bodies
+        parts = ", ".join(self._parts) or "(none)"
+        assemblies = ", ".join(self._assemblies) or "(none)"
+        raise PartNotFound(
+            f"No part or assembly named {name!r}. Parts: {parts}. Assemblies: {assemblies}."
+        )
 
     def check_print_clearance(self, name: str, setup: dict | None = None) -> dict:
         """Gap between parts of an assembly that print as one piece.
