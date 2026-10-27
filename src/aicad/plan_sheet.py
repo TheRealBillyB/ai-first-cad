@@ -10,6 +10,7 @@ and draws this file from that data. Opening the PNG does not run code.
 
 from __future__ import annotations
 
+import io
 import math
 from pathlib import Path
 
@@ -54,12 +55,60 @@ def render_plan_sheet(
     footer: str = "",
 ) -> Path:
     """Draw one blueprint PNG. ``panels`` are the cells, left to right."""
-    if not panels:
-        raise ValueError("A plan sheet needs at least one panel.")
-    from aicad.paths import ensure_real_directory
+    image = _compose_sheet(
+        title=title,
+        subtitle=subtitle,
+        revision=revision,
+        status=status,
+        panels=panels,
+        footer=footer,
+    )
+    from aicad.paths import ensure_real_directory, publish_file
 
     out = Path(path)
     ensure_real_directory(out.parent)
+
+    def write(temporary: Path) -> None:
+        image.save(temporary, "PNG")
+
+    publish_file(out, write)
+    return out
+
+
+def plan_sheet_png(
+    *,
+    title: str,
+    subtitle: str = "",
+    revision: int,
+    status: str,
+    panels: list[dict],
+    footer: str = "",
+) -> bytes:
+    """The same PNG ``render_plan_sheet`` writes, without a file path."""
+    image = _compose_sheet(
+        title=title,
+        subtitle=subtitle,
+        revision=revision,
+        status=status,
+        panels=panels,
+        footer=footer,
+    )
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _compose_sheet(
+    *,
+    title: str,
+    subtitle: str,
+    revision: int,
+    status: str,
+    panels: list[dict],
+    footer: str,
+) -> Image.Image:
+    if not panels:
+        raise ValueError("A plan sheet needs at least one panel.")
     width, height = _page_size(len(panels))
     scale_px = _SSAA
     image = Image.new("RGB", (width * scale_px, height * scale_px), _PAPER)
@@ -99,14 +148,7 @@ def render_plan_sheet(
         for index, line in enumerate(footer_lines):
             draw.text((20 * scale_px, footer_y + index * 22 * scale_px), line, font=font_small, fill=_NOTE)
 
-    image = image.resize((width, height), Image.Resampling.LANCZOS)
-    from aicad.paths import publish_file
-
-    def write(temporary: Path) -> None:
-        image.save(temporary, "PNG")
-
-    publish_file(out, write)
-    return out
+    return image.resize((width, height), Image.Resampling.LANCZOS)
 
 
 def _page_size(panels: int) -> tuple[int, int]:
