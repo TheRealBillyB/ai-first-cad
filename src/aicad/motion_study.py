@@ -35,6 +35,8 @@ intersected. The narrow phase is the kernel boolean. Overlap reports the
 intersection volume and the penetration depth. A gap shorter than
 ``clearance_mm`` is a clearance hit, and the depth is the shortfall. The two
 instances of a joint, and pairs in ``ignore_collisions``, are allowed to touch.
+Overlap of a joint pair is recorded on ``joint_seats`` and in ``fused_joints``.
+It is not a collision, and it does not change ``status``.
 
 The result record is ``motion_study.v1``. Later checks read it instead of
 sampling the joints again. Each step has:
@@ -72,7 +74,7 @@ import math
 import operator
 
 from aicad import kernel
-from aicad.assembly import posed_shapes
+from aicad.assembly import joint_seats, posed_shapes
 from aicad.errors import GeometryError
 from aicad.honesty import VERIFIED_CHECK, finish
 from aicad.kinematics import normalize as normalize_assembly
@@ -241,6 +243,7 @@ def run_study(
         collisions, step_rejected, step_narrow = _collisions(
             solved, placed, spec.get("ignore_collisions") or [], chosen["clearance_mm"]
         )
+        seats = joint_seats(solved, placed)
         rejected += step_rejected
         narrow += step_narrow
         shown_time = round(time_s, 6)
@@ -263,6 +266,7 @@ def run_study(
                 },
                 "limits": limits,
                 "collisions": collisions,
+                "joint_seats": seats,
                 "broad_phase_rejected": step_rejected,
                 "narrow_phase_pairs": step_narrow,
                 "warnings": list(solved["warnings"]),
@@ -304,20 +308,18 @@ def run_study(
         "limit_hit_count": len(flat_limits),
         "first_limit": flat_limits[0] if flat_limits else None,
         "limit_hits": flat_limits,
+        "fused_joints": _fused_summary(step_rows),
         "broad_phase_rejected": rejected,
         "narrow_phase_pairs": narrow,
         "steps": step_rows,
-        "note": (
-            "Each step is a pose from the joint solver. "
-            "Collisions and limit hits are recorded on that pose."
-        ),
+        "note": _study_note(step_rows),
         "assumptions": [
             "Samples are evenly spaced from the start of the timeline to the end.",
             "A gear coupling is driven = ratio × driver + offset, applied with the assembly relations.",
             "A command past a joint limit is held at the stop.",
             "The broad phase is the axis-aligned box. The narrow phase is the boolean intersection of the solids.",
             "Penetration depth for a convex solid is the minimum translation that separates it.",
-            "Parts that share a joint are allowed to touch.",
+            "Parts that share a joint are allowed to touch. Overlap of that pair is fused_joints, not a collision.",
             "This is not a contact force.",
         ],
     }
@@ -331,7 +333,7 @@ def run_study(
         ),
         limits=[
             "Only the sampled steps are checked. A hit between steps is not seen.",
-            "Parts joined to each other are allowed to touch, and so are pairs in ignore_collisions.",
+            "Parts joined to each other are allowed to touch, and so are pairs in ignore_collisions. Overlap of a joint pair is fused_joints and does not change status.",
             "Penetration depth is exact for convex polyhedra. A non-convex or curved solid uses the convex hull, so the depth can exceed the local overlap. The volume is the boolean of the modeled solids.",
             "A sampled direction set is used when a pair has too many edges. That depth is an upper bound.",
             "This is not a contact force.",
@@ -723,6 +725,38 @@ def _narrow(left, right, clearance: float) -> dict | None:
             "at_mm": at,
         }
     return None
+
+
+def _fused_summary(steps: list[dict]) -> list[dict]:
+    """One row per joint whose solids overlap on at least one step."""
+    found: dict[str, dict] = {}
+    for step in steps:
+        for seat in step.get("joint_seats") or []:
+            if not seat["fused"]:
+                continue
+            row = found.get(seat["joint"])
+            if row is None:
+                row = {
+                    "joint": seat["joint"],
+                    "parent": seat["parent"],
+                    "child": seat["child"],
+                    "steps": [],
+                    "max_overlap_mm3": 0.0,
+                }
+                found[seat["joint"]] = row
+            row["steps"].append(step["index"])
+            if seat["overlap_mm3"] > row["max_overlap_mm3"]:
+                row["max_overlap_mm3"] = seat["overlap_mm3"]
+    return [found[name] for name in sorted(found)]
+
+
+def _study_note(steps: list[dict]) -> str:
+    text = "Each step is a pose from the joint solver. Collisions and limit hits are recorded on that pose."
+    fused = _fused_summary(steps)
+    if not fused:
+        return text
+    names = ", ".join(row["joint"] for row in fused)
+    return text + f" Joint solids overlap on {names}. That overlap is not in the collision list."
 
 
 def _gap_direction(point_a, point_b) -> list[float] | None:

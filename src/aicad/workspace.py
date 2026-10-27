@@ -844,6 +844,14 @@ def _cmd_bolts(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("bolts", workspace.document.check_bolts(spec))
 
 
+def _cmd_print_clearance(workspace: Workspace, arguments: dict) -> dict:
+    setup = arguments.get("setup") or {}
+    if not isinstance(setup, dict):
+        raise GeometryError("check_print_clearance setup is an object with fuse_mm and min_clearance_mm.")
+    report = workspace.document.check_print_clearance(arguments["name"], setup)
+    return workspace._remember_panel("print_clearance", report)
+
+
 def _cmd_print(workspace: Workspace, arguments: dict) -> dict:
     setup = arguments.get("setup") or {}
     if not isinstance(setup, dict):
@@ -1376,8 +1384,8 @@ _add(Command(
 ))
 _add(Command(
     "export_part",
-    "Write STEP or STL.",
-    _obj({"name": _string("Part name."), "format": _string("step or stl."), "path": _string("Optional output path.")}, ["name", "format"]),
+    "Write STEP, STL, or 3MF. An assembly is one file in its current pose, and the parts stay separate solids.",
+    _obj({"name": _string("Part or assembly name."), "format": _string("step, stl, or 3mf."), "path": _string("Optional output path.")}, ["name", "format"]),
     _cmd_export,
 ))
 _add(Command("feature_report", "How much of each feature was new material or already buried.", _PART, _cmd_features))
@@ -1565,11 +1573,26 @@ _add(Command(
     _cmd_bolts,
 ))
 _add(Command(
+    "check_print_clearance",
+    "Gap between parts of an assembly that print as one piece, including the two solids of a joint. Overlap or a gap under the fuse line fails.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "setup": {
+                "type": "object",
+                "description": "fuse_mm, min_clearance_mm, pose, joints, and mesh_deflection_mm. The stored assembly is left unchanged.",
+            },
+        },
+        ["name"],
+    ),
+    _cmd_print_clearance,
+))
+_add(Command(
     "check_print",
     "Overhang map for one orientation, a suggested orientation, and whether the part fits a named printer. A slicer estimate is included when slice is true and OrcaSlicer or PrusaSlicer is installed.",
     _obj(
         {
-            "name": _string("Part name."),
+            "name": _string("Part name, or an assembly in its current pose."),
             "setup": {
                 "type": "object",
                 "description": "orientation (best or z_up), threshold_deg, printer, slice, price_per_kg.",
@@ -1698,7 +1721,7 @@ _add(Command(
 ))
 _add(Command(
     "run_motion_study",
-    "Drive joints through a timeline of expressions or keyframes, with gear couplings, and report collisions and joint-limit violations.",
+    "Drive joints through a timeline of expressions or keyframes, with gear couplings, and report collisions, joint-limit violations, and joint pairs whose solids overlap.",
     _obj(
         {
             "name": _string("Assembly name."),

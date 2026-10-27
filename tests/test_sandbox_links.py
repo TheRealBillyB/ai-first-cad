@@ -437,8 +437,6 @@ def test_a_slicer_does_not_write_through_a_link(tmp_path, monkeypatch):
 def test_a_swapped_directory_is_not_written(tmp_path, monkeypatch):
     from aicad import paths
 
-    if not paths.nofollow_writes():
-        pytest.skip("this system cannot open a directory without following a link")
     outside = tmp_path / "outside"
     outside.mkdir()
     project = tmp_path / "project"

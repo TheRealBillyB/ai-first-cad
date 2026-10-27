@@ -343,6 +343,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `check_wall_thickness` reports a ray estimate and a section estimate, and which one won.
 - `section_part` shows internal geometry that the outside views hide.
 - `check_clearance` on two parts reports interference, or the gap if they are apart.
+- `check_print_clearance` measures an assembly that prints as one piece, including the two solids of a joint. Overlap, a gap under the fuse line, or a gap the export mesh can close, is fused.
 - `check_packaging` checks that parts fit inside an envelope. The envelope is a part, a primitive (`shape` box, cylinder, or sphere), or an `outline` extruded along an axis. Pass `assembly`, and optionally `pose` or `joints`, to use the posed solids without changing the stored pose. The report has pass or fail per part, the parts that stick out (how far, and a point), the minimum signed wall clearance, and part-to-part overlap inside the envelope.
 - `inspect_part` renders front, back, left, right, top, bottom, and isometric views.
 - `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
@@ -573,10 +574,12 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def export_part(name: str, format: str, path: str | None = None) -> dict:
-        """Export a part to STEP or STL. `format` is `step` or `stl`.
+        """Export a part or an assembly to STEP, STL, or 3MF.
 
+        `format` is `step`, `stl`, or `3mf`. An assembly is written in its
+        current pose as one file, and the parts stay separate solids.
         `path` is optional. When omitted, the file is written under the workspace
-        exports directory. STEP is the solid; STL is a triangle mesh for printing.
+        exports directory.
         """
         return guard(lambda: run("export_part", name=name, format=format, path=path))
 
@@ -956,8 +959,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         The record schema is motion_study.v1. Each step has the pose matrix
         of every instance, collisions with interference volume and penetration
         depth, and any joint that was held at a stop. Parts that share a joint
-        are allowed to touch. Boxes farther apart than the clearance are not
-        intersected.
+        are allowed to touch. Overlap of that pair is fused_joints, not a
+        collision, and it does not change status. Boxes farther apart than
+        the clearance are not intersected.
         """
         return guard(
             lambda: run(
@@ -1180,9 +1184,22 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("check_bolts", spec=spec))
 
     @mcp.tool()
+    def check_print_clearance(name: str, setup: dict[str, Any] | None = None) -> dict:
+        """Gap between parts of an assembly that print as one piece.
+
+        Joint pairs are included. Motion collisions skip those pairs.
+        setup.fuse_mm defaults to 0.15. setup.min_clearance_mm defaults to 0.2.
+        setup.pose and setup.joints apply to this check only.
+        setup.mesh_deflection_mm defaults to 0.05, and a gap under twice that can close in the mesh.
+        """
+        return guard(lambda: run("check_print_clearance", name=name, setup=setup))
+
+    @mcp.tool()
     def check_print(name: str, setup: dict[str, Any] | None = None) -> list[str | Image]:
         """Overhang map, suggested orientation, and printer fit.
 
+        name is a part, or an assembly in its current pose. The assembly is
+        one print and the parts are not united.
         setup.orientation is best or one of z_up, z_down, x_up, x_down, y_up, y_down.
         threshold_deg defaults to 45 (degrees from vertical). printer names a bed
         from list_printers. slice true asks OrcaSlicer or PrusaSlicer for time and
