@@ -1665,58 +1665,36 @@ def import_step_file(path: Path) -> Shape:
 def import_step_bytes(path: Path, data: bytes) -> Shape:
     """Build a solid from STEP bytes already read from ``path``.
 
-    The reader is given a private copy of those bytes. ``path`` is not opened again.
+    The reader is given those bytes. ``path`` is not opened again, and the
+    reader is not given a temporary name to open.
     """
     if len(data) > MAX_STEP_BYTES:
         raise GeometryError(f"STEP file {path} is too large.")
     _refuse_step_file_outside_folder(path, data)
-    temporary = _private_step(data)
     try:
-        try:
-            # The STEP parser logs through C stdout. That descriptor is the MCP
-            # stream when `aicad serve` is running, so the bytes never reach it.
-            with divert_native_stdio(stderr=True):
-                imported = _read_step_shape(temporary)
-        except GeometryError:
-            raise
-        except Exception as exc:
-            raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
-        try:
-            solid = _require_solid(imported)
-        except GeometryError as exc:
-            raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
-        return Shape(solid)
-    finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-def _private_step(data: bytes) -> Path:
-    """A temporary STEP file that is not the project path."""
-    import tempfile
-
-    handle = tempfile.NamedTemporaryFile(prefix="aicad-step-", suffix=".step", delete=False)
-    try:
-        handle.write(data)
-    except Exception:
-        name = handle.name
-        handle.close()
-        Path(name).unlink(missing_ok=True)
+        # The STEP parser logs through C stdout. That descriptor is the MCP
+        # stream when `aicad serve` is running, so the bytes never reach it.
+        with divert_native_stdio(stderr=True):
+            imported = _read_step_bytes(path, data)
+    except GeometryError:
         raise
-    handle.close()
-    return Path(handle.name)
+    except Exception as exc:
+        raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
+    try:
+        solid = _require_solid(imported)
+    except GeometryError as exc:
+        raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
+    return Shape(solid)
 
 
-def _read_step_shape(path: Path):
-    """Read the solids in ``path`` and do not open any other file it names."""
+def _read_step_bytes(path: Path, data: bytes):
+    """Read the solids in ``data``. The name passed to the reader is a label."""
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPControl import STEPControl_Reader
     from build123d.topology import Shape as BuildShape
 
     reader = STEPControl_Reader()
-    status = reader.ReadFile(str(path))
+    status = reader.ReadStream("part.step", io.BytesIO(data))
     if status != IFSelect_RetDone or reader.TransferRoots() < 1:
         raise GeometryError(f"Could not read STEP file {path}.")
     shape = reader.OneShape()
