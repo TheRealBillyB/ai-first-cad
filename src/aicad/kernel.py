@@ -1996,7 +1996,12 @@ def tessellation_linear(size_x: float, size_y: float, size_z: float, diagonal: f
 
 
 def tessellate(shape: Shape) -> TriangleMesh:
-    """Mesh the solid and discretize its edges for rendering."""
+    """Mesh the solid and discretize its edges for rendering.
+
+    Texture coordinates are not packed into an atlas. Print checks and
+    pictures discard them, and the packer overflows on a solid with many
+    faces, such as two gears in a housing.
+    """
     impl = shape.impl
     _refuse_face_count(len(list(impl.faces())))
     box = impl.bounding_box()
@@ -2005,7 +2010,7 @@ def tessellate(shape: Shape) -> TriangleMesh:
     linear = tessellation_linear(float(size.X), float(size.Y), float(size.Z), diagonal)
     linear = linear_for_surface(_surface_area(impl), linear)
     vertices, triangles, normals, _uvs = impl.tessellate_with_uvs(
-        linear, angular_tolerance=0.18
+        linear, angular_tolerance=0.18, atlas_packing=False
     )
     if not triangles:
         raise GeometryError("The solid produced an empty mesh and cannot be rendered.")
