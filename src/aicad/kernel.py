@@ -1593,6 +1593,38 @@ def export_step_file(shape: Shape, path: Path) -> None:
     publish_file(path, write)
 
 
+def _without_hairline_edges(impl):
+    """Drop edges too short to triangulate.
+
+    A cylinder that sits tangent to a planar face leaves an edge at the
+    contact point. The mesher then skips that face, or rejects the mesh.
+    Edges under 0.01 mm are removed. A heal that changes the volume by more
+    than a small fraction is discarded.
+    """
+    from build123d.topology import Shape as BuildShape
+    from OCP.ShapeFix import ShapeFix_Wireframe
+
+    try:
+        original = float(impl.volume)
+    except Exception:
+        return impl
+    try:
+        fixer = ShapeFix_Wireframe(impl.wrapped)
+        fixer.SetPrecision(0.01)
+        fixer.FixSmallEdges()
+        healed = BuildShape.cast(fixer.Shape())
+    except Exception:
+        return impl
+    if healed is None:
+        return impl
+    try:
+        if abs(float(healed.volume) - original) > max(0.5, abs(original) * 0.002):
+            return impl
+    except Exception:
+        return impl
+    return healed
+
+
 def export_3mf_file(bodies: list[tuple[str, Shape]], path: Path) -> None:
     """Write one 3MF with a separate mesh object for each solid.
 
@@ -1618,7 +1650,7 @@ def _write_3mf(bodies: list[tuple[str, Shape]], path: Path) -> None:
         raise GeometryError("There is no solid to export.")
     mesher = Mesher()
     for name, shape in bodies:
-        impl = copy.deepcopy(shape.impl)
+        impl = _without_hairline_edges(copy.deepcopy(shape.impl))
         label = str(name)
         try:
             impl.label = label
@@ -1648,12 +1680,15 @@ def export_stl_file(
     from aicad.paths import nofollow_writes, publish_file
 
     def write(temporary: Path) -> None:
-        area = _surface_area(shape.impl)
-        _refuse_face_count(len(list(shape.impl.faces())))
+        import copy
+
+        impl = _without_hairline_edges(copy.deepcopy(shape.impl))
+        area = _surface_area(impl)
+        _refuse_face_count(len(list(impl.faces())))
         linear = linear_for_surface(area, linear_tolerance)
         angular = _floor_angular(angular_tolerance)
         if not export_stl(
-            shape.impl,
+            impl,
             temporary,
             tolerance=linear,
             angular_tolerance=angular,
