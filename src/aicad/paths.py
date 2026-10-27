@@ -1202,8 +1202,9 @@ def published_path(path: str | Path) -> str:
 def ensure_real_directory(path: str | Path) -> Path:
     """Create a directory. Do not follow a symlink or a junction to do it.
 
-    Each new component is created from the parent directory's handle. When the
-    project folder is a link, that handle is the directory the link points at.
+    Each new component is created from a directory handle. When the project
+    folder is a link, that handle is the directory the link points at. A link
+    earlier in the path is not opened as its own component.
     """
 
     raw = Path(os.path.abspath(path))
@@ -1216,6 +1217,8 @@ def ensure_real_directory(path: str | Path) -> Path:
         else:
             descriptor = open_directory(root)
     except OSError as exc:
+        if exc.errno == errno.ENOTDIR and exc.strerror == "not a folder":
+            raise OSError(errno.ENOTDIR, f"{path} is not a folder.") from exc
         if exc.errno in _LINK_ERRNOS or exc.strerror == "is a link":
             raise OSError(errno.ELOOP, f"{path} is a link and was not followed.") from exc
         if exc.errno == errno.ENOTDIR:
@@ -1243,18 +1246,102 @@ def _ensure_real_directory_by_path(path: str | Path, raw: Path) -> Path:
 
 
 def _directory_create_anchor(directory: Path) -> tuple[Path, Path]:
-    """Directory handle to create from, and the remaining path under it."""
+    """Directory handle to create from, and the remaining path under it.
 
-    from aicad.file_access import _project_link_anchor
+    A real project directory is opened by its own path, so a link above it
+    (``/var`` on macOS) is only a prefix of that open. A project folder that
+    is a link is opened from the directory it points at. Otherwise the last
+    real directory that already exists is opened, and only the missing tail
+    is created. The filesystem root is not walked one component at a time.
+    """
 
-    found = _project_link_anchor(directory / "child")
+    holder = _project_holding(directory)
+    if holder is not None:
+        try:
+            holder_is_link = is_reparse(holder)
+        except OSError:
+            holder_is_link = True
+        if not holder_is_link:
+            return holder, _relative_within(holder, directory)
+    found = _linked_project_anchor(directory)
     if found is not None:
-        root, relative = found
-        parent = relative.parent
-        if parent == Path("."):
-            return root, Path()
-        return root, parent
-    return Path(directory.anchor), directory.relative_to(directory.anchor)
+        return found
+    return _missing_tail_anchor(directory)
+
+
+def _linked_project_anchor(path: Path) -> tuple[Path, Path] | None:
+    """Resolved project a directory link points at, and ``path`` under that link.
+
+    The outermost link that marks a project is used. A link that is not a
+    project does not hide it. ``None`` when the path has no project link.
+    """
+
+    from aicad.file_access import _marks_project
+
+    probe = path
+    seen: set[str] = set()
+    chain: list[Path] = []
+    while True:
+        key = os.path.normcase(os.path.abspath(probe))
+        if key in seen:
+            break
+        seen.add(key)
+        chain.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    for candidate in reversed(chain):
+        try:
+            linked = is_reparse(candidate)
+        except OSError:
+            linked = True
+        if not linked or not _marks_project(candidate):
+            continue
+        try:
+            resolved = candidate.resolve()
+            if is_reparse(resolved) or not resolved.is_dir():
+                raise OSError(errno.ELOOP, "is a link")
+            return resolved, _relative_within(candidate, path)
+        except OSError as exc:
+            raise OSError(errno.ELOOP, "is a link") from exc
+    return None
+
+
+def _missing_tail_anchor(directory: Path) -> tuple[Path, Path]:
+    """Last real directory that already exists, and the components left to create.
+
+    When that directory's own name is a symlink or junction, the new directory
+    would be created in the link target. That is refused. A link only in an
+    earlier component stays a prefix of the path that is opened.
+    """
+
+    current = Path(directory.anchor)
+    missing: list[str] = []
+    parts = directory.relative_to(current).parts
+    for index, part in enumerate(parts):
+        nxt = current / part
+        try:
+            nxt.lstat()
+        except OSError:
+            missing = list(parts[index:])
+            break
+        current = nxt
+    try:
+        if is_reparse(current) or current.is_symlink():
+            raise OSError(errno.ELOOP, "is a link")
+    except OSError as exc:
+        if exc.errno == errno.ELOOP or exc.strerror == "is a link":
+            raise
+        raise OSError(errno.ELOOP, "is a link") from exc
+    if current != Path(directory.anchor):
+        try:
+            is_dir = current.is_dir()
+        except OSError as exc:
+            raise OSError(errno.ENOTDIR, "not a folder") from exc
+        if not is_dir:
+            raise OSError(errno.ENOTDIR, "not a folder")
+    return current, Path(*missing)
 
 
 def refuse_link_ancestors(path: str | Path, label: str, error: type[Exception]) -> None:
@@ -1916,7 +2003,8 @@ def _publish_anchor(path: Path, chosen: Path | None) -> tuple[Path, Path] | None
 
     A path that is lexically inside a remembered project uses that project.
     A path through a project folder that is a link uses the directory that
-    link points at. ``None`` means this system should create the file by path.
+    link points at. An earlier link that is not a project does not hide it.
+    ``None`` means this system should create the file by path.
     """
 
     if chosen is not None and _lexical_inside(path, chosen):
@@ -1925,6 +2013,8 @@ def _publish_anchor(path: Path, chosen: Path | None) -> tuple[Path, Path] | None
 
     try:
         found = _project_link_anchor(path)
+        if found is None:
+            found = _linked_project_anchor(path)
     except OSError as exc:
         raise OSError(errno.ELOOP, f"{path} is a link and was not followed.") from exc
     if found is None or not found[1].parts:

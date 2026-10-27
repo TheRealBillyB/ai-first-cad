@@ -819,3 +819,51 @@ def test_a_new_file_outside_a_project_is_created_from_its_directory(tmp_path):
     publish_text(target, "inside\n")
     assert target.read_text(encoding="utf-8") == "inside\n"
     assert target.is_file() and not target.is_symlink()
+
+
+def test_a_directory_under_an_earlier_link_is_created_in_the_real_folder(tmp_path):
+    from aicad.paths import ensure_real_directory, publish_text
+
+    private = tmp_path / "private" / "var" / "folders"
+    private.mkdir(parents=True)
+    var = tmp_path / "var"
+    _directory_link(var, tmp_path / "private" / "var")
+    made = ensure_real_directory(var / "folders" / "job" / "out")
+    assert made == Path(os.path.abspath(var / "folders" / "job" / "out"))
+    assert (private / "job" / "out").is_dir()
+    assert not (private / "job" / "out").is_symlink()
+    publish_text(var / "folders" / "job" / "part.txt", "inside\n")
+    assert (private / "job" / "part.txt").read_text(encoding="utf-8") == "inside\n"
+    assert not (private / "job" / "part.txt").is_symlink()
+
+
+def test_a_project_link_under_an_earlier_link_is_created_in_the_project(tmp_path):
+    from aicad.paths import ensure_real_directory, publish_text
+
+    private = tmp_path / "private" / "var"
+    private.mkdir(parents=True)
+    var = tmp_path / "var"
+    _directory_link(var, private)
+    real = private / "real"
+    real.mkdir()
+    (real / "session.json").write_text("{}\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / _CANARY_NAME).write_bytes(b"keep\n")
+    _directory_link(real / "docs", outside)
+    link = private / "link"
+    _directory_link(link, real)
+    ensure_real_directory(var / "link" / "exports")
+    assert (real / "exports").is_dir()
+    assert not (real / "exports").is_symlink()
+    publish_text(var / "link" / "part.txt", "inside\n")
+    assert (real / "part.txt").read_text(encoding="utf-8") == "inside\n"
+    publish_text(var / "link" / "notes" / "part.txt", "inside\n")
+    assert (real / "notes" / "part.txt").read_text(encoding="utf-8") == "inside\n"
+    with pytest.raises(OSError):
+        ensure_real_directory(var / "link" / "docs" / "more")
+    with pytest.raises(OSError):
+        publish_text(var / "link" / "docs" / "sub" / "part.txt", _CANARY_TEXT)
+    assert not (outside / "more").exists()
+    assert (outside / _CANARY_NAME).read_bytes() == b"keep\n"
+    assert not (outside / "part.txt").exists()
