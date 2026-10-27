@@ -1018,6 +1018,8 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
             cwd=str(path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=180,
             check=False,
