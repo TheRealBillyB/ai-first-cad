@@ -67,10 +67,35 @@ These checks use a marker file outside the project. A project file is data. The 
 - **AC.** A bidi control, a zero-width character, or a Latin lookalike does not change the title, file name, or note that is stored and shown.
 - **AD.** Solver text and errors shown to the assistant are marked as data. Tessellation and meshing stay inside the triangle budget.
 
+- **AE.** A resource or session handed to the assistant is marked as data. A bidi control or a Latin lookalike in a sheet, a research note, or receipt text is not shown as a different string.
+
 Master documents are generated from the entry files in the repository. A symlink or junction on that path is not followed, and a file with another name is not read or written. Generating the masters does not run an entry as code.
+
+- **AF.** Gmsh, OpenCascade, and font libraries do not read a project config file or a parent variable that names one.
 
 This sandbox is for one person on their own machine. It is not a boundary between tenants. The choices are recorded in [docs/DECISIONS.md](docs/DECISIONS.md).
 
+- **AG.** Tessellation and STL export stay inside the triangle budget before native meshing starts, including a large face and a tiny tolerance.
+
 The workspace app listens on this computer only. A bind address that is not loopback is refused. It answers `localhost` and `127.0.0.1` on the port it opened, and it refuses a connection whose peer is not loopback, and a request whose `Origin` is some other site. Responses refuse to be framed, and they ask the browser not to send the address of a request onward. A picture response, whose address carries the session, is not stored. A command that does not name this app as its origin is refused too. A read from the page often sends no origin; that read still needs the session token. Each launch picks a new session token, puts that token in the page it serves, and accepts an API call only when the page sends the token back. The picture requests are the one exception: an image tag cannot set a header, so those carry the same token in the query. Names, notes, and other text from the project are shown as text. A plan title and a note drop hidden format characters. A title or file name that uses a letter which looks like a different letter is refused. The workspace page drops format characters before it shows text. The workspace file view does not open a file that is a link or that has another name. That file is read from the project directory without following a link, and the response tells the browser not to run it. A call from the page is the person. A call from the attached assistant is the assistant. The command body cannot choose which of those it is. Allowing design scripts, granting the network for one script, saving settings, and starting a chat require the page token. The assistant token cannot do those. An MCP resource returns a project error as that error, without a traceback.
 
+- **AH.** A helper program does not inherit the parent environment. An 8.3 short name, including one in an absolute path, is not a project path.
+
 That stops another website, including one that tries to reach this computer by a DNS name that merely points here. It does not stop a program that already has a shell on this computer. An AI with that access can read the page, copy the session, and do what you can do. If a later approval step treats a click in the app as already approved, that step is a guardrail for an assistant that follows the rules. It is not a security boundary against a malicious program on this computer.
+
+- A design script's standard output and standard error are kept only up to 1 MB. A longer stream is not stored.
+- **AI.** A name inside a drawing, a 3MF package, or a session frame does not open a file outside the project.
+
+- **E.** A project file is read from the project directory, so a directory link in the middle of the path is not followed.
+- A design script's disk quota counts the bytes it writes, including a file that was removed before the next look.
+- **AJ.** A copy, an export, a render, and a picture response do not follow a symlink or junction, and do not send bytes from outside the project.
+
+- **R.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
+- A design script's check record is written to the file the parent opened. A different file at that path is not the record.
+- **AK.** A request to the model API or the local workspace app does not use a proxy or a certificate file named by the environment. Those variables stay in the process environment.
+
+- **E.** A directory link is unlinked when a project folder is removed, and the directory it points at is left in place.
+- A design script's job file, script file, and result are not opened when that name is a link.
+- **AL.** A slicer runs with the program directory as its working directory. An output folder that is a symlink or junction is not used.
+
+- A token, a design-script opt-in, a session record, and saved assistant settings are created readable by this user only.
