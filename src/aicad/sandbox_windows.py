@@ -506,12 +506,17 @@ def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
         ctypes.byref(sid),
     )
     if result != 0:
-        if (result & 0xFFFFFFFF) != _ERROR_ALREADY_EXISTS:
-            raise OSError(
-                f"Windows could not create an AppContainer profile (code 0x{result & 0xFFFFFFFF:08X})."
-            )
-        derived = userenv.DeriveAppContainerSidFromAppContainerName(_PROFILE_NAME, ctypes.byref(sid))
+        # The profile is one name for every script. A second process, or a
+        # profile left by an earlier run, can make Create return an unexpected
+        # code instead of "already exists". The registered profile is opened.
+        derived = userenv.DeriveAppContainerSidFromAppContainerName(
+            _PROFILE_NAME, ctypes.byref(sid)
+        )
         if derived != 0:
+            if (result & 0xFFFFFFFF) != _ERROR_ALREADY_EXISTS:
+                raise OSError(
+                    f"Windows could not create an AppContainer profile (code 0x{result & 0xFFFFFFFF:08X})."
+                )
             raise OSError(
                 f"Windows could not open the AppContainer profile (code 0x{derived & 0xFFFFFFFF:08X})."
             )
@@ -1922,16 +1927,43 @@ def _firewall_script(sid: str | None = None, *, install: bool) -> str:
     if sid is None or _PACKAGE_SID_TEXT.fullmatch(sid) is None:
         raise OSError("The AppContainer id is not a package SID, so the network was not blocked.")
     package = sid.upper()
+    # Remove returns before the firewall service drops the name. Creating the
+    # same rule in that window is error 183. The old rule is removed again
+    # and the create is retried. A rule that is still present after that is
+    # not treated as installed.
     return (
         remove
-        + "  New-NetFirewallRule -Name 'aicad-script-network-off-out' "
+        + "  $created = $false\n"
+        + "  $kept = $null\n"
+        + "  foreach ($attempt in 1..4) {\n"
+        + "    try {\n"
+        + "      New-NetFirewallRule -Name 'aicad-script-network-off-out' "
         + "-DisplayName 'aicad script network off outbound' "
         + "-Direction Outbound -Action Block -Protocol Any "
         + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
-        + "  New-NetFirewallRule -Name 'aicad-script-network-off-in' "
+        + "      New-NetFirewallRule -Name 'aicad-script-network-off-in' "
         + "-DisplayName 'aicad script network off inbound' "
         + "-Direction Inbound -Action Block -Protocol Any "
         + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
+        + "      $created = $true\n"
+        + "      break\n"
+        + "    } catch {\n"
+        + "      $kept = $_\n"
+        + "      $text = ($_ | Out-String)\n"
+        + "      if ($text -notmatch '183' -and $text -notmatch 'already exists') { throw }\n"
+        + "      foreach ($name in @('aicad-script-network-off-out', 'aicad-script-network-off-in')) {\n"
+        + "        foreach ($rule in @(Get-NetFirewallRule -Name $name -ErrorAction Ignore)) {\n"
+        + "          Remove-NetFirewallRule -InputObject $rule\n"
+        + "        }\n"
+        + "        Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue\n"
+        + "      }\n"
+        + "      Start-Sleep -Milliseconds 250\n"
+        + "    }\n"
+        + "  }\n"
+        + "  if (-not $created) {\n"
+        + "    Write-Output ($kept | Out-String)\n"
+        + "    exit 1\n"
+        + "  }\n"
         + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
     )
 
