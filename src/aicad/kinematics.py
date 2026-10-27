@@ -324,8 +324,9 @@ def expand_motion(spec: dict, motion: dict) -> list[dict]:
         frames = int(sweep.get("frames") or motion.get("samples") or 5)
         if frames < 2:
             raise GeometryError("A sweep needs at least two frames.")
-        start = float(sweep["start"])
-        end = float(sweep["end"])
+        joint_row = next(item for item in spec["joints"] if item["name"] == joint)
+        start = _sweep_bound(sweep, joint_row, "start", "min")
+        end = _sweep_bound(sweep, joint_row, "end", "max")
         samples = []
         for index in range(frames):
             blend = index / (frames - 1)
@@ -349,6 +350,17 @@ def expand_motion(spec: dict, motion: dict) -> list[dict]:
             blend = 1.0
         samples.append(_blend(targets[left], targets[left + 1], blend))
     return _timed(samples, motion, count)
+
+
+def _sweep_bound(sweep: dict, joint: dict, key: str, stop: str) -> float:
+    if key in sweep and sweep[key] is not None:
+        try:
+            return float(sweep[key])
+        except (TypeError, ValueError) as exc:
+            raise GeometryError(f"Sweep {key} must be a number.") from exc
+    if stop in joint:
+        return float(joint[stop])
+    raise GeometryError(f"Sweep joint {joint['name']!r} needs {key}, or a {stop} stop.")
 
 
 def apply_pose(spec: dict, pose: str) -> dict:
