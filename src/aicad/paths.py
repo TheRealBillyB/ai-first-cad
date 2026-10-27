@@ -1422,17 +1422,28 @@ def read_nofollow_bytes(path: str | Path, *, maximum: int, label: str, error: ty
     """Read ``path`` without following a link at that name.
 
     A file inside a project this process has opened is read from that project's
-    directory. Any other file is read from its parent directory.
+    directory. A project folder that is itself a link is opened from the
+    directory it points at, so a nested link is not followed. Any other file
+    is read from its parent directory.
     """
     file = Path(path)
     if not file.is_absolute():
         file = Path.cwd() / file
     holder = _project_containing(file)
     if holder is not None and _lexical_inside(file, holder):
-        return read_checked_bytes(holder, file, maximum=maximum, label=label, error=error)
-    parent = file.parent
-    _before_nofollow(parent, Path(file.name))
-    return _finish_read(parent, Path(file.name), maximum, label, error)
+        try:
+            if not is_reparse(holder):
+                return read_checked_bytes(holder, file, maximum=maximum, label=label, error=error)
+        except OSError:
+            pass
+    from aicad.file_access import _read_anchor
+
+    try:
+        root, relative = _read_anchor(file)
+    except OSError as exc:
+        raise _read_error(label, error, exc) from exc
+    _before_nofollow(root, relative)
+    return _finish_read(root, relative, maximum, label, error)
 
 
 def _finish_read(root: Path, relative: Path, maximum: int, label: str, error: type[Exception]) -> bytes:
