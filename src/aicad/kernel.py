@@ -1577,59 +1577,54 @@ def _prepare_export_parent(path: Path) -> None:
         raise GeometryError(f"Could not write {path}.") from exc
 
 
-def _write_step_impl(impl, temporary: Path) -> bool:
+def _volume_of_step_bytes(data: bytes) -> float:
+    """Volume of STEP bytes. A shell or a file this reader rejects is zero."""
+    if not data or len(data) > MAX_STEP_BYTES:
+        return 0.0
     try:
-        return bool(export_step(impl, temporary))
-    except (OSError, RuntimeError):
-        return False
-
-
-def _descriptor_on_fd_path(path: Path) -> int | None:
-    """Descriptor number when ``path`` is ``/proc/self/fd/N`` or ``/dev/fd/N``."""
-    text = os.fspath(path).replace("\\", "/")
-    for prefix in ("/proc/self/fd/", "/dev/fd/"):
-        if not text.startswith(prefix):
-            continue
-        number = text[len(prefix) :]
-        if number.isdigit():
-            return int(number)
-    return None
-
-
-def _bytes_just_written(path: Path) -> bytes:
-    """Bytes of a STEP file this process just wrote.
-
-    Inside a project the publisher passes ``/proc/self/fd/N``. That name is a
-    symlink to the descriptor it still holds, so the reader that refuses links
-    will not open it. The descriptor is read directly. Any other path is read
-    as a STEP file.
-    """
-    descriptor = _descriptor_on_fd_path(path)
-    if descriptor is None:
-        return read_step_bytes(path)
-    size = os.fstat(descriptor).st_size
-    if size > MAX_STEP_BYTES:
-        raise GeometryError("STEP file is too large.")
-    if size <= 0:
-        return b""
-    chunks: list[bytes] = []
-    offset = 0
-    while offset < size:
-        block = os.pread(descriptor, min(size - offset, 1024 * 1024), offset)
-        if not block:
-            break
-        chunks.append(block)
-        offset += len(block)
-    return b"".join(chunks)
-
-
-def _step_file_volume(path: Path) -> float:
-    """Volume of a STEP file this process just wrote. A shell reads as zero."""
-    try:
-        loaded = _read_step_bytes(path, _bytes_just_written(path))
+        loaded = _read_step_bytes(Path("part.step"), data)
     except (GeometryError, OSError, RuntimeError):
         return 0.0
     return _volume(loaded)
+
+
+def _step_bytes(impl, *, write_pcurves: bool) -> bytes | None:
+    """STEP bytes for ``impl`` when they read back as a solid."""
+    buffer = io.BytesIO()
+    try:
+        written = bool(export_step(impl, buffer, write_pcurves=write_pcurves))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not written:
+        return None
+    data = buffer.getvalue()
+    if _volume_of_step_bytes(data) <= 0:
+        return None
+    return data
+
+
+def _solid_step_bytes(impl) -> bytes | None:
+    """Bytes of a solid.
+
+    The writer builds the file in memory and the volume check reads those
+    bytes. A path is not opened for either step. Parametric curves are tried
+    first. A shell is sewn and, if it is still empty, written again without
+    those curves. A box is left unchanged.
+    """
+    data = _step_bytes(impl, write_pcurves=True)
+    if data is not None:
+        return data
+    cleaned = _sewn_solid(impl)
+    if cleaned is not None:
+        data = _step_bytes(cleaned, write_pcurves=True)
+        if data is not None:
+            return data
+    data = _step_bytes(impl, write_pcurves=False)
+    if data is not None:
+        return data
+    if cleaned is None:
+        return None
+    return _step_bytes(cleaned, write_pcurves=False)
 
 
 def _sewn_solid(impl):
@@ -1651,16 +1646,10 @@ def export_step_file(shape: Shape, path: Path) -> None:
     from aicad.paths import nofollow_writes, publish_file
 
     def write(temporary: Path) -> None:
-        if _write_step_impl(shape.impl, temporary) and _step_file_volume(temporary) > 0:
-            return
-        cleaned = _sewn_solid(shape.impl)
-        if (
-            cleaned is not None
-            and _write_step_impl(cleaned, temporary)
-            and _step_file_volume(temporary) > 0
-        ):
-            return
-        raise GeometryError(f"Could not write STEP file {path}.")
+        data = _solid_step_bytes(shape.impl)
+        if data is None:
+            raise GeometryError(f"Could not write STEP file {path}.")
+        temporary.write_bytes(data)
 
     if not nofollow_writes():
         _prepare_export_parent(path)
