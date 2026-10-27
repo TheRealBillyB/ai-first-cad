@@ -3564,13 +3564,10 @@ class _DesignRecord:
         if self.proc.poll() not in (0, None):
             self._refuse()
         stop = self.job / "calls" / "STOP"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        if hasattr(os, "O_CLOEXEC"):
-            flags |= os.O_CLOEXEC
+        from aicad.file_access import create_file
+
         try:
-            descriptor = os.open(stop, flags, 0o600)
+            descriptor = create_file(stop.parent, stop.name)
         except FileExistsError:
             descriptor = None
         except OSError as exc:
@@ -3589,13 +3586,10 @@ class _DesignRecord:
             self._refuse()
         if self.proc.returncode != 0:
             self._refuse()
-        read_flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            read_flags |= os.O_NOFOLLOW
-        if hasattr(os, "O_CLOEXEC"):
-            read_flags |= os.O_CLOEXEC
+        from aicad.file_access import open_read
+
         try:
-            descriptor = os.open(self.record, read_flags)
+            descriptor = open_read(self.record)
         except OSError as exc:
             raise ScriptError("The design script could not record its checks.") from exc
         try:
