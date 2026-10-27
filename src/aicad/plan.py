@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from aicad.errors import PlanError
-from aicad.plan_sheet import FILLS, render_plan_sheet
+from aicad.plan_sheet import FILLS, plan_sheet_png, render_plan_sheet
 
 _PLAN_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,40}$")
 _ITEM_ID = re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
@@ -196,7 +196,11 @@ class PlanStore:
         return found
 
     def get(self, name: str) -> dict:
-        return self._public(self._load(name))
+        plan = self._load(name)
+        for revision in plan["revisions"]:
+            for sheet in revision.get("sheets") or []:
+                _refresh_sheet_picture(self.root, plan, revision, sheet)
+        return self._public(plan)
 
     def add_research(self, name: str, note: str, source: str, title: str = "") -> dict:
         plan = self._load(name)
@@ -1294,34 +1298,115 @@ def _fill(value) -> str:
     raise PlanError("A block fill is one of: " + ", ".join(FILLS) + ".")
 
 
-def _render_revision(root: Path, plan: dict, revision: dict) -> None:
+def _revision_stamp(plan: dict, revision: dict) -> str:
+    if revision.get("version") != plan.get("current_revision"):
+        return "recorded"
+    return plan.get("status") or "draft"
+
+
+def _picture_stamps(plan: dict, revision: dict) -> tuple[str, ...]:
+    """Stamps a saved picture of this revision may carry.
+
+    The current revision is drawn with the plan status. An older revision
+    keeps the status it had when it was saved, or the recorded stamp used
+    when every revision is drawn again.
+    """
+
+    primary = _revision_stamp(plan, revision)
+    if revision.get("version") == plan.get("current_revision"):
+        return (primary,)
+    stamps = [primary]
+    for name in ("draft", "in_review", "approved", "recorded"):
+        if name not in stamps:
+            stamps.append(name)
+    return tuple(stamps)
+
+
+def _drawing_panels(sheet: dict) -> list:
+    panels = []
+    for panel in sheet["panels"]:
+        drawn = copy.deepcopy(panel)
+        for block in drawn["blocks"]:
+            block["_fill"] = FILLS[block["fill"]]
+        panels.append(drawn)
+    return panels
+
+
+def _sheet_png_bytes(plan: dict, revision: dict, sheet: dict, stamp: str) -> bytes:
+    return plan_sheet_png(
+        title=sheet["title"],
+        subtitle=sheet.get("subtitle") or "",
+        revision=int(revision["version"]),
+        status=stamp,
+        panels=_drawing_panels(sheet),
+        footer=sheet.get("footer") or _FOOTER,
+    )
+
+
+def _stored_sheet_bytes(root: Path, relative: str) -> bytes | None:
+    from aicad.file_access import read_file
+
+    try:
+        path = _abs(root, relative)
+    except PlanError:
+        return None
+    try:
+        return read_file(path, maximum=8_000_000)
+    except OSError:
+        return None
+
+
+def _refresh_sheet_picture(root: Path, plan: dict, revision: dict, sheet: dict) -> None:
+    """Show the drawing of this sheet. A path outside the project is not opened.
+
+    A picture that is already that drawing is left as it is. Any other file
+    at an inside path is drawn again.
+    """
+
+    if not isinstance(sheet, dict):
+        raise PlanError("A plan sheet has to stay inside the project.")
+    relative = sheet.get("path")
+    if not isinstance(relative, str) or not relative:
+        return
+    try:
+        _abs(root, relative)
+    except PlanError:
+        return
+    existing = _stored_sheet_bytes(root, relative)
+    if existing is not None:
+        for stamp in _picture_stamps(plan, revision):
+            if _sheet_png_bytes(plan, revision, sheet, stamp) == existing:
+                return
+    _paint_sheet(root, plan, revision, sheet, _revision_stamp(plan, revision))
+
+
+def _paint_sheet(root: Path, plan: dict, revision: dict, sheet: dict, stamp: str) -> None:
     from aicad.paths import ensure_real_directory, output_dir
 
+    if not isinstance(sheet, dict):
+        raise PlanError("A plan sheet has to stay inside the project.")
     output_dir(root, root / "plans" / plan["id"] / f"v{revision['version']}", "Plan sheet", PlanError)
-    stamp = plan.get("status") or "draft"
-    if revision.get("version") != plan.get("current_revision"):
-        stamp = "recorded"
+    destination, relative = _sheet_destination(root, plan, revision, sheet)
+    sheet["path"] = relative
+    ensure_real_directory(destination.parent)
+    render_plan_sheet(
+        destination,
+        title=sheet["title"],
+        subtitle=sheet.get("subtitle") or "",
+        revision=int(revision["version"]),
+        status=stamp,
+        panels=_drawing_panels(sheet),
+        footer=sheet.get("footer") or _FOOTER,
+    )
+
+
+def _render_revision(root: Path, plan: dict, revision: dict) -> None:
+    from aicad.paths import output_dir
+
+    output_dir(root, root / "plans" / plan["id"] / f"v{revision['version']}", "Plan sheet", PlanError)
+    stamp = _revision_stamp(plan, revision)
     for sheet in revision.get("sheets") or []:
-        if not isinstance(sheet, dict):
-            raise PlanError("A plan sheet has to stay inside the project.")
-        destination, relative = _sheet_destination(root, plan, revision, sheet)
-        sheet["path"] = relative
-        panels = []
-        for panel in sheet["panels"]:
-            drawn = copy.deepcopy(panel)
-            for block in drawn["blocks"]:
-                block["_fill"] = FILLS[block["fill"]]
-            panels.append(drawn)
-        ensure_real_directory(destination.parent)
-        render_plan_sheet(
-            destination,
-            title=sheet["title"],
-            subtitle=sheet.get("subtitle") or "",
-            revision=int(revision["version"]),
-            status=stamp,
-            panels=panels,
-            footer=sheet.get("footer") or _FOOTER,
-        )
+        _paint_sheet(root, plan, revision, sheet, stamp)
 
 
 def _refuse_reserved_sheet_id(sheet_id: str) -> None:
