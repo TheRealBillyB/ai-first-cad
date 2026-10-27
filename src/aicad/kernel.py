@@ -1633,6 +1633,8 @@ _STEP_EXTERNAL_MARKERS = (
 
 # A shared STEP file is read on the host, outside the script file cap.
 MAX_STEP_BYTES = 64 * 1024 * 1024
+# A STEP list nested further than this is not given to the reader.
+_MAX_STEP_LIST_DEPTH = 32
 _MAX_TRIANGLES = 1_000_000
 _MAX_FACES = 100_000
 _MIN_ANGULAR = 0.05
@@ -1669,6 +1671,7 @@ def import_step_bytes(path: Path, data: bytes) -> Shape:
     """
     if len(data) > MAX_STEP_BYTES:
         raise GeometryError(f"STEP file {path} is too large.")
+    data = _accepted_step_bytes(path, data)
     _refuse_step_file_outside_folder(path, data)
     temporary = _private_step(data)
     try:
@@ -1707,6 +1710,59 @@ def _private_step(data: bytes) -> Path:
         raise
     handle.close()
     return Path(handle.name)
+
+
+def _accepted_step_bytes(path: Path, data: bytes) -> bytes:
+    """STEP bytes the reader may see.
+
+    A leading byte-order mark and leading whitespace are not part of the
+    exchange. A file that does not start with the STEP exchange marker, or a
+    list nested past the cap, is not given to the reader. The message does
+    not include the file body.
+    """
+
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    start = 0
+    while start < len(data) and data[start] in b" \t\r\n":
+        start += 1
+    if start:
+        data = data[start:]
+    if not data.startswith(b"ISO-10303-21"):
+        raise GeometryError(f"Could not read STEP file {path}.")
+    text = data.decode("latin-1")
+    depth = 0
+    index = 0
+    length = len(text)
+    while index < length:
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end < 0:
+                raise GeometryError(f"Could not read STEP file {path}.")
+            index = end + 2
+            continue
+        char = text[index]
+        if char == "'":
+            index += 1
+            while index < length:
+                if text[index] == "'":
+                    if index + 1 < length and text[index + 1] == "'":
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                index += 1
+            else:
+                raise GeometryError(f"Could not read STEP file {path}.")
+            continue
+        if char == "(":
+            depth += 1
+            if depth > _MAX_STEP_LIST_DEPTH:
+                raise GeometryError(f"Could not read STEP file {path}.")
+        elif char == ")" and depth:
+            depth -= 1
+        index += 1
+    return data
 
 
 def _read_step_shape(path: Path):
