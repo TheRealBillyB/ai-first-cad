@@ -727,6 +727,8 @@ def test_windows_network_block_names_only_that_container():
     package = "S-1-15-2-11-22-33-44-55-66-77"
     script = win._firewall_script(package, install=True)
     assert script.count("New-NetFirewallRule") == 2
+    assert "Get-NetFirewallRule -Name 'aicad-script-network-off-out' -ErrorAction Ignore" in script
+    assert "Get-NetFirewallRule -Name 'aicad-script-network-off-in' -ErrorAction Ignore" in script
     assert script.count("-Action Block") == 2
     assert script.count("-Protocol Any") == 2
     assert "-Direction Outbound" in script
