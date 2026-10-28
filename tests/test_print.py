@@ -1,5 +1,7 @@
 """Print orientation, overhangs, printer fit, and the slicer skip path."""
 
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -290,6 +292,15 @@ def test_a_support_warning_slices_again_with_supports(tmp_path, monkeypatch):
     )
     script.chmod(0o755)
     monkeypatch.setattr("aicad.printprep.find_slicers", lambda: [str(script)])
+    if os.name == "nt":
+        # Windows will not start a shebang script. The interpreter runs the same file.
+        from aicad.printprep import _slice_command
+
+        def command(executable, gcode, stl, price_per_kg, export, supports=False):
+            built = _slice_command(executable, gcode, stl, price_per_kg, export, supports)
+            return [sys.executable, *built]
+
+        monkeypatch.setattr("aicad.printprep._slice_command", command)
     report = slice_mesh(np.zeros((1, 3)), np.zeros((0, 3), dtype=int), tmp_path / "out")
     assert report["status"] == "sliced"
     assert report["supports"] == "on"
