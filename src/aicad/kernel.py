@@ -1804,9 +1804,9 @@ def import_step_file(path: Path) -> Shape:
     by naming some other path. A file past the size cap is not read.
 
     A glTF, OBJ, or COLLADA file is read the same way. An external buffer, image,
-    or material library is opened only when it is one file in the same folder,
-    and only through the shared file reader. The project path is not given to
-    a geometry reader.
+    or material library is opened only when it stays inside that file's folder,
+    including a subfolder, and only through the shared file reader. The project
+    path is not given to a geometry reader.
     """
     if path.suffix.lower() in {".gltf", ".glb", ".obj", ".dae"}:
         from aicad.mesh_import import import_mesh_file
