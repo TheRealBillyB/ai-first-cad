@@ -87,7 +87,7 @@ That stops another website, including one that tries to reach this computer by a
 - **AI.** A name inside a drawing, a 3MF package, or a session frame does not open a file outside the project.
 
 - **E.** A project file is read from the project directory, so a directory link in the middle of the path is not followed.
-- A design script's disk quota counts the bytes it writes, including a file that was removed before the next look. The count is read again when the script exits, so a run that finishes before the next look is still counted.
+- A design script's disk quota counts the bytes it writes, including a file that was removed before the next look. The count is read again when the script exits, so a run that finishes before the next look is still counted. A child that exits before its own counter is opened is counted too: on Linux those writes are added when the script collects the child, and on macOS they are read while the child is still a zombie.
 - **AJ.** A copy, an export, a render, and a picture response do not follow a symlink or junction, and do not send bytes from outside the project.
 
 - **R.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
@@ -112,7 +112,7 @@ That stops another website, including one that tries to reach this computer by a
 
 - **AR.** A file that is not a STEP exchange, or a STEP list nested past the limit, is not given to the STEP reader.
 
-- **AS.** A glTF, OBJ, or COLLADA import reads the file through the shared file reader. An external buffer, image, or material library is opened only when it is embedded or is one file in the same folder. A path that leaves the folder is not opened. The project path is not given to a geometry reader.
+- **AS.** A glTF, OBJ, or COLLADA import reads the file through the shared file reader. An external buffer, image, or material library is opened only when it is embedded or stays inside that file's folder. A path that leaves the folder is not opened. The project path is not given to a geometry reader.
 
 - **AW.** A directory created on Windows is one request on the parent directory handle. A link at that name is not followed.
 
@@ -132,6 +132,20 @@ That stops another website, including one that tries to reach this computer by a
 
 - **BB.** A new project file or folder is created from a directory handle. When the project folder is a link, that handle is the directory the link points at. A link in the rest of the path is not followed.
 
+- **BB.** Fontconfig reads the file shipped with aicad. That file names system font folders. A configuration file in the account home is not read. Plugin consent stays on the account home.
+
+- **BC.** Gmsh meshes a part from a private folder outside the project. The process temporary directory is not used when that directory is inside a project.
+
 - **BC.** The design-record stop file is created from its parent directory, and the record is read from its parent directory. A link at either name is not followed.
+
+- **BD.** The OpenCascade glTF reader does not open a file. A glTF import reads the file through the shared file reader.
+
+- **BE.** A glTF, OBJ, or COLLADA import may read a file in a subfolder of the mesh file's folder. Each name in that path stays inside the folder. A link is not followed. The file is read through the shared file reader.
+
+- **BF.** A project folder that is a link is opened from the directory it points at, including when another directory link sits further out. A nested link is not followed.
+
+- **BF.** Opening a session record draws each step from its stored mesh. A picture that already matches that drawing is left as it is. A step with no mesh does not return its stored picture. A path outside the project is not opened.
+
+- **BG.** When confinement stops, the script result is opened from its parent directory. A link at that name is not followed, and another name for the file is not changed.
 
 - **BH.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
