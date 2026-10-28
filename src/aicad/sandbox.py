@@ -3665,6 +3665,30 @@ def _sandbox_runner() -> Path:
     return Path(origin).resolve()
 
 
+def _write_new_temp(prefix: str, suffix: str, data: bytes, directory: str | None = None) -> Path:
+    """A new temporary file, written on the descriptor that created it.
+
+    The temporary directory may itself be a link. The bytes go to the file
+    this call created, so that link is not opened again to write them.
+    """
+
+    descriptor, name = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=directory)
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+    except OSError:
+        os.close(descriptor)
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    os.close(descriptor)
+    return Path(name)
+
+
 def _child_command(job: Path) -> list[str]:
     """Python command for one sandbox child.
 
@@ -3916,10 +3940,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             [str(workspace)],
             network=network,
         )
-        descriptor, name = tempfile.mkstemp(prefix="aicad-seatbelt-", suffix=".sb")
-        os.close(descriptor)
-        profile_path = Path(name)
-        publish_text(profile_path, profile, root=profile_path.parent)
+        profile_path = _write_new_temp("aicad-seatbelt-", ".sb", profile.encode("utf-8"))
         command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds()
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
