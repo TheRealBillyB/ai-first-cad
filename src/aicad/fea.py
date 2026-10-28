@@ -967,7 +967,7 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
     order = mesh["order"]
     element_type = "C3D10" if order == 2 else "C3D4"
     width = 10 if order == 2 else 4
-    from aicad.paths import held_entry_is_file, held_tool_directory, run_in_held_directory
+    from aicad.paths import held_entry_is_file, held_subprocess_kwargs, held_tool_directory
 
     with held_tool_directory() as path:
         lines = ["*HEADING", "aicad linear static", "*NODE"]
@@ -1013,8 +1013,7 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
             return None, None, "CalculiX (ccx) is not on PATH."
         from aicad.sandbox import program_environment
 
-        completed = run_in_held_directory(
-            path,
+        completed = subprocess.run(
             [solver, "-i", "job"],
             capture_output=True,
             text=True,
@@ -1022,6 +1021,7 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
             timeout=180,
             check=False,
             env=program_environment(),
+            **held_subprocess_kwargs(path),
         )
         if completed.returncode != 0 or not held_entry_is_file(path, "job.frd"):
             detail = _ccx_error(completed.stdout)

@@ -1250,7 +1250,8 @@ def _directory_path_from_handle(descriptor: int) -> Path | None:
         return None
     import fcntl
 
-    buffer = ctypes.create_string_buffer(4 * 1024)
+    # Python refuses an fcntl string longer than 1024 bytes. macOS PATH_MAX is 1024.
+    buffer = ctypes.create_string_buffer(1024)
     command = getattr(fcntl, "F_GETPATH", 50)
     try:
         fcntl.fcntl(descriptor, command, buffer)
@@ -1302,8 +1303,11 @@ def guest_path(directory: Path, relative: str) -> Path:
 
 
 @contextlib.contextmanager
-def use_held_thread(directory: Path):
+def use_held_thread(directory: Path | None):
     """Use a held directory as this thread's working directory when that is required."""
+    if directory is None:
+        yield
+        return
     held = _find_held(directory)
     if held is None or held.descriptor < 0 or _path_tracks_directory(held) or sys.platform != "darwin":
         yield
@@ -1325,10 +1329,8 @@ def _darwin_libc():
     return libc
 
 
-def run_in_held_directory(directory: Path, args, **kwargs):
-    """Run a program with its working directory on the held directory."""
-    import subprocess
-
+def held_subprocess_kwargs(directory: Path) -> dict:
+    """Arguments that run a program in ``directory`` rather than at a replaced name."""
     held = _find_held(directory)
     if held is not None and held.descriptor >= 0 and not _path_tracks_directory(held):
         descriptor = held.descriptor
@@ -1336,14 +1338,16 @@ def run_in_held_directory(directory: Path, args, **kwargs):
         def enter() -> None:
             os.fchdir(descriptor)
 
-        kept = list(kwargs.get("pass_fds") or ())
-        if descriptor not in kept:
-            kept.append(descriptor)
-        kwargs["pass_fds"] = tuple(kept)
-        kwargs["preexec_fn"] = enter
-        kwargs.pop("cwd", None)
-        return subprocess.run(args, **kwargs)
-    kwargs["cwd"] = os.fspath(_find_held(directory).public if held is not None else directory)
+        return {"preexec_fn": enter, "pass_fds": (descriptor,), "close_fds": True}
+    public = held.public if held is not None else directory
+    return {"cwd": os.fspath(public)}
+
+
+def run_in_held_directory(directory: Path, args, **kwargs):
+    """Run a program with its working directory on the held directory."""
+    import subprocess
+
+    kwargs.update(held_subprocess_kwargs(directory))
     return subprocess.run(args, **kwargs)
 
 

@@ -715,7 +715,7 @@ def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
 
 
 def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
-    from aicad.paths import held_entry_is_file, held_tool_directory, publish_text, run_in_held_directory
+    from aicad.paths import held_entry_is_file, held_subprocess_kwargs, held_tool_directory, publish_text
 
     with held_tool_directory() as path:
         publish_text(
@@ -731,8 +731,7 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
             return None, None, "CalculiX (ccx) is not on PATH."
         from aicad.sandbox import program_environment
 
-        completed = run_in_held_directory(
-            path,
+        completed = subprocess.run(
             [solver, "-i", "job"],
             capture_output=True,
             text=True,
@@ -740,6 +739,7 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
             timeout=timeout,
             check=False,
             env=program_environment(),
+            **held_subprocess_kwargs(path),
         )
         stdout = completed.stdout or ""
         if "nonpositive jacobian" in stdout.lower():
