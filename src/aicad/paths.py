@@ -2139,4 +2139,31 @@ def _replace_path_prefix(text: str, variant: str) -> str:
     return "".join(pieces)
 
 
+def lock_unused_gltf_reader() -> None:
+    """Refuse the unused OpenCascade glTF reader and writer.
+
+    A glTF import in this program reads bytes through the shared file reader.
+    The OpenCascade reader is not given a path.
+    """
+
+    if getattr(lock_unused_gltf_reader, "_done", False):
+        return
+    try:
+        from OCP.RWGltf import RWGltf_CafReader, RWGltf_CafWriter
+    except ImportError:
+        lock_unused_gltf_reader._done = True
+        return
+
+    def blocked(*_args, **_kwargs):
+        from aicad.errors import GeometryError
+
+        raise GeometryError("The glTF reader is not used.")
+
+    RWGltf_CafReader.Perform = blocked
+    RWGltf_CafReader.ProbeHeader = blocked
+    RWGltf_CafWriter.Perform = blocked
+    lock_unused_gltf_reader._done = True
+
+
 prepare_geometry_import()
+lock_unused_gltf_reader()
