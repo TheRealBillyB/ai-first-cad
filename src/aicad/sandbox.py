@@ -4044,13 +4044,13 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     sentinel_path: str | None = None
     keep_job = False
     try:
-        # The watch is in place before the script starts, so a file that
-        # appears and disappears between timer samples is still counted.
-        disk.arm()
         if kind == "design":
             design_record = _DesignRecord(workspace, job)
             design_record.start()
         if sys.platform == "win32":
+            # The watch is in place before the script runs. Windows starts the
+            # process inside this call, so the watch has to exist already.
+            disk.arm()
             from aicad.sandbox_windows import spawn as windows_spawn
 
             code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
@@ -4127,6 +4127,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 proc = subprocess.Popen(command, **popen_kwargs)
         finally:
             os.close(hold_read)
+        # Start the watch after the process exists. A watch thread that is
+        # blocked in the kernel during process creation kills the parent on macOS.
+        # The script is still waiting on the quota pipe, so it has not written yet.
+        disk.arm()
         disk.hold_counter(proc.pid)
         disk.baseline(proc.pid)
         _release_write_fd(quota_hold)
