@@ -65,9 +65,9 @@ These checks use a marker file outside the project. A project file is data. The 
 - **AA.** A plan, a plugin manifest, and a command-line file that is a link is not opened.
 - **AB.** A STEP file that is exported and imported again stays geometry. A session replay does not run the recorded commands, and opening a project does not run a script stored in the session.
 - **AC.** A bidi control, a zero-width character, or a Latin lookalike does not change the title, file name, or note that is stored and shown.
-- **AD.** Solver text and errors shown to the assistant are marked as data. Tessellation and meshing stay inside the triangle budget.
+- **AD.** Solver text and errors shown to the assistant are marked as data. Text that already starts with the marker is still wrapped, and a tool result keeps this program's marker sentence. Tessellation and meshing stay inside the triangle budget.
 
-- **AE.** A resource or session handed to the assistant is marked as data. A bidi control or a Latin lookalike in a sheet, a research note, or receipt text is not shown as a different string.
+- **AE.** A resource or session handed to the assistant is marked as data. Text that already starts with the marker is still wrapped. A bidi control or a Latin lookalike in a sheet, a research note, or receipt text is not shown as a different string.
 
 Master documents are generated from the entry files in the repository. A symlink or junction on that path is not followed, and a file with another name is not read or written. Generating the masters does not run an entry as code.
 
@@ -87,15 +87,45 @@ That stops another website, including one that tries to reach this computer by a
 - **AI.** A name inside a drawing, a 3MF package, or a session frame does not open a file outside the project.
 
 - **E.** A project file is read from the project directory, so a directory link in the middle of the path is not followed.
-- A design script's disk quota counts the bytes it writes, including a file that was removed before the next look.
+- A design script's disk quota counts the bytes it writes, including a file that was removed before the next look. The count is read again when the script exits, so a run that finishes before the next look is still counted.
 - **AJ.** A copy, an export, a render, and a picture response do not follow a symlink or junction, and do not send bytes from outside the project.
 
 - **R.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
+- A file a script removes is still counted at the size it reached, including toward the per-file cap.
 - A design script's check record is written to the file the parent opened. A different file at that path is not the record.
 - **AK.** A request to the model API or the local workspace app does not use a proxy or a certificate file named by the environment. Those variables stay in the process environment.
 
 - **E.** A directory link is unlinked when a project folder is removed, and the directory it points at is left in place.
 - A design script's job file, script file, and result are not opened when that name is a link.
-- **AL.** A slicer runs with the program directory as its working directory. An output folder that is a symlink or junction is not used.
+- **AL.** A slicer, ffmpeg, and CalculiX each run in a private folder outside the project and see only file names from that folder. Results are copied back into the project. An output folder that is a symlink or junction is not used.
 
 - A token, a design-script opt-in, a session record, and saved assistant settings are created readable by this user only.
+- **AM.** A request to the model API or the workspace app does not follow a redirect, and it does not open a file URL. The workspace app refuses a request line that names another host. A host or origin is accepted only as ``localhost`` or ``127.0.0.1`` with the decimal port it bound.
+
+- **AN.** A path that matches an existing name after Unicode normalization is refused.
+
+- **AO.** An 8.3 short name is refused, including a numeric suffix of more than one digit.
+
+- **AP.** Text that is shown or stored from a name, a note, a plugin warning, or an error does not contain a terminal sequence or a hidden control character.
+
+- **AQ.** A STEP import is read from the bytes already taken from that file. The reader is not given a temporary name to open.
+
+- **AR.** A file that is not a STEP exchange, or a STEP list nested past the limit, is not given to the STEP reader.
+
+- **AS.** A glTF, OBJ, or COLLADA import reads the file through the shared file reader. An external buffer, image, or material library is opened only when it is embedded or is one file in the same folder. A path that leaves the folder is not opened. The project path is not given to a geometry reader.
+
+- **AW.** A directory created on Windows is one request on the parent directory handle. A link at that name is not followed.
+
+- **AT.** Geometry libraries do not read a configuration file from the account home. A design script's home and config directory are an empty folder, and Matplotlib uses a private config directory. Plugin consent stays on the account home.
+
+- **AX.** A session path and a STEP import do not follow a directory link, including one whose target stays inside the project.
+
+- **AU.** A design script receives an allowlist of environment variables. Ordinary parent variables are not copied. The account home is included so the script can resolve it, and Windows also receives the session variables it needs to start. The sandbox on Linux, macOS, and Windows is unchanged.
+
+- **AY.** When the project folder is a link, a file under it is opened from the directory that link points at. A nested link is not followed.
+
+- **AV.** Opening a plan draws each sheet from the plan data. A picture already on disk is shown only when it is that drawing.
+
+- **AZ.** A junction is removed the same way as a symlink before a slicer writes. A junction in a plan folder is not entered or removed when orphan sheets are cleaned up.
+
+- **BA.** The design-record log is created from its parent directory handle. A link at that name is not followed.
