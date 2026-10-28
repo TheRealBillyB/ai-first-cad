@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -208,6 +209,8 @@ class _ProcTaskInfo(ctypes.Structure):
 
 _libproc = None
 _libproc_failed = False
+_fdinfo_ready = False
+_fdinfo_lock = threading.Lock()
 
 
 def _proc_pidinfo():
@@ -652,19 +655,24 @@ class _VnodeFdInfoWithPath(ctypes.Structure):
     ]
 
 
-class _Kevent(ctypes.Structure):
-    _fields_ = [
-        ("ident", ctypes.c_uint64),
-        ("filter", ctypes.c_int16),
-        ("flags", ctypes.c_uint16),
-        ("fflags", ctypes.c_uint32),
-        ("data", ctypes.c_int64),
-        ("udata", ctypes.c_void_p),
-    ]
-
-
-class _TimeSpec(ctypes.Structure):
-    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+def _bind_fdinfo(lib) -> bool:
+    """Bind ``proc_pidfdinfo`` once. Two threads must not set its signature together."""
+    global _fdinfo_ready
+    with _fdinfo_lock:
+        if _fdinfo_ready:
+            return True
+        if not hasattr(lib, "proc_pidfdinfo"):
+            return False
+        lib.proc_pidfdinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidfdinfo.restype = ctypes.c_int
+        _fdinfo_ready = True
+        return True
 
 
 def open_file_sizes(pid: int, root: Path) -> dict[str, int]:
@@ -676,18 +684,7 @@ def open_file_sizes(pid: int, root: Path) -> dict[str, int]:
     if pid <= 0 or sys.platform != "darwin":
         return {}
     lib = _proc_pidinfo()
-    if lib is None or not hasattr(lib, "proc_pidfdinfo"):
-        return {}
-    try:
-        lib.proc_pidfdinfo.argtypes = [
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_void_p,
-            ctypes.c_int,
-        ]
-        lib.proc_pidfdinfo.restype = ctypes.c_int
-    except AttributeError:
+    if lib is None or not _bind_fdinfo(lib):
         return {}
     count = 64
     used = 0
@@ -707,26 +704,29 @@ def open_file_sizes(pid: int, root: Path) -> dict[str, int]:
         return {}
     root_resolved = root.resolve()
     sizes: dict[str, int] = {}
-    slots = used // ctypes.sizeof(_ProcFdInfo)
+    slots = min(len(infos), used // ctypes.sizeof(_ProcFdInfo))
     for index in range(slots):
         item = infos[index]
         if int(item.proc_fdtype) != _PROX_FDTYPE_VNODE or int(item.proc_fd) < 0:
             continue
-        info = _VnodeFdInfoWithPath()
+        # The kernel writes at most this many bytes. A short struct must not be the target.
+        buf = ctypes.create_string_buffer(4096)
         try:
             written = int(
                 lib.proc_pidfdinfo(
                     pid,
                     int(item.proc_fd),
                     _PROC_PIDFDVNODEPATHINFO,
-                    ctypes.byref(info),
-                    ctypes.sizeof(info),
+                    buf,
+                    len(buf),
                 )
             )
         except (OSError, ctypes.ArgumentError):
             continue
-        if written <= 0:
+        need = ctypes.sizeof(_VnodeFdInfoWithPath)
+        if written < need or written > len(buf):
             continue
+        info = _VnodeFdInfoWithPath.from_buffer_copy(buf.raw[:need])
         mode = int(info.pvip.vip_vi.vi_stat.vst_mode)
         if not stat.S_ISREG(mode):
             continue
@@ -757,25 +757,23 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
     if sys.platform != "darwin":
         mark(False)
         return
-    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-    libc.kqueue.argtypes = []
-    libc.kqueue.restype = ctypes.c_int
-    libc.kevent.argtypes = [
-        ctypes.c_int,
-        ctypes.POINTER(_Kevent),
-        ctypes.c_int,
-        ctypes.POINTER(_Kevent),
-        ctypes.c_int,
-        ctypes.POINTER(_TimeSpec),
-    ]
-    libc.kevent.restype = ctypes.c_int
-    queue = int(libc.kqueue())
-    if queue < 0:
+    import select
+
+    try:
+        queue = select.kqueue()
+        flags = select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR
+        note = (
+            select.KQ_NOTE_WRITE
+            | select.KQ_NOTE_EXTEND
+            | select.KQ_NOTE_DELETE
+            | select.KQ_NOTE_RENAME
+            | select.KQ_NOTE_ATTRIB
+            | select.KQ_NOTE_LINK
+        )
+        vnode = select.KQ_FILTER_VNODE
+    except (AttributeError, OSError):
         mark(False)
         return
-    # EV_ADD | EV_ENABLE | EV_CLEAR | EV_RECEIPT. EVFILT_VNODE is -4.
-    flags = 0x0001 | 0x0004 | 0x0020 | 0x0040
-    note = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020 | 0x0040
     directories: dict[str, int] = {}
     known: dict[str, set[str]] = {}
 
@@ -784,6 +782,8 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
         if key in directories:
             return
         open_flags = os.O_RDONLY
+        if hasattr(os, "O_EVTONLY"):
+            open_flags |= os.O_EVTONLY
         if hasattr(os, "O_CLOEXEC"):
             open_flags |= os.O_CLOEXEC
         if hasattr(os, "O_DIRECTORY"):
@@ -792,13 +792,9 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
             descriptor = os.open(key, open_flags)
         except OSError:
             return
-        change = _Kevent(ident=descriptor, filter=-4, flags=flags, fflags=note)
-        reported = _Kevent()
-        zero = _TimeSpec(tv_sec=0, tv_nsec=0)
-        result = int(libc.kevent(queue, ctypes.byref(change), 1, ctypes.byref(reported), 1, ctypes.byref(zero)))
-        # EV_RECEIPT reports EV_ERROR even when the watch was added. data is
-        # the errno, and zero means the watch is in place.
-        if result < 0 or (int(reported.flags) & 0x4000 and int(reported.data) != 0):
+        try:
+            queue.control([select.kevent(descriptor, filter=vnode, flags=flags, fflags=note)], 0, 0)
+        except OSError:
             os.close(descriptor)
             return
         directories[key] = descriptor
@@ -854,12 +850,12 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
             return
         rescan()
         mark(True)
-        timeout = _TimeSpec(tv_sec=0, tv_nsec=20_000_000)
-        events = (_Kevent * 64)()
-        no_changes = ctypes.POINTER(_Kevent)()
         while not stop.is_set():
-            count = int(libc.kevent(queue, no_changes, 0, events, len(events), ctypes.byref(timeout)))
-            if count > 0:
+            try:
+                events = queue.control(None, 64, 0.02)
+            except OSError:
+                events = ()
+            if events:
                 rescan()
             reread()
             scan()
@@ -870,6 +866,6 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
             except OSError:
                 pass
         try:
-            os.close(queue)
+            queue.close()
         except OSError:
             pass

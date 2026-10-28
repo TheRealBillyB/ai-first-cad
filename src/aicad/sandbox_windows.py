@@ -2711,6 +2711,56 @@ def _apply_directory_events(buffer, nbytes: int, root: Path, retain, release) ->
         offset += next_offset
 
 
+class _FindData(ctypes.Structure):
+    """WIN32_FIND_DATAW. The name fields have to be present so the call does not write past the struct."""
+
+    _fields_ = [
+        ("dwFileAttributes", wintypes.DWORD),
+        ("ftCreationTime", wintypes.FILETIME),
+        ("ftLastAccessTime", wintypes.FILETIME),
+        ("ftLastWriteTime", wintypes.FILETIME),
+        ("nFileSizeHigh", wintypes.DWORD),
+        ("nFileSizeLow", wintypes.DWORD),
+        ("dwReserved0", wintypes.DWORD),
+        ("dwReserved1", wintypes.DWORD),
+        ("cFileName", wintypes.WCHAR * 260),
+        ("cAlternateFileName", wintypes.WCHAR * 14),
+    ]
+
+
+_find_bound = False
+
+
+def named_size(path: Path) -> int | None:
+    """The directory entry's size. This does not leave the file open.
+
+    An open read handle would stop the script from replacing the file. The
+    directory entry still reports the size, including while another open
+    holds the file.
+    """
+    if sys.platform != "win32":
+        return None
+    _bind()
+    kernel32 = _kernel32()
+    global _find_bound
+    if not _find_bound:
+        kernel32.FindFirstFileW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_FindData)]
+        kernel32.FindFirstFileW.restype = wintypes.HANDLE
+        kernel32.FindClose.argtypes = [wintypes.HANDLE]
+        kernel32.FindClose.restype = wintypes.BOOL
+        _find_bound = True
+    data = _FindData()
+    handle = kernel32.FindFirstFileW(str(path), ctypes.byref(data))
+    if not handle or handle == _INVALID_HANDLE:
+        return None
+    kernel32.FindClose(handle)
+    if int(data.dwFileAttributes) & 0x10:
+        return None
+    if int(data.dwFileAttributes) & 0x400:
+        return None
+    return (int(data.nFileSizeHigh) << 32) | int(data.nFileSizeLow)
+
+
 def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None:
     """Watch ``root`` until ``stop`` is set.
 
