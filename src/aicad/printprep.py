@@ -231,22 +231,9 @@ def fits_printer(size_mm: list[float], printer_name: str) -> dict:
 def _real_output_dir(path: Path) -> None:
     """Create ``path``. Do not follow a symlink or a junction to do it."""
 
-    import errno
-    import os
+    from aicad.paths import ensure_real_directory
 
-    from aicad.paths import is_reparse
-
-    raw = Path(os.path.abspath(path))
-    current = Path(raw.anchor)
-    for part in raw.relative_to(current).parts:
-        current = current / part
-        if is_reparse(current) or current.is_symlink():
-            raise OSError(errno.ELOOP, f"{path} is a link and was not followed.")
-        if current.exists():
-            if not current.is_dir():
-                raise OSError(errno.ENOTDIR, f"{path} is not a folder.")
-            continue
-        current.mkdir()
+    ensure_real_directory(path)
 
 
 def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price_per_kg=None) -> dict:
