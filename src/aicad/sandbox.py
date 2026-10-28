@@ -745,21 +745,29 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
 
 
 def open_null_device(flags: int) -> int:
-    """Open the null device so a reader can discard native logs.
+    """Open a sink so a reader can discard native logs.
 
     The script file check wraps ``os.open``. The STEP reader uses this instead,
     and only for the null device recorded when that check was installed. A
-    script that names the device, or any other path, still goes through the check.
+    confined Windows process cannot open that device, so the log is discarded
+    in the temporary directory instead. A script that names the device, or any
+    other path, still goes through the check.
     """
     target = os.devnull
-    if (
-        _GUARD
-        and _REAL_OS_OPEN is not None
-        and _NULL_DEVICE is not None
-        and os.path.normcase(os.fspath(target)) == os.path.normcase(_NULL_DEVICE)
-    ):
-        return _REAL_OS_OPEN(target, flags)
-    return os.open(target, flags)
+    try:
+        if (
+            _GUARD
+            and _REAL_OS_OPEN is not None
+            and _NULL_DEVICE is not None
+            and os.path.normcase(os.fspath(target)) == os.path.normcase(_NULL_DEVICE)
+        ):
+            return _REAL_OS_OPEN(target, flags)
+        return os.open(target, flags)
+    except OSError:
+        raw, name = tempfile.mkstemp(prefix="aicad-discard-")
+        os.close(raw)
+        temporary = getattr(os, "O_TEMPORARY", 0)
+        return os.open(name, flags | temporary)
 
 
 def _read_roots() -> list[Path]:
