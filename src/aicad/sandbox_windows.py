@@ -595,25 +595,245 @@ def _release_profile_lock() -> None:
         handle.close()
 
 
+def _profile_use_path() -> Path:
+    return _profile_lock_path().with_name("script-profile-use")
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _load_profile_use() -> dict[int, int]:
+    """Live processes that are using the script profile. A dead pid is dropped."""
+
+    found: dict[int, int] = {}
+    try:
+        text = _profile_use_path().read_text(encoding="utf-8")
+    except OSError:
+        return found
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+            count = int(parts[1])
+        except ValueError:
+            continue
+        if count > 0 and _pid_alive(pid):
+            found[pid] = count
+    return found
+
+
+def _store_profile_use(found: dict[int, int]) -> None:
+    path = _profile_use_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = "".join(f"{pid} {count}\n" for pid, count in sorted(found.items()))
+    path.write_text(data, encoding="utf-8")
+
+
+def _profile_is_in_use() -> bool:
+    """True when a live process is already running in the script profile."""
+
+    found = _load_profile_use()
+    try:
+        _store_profile_use(found)
+    except OSError:
+        pass
+    return bool(found)
+
+
+def _change_profile_use(delta: int) -> None:
+    found = _load_profile_use()
+    pid = os.getpid()
+    count = found.get(pid, 0) + delta
+    if count > 0:
+        found[pid] = count
+    else:
+        found.pop(pid, None)
+    _store_profile_use(found)
+
+
+def _release_profile_use() -> None:
+    """Drop this process's use of the profile. The caller does not hold the lock."""
+
+    _acquire_profile_lock()
+    try:
+        _change_profile_use(-1)
+    finally:
+        _release_profile_lock()
+
+
+def _derive_profile_sid() -> tuple[int, ctypes.c_void_p]:
+    sid = ctypes.c_void_p()
+    result = int(
+        _userenv().DeriveAppContainerSidFromAppContainerName(
+            _PROFILE_NAME,
+            ctypes.byref(sid),
+        )
+    )
+    return result & 0xFFFFFFFF, sid
+
+
+def _process_capability_sids(process: int) -> list[str]:
+    """Capability SIDs on a suspended process token."""
+
+    kernel32 = _kernel32()
+    advapi32 = _advapi32()
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+        raise OSError(_win_error("Could not read the script profile token"))
+    try:
+        returned = wintypes.DWORD(0)
+        advapi32.GetTokenInformation(token, _TokenCapabilities, None, 0, ctypes.byref(returned))
+        size = int(returned.value)
+        if size <= 0 or size > 1024 * 1024:
+            raise OSError("Could not read the script profile capabilities.")
+        buffer = ctypes.create_string_buffer(size)
+        if not advapi32.GetTokenInformation(
+            token,
+            _TokenCapabilities,
+            buffer,
+            size,
+            ctypes.byref(returned),
+        ):
+            raise OSError("Could not read the script profile capabilities.")
+        return _token_group_sids(
+            buffer,
+            lambda pointer: _sid_to_string(ctypes.c_void_p(pointer)),
+        )
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _stored_capabilities_are_empty(sid: ctypes.c_void_p) -> bool:
+    """True when this profile adds no capabilities.
+
+    A suspended process is created with no capabilities and terminated
+    before it runs. Any capability on its token was stored in the profile.
+    """
+
+    kernel32 = _kernel32()
+    security = _SecurityCapabilities()
+    security.AppContainerSid = sid
+    security.Capabilities = None
+    security.CapabilityCount = 0
+    size = ctypes.c_size_t(0)
+    kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+    attributes = ctypes.create_string_buffer(size.value)
+    if not kernel32.InitializeProcThreadAttributeList(attributes, 1, 0, ctypes.byref(size)):
+        raise OSError(_win_error("Could not prepare the script profile check"))
+    try:
+        if not kernel32.UpdateProcThreadAttribute(
+            attributes,
+            0,
+            _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+            ctypes.c_void_p(ctypes.addressof(security)),
+            ctypes.sizeof(security),
+            None,
+            None,
+        ):
+            raise OSError(_win_error("Could not attach the script profile"))
+        startup = _StartupInfoEx()
+        startup.StartupInfo.cb = ctypes.sizeof(startup)
+        startup.lpAttributeList = ctypes.c_void_p(ctypes.addressof(attributes))
+        command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline([sys.executable, "-c", ""]))
+        process = _ProcessInformation()
+        created = False
+        for breakaway in (True, False):
+            created = bool(
+                kernel32.CreateProcessW(
+                    sys.executable,
+                    command_line,
+                    None,
+                    None,
+                    False,
+                    _creation_flags(breakaway=breakaway),
+                    None,
+                    None,
+                    ctypes.byref(startup),
+                    ctypes.byref(process),
+                )
+            )
+            if created:
+                break
+            code = _last_error(kernel32)
+            if breakaway and code == _ERROR_ACCESS_DENIED:
+                continue
+            raise OSError(f"Could not check the script profile (Windows error {code}).")
+        if not created:
+            raise OSError("Could not check the script profile.")
+        try:
+            return _process_capability_sids(int(process.hProcess)) == []
+        finally:
+            kernel32.TerminateProcess(process.hProcess, 1)
+            kernel32.CloseHandle(process.hThread)
+            kernel32.CloseHandle(process.hProcess)
+    finally:
+        kernel32.DeleteProcThreadAttributeList(attributes)
+
+
+def _open_proven_profile() -> tuple[ctypes.c_void_p, str]:
+    """Open the profile a live script is using, when it has no capabilities.
+
+    The profile is not deleted. A profile with stored capabilities is not used.
+    """
+
+    result, sid = _derive_profile_sid()
+    if result != 0:
+        _free_partial_sid(sid)
+        raise OSError(
+            f"Windows could not read the AppContainer profile (code 0x{result & 0xFFFFFFFF:08X})."
+        )
+    try:
+        if not _stored_capabilities_are_empty(sid):
+            raise OSError(
+                "The Windows script profile has capabilities, so the script was not started."
+            )
+        text = _sid_to_string(sid)
+    except Exception:
+        _free_partial_sid(sid)
+        raise
+    return sid, text
+
+
 def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
     """A script profile with no stored capabilities.
 
-    A name that is already registered is deleted and created again. The
-    registered profile is not opened.
+    When no script is using the name, an existing profile is deleted and
+    created again. A profile a live script is using is opened only after its
+    token has no capabilities. The lock covers that decision, not the script.
     """
 
-    result, sid = _create_appcontainer_profile()
-    if result != 0:
-        _free_partial_sid(sid)
-        _delete_appcontainer_profile()
+    _acquire_profile_lock()
+    try:
         result, sid = _create_appcontainer_profile()
         if result != 0:
             _free_partial_sid(sid)
-            raise OSError(
-                f"Windows could not create an AppContainer profile (code 0x{result & 0xFFFFFFFF:08X})."
-            )
-    text = _sid_to_string(sid)
-    return sid, text
+            if _profile_is_in_use():
+                sid, text = _open_proven_profile()
+            else:
+                _delete_appcontainer_profile()
+                result, sid = _create_appcontainer_profile()
+                if result != 0:
+                    _free_partial_sid(sid)
+                    raise OSError(
+                        "Windows could not create an AppContainer profile "
+                        f"(code 0x{result & 0xFFFFFFFF:08X})."
+                    )
+                text = _sid_to_string(sid)
+        else:
+            text = _sid_to_string(sid)
+        _change_profile_use(1)
+        return sid, text
+    finally:
+        _release_profile_lock()
 
 
 def _is_volume_root_text(path: str) -> bool:
@@ -2340,7 +2560,6 @@ def spawn(
 
     _bind()
     mode = ensure_mode(read_paths)
-    _acquire_profile_lock()
     sid = None
     job = None
     process = None
@@ -2443,7 +2662,8 @@ def spawn(
             if sid is not None:
                 _advapi32().FreeSid(sid)
         finally:
-            _release_profile_lock()
+            if sid is not None:
+                _release_profile_use()
 
 
 def _probe_source() -> str:
@@ -2479,55 +2699,57 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
 
     _bind()
     root = Path(tempfile.mkdtemp(prefix="aicad-win-probe-"))
+    sid = None
     try:
-        _acquire_profile_lock()
+        sid, sid_text = _appcontainer_sid()
         try:
-            sid, sid_text = _appcontainer_sid()
+            package = _package_sid(mode == "lpac")
+            grant_read_paths(read_paths, sid_text, package)
+            grant_workspace(root, sid_text, package)
+            job = _create_job(_PROBE_CPU_SECONDS, _PROBE_MEMORY_BYTES)
+            held_block = False
             try:
-                package = _package_sid(mode == "lpac")
-                grant_read_paths(read_paths, sid_text, package)
-                grant_workspace(root, sid_text, package)
-                job = _create_job(_PROBE_CPU_SECONDS, _PROBE_MEMORY_BYTES)
-                held_block = False
+                stdout_path = root / "stdout.txt"
+                stderr_path = root / "stderr.txt"
+                _hold_network_block(sid_text)
+                held_block = True
+                process, _io_base = _launch(
+                    _probe_command(root),
+                    cwd=str(root),
+                    env=_probe_env(root),
+                    job=job,
+                    sid=sid,
+                    lpac=mode == "lpac",
+                    network=False,
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                )
                 try:
-                    stdout_path = root / "stdout.txt"
-                    stderr_path = root / "stderr.txt"
-                    _hold_network_block(sid_text)
-                    held_block = True
-                    process, _io_base = _launch(
-                        _probe_command(root),
-                        cwd=str(root),
-                        env=_probe_env(root),
-                        job=job,
-                        sid=sid,
-                        lpac=mode == "lpac",
-                        network=False,
-                        stdout_path=stdout_path,
-                        stderr_path=stderr_path,
-                    )
-                    try:
-                        _kernel32().WaitForSingleObject(process.hProcess, 60_000)
-                        code = wintypes.DWORD(0)
-                        _kernel32().GetExitCodeProcess(process.hProcess, ctypes.byref(code))
-                        output = _read_text(stdout_path)
-                        if code.value == 0 and "sandbox-ok" in output:
-                            return None
-                        detail = _read_text(stderr_path).strip()
-                        return detail or f"the probe exited with code {code.value}"
-                    finally:
-                        _kernel32().CloseHandle(process.hThread)
-                        _kernel32().CloseHandle(process.hProcess)
+                    _kernel32().WaitForSingleObject(process.hProcess, 60_000)
+                    code = wintypes.DWORD(0)
+                    _kernel32().GetExitCodeProcess(process.hProcess, ctypes.byref(code))
+                    output = _read_text(stdout_path)
+                    if code.value == 0 and "sandbox-ok" in output:
+                        return None
+                    detail = _read_text(stderr_path).strip()
+                    return detail or f"the probe exited with code {code.value}"
                 finally:
-                    _kernel32().CloseHandle(job)
-                    if held_block:
-                        _release_network_block()
+                    _kernel32().CloseHandle(process.hThread)
+                    _kernel32().CloseHandle(process.hProcess)
             finally:
-                _advapi32().FreeSid(sid)
+                _kernel32().CloseHandle(job)
+                if held_block:
+                    _release_network_block()
         finally:
-            _release_profile_lock()
+            _advapi32().FreeSid(sid)
     except OSError as exc:
         return str(exc)
     finally:
+        if sid is not None:
+            try:
+                _release_profile_use()
+            except OSError:
+                pass
         try:
             import shutil
 

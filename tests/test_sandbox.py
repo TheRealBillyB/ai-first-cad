@@ -846,16 +846,16 @@ def test_windows_network_block_names_only_that_container():
         win._wfp_engine = None
 
     spawn = inspect.getsource(win.spawn)
-    assert spawn.index("_acquire_profile_lock") < spawn.index("_appcontainer_sid")
+    assert "_acquire_profile_lock" not in spawn
     assert spawn.index("_appcontainer_sid") < spawn.index("_hold_network_block")
     assert spawn.index("_hold_network_block") < spawn.index("_launch")
     assert spawn.index("TerminateJobObject") < spawn.index("_release_network_block")
-    assert spawn.index("_release_network_block") < spawn.index("_release_profile_lock")
+    assert spawn.index("_release_network_block") < spawn.index("_release_profile_use")
     probe = inspect.getsource(win._probe_mode)
-    assert probe.index("_acquire_profile_lock") < probe.index("_appcontainer_sid")
+    assert "_acquire_profile_lock" not in probe
     assert probe.index("_appcontainer_sid") < probe.index("_hold_network_block")
     assert probe.index("_hold_network_block") < probe.index("_launch")
-    assert probe.index("_release_network_block") < probe.index("_release_profile_lock")
+    assert probe.index("_release_network_block") < probe.index("_release_profile_use")
     hold = inspect.getsource(win._hold_network_block)
     assert hold.index("_firewall_block_is_present") < hold.index("_run_firewall_script")
     assert hold.index("_run_firewall_script") < hold.index("_install_wfp_block")
@@ -1042,8 +1042,21 @@ def test_windows_stale_profile_is_replaced_before_the_script_starts():
     assert re.search(r"None,\s*\n\s*0,", created)
     body = inspect.getsource(win._appcontainer_sid)
     assert "DeriveAppContainerSidFromAppContainerName" not in body
+    assert body.index("_profile_is_in_use") < body.index("_delete_appcontainer_profile")
     assert body.count("_create_appcontainer_profile()") == 2
     assert "_delete_appcontainer_profile()" in body
+    assert "_open_proven_profile" in body
+    proven = inspect.getsource(win._open_proven_profile)
+    assert proven.index("_derive_profile_sid") < proven.index("_stored_capabilities_are_empty")
+    assert proven.index("_stored_capabilities_are_empty") < proven.index("return")
+    derived = inspect.getsource(win._derive_profile_sid)
+    assert "DeriveAppContainerSidFromAppContainerName" in derived
+    check = inspect.getsource(win._stored_capabilities_are_empty)
+    assert "TerminateProcess" in check
+    assert "ResumeThread" not in check
+    assert "CapabilityCount = 0" in check
+    assert "_creation_flags" in check
+    assert "_CREATE_SUSPENDED" in inspect.getsource(win._creation_flags)
     calls = []
 
     def fail_then_create():
@@ -1063,9 +1076,18 @@ def test_windows_stale_profile_is_replaced_before_the_script_starts():
     original_create = win._create_appcontainer_profile
     original_delete = win._delete_appcontainer_profile
     original_text = win._sid_to_string
+    original_in_use = win._profile_is_in_use
+    original_change = win._change_profile_use
+    original_acquire = win._acquire_profile_lock
+    original_release = win._release_profile_lock
+    original_open = win._open_proven_profile
     win._create_appcontainer_profile = fail_then_create
     win._delete_appcontainer_profile = delete
     win._sid_to_string = text
+    win._profile_is_in_use = lambda: False
+    win._change_profile_use = lambda _delta: None
+    win._acquire_profile_lock = lambda: None
+    win._release_profile_lock = lambda: None
     try:
         _sid, got = win._appcontainer_sid()
         assert got == "S-1-15-2-11-22-33-44-55-66-77"
@@ -1091,10 +1113,40 @@ def test_windows_stale_profile_is_replaced_before_the_script_starts():
         with pytest.raises(OSError, match="could not create an AppContainer profile"):
             win._appcontainer_sid()
         assert calls == ["create", "delete", "create"]
+
+        calls.clear()
+        win._profile_is_in_use = lambda: True
+
+        def proven_profile():
+            calls.append("prove")
+            return ctypes.c_void_p(), "S-1-15-2-11-22-33-44-55-66-77"
+
+        win._open_proven_profile = proven_profile
+        _sid, got = win._appcontainer_sid()
+        assert got == "S-1-15-2-11-22-33-44-55-66-77"
+        assert calls == ["create", "prove"]
+
+        calls.clear()
+
+        def refuse_profile():
+            calls.append("prove")
+            raise OSError(
+                "The Windows script profile has capabilities, so the script was not started."
+            )
+
+        win._open_proven_profile = refuse_profile
+        with pytest.raises(OSError, match="has capabilities"):
+            win._appcontainer_sid()
+        assert calls == ["create", "prove"]
     finally:
         win._create_appcontainer_profile = original_create
         win._delete_appcontainer_profile = original_delete
         win._sid_to_string = original_text
+        win._profile_is_in_use = original_in_use
+        win._change_profile_use = original_change
+        win._acquire_profile_lock = original_acquire
+        win._release_profile_lock = original_release
+        win._open_proven_profile = original_open
 
 
 def test_windows_stale_firewall_block_is_not_removed():
