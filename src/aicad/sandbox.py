@@ -3152,14 +3152,29 @@ class _DiskWatch:
             return
         key = _file_key(path)
         if sys.platform == "win32":
-            # A read handle from os.open does not share delete access. The
-            # script then cannot replace the file, including a STEP it writes
-            # and reads back. The directory entry still has the size.
-            from aicad.sandbox_windows import named_size
+            from aicad.sandbox_windows import named_size, shared_read
 
-            size = named_size(path)
-            if size is not None:
-                self.note_size(key, size)
+            descriptor = shared_read(path)
+            if descriptor is None:
+                size = named_size(path)
+                if size is not None:
+                    self.note_size(key, size)
+                return
+            try:
+                info = os.fstat(descriptor)
+            except OSError:
+                os.close(descriptor)
+                return
+            self.note_size(key, int(info.st_size))
+            with self._lock:
+                current = self._held.get(key)
+                if current is not None or len(self._held) >= 256:
+                    drop = descriptor
+                else:
+                    self._held[key] = descriptor
+                    drop = None
+            if drop is not None:
+                os.close(drop)
             return
         with self._lock:
             held = self._held.get(key)

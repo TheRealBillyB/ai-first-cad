@@ -2731,6 +2731,37 @@ class _FindData(ctypes.Structure):
 _find_bound = False
 
 
+def shared_read(path: Path) -> int | None:
+    """A read descriptor that shares delete.
+
+    The script can replace the file while this descriptor stays open, and the
+    size can still be read after the name is gone. ``os.open`` does not share
+    delete, so it is not used here.
+    """
+    if sys.platform != "win32":
+        return None
+    _bind()
+    kernel32 = _kernel32()
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x1 | 0x80 | 0x100000,  # read data, read attributes, synchronize
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+        None,
+        _OPEN_EXISTING,
+        0x80,  # FILE_ATTRIBUTE_NORMAL
+        None,
+    )
+    if not handle or handle == _INVALID_HANDLE:
+        return None
+    import msvcrt
+
+    try:
+        return msvcrt.open_osfhandle(int(handle), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except (OSError, ValueError):
+        kernel32.CloseHandle(handle)
+        return None
+
+
 def named_size(path: Path) -> int | None:
     """The directory entry's size. This does not leave the file open.
 

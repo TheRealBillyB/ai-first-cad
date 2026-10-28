@@ -852,13 +852,14 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
         mark(True)
         while not stop.is_set():
             try:
-                events = queue.control(None, 64, 0.02)
+                queue.control(None, 64, 0.005)
             except OSError:
-                events = ()
-            if events:
-                rescan()
+                pass
+            # Look again even when no event is waiting. A create and a removal
+            # can collapse into one note, and the name is only visible in between.
+            # This thread does not ask libproc; the other sampler does.
+            rescan()
             reread()
-            scan()
     finally:
         for descriptor in directories.values():
             try:
