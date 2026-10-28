@@ -129,3 +129,5 @@ That stops another website, including one that tries to reach this computer by a
 - **AZ.** A junction is removed the same way as a symlink before a slicer writes. A junction in a plan folder is not entered or removed when orphan sheets are cleaned up.
 
 - **BA.** The design-record log is created from its parent directory handle. A link at that name is not followed.
+
+- **BH.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
