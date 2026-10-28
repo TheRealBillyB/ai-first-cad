@@ -821,6 +821,19 @@ def test_a_new_file_outside_a_project_is_created_from_its_directory(tmp_path):
     assert target.is_file() and not target.is_symlink()
 
 
+def test_a_temp_file_is_written_when_its_directory_is_a_link(tmp_path):
+    from aicad.sandbox import _write_new_temp
+
+    private = tmp_path / "private" / "tmp"
+    private.mkdir(parents=True)
+    link = tmp_path / "tmp"
+    _directory_link(link, private)
+    path = _write_new_temp("aicad-seatbelt-", ".sb", b"profile\n", directory=str(link))
+    assert path.name.startswith("aicad-seatbelt-")
+    assert (private / path.name).read_bytes() == b"profile\n"
+    assert not (private / path.name).is_symlink()
+
+
 def test_a_directory_under_an_earlier_link_is_created_in_the_real_folder(tmp_path):
     from aicad.paths import ensure_real_directory, publish_text
 
