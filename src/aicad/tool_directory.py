@@ -167,14 +167,20 @@ def _directory_from_handle(descriptor: int) -> Path | None:
         return None
     import fcntl
 
-    # Python refuses an fcntl string longer than 1024 bytes. macOS PATH_MAX is 1024.
-    buffer = ctypes.create_string_buffer(1024)
+    # fcntl returns a new bytes object of the same length. It does not write
+    # the path back into the buffer it was given. The length is PATH_MAX.
     command = getattr(fcntl, "F_GETPATH", 50)
     try:
-        fcntl.fcntl(descriptor, command, buffer)
+        result = fcntl.fcntl(descriptor, command, bytes(1024))
     except OSError:
         return None
-    raw = buffer.raw.split(b"\x00", 1)[0]
+    if isinstance(result, str):
+        raw = os.fsencode(result)
+    elif isinstance(result, (bytes, bytearray)):
+        raw = bytes(result)
+    else:
+        return None
+    raw = raw.split(b"\x00", 1)[0]
     if not raw:
         return None
     return Path(os.fsdecode(raw))
