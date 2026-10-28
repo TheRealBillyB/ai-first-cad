@@ -394,6 +394,8 @@ def _bind() -> None:
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.InitializeProcThreadAttributeList.argtypes = [
         ctypes.c_void_p,
         wintypes.DWORD,
@@ -600,8 +602,28 @@ def _profile_use_path() -> Path:
 
 
 def _pid_alive(pid: int) -> bool:
+    """True when that process is still running.
+
+    On Windows, ``os.kill(pid, 0)`` is not an existence check. It raises
+    ``SystemError`` and can terminate the process. Open the process instead.
+    """
+
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        _bind()
+        kernel32 = _kernel32()
+        # PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return int(code.value) == 259
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:

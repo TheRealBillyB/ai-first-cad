@@ -1034,6 +1034,7 @@ def test_windows_stale_profile_is_replaced_before_the_script_starts():
 
     import ctypes
     import inspect
+    import os
     import re
 
     from aicad import sandbox_windows as win
@@ -1057,6 +1058,12 @@ def test_windows_stale_profile_is_replaced_before_the_script_starts():
     assert "CapabilityCount = 0" in check
     assert "_creation_flags" in check
     assert "_CREATE_SUSPENDED" in inspect.getsource(win._creation_flags)
+    alive = inspect.getsource(win._pid_alive)
+    windows_alive = alive.split('sys.platform == "win32"', 1)[1].split("os.kill", 1)[0]
+    assert "OpenProcess" in windows_alive
+    assert "os.kill" not in windows_alive
+    assert win._pid_alive(os.getpid()) is True
+    assert win._pid_alive(0) is False
     calls = []
 
     def fail_then_create():
