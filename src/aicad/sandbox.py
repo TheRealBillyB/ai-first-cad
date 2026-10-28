@@ -1705,11 +1705,9 @@ def apply_sandbox(
         fd = result_fd
         opened = False
         if fd is None and result_path is not None:
-            fd = os.open(
-                result_path,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0),
-                0o600,
-            )
+            from aicad.file_access import open_write
+
+            fd = open_write(result_path.parent, result_path.name)
             opened = True
         _block_new_files(fd)
         if opened and fd is not None:
