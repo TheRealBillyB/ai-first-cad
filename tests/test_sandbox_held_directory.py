@@ -18,6 +18,23 @@ def _real_directory(folder: Path) -> Path:
     text = os.fspath(folder).replace("\\", "/")
     if text.startswith("/proc/self/fd/"):
         return Path(os.readlink(text))
+    # A volume-id path stays on the opened directory, so it is not a name
+    # that can be replaced. The kernel reports the directory's real name.
+    if text.startswith("/.vol/"):
+        import fcntl
+
+        descriptor = os.open(folder, os.O_RDONLY)
+        try:
+            result = fcntl.fcntl(descriptor, getattr(fcntl, "F_GETPATH", 50), bytes(1024))
+        finally:
+            os.close(descriptor)
+        if isinstance(result, str):
+            raw = os.fsencode(result)
+        else:
+            raw = bytes(result)
+        raw = raw.split(b"\x00", 1)[0]
+        if raw:
+            return Path(os.fsdecode(raw))
     return Path(folder)
 
 
