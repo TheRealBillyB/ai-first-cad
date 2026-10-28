@@ -681,7 +681,8 @@ def open_file_sizes(pid: int, root: Path) -> dict[str, int]:
     An unlinked file stays visible until its descriptor is closed. The path
     is the one the process opened. A file outside ``root`` is not counted.
     """
-    if pid <= 0 or sys.platform != "darwin":
+    if pid <= 0 or sys.platform != "darwin" or pid != os.getpid():
+        # Another process's descriptor list has stopped the parent.
         return {}
     lib = _proc_pidinfo()
     if lib is None or not _bind_fdinfo(lib):

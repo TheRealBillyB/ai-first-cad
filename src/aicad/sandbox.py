@@ -3046,6 +3046,7 @@ class _DiskWatch:
         self._io_fds: dict[int, int] = {}
         self._pids: set[int] = set()
         self._file_peak: dict[str, int] = {}
+        self._known_names: dict[str, set[str]] = {}
         self._held: dict[str, int] = {}
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -3238,6 +3239,44 @@ class _DiskWatch:
         if stat.S_ISREG(info.st_mode):
             self.note_size(key, int(info.st_size))
 
+    def scan_new_files(self) -> None:
+        """Open files that appeared since the last look.
+
+        The first look only records names. A file that is created and removed
+        before a later look is missed, so callers repeat this often.
+        """
+        known = self._known_names
+        pending = [str(self.root)]
+        visited: set[str] = set()
+        while pending:
+            directory = pending.pop()
+            if directory in visited:
+                continue
+            visited.add(directory)
+            previous = known.get(directory)
+            live: set[str] = set()
+            try:
+                entries = list(os.scandir(directory))
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(entry.path)
+                    elif entry.is_file(follow_symlinks=False):
+                        live.add(entry.path)
+                        if previous is not None and entry.path not in previous:
+                            self.retain(Path(entry.path))
+                except OSError:
+                    continue
+            if previous is not None:
+                for gone in previous - live:
+                    self.release(Path(gone))
+            known[directory] = live
+        self._reread_held()
+
     def _reread_held(self) -> None:
         with self._lock:
             held = list(self._held.items())
@@ -3268,17 +3307,15 @@ class _DiskWatch:
             if sys.platform.startswith("linux"):
                 self._linux_directory_watch()
             elif sys.platform == "darwin":
-                from aicad.sandbox_macos import run_directory_watch
-
-                run_directory_watch(
-                    self.root,
-                    self.retain,
-                    self.release,
-                    self._reread_held,
-                    self.note_files,
-                    self._stop,
-                    self._mark_watch,
-                )
+                self.scan_new_files()
+                self._mark_watch(True)
+                while not self._stop.is_set():
+                    try:
+                        self.scan_new_files()
+                    except OSError:
+                        pass
+                    if self._stop.wait(0.001):
+                        break
             elif sys.platform == "win32":
                 from aicad.sandbox_windows import run_directory_watch
 
@@ -3658,6 +3695,11 @@ def _watch_descendants(
             _kill_process_tree(leader, seen, lock, extra=found)
             return
         if disk is not None:
+            if sys.platform == "darwin":
+                try:
+                    disk.scan_new_files()
+                except OSError:
+                    pass
             watched = {leader, *found}
             for pid in watched:
                 disk.hold_counter(pid)
@@ -4132,13 +4174,14 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 proc = subprocess.Popen(command, **popen_kwargs)
         finally:
             os.close(hold_read)
-        # Start the watch after the process exists. A watch thread that is
-        # blocked in the kernel during process creation kills the parent on macOS.
-        # The script is still waiting on the quota pipe, so it has not written yet.
-        disk.arm()
+        # macOS lists files from the sampler thread that already exists.
+        # A second watch thread in this process stops the parent while a script runs.
+        if sys.platform == "darwin":
+            disk.scan_new_files()
+        else:
+            disk.arm()
         disk.hold_counter(proc.pid)
         disk.baseline(proc.pid)
-        _release_write_fd(quota_hold)
 
         def _read_disk_at_exit() -> None:
             with seen_lock:
@@ -4181,6 +4224,9 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             daemon=True,
         )
         watcher.start()
+        # The script has been waiting on the quota pipe. Release it only after
+        # the file sampler is running.
+        _release_write_fd(quota_hold)
 
         def sweep() -> None:
             if account is None or sentinel_path is None:

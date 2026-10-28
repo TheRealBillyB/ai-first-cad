@@ -2858,13 +2858,14 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
 
         mark(True)
         while not stop.is_set():
-            waited = int(kernel32.WaitForSingleObject(event, 1))
-            if stop.is_set():
-                break
             try:
                 note_tree()
             except OSError:
                 pass
+            reread()
+            waited = int(kernel32.WaitForSingleObject(event, 1))
+            if stop.is_set():
+                break
             if waited == _WAIT_OBJECT_0 and pending:
                 transferred = wintypes.DWORD(0)
                 got = kernel32.GetOverlappedResult(
