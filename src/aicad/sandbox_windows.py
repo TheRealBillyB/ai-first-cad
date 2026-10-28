@@ -506,16 +506,14 @@ def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
         ctypes.byref(sid),
     )
     if result != 0:
-        # Another start can be creating this same profile. That returns a
-        # code other than "already exists", while the profile is still there.
-        derived = userenv.DeriveAppContainerSidFromAppContainerName(_PROFILE_NAME, ctypes.byref(sid))
-        if derived != 0:
-            if (result & 0xFFFFFFFF) == _ERROR_ALREADY_EXISTS:
-                raise OSError(
-                    f"Windows could not open the AppContainer profile (code 0x{derived & 0xFFFFFFFF:08X})."
-                )
+        if (result & 0xFFFFFFFF) != _ERROR_ALREADY_EXISTS:
             raise OSError(
                 f"Windows could not create an AppContainer profile (code 0x{result & 0xFFFFFFFF:08X})."
+            )
+        derived = userenv.DeriveAppContainerSidFromAppContainerName(_PROFILE_NAME, ctypes.byref(sid))
+        if derived != 0:
+            raise OSError(
+                f"Windows could not open the AppContainer profile (code 0x{derived & 0xFFFFFFFF:08X})."
             )
     text = _sid_to_string(sid)
     return sid, text
@@ -1926,22 +1924,14 @@ def _firewall_script(sid: str | None = None, *, install: bool) -> str:
     package = sid.upper()
     return (
         remove
-        + "  try {\n"
-        + "    New-NetFirewallRule -Name 'aicad-script-network-off-out' "
+        + "  New-NetFirewallRule -Name 'aicad-script-network-off-out' "
         + "-DisplayName 'aicad script network off outbound' "
         + "-Direction Outbound -Action Block -Protocol Any "
         + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
-        + "  } catch {\n"
-        + "    if (-not (Get-NetFirewallRule -Name 'aicad-script-network-off-out' -ErrorAction Ignore)) { throw }\n"
-        + "  }\n"
-        + "  try {\n"
-        + "    New-NetFirewallRule -Name 'aicad-script-network-off-in' "
+        + "  New-NetFirewallRule -Name 'aicad-script-network-off-in' "
         + "-DisplayName 'aicad script network off inbound' "
         + "-Direction Inbound -Action Block -Protocol Any "
         + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
-        + "  } catch {\n"
-        + "    if (-not (Get-NetFirewallRule -Name 'aicad-script-network-off-in' -ErrorAction Ignore)) { throw }\n"
-        + "  }\n"
         + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
     )
 
