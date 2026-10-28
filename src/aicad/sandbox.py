@@ -2604,6 +2604,70 @@ class _OutputCapture:
         return bytes(self._stderr)
 
 
+class _ExitNote:
+    """macOS notice that a process has exited, without collecting it.
+
+    ``waitid`` can keep reporting that the process is still running after it
+    has exited. libproc does not always call that process a zombie, and a
+    zombie still answers ``kill``. Either one alone waits until the wall
+    clock. This watch reports the exit on its own.
+    """
+
+    def __init__(self, pid: int) -> None:
+        self._queue = None
+        self._fired = False
+        if sys.platform != "darwin" or pid <= 0:
+            return
+        import select
+
+        if not hasattr(select, "kqueue"):
+            return
+        try:
+            queue = select.kqueue()
+            queue.control(
+                [
+                    select.kevent(
+                        pid,
+                        filter=select.KQ_FILTER_PROC,
+                        flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
+                        fflags=select.KQ_NOTE_EXIT,
+                    )
+                ],
+                0,
+                0,
+            )
+        except OSError:
+            return
+        self._queue = queue
+
+    def watching(self) -> bool:
+        return self._queue is not None
+
+    def fired(self) -> bool:
+        if self._fired:
+            return True
+        queue = self._queue
+        if queue is None:
+            return False
+        try:
+            events = queue.control(None, 1, 0)
+        except OSError:
+            return False
+        if events:
+            self._fired = True
+        return self._fired
+
+    def close(self) -> None:
+        queue = self._queue
+        self._queue = None
+        if queue is None:
+            return
+        try:
+            queue.close()
+        except OSError:
+            pass
+
+
 def _wait_script(
     proc: subprocess.Popen,
     wall: float,
@@ -2620,16 +2684,33 @@ def _wait_script(
     collected. The write counter is still available then. Collecting the
     process first drops it. A system that cannot report the exit without
     collecting the process is not collected until that reading has run.
+    When no report is available at all, the process is collected so the
+    wait cannot run out the wall clock.
     """
     deadline = time.monotonic() + wall
     capture = _OutputCapture(proc)
     capture.start()
+    note = _ExitNote(proc.pid or 0)
     try:
         while True:
-            exited = _exited_unreaped(proc.pid)
-            if exited is None:
-                exited = _exited_for_reading(proc)
-            if exited:
+            unreaped = _exited_unreaped(proc.pid)
+            ready = bool(unreaped) or note.fired()
+            if not ready and unreaped is None:
+                probed = _exited_for_reading(proc)
+                if probed:
+                    ready = True
+                elif probed is None and not note.watching():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(proc.args, wall)
+                    try:
+                        proc.wait(timeout=min(0.05, remaining))
+                    except subprocess.TimeoutExpired:
+                        if sweep is not None:
+                            sweep()
+                        continue
+                    break
+            if ready:
                 if before_reap is not None:
                     before_reap()
                 try:
@@ -2648,6 +2729,8 @@ def _wait_script(
     except BaseException:
         capture.finish(timeout=0.2)
         raise
+    finally:
+        note.close()
 
 
 def _exited_for_reading(proc: subprocess.Popen) -> bool | None:
