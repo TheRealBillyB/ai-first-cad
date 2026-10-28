@@ -91,26 +91,47 @@ def open_relative(root: Path, relative: str | Path, *, create: bool = False) -> 
 def open_inplace(path: str | Path) -> int:
     """Open an existing file so it can be rewritten. A link is refused.
 
-    The caller closes the descriptor. The file is truncated.
+    The caller closes the descriptor. The file is truncated. The parent
+    directory is opened first, and the file name is opened from that handle.
     """
 
     file = Path(path)
     if sys.platform == "win32":
         return _windows_open_inplace(file)
-    flags = os.O_WRONLY | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    return _posix_open_inplace(file)
+
+
+def _posix_open_inplace(file: Path) -> int:
+    """Rewrite ``file`` from its parent directory. A link is not followed."""
+
+    from aicad.paths import _call, _libc
+
+    directory = open_directory(file.parent)
+    flags = os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
-    descriptor = os.open(file, flags)
+    descriptor = -1
     try:
+        descriptor = _call(_libc().openat(directory, os.fsencode(file.name), flags, 0), file.name)
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise OSError(errno.EINVAL, "not an ordinary file", str(file))
+        return descriptor
     except Exception:
-        os.close(descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
         raise
-    return descriptor
+    finally:
+        os.close(directory)
+
+
+def open_read(path: str | Path) -> int:
+    """Open an existing file for reading. A link is not followed.
+
+    The caller closes the descriptor. The file is not truncated.
+    """
+
+    return _open_read(_absolute_file(path))
 
 
 def replace_file(root: Path, relative: str | Path, write, *, private: bool = False) -> None:
