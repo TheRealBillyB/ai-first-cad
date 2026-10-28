@@ -175,6 +175,42 @@ def _posix_create_new(directory: Path, name: str) -> int:
     return descriptor
 
 
+def open_write(directory: Path, name: str) -> int:
+    """Open or create ``name`` for writing. A link is not followed.
+
+    An existing regular file with one name is truncated. The caller closes
+    the descriptor. A new file is owner read and write.
+    """
+
+    _check_component(name)
+    if sys.platform == "win32":
+        return _windows_open_write(Path(directory), name)
+    return _posix_open_write(Path(directory), name)
+
+
+def _posix_open_write(directory: Path, name: str) -> int:
+    from aicad.paths import _call, _libc
+
+    dirfd = open_directory(directory)
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor = _call(_libc().openat(dirfd, os.fsencode(name), flags, 0o600), name)
+    finally:
+        os.close(dirfd)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError(errno.ELOOP, "has another name", name)
+        os.fchmod(descriptor, 0o600)
+        os.ftruncate(descriptor, 0)
+    except OSError:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def read_from_root(root: Path, relative: Path, maximum: int) -> bytes:
     """Read a regular file from ``root``. A link is not followed."""
     if sys.platform == "win32":
@@ -259,9 +295,9 @@ def _session_project(file: Path) -> Path | None:
 def _project_link_anchor(file: Path) -> tuple[Path, Path] | None:
     """A linked project directory, and the file's path under that link.
 
-    The outermost directory link is the one closest to the root. When that
-    link's target is a project, the file is opened from the target. A link
-    under the project is a component of that open and is not followed.
+    The outermost directory link whose target is a project is the one used.
+    A directory link further out that is not a project does not hide it.
+    A link under the project is a component of that open and is not followed.
     """
     from aicad.paths import _relative_within, is_reparse
 
@@ -286,10 +322,10 @@ def _project_link_anchor(file: Path) -> tuple[Path, Path] | None:
             linked = is_reparse(candidate)
         except OSError:
             linked = True
-        if linked:
+        if linked and _marks_project(candidate):
             outermost = candidate
             break
-    if outermost is None or not _marks_project(outermost):
+    if outermost is None:
         return None
     try:
         resolved = outermost.resolve()
@@ -538,6 +574,38 @@ def _windows_create_new(directory: Path, name: str) -> int:
         handle = None
         return descriptor
     finally:
+        if handle is not None:
+            _close_handle(handle)
+        os.close(parent)
+
+
+def _windows_open_write(directory: Path, name: str) -> int:
+    """Open or create ``name`` for writing. A link is not truncated."""
+
+    parent = _windows_open_root(directory, write=True)
+    handle = None
+    descriptor = -1
+    try:
+        handle = _nt_open(
+            _os_handle(parent),
+            name,
+            access=_FILE_WRITE_ACCESS,
+            directory=False,
+            create=True,
+            disposition=_FILE_OPEN_IF,
+        )
+        _refuse_reparse(handle, name)
+        if _attributes(handle) & _FILE_ATTRIBUTE_DIRECTORY or _link_count(handle) != 1:
+            raise OSError(errno.ELOOP, "has another name", name)
+        descriptor = _descriptor(handle, os.O_WRONLY | getattr(os, "O_BINARY", 0))
+        handle = None
+        os.ftruncate(descriptor, 0)
+        opened = descriptor
+        descriptor = -1
+        return opened
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
         if handle is not None:
             _close_handle(handle)
         os.close(parent)
