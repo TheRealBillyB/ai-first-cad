@@ -167,7 +167,8 @@ def _directory_from_handle(descriptor: int) -> Path | None:
         return None
     import fcntl
 
-    buffer = ctypes.create_string_buffer(4 * 1024)
+    # Python refuses an fcntl string longer than 1024 bytes. macOS PATH_MAX is 1024.
+    buffer = ctypes.create_string_buffer(1024)
     command = getattr(fcntl, "F_GETPATH", 50)
     try:
         fcntl.fcntl(descriptor, command, buffer)
