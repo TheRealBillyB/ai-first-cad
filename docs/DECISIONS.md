@@ -24,6 +24,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | An assembly exports as one print without uniting the parts | Print prep and export took one part. An assembly is now one STEP, STL, or 3MF in its current pose, and each part stays its own solid so a gap is not filled. |
 | Print meshing skips the texture atlas | Print checks and pictures discard texture coordinates. Packing those coordinates overflows the call stack on a housing that holds two spur gears, so the mesh is built without an atlas. |
 | The design-record log is created from its directory | The log file is created from the parent directory handle, so a link at that name is not followed. |
+| The design-record stop file is opened from its directory | The stop file is created from its parent directory, and the record is read from its parent directory. A link at either name is not followed. |
 | The sketch solver is built from source in CI | CI compiles python-solvespace 3.0.8 on Ubuntu, macOS, and Windows with an empty pip cache and no binary wheel. The build uses the installer's compiler flags. A C file has to be compiled with the standard that installer selected, and a C++ file keeps its own standard. MSVC is left unset, and that path is still compiled from source. |
 | Tool text is marked even when it already starts with the marker | A tool result or a project resource that began with the marker was returned as it was. The marker and its closing line are written around that text every time, and a tool result keeps this program's marker sentence. |
 
