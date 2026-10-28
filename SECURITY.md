@@ -130,4 +130,6 @@ That stops another website, including one that tries to reach this computer by a
 
 - **BA.** The design-record log is created from its parent directory handle. A link at that name is not followed.
 
+- **BB.** A new project file or folder is created from a directory handle. When the project folder is a link, that handle is the directory the link points at. A link in the rest of the path is not followed.
+
 - **BH.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
