@@ -751,56 +751,18 @@ def open_file_sizes(pid: int, root: Path) -> dict[str, int]:
 def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None:
     """Watch ``root`` until ``stop`` is set.
 
-    A new file is reported as soon as its directory changes, so a name that
-    is gone before the next timer is still opened and measured.
+    A new file is opened while its name is still there, so a name that is
+    gone before the next timer is still measured. This does not use kqueue:
+    a kqueue wait in this process while a script process is created stops
+    the parent. This thread does not ask libproc; the other sampler does.
     """
     if sys.platform != "darwin":
         mark(False)
         return
-    import select
-
-    try:
-        queue = select.kqueue()
-        flags = select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR
-        note = (
-            select.KQ_NOTE_WRITE
-            | select.KQ_NOTE_EXTEND
-            | select.KQ_NOTE_DELETE
-            | select.KQ_NOTE_RENAME
-            | select.KQ_NOTE_ATTRIB
-            | select.KQ_NOTE_LINK
-        )
-        vnode = select.KQ_FILTER_VNODE
-    except (AttributeError, OSError):
-        mark(False)
-        return
-    directories: dict[str, int] = {}
     known: dict[str, set[str]] = {}
 
-    def watch_dir(directory: Path) -> None:
-        key = str(directory)
-        if key in directories:
-            return
-        open_flags = os.O_RDONLY
-        if hasattr(os, "O_EVTONLY"):
-            open_flags |= os.O_EVTONLY
-        if hasattr(os, "O_CLOEXEC"):
-            open_flags |= os.O_CLOEXEC
-        if hasattr(os, "O_DIRECTORY"):
-            open_flags |= os.O_DIRECTORY
-        try:
-            descriptor = os.open(key, open_flags)
-        except OSError:
-            return
-        try:
-            queue.control([select.kevent(descriptor, filter=vnode, flags=flags, fflags=note)], 0, 0)
-        except OSError:
-            os.close(descriptor)
-            return
-        directories[key] = descriptor
-
     def rescan() -> None:
-        pending = list(directories)
+        pending = [str(root)]
         visited: set[str] = set()
         while pending:
             directory = pending.pop()
@@ -816,57 +778,29 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
             for entry in entries:
                 if entry.is_symlink():
                     continue
-                child = Path(entry.path)
                 try:
                     is_dir = entry.is_dir(follow_symlinks=False)
                     is_file = entry.is_file(follow_symlinks=False)
                 except OSError:
                     continue
                 if is_dir:
-                    before = set(directories)
-                    watch_dir(child)
-                    if str(child) not in before and str(child) in directories:
-                        pending.append(str(child))
+                    pending.append(entry.path)
                 elif is_file:
                     live.add(entry.path)
                     if previous is not None and entry.path not in previous:
-                        retain(child)
+                        retain(Path(entry.path))
             if previous is not None:
                 for gone in previous - live:
                     release(Path(gone))
             known[directory] = live
 
-    try:
-        watch_dir(root)
-        for dirpath, dirnames, _names in os.walk(root, followlinks=False):
-            current = Path(dirpath)
-            if current.is_symlink():
-                dirnames.clear()
-                continue
-            dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
-            watch_dir(current)
-        if not directories:
-            mark(False)
-            return
-        rescan()
-        mark(True)
-        while not stop.is_set():
-            try:
-                queue.control(None, 64, 0.005)
-            except OSError:
-                pass
-            # Look again even when no event is waiting. A create and a removal
-            # can collapse into one note, and the name is only visible in between.
-            # This thread does not ask libproc; the other sampler does.
+    rescan()
+    mark(True)
+    while not stop.is_set():
+        if stop.wait(0.005):
+            break
+        try:
             rescan()
             reread()
-    finally:
-        for descriptor in directories.values():
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-        try:
-            queue.close()
-        except OSError:
-            pass
+        except Exception:
+            continue

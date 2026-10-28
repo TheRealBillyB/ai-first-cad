@@ -2851,11 +2851,20 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
         if not issue():
             mark(False)
             return
+        def note_tree() -> None:
+            for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+                for name in filenames:
+                    retain(Path(dirpath) / name)
+
         mark(True)
         while not stop.is_set():
-            waited = int(kernel32.WaitForSingleObject(event, 20))
+            waited = int(kernel32.WaitForSingleObject(event, 1))
             if stop.is_set():
                 break
+            try:
+                note_tree()
+            except OSError:
+                pass
             if waited == _WAIT_OBJECT_0 and pending:
                 transferred = wintypes.DWORD(0)
                 got = kernel32.GetOverlappedResult(

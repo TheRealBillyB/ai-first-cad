@@ -3154,6 +3154,11 @@ class _DiskWatch:
         if sys.platform == "win32":
             from aicad.sandbox_windows import named_size, shared_read
 
+            with self._lock:
+                held = self._held.get(key)
+            if held is not None:
+                self._note_descriptor(key, held)
+                return
             descriptor = shared_read(path)
             if descriptor is None:
                 size = named_size(path)
