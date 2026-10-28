@@ -36,6 +36,11 @@ def packaged_font_config() -> Path:
     return Path(__file__).resolve().parent / "data" / "ezdxf.ini"
 
 
+def packaged_fontconfig_file() -> Path:
+    """Fontconfig file shipped with aicad. It does not include the account home."""
+    return Path(__file__).resolve().parent / "data" / "fonts.conf"
+
+
 def _is_project_ini(path: Path) -> bool:
     """True for ``ezdxf.ini`` in the working directory, not the packaged file."""
     if path.name.lower() != "ezdxf.ini":
@@ -211,10 +216,11 @@ def prepare_geometry_import() -> None:
     a font folder outside the project. ``EZDXF_CONFIG_FILE`` points at the file
     shipped with aicad. The working-directory file and the home file are not
     read. Variables that name a font, Gmsh, or OpenCascade configuration are
-    removed before those libraries load. Matplotlib uses a private config
-    directory. The image library asks to enter the interpreter directory while
-    it loads. That request is refused, so a relative path in the project still
-    opens.
+    removed before those libraries load. Fontconfig then uses the file
+    shipped with aicad, which names system font folders only. Matplotlib
+    uses a private config directory. The image library asks to enter the
+    interpreter directory while it loads. That request is refused, so a
+    relative path in the project still opens.
     """
     from aicad.sandbox import scrub_library_environment
 
