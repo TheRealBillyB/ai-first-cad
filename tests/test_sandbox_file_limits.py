@@ -198,13 +198,22 @@ def test_a_file_removed_between_snapshots_is_counted(tmp_path):
     try:
         assert disk.arm()
         path = tmp_path / "gone.bin"
-        path.write_bytes(b"x" * 2_000_000)
-        path.unlink()
-        assert not path.exists()
+        # Yield while the bytes are written so the watch thread can open the
+        # file. One write can finish before that thread runs.
+        with path.open("wb") as handle:
+            left = 2_000_000
+            while left and not disk.hit.is_set():
+                piece = min(left, 65_536)
+                handle.write(b"x" * piece)
+                handle.flush()
+                left -= piece
+                time.sleep(0)
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline and not disk.hit.is_set():
             time.sleep(0.01)
         assert disk.hit.is_set()
+        path.unlink(missing_ok=True)
+        assert not path.exists()
     finally:
         disk.close_counters()
     message = disk.settle()

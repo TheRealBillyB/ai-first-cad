@@ -3695,11 +3695,6 @@ def _watch_descendants(
             _kill_process_tree(leader, seen, lock, extra=found)
             return
         if disk is not None:
-            if sys.platform == "darwin":
-                try:
-                    disk.scan_new_files()
-                except OSError:
-                    pass
             watched = {leader, *found}
             for pid in watched:
                 disk.hold_counter(pid)
