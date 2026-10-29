@@ -14,7 +14,6 @@ import math
 import re
 import signal
 import subprocess
-import tempfile
 import threading
 from pathlib import Path
 
@@ -797,8 +796,10 @@ def _mesh_attempts(shape: kernel.Shape, mesh_size: float, order: int) -> list[di
 def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorithm: int, optimize: int, occ_fix: bool) -> dict:
     import gmsh
 
-    with tempfile.TemporaryDirectory() as directory:
-        step_path = Path(directory) / "part.step"
+    from aicad.paths import private_tool_directory
+
+    with private_tool_directory() as directory:
+        step_path = directory / "part.step"
         kernel.export_step_file(shape, step_path)
         from aicad.sandbox import scrub_library_environment
 
