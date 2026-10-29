@@ -76,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Allow design scripts in this project. The assistant cannot do this.",
     )
+    wall_cmd = commands.add_parser(
+        "script-wall",
+        parents=[common],
+        help="Set how many seconds a design script in this project may run. From 1 to 600. The default is 120.",
+    )
+    wall_cmd.add_argument("seconds", type=int)
 
     run = commands.add_parser("run", parents=[common], help="Create or replace a part from a script.")
     run.add_argument("script", type=Path, help="Python file that assigns a solid to `part`.")
@@ -666,6 +672,10 @@ def _dispatch(args: argparse.Namespace) -> int:
         from aicad.sandbox import allow_design_scripts
 
         return _emit(allow_design_scripts(args.workspace))
+    if args.command == "script-wall":
+        from aicad.sandbox import set_project_wall_seconds
+
+        return _emit(set_project_wall_seconds(args.workspace, args.seconds))
     # Listing or allowing a plugin must not open the design. Opening a file is not consent.
     if args.command == "plugins":
         from aicad.plugins import dispatch_cli
