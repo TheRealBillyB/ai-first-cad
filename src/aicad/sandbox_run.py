@@ -6,10 +6,12 @@ runs in the parent process.
 
 from __future__ import annotations
 
+import atexit
 import io
 import json
 import os
 import sys
+import threading
 import traceback
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -326,8 +328,11 @@ def _leave(code: int) -> int:
     than a minute to exit, and the parent waits for that. The result file is
     already written. macOS keeps the normal exit so the seatbelt wrapper is
     reaped with the child; a direct exit can leave that wrapper running.
+    Children that have already exited are collected first so their writes
+    stay in the quota.
     """
 
+    _collect_descendant_writes()
     if sys.platform == "win32":
         os._exit(code)
     return code
@@ -391,6 +396,162 @@ def _early_thread_stack():
     return module
 
 
+_child_bytes: dict[int, int] = {}
+_child_bytes_lock = threading.Lock()
+_quota_job: list[Path | None] = [None]
+_real_waitpid = os.waitpid
+_wait_accounting_installed = False
+
+
+def _publish_child_writes() -> None:
+    """Write the bytes recorded for collected children where the parent can read them."""
+    job = _quota_job[0]
+    if job is None or sys.platform != "darwin":
+        return
+    with _child_bytes_lock:
+        payload = {str(pid): int(amount) for pid, amount in _child_bytes.items()}
+    if not payload:
+        return
+    from aicad.paths import publish_text
+
+    try:
+        publish_text(job / "child-writes.json", json.dumps(payload) + "\n", root=job)
+    except OSError:
+        return
+
+
+def _record_zombie_children() -> list[int]:
+    """Logical writes of children that have exited and have not been collected.
+
+    macOS keeps that counter until the child is collected. Reading it first
+    is what makes a child that exits before the parent opens a counter count.
+    """
+    if sys.platform != "darwin":
+        return []
+    from aicad.sandbox_macos import bytes_written, child_pids, process_runtime
+
+    listed = child_pids(os.getpid())
+    if not listed:
+        return []
+    recorded: list[int] = []
+    for pid in listed:
+        runtime = process_runtime(pid)
+        if runtime is None or not runtime[1]:
+            continue
+        with _child_bytes_lock:
+            if pid not in _child_bytes:
+                value = bytes_written(pid)
+                if value is not None:
+                    _child_bytes[pid] = int(value)
+        recorded.append(pid)
+    return recorded
+
+
+def _pending_child(pid: int) -> int | None:
+    """A child that has exited and has not been collected, without collecting it."""
+    waitid = getattr(os, "waitid", None)
+    exited = getattr(os, "WEXITED", None)
+    nohang = getattr(os, "WNOHANG", None)
+    nowait = getattr(os, "WNOWAIT", None)
+    if waitid is None or None in (exited, nohang, nowait):
+        return None
+    which = os.P_PID if pid > 0 else getattr(os, "P_ALL", None)
+    if which is None:
+        return None
+    try:
+        status = waitid(which, pid if pid > 0 else 0, exited | nohang | nowait)
+    except (AttributeError, ChildProcessError, OSError):
+        return None
+    if status is None:
+        return None
+    found = getattr(status, "si_pid", None)
+    if isinstance(found, int) and found > 0:
+        return found
+    return pid if pid > 0 else None
+
+
+def _remember_child(pid: int) -> None:
+    """Record one child's logical writes while it can still be read."""
+    with _child_bytes_lock:
+        if pid in _child_bytes:
+            return
+    from aicad.sandbox_macos import bytes_written
+
+    value = bytes_written(pid)
+    if value is None:
+        return
+    with _child_bytes_lock:
+        _child_bytes.setdefault(pid, int(value))
+
+
+def _install_wait_accounting() -> None:
+    """Read a child's logical writes before a Python wait collects it."""
+    global _wait_accounting_installed
+    if _wait_accounting_installed or sys.platform != "darwin":
+        return
+    _wait_accounting_installed = True
+
+    def waitpid(pid: int, options: int = 0):
+        nohang = bool(options & os.WNOHANG)
+        while True:
+            pending = _pending_child(pid)
+            if pending is not None:
+                _remember_child(pending)
+                _publish_child_writes()
+                return _real_waitpid(pending, 0)
+            zombies = _record_zombie_children()
+            chosen = [item for item in zombies if pid <= 0 or item == pid]
+            if chosen:
+                _publish_child_writes()
+                return _real_waitpid(chosen[0], 0)
+            try:
+                got = _real_waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                return (0, 0) if nohang else _real_waitpid(pid, options)
+            if got[0] != 0 or nohang:
+                return got
+            import time
+
+            time.sleep(0.002)
+
+    os.waitpid = waitpid  # type: ignore[assignment]
+    if hasattr(os, "wait"):
+
+        def wait():
+            return waitpid(-1, 0)
+
+        os.wait = wait  # type: ignore[assignment]
+
+
+def _collect_descendant_writes() -> None:
+    """Count children that exited before their own write counter was opened.
+
+    On Linux, collecting a child adds its logical writes to this process.
+    The parent reads this process before collecting it. On macOS each exited
+    child is read while it is still a zombie, and that total is published
+    for the parent.
+    """
+    if sys.platform.startswith("linux"):
+        while True:
+            try:
+                pid, _status = _real_waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return
+            except OSError:
+                return
+            if pid == 0:
+                return
+    if sys.platform != "darwin":
+        return
+    zombies = _record_zombie_children()
+    _publish_child_writes()
+    for pid in zombies:
+        try:
+            _real_waitpid(pid, os.WNOHANG)
+        except OSError:
+            pass
+
+
 def _wait_for_quota_hold() -> None:
     """Block until the parent has opened the write counter.
 
@@ -424,6 +585,8 @@ def _wait_for_quota_hold() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _wait_for_quota_hold()
+    _install_wait_accounting()
+    atexit.register(_collect_descendant_writes)
     stack = _early_thread_stack()
     if stack is not None:
         stack.prepare_geometry_thread_stack()
@@ -448,6 +611,7 @@ def main(argv: list[str] | None = None) -> int:
         print("usage: python -P -m aicad.sandbox_run JOB_DIR", file=sys.stderr)
         return 2
     job = Path(args[0])
+    _quota_job[0] = job
     if stack is not None and not stack.current_thread_can_run_geometry():
         try:
             _write(job, {"ok": False, "error": stack.SMALL_CALLER_STACK})
@@ -526,6 +690,7 @@ def main(argv: list[str] | None = None) -> int:
             _write(job, {"ok": False, "error": detail})
         except Exception:
             print(detail, file=sys.stderr)
+        _collect_descendant_writes()
         os._exit(1)
 
 

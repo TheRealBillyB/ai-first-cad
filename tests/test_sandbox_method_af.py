@@ -40,9 +40,15 @@ def test_parent_library_variables_are_removed(tmp_path):
             os.environ[name] = str(marker)
         prepare_geometry_import()
         for name in _LIBRARY_VARS:
-            if name == "EZDXF_CONFIG_FILE":
+            if name in {"EZDXF_CONFIG_FILE", "FONTCONFIG_FILE"}:
                 continue
             assert name not in os.environ
+        from aicad.paths import packaged_fontconfig_file
+
+        fontconfig = Path(os.environ["FONTCONFIG_FILE"])
+        assert fontconfig == packaged_fontconfig_file()
+        assert fontconfig.is_file()
+        assert _MARKER not in fontconfig.read_text(encoding="utf-8")
         assert os.environ["EZDXF_CONFIG_FILE"] != str(marker)
         assert _MARKER not in os.environ["EZDXF_CONFIG_FILE"]
         assert Path(os.environ["EZDXF_CONFIG_FILE"]).is_file()
