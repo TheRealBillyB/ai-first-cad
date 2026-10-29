@@ -87,11 +87,11 @@ That stops another website, including one that tries to reach this computer by a
 - **AI.** A name inside a drawing, a 3MF package, or a session frame does not open a file outside the project.
 
 - **E.** A project file is read from the project directory, so a directory link in the middle of the path is not followed.
-- A design script's disk quota counts the bytes it writes, including a file that was removed before the next look. The count is read again when the script exits, so a run that finishes before the next look is still counted. A child that exits before its own counter is opened is counted too: on Linux those writes are added when the script collects the child, and on macOS they are read while the child is still a zombie.
+- A design script's disk quota counts the bytes it writes, including a file that was removed before the next look. The count is read again when the script exits, before the process is collected, so a run that finishes before the next look is still counted. That reading still happens when the system cannot report the exit without collecting the process. A child that exits before its own counter is opened is counted too: on Linux those writes are added when the script collects the child, and on macOS they are read while the child is still a zombie.
 - **AJ.** A copy, an export, a render, and a picture response do not follow a symlink or junction, and do not send bytes from outside the project.
 
 - **R.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
-- A file a script removes is still counted at the size it reached, including toward the per-file cap.
+- A file a script removes is still counted at the size it reached, including toward the per-file cap. A file that appears and is removed between timer samples is counted too. macOS counts an unlinked file that is still open. Windows counts the file from the directory change.
 - A design script's check record is written to the file the parent opened. A different file at that path is not the record.
 - **AK.** A request to the model API or the local workspace app does not use a proxy or a certificate file named by the environment. Those variables stay in the process environment.
 
