@@ -90,13 +90,11 @@ That stops another website, including one that tries to reach this computer by a
 - A design script's disk quota counts the bytes it writes, including a file that was removed before the next look. The count is read again when the script exits, before the process is collected, so a run that finishes before the next look is still counted. That reading still happens when the system cannot report the exit without collecting the process. A child that exits before its own counter is opened is counted too: on Linux those writes are added when the script collects the child, and on macOS they are read while the child is still a zombie.
 - **AJ.** A copy, an export, a render, and a picture response do not follow a symlink or junction, and do not send bytes from outside the project.
 
-- **R.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
 - A design script's disk quota counts writes from every thread in the process, not from one thread alone.
 - A file a script removes is still counted at the size it reached, including toward the per-file cap. A file that appears and is removed between timer samples is counted too. macOS counts an unlinked file that is still open. Windows counts the file from the directory change.
 - A design script's check record is written to the file the parent opened. A different file at that path is not the record.
 - **AK.** A request to the model API or the local workspace app does not use a proxy or a certificate file named by the environment. Those variables stay in the process environment.
 
-- **E.** A directory link is unlinked when a project folder is removed, and the directory it points at is left in place.
 - A design script's job file, script file, and result are not opened when that name is a link.
 - **AL.** A slicer, ffmpeg, and CalculiX each run in a private folder outside the project and see only file names from that folder. Results are copied back into the project. An output folder that is a symlink or junction is not used.
 
@@ -133,39 +131,25 @@ That stops another website, including one that tries to reach this computer by a
 
 - A private directory used for Gmsh, CalculiX, a design-call job, a plugin part copy, or a robot export is opened by its handle. Replacing that directory's name does not change the files read or written there.
 
-- **BB.** A new project file or folder is created from a directory handle. When the project folder is a link, that handle is the directory the link points at. A link in the rest of the path is not followed.
-
 - **BB.** Fontconfig reads the file shipped with aicad. That file names system font folders. A configuration file in the account home is not read. Plugin consent stays on the account home.
 
 - **BC.** Gmsh meshes a part from a private folder outside the project. The process temporary directory is not used when that directory is inside a project.
-
-- **BC.** The design-record stop file is created from its parent directory, and the record is read from its parent directory. A link at either name is not followed.
 
 - CalculiX output is read as UTF-8. A byte that is not UTF-8 does not stop the error report.
 
 - A session picture's width and height are read from its header before the picture is decoded. A picture past the pixel limit is refused.
 
-- **BD.** A file created for the design record is readable and writable by its owner only, on Windows and on other systems.
-
 - **BD.** The OpenCascade glTF reader does not open a file. A glTF import reads the file through the shared file reader.
 
 - A file name that the Windows upcase table stores as an existing name is refused, including U+0131 LATIN SMALL LETTER DOTLESS I.
 
-- **BE.** A picture under a project folder that is a link is read from the directory that link points at. A nested link is not followed.
-
 - **BE.** A glTF, OBJ, or COLLADA import may read a file in a subfolder of the mesh file's folder. Each name in that path stays inside the folder. A link is not followed. The file is read through the shared file reader.
-
-- **BF.** A project folder that is a link is opened from the directory it points at, including when another directory link sits further out. A nested link is not followed.
 
 - **BF.** Opening a session record draws each step from its stored mesh. A picture that already matches that drawing is left as it is. A step with no mesh does not return its stored picture. A path outside the project is not opened.
 
 - **BH.** Slicer output is read as UTF-8. A byte that is not UTF-8 does not stop the report, and a terminal sequence in that output is not shown.
 
 - **BI.** The directory where a slicer or ffmpeg runs is opened by its handle. Replacing that directory's name does not change the files read or written there.
-
-- **BG.** When confinement stops, the script result is opened from its parent directory. A link at that name is not followed, and another name for the file is not changed.
-
-- **BH.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
 
 - **BJ.** Matplotlib's private config directory is opened by its handle. Replacing that directory's name does not change the directory that is used.
 
@@ -176,3 +160,23 @@ That stops another website, including one that tries to reach this computer by a
 - **BG.** A bill-of-materials cell that begins with =, +, -, or @ is stored as text.
 
 - **BM.** A design script's check record and its macOS confinement profile are written outside the project. The process temporary directory is not used when that directory is inside a project.
+
+- **BN.** A design script cannot read or write a file outside the project. An export and a STEP import stay inside that folder.
+
+- **BO.** A STEP import from the assistant stays inside the project. A path outside that folder is not read.
+
+- **BP.** A directory link is unlinked when a project folder is removed, and the directory it points at is left in place.
+- **BQ.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
+- **BR.** A new project file or folder is created from a directory handle. When the project folder is a link, that handle is the directory the link points at. A link in the rest of the path is not followed.
+
+- **BS.** The design-record stop file is created from its parent directory, and the record is read from its parent directory. A link at either name is not followed.
+
+- **BT.** A file created for the design record is readable and writable by its owner only, on Windows and on other systems.
+
+- **BU.** A picture under a project folder that is a link is read from the directory that link points at. A nested link is not followed.
+
+- **BV.** A project folder that is a link is opened from the directory it points at, including when another directory link sits further out. A nested link is not followed.
+
+- **BW.** When confinement stops, the script result is opened from its parent directory. A link at that name is not followed, and another name for the file is not changed.
+
+- **BX.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
