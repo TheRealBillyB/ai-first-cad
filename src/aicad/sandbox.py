@@ -510,18 +510,27 @@ def warn_design_scripts(workspace: str | Path) -> None:
 
 
 def require_in_project(path: str | Path, workspace: str | Path, *, writing: bool) -> None:
-    """Refuse a design-script path that leaves the project. No-op outside the sandbox child."""
-    from aicad.sandbox_state import in_sandbox
+    """Refuse a design-script path that leaves the project.
 
-    if not in_sandbox():
+    No-op unless this process is the confined script, or it is running a call
+    that script asked for. A call the script asked for stays in the project.
+    It does not use the library directories the confined script may read.
+    """
+    from aicad.sandbox_state import in_design_call, in_sandbox
+
+    script_call = in_design_call()
+    if not in_sandbox() and not script_call:
         return
     root = Path(workspace).resolve()
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = root / candidate
-    if _inside(candidate, root):
-        return
-    if not writing and _under(candidate, _read_roots()):
+    if script_call:
+        from aicad.paths import _lexical_inside
+
+        if _lexical_inside(candidate, root) and _inside(candidate, root):
+            return
+    elif _inside(candidate, root) or (not writing and _under(candidate, _read_roots())):
         return
     action = "write" if writing else "read"
     from aicad.paths import hide_project_path
