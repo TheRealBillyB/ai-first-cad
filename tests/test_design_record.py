@@ -379,6 +379,73 @@ def test_the_design_record_stop_and_record_are_opened_from_their_directories(tmp
     assert not (calls / "STOP").is_symlink()
 
 
+def test_closing_the_design_record_retries_while_windows_reports_it_in_use(tmp_path, monkeypatch):
+    import os
+
+    from aicad.sandbox import _DesignRecord
+
+    path = tmp_path / "aicad-design-checks.json"
+    path.write_text("{}\n", encoding="utf-8")
+    record = _DesignRecord(tmp_path, tmp_path / "job")
+    record.record = path
+    real = os.unlink
+    calls = {"n": 0}
+
+    def unlink(name, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3 and os.fspath(name) == os.fspath(path):
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process", os.fspath(name))
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    record.close()
+    assert calls["n"] >= 3
+    assert not path.exists()
+
+
+def test_closing_the_design_record_stops_the_model_before_removing_the_file(tmp_path):
+    import subprocess
+
+    from aicad.sandbox import _DesignRecord
+
+    path = tmp_path / "aicad-design-checks.json"
+    path.write_text("{}\n", encoding="utf-8")
+    removed: list[int | None] = []
+
+    class Fake:
+        def __init__(self):
+            self.returncode = None
+            self.pid = 2_000_000_003
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("model", timeout)
+            removed.append(self.returncode)
+            return self.returncode
+
+    record = _DesignRecord(tmp_path, tmp_path / "job")
+    record.proc = Fake()
+    record.record = path
+    record.close()
+    assert removed == [-9]
+    assert not path.exists()
+
+
+def test_the_model_keeps_the_design_record_private_before_it_runs_calls():
+    import inspect
+
+    from aicad.design_calls import model_main
+
+    source = inspect.getsource(model_main)
+    assert source.index("_keep_record_private") < source.index("serve_calls")
+
+
 def test_the_stop_file_is_not_created_through_a_directory_link(tmp_path):
     from aicad.errors import ScriptError
     from aicad.sandbox import _DesignRecord

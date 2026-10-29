@@ -351,6 +351,27 @@ def _write_all(descriptor: int, payload: bytes) -> None:
     os.fsync(descriptor)
 
 
+def _keep_record_private(record_fd: int) -> None:
+    """Do not let a nested part script inherit the design-check file.
+
+    The handle stays open in this process until the report is written. On
+    Windows it arrives inheritable. A child that inherited it would still
+    have the file after this process exits, and removing the file would fail.
+    """
+
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetHandleInformation.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+    kernel32.SetHandleInformation.restype = wintypes.BOOL
+    # HANDLE_FLAG_INHERIT is 1. Clearing it keeps the handle in this process.
+    if not kernel32.SetHandleInformation(ctypes.c_void_p(int(record_fd)), 1, 0):
+        raise OSError(ctypes.get_last_error(), "Could not keep the design record in this process.")
+
+
 def _adopt_record(record_fd: int) -> int:
     """Use the file the parent already opened.
 
@@ -375,6 +396,8 @@ def model_main(job: Path, record_path: Path, record_fd: int | None = None) -> in
     document = Document(workspace)
     before = {row["name"]: row for row in document.session_payload().get("parts", [])}
     calls: list[dict] = []
+    if record_fd is not None:
+        _keep_record_private(record_fd)
     report = serve_calls(job / "calls", document, calls, before)
     text = (json.dumps(report) + "\n").encode("utf-8")
     # The parent recorded this file's identity. Writing to the open file keeps
