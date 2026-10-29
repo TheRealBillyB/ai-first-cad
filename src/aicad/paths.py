@@ -2044,7 +2044,9 @@ def _create_beside(directory: Path, suffix: str) -> Path:
         for _ in range(128):
             name = f".aicad-{os.getpid()}-{uuid.uuid4().hex}{suffix}"
             try:
-                descriptor = create_file(directory, name)
+                # This file is renamed into place. An owner-only access list
+                # would drop a grant already on the directory.
+                descriptor = create_file(directory, name, private=False)
             except FileExistsError as exc:
                 last = exc
                 continue

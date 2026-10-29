@@ -191,6 +191,20 @@ def test_create_file_creates_a_private_file(tmp_path):
     assert (tmp_path / "fresh.log").read_text(encoding="utf-8") == "ok\n"
 
 
+def test_a_published_file_keeps_the_directory_access_list(tmp_path):
+    from aicad.paths import _OWNER_ONLY_SDDL, publish_text
+
+    target = tmp_path / "probe.py"
+    publish_text(target, "print('sandbox-ok')\n")
+    assert target.read_text(encoding="utf-8") == "print('sandbox-ok')\n"
+    if sys.platform != "win32":
+        return
+    from aicad.paths import _windows_dacl_text
+
+    published = _windows_dacl_text(target).upper().replace(" ", "")
+    assert published != _OWNER_ONLY_SDDL
+
+
 def test_create_file_does_not_follow_a_link(tmp_path):
     from aicad.file_access import create_file
 
