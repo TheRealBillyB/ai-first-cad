@@ -10,7 +10,9 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A deep boolean runs on a thread with a larger stack | On macOS a pytest worker keeps the process stack, about 8 MiB, and OpenCascade's own pool threads are 512 KiB. A rod-handler boolean or mesh recurses further than that and the worker exits with no traceback. That call is pinned to one pool thread and, when the caller is smaller than 16 MiB, runs on a Python thread that has the geometry stack. |
 | A hypoid pitch step scales with the ring | The axial unknown is a length and the other two unknowns are angles. The step and its clamp grow the axial part with the ring radius, so a larger blank still reaches the pitch point. A ring at the radius the step was written for is unchanged. |
+| A Windows part script is stopped before the check record | A design script that runs out of wall time stops its model process, then removes the check record. On Windows the part scripts that model started are not in the process list returned for other systems, and stopping the model first reparents them, so they still hold the record and the delete fails. They are listed and stopped while the model is still their parent, and the terminate right is the only right requested, because an AppContainer refuses a broader open. |
 | The design-check record is removed after the model exits | The process that records a design script's checks keeps that file open until the script finishes. Removing the file while the process still has it fails on Windows. The process and a part script it started are stopped first. A nested part script does not inherit the file. A folder the container can already modify is not walked again, and a firewall read-back from a process that is still running is reused, so those steps do not consume the script's time limit. |
 
 ## 2026-10-27
