@@ -1,6 +1,6 @@
 """Headless animations of an assembly.
 
-A motion study, a camera orbit, or an exploded opening is drawn with the same
+A stored motion, a motion study, a camera orbit, or an exploded opening is drawn with the same
 software rasterizer as the still views. Nothing here opens a window or uses a
 GPU. The GIF is written with Pillow, which is already a dependency. MP4 and
 WebM are written by ``ffmpeg`` when that program is on PATH outside the
@@ -238,21 +238,29 @@ def _timeline(spec, kind, sequence, study, frames, fps, duration_s) -> dict:
     drivers: list[str] = []
     study_name = None
     chosen_study = None
+    chosen_motion = None
     if kind == "motion":
-        chosen_study = study_by_name(spec, sequence, study)
-        if chosen_study is None:
+        chosen_study, chosen_motion = _motion_source(spec, sequence, study)
+        if chosen_study is None and chosen_motion is None:
             known = ", ".join(spec.get("studies") or {}) or "(none)"
+            motions = ", ".join(spec.get("motions") or {}) or "(none)"
             raise GeometryError(
-                f"Name a motion study on {spec['name']!r}, or pass one. Studies: {known}."
+                f"Name a motion or a motion study on {spec['name']!r}, or pass one. "
+                f"Motions: {motions}. Studies: {known}."
             )
-        from aicad.motion_study import normalize_study
+        if chosen_study is not None:
+            from aicad.motion_study import normalize_study
 
-        chosen_study = normalize_study(
-            chosen_study, spec["joints"], spec["relations"], name=chosen_study.get("name")
-        )
-        motion_s = float(chosen_study["duration_s"])
-        drivers = [driver["joint"] for driver in chosen_study["drivers"]]
-        study_name = chosen_study["name"]
+            chosen_study = normalize_study(
+                chosen_study, spec["joints"], spec["relations"], name=chosen_study.get("name")
+            )
+            motion_s = float(chosen_study["duration_s"])
+            drivers = [driver["joint"] for driver in chosen_study["drivers"]]
+            study_name = chosen_study["name"]
+        else:
+            motion_s = _motion_duration(chosen_motion)
+            drivers = _motion_drivers(chosen_motion)
+            study_name = chosen_motion.get("name")
         span = motion_s if duration_s is None else _duration(duration_s)
     else:
         if duration_s is None:
@@ -274,6 +282,7 @@ def _timeline(spec, kind, sequence, study, frames, fps, duration_s) -> dict:
         "frames": count,
         "motion_s": motion_s if kind == "motion" else span,
         "study": chosen_study,
+        "motion": chosen_motion,
         "study_name": study_name,
         "drivers": drivers,
         "overlay_default": overlay,
@@ -297,10 +306,97 @@ def _duration(value) -> float:
     return number
 
 
+def _motion_source(spec, sequence, study):
+    """A stored motion study, or a stored motion, named by ``sequence``."""
+    if study:
+        return study_by_name(spec, sequence, study), None
+    motions = spec.get("motions") or {}
+    studies = spec.get("studies") or {}
+    if not sequence:
+        return None, None
+    if sequence in motions and sequence in studies:
+        raise GeometryError(
+            f"{sequence!r} is both a motion and a motion study. Pass the motion or the study on its own."
+        )
+    if sequence in studies:
+        return study_by_name(spec, sequence, None), None
+    if sequence in motions:
+        from aicad.assembly import motion_by_name
+
+        return None, motion_by_name(spec, sequence, None)
+    known_motions = ", ".join(motions) or "(none)"
+    known_studies = ", ".join(studies) or "(none)"
+    raise GeometryError(
+        f"No motion or motion study {sequence!r}. Motions: {known_motions}. Studies: {known_studies}."
+    )
+
+
+def _motion_duration(motion) -> float:
+    duration = motion.get("duration_s")
+    if duration is None:
+        return 1.0
+    try:
+        number = float(duration)
+    except (TypeError, ValueError) as exc:
+        raise GeometryError("duration_s must be positive.") from exc
+    if number <= 0:
+        raise GeometryError("duration_s must be positive.")
+    return number
+
+
+def _motion_drivers(motion) -> list[str]:
+    sweep = motion.get("sweep") or {}
+    joint = sweep.get("joint")
+    if joint:
+        return [str(joint)]
+    names: list[str] = []
+
+    def add(name) -> None:
+        text = str(name)
+        if text and text not in names:
+            names.append(text)
+
+    for frame in motion.get("keyframes") or []:
+        if not isinstance(frame, dict):
+            continue
+        if frame.get("joint"):
+            add(frame["joint"])
+        extra = frame.get("joints") or {}
+        if isinstance(extra, dict):
+            for key in extra:
+                add(key)
+        for key in frame:
+            if key in {"time_s", "pose", "joint", "value", "joints"}:
+                continue
+            add(key)
+    return names
+
+
+def _motion_rows(spec, motion, count):
+    import copy
+
+    from aicad.kinematics import expand_motion
+
+    sampled = copy.deepcopy(motion)
+    if sampled.get("sweep"):
+        sampled["sweep"] = dict(sampled["sweep"])
+        sampled["sweep"]["frames"] = count
+    else:
+        sampled["samples"] = count
+    rows = []
+    for sample in expand_motion(spec, sampled):
+        solved = solve_joints(spec, sample["joints"])
+        rows.append({"index": sample["index"], "time_s": sample["time_s"], "solved": solved})
+    return rows
+
+
 def _samples(spec, shapes, libraries, kind, clock, gap_mm) -> dict:
     count = clock["frames"]
     if kind == "motion":
-        rows = posed_at(spec, clock["study"], count)
+        if clock.get("motion") is not None:
+            rows = _motion_rows(spec, clock["motion"], count)
+        else:
+            rows = posed_at(spec, clock["study"], count)
         return {"kind": kind, "rows": rows, "gap_mm": None, "offsets": None, "solved": None}
     solved = solve_joints(spec)
     if kind == "orbit":
