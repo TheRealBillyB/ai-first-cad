@@ -94,8 +94,11 @@ except Exception as exc:
 raise SystemExit(main([str(job)]))
 """
 
-# Defaults. A test may set a lower value. Nothing can set a higher one.
+# Defaults. A test or the environment may set a lower value. The account
+# config may raise the wall clock for one project up to WALL_SECONDS_CAP.
+# A file in the project, the environment, and a script cannot raise it.
 WALL_SECONDS = 120
+WALL_SECONDS_CAP = 600
 CPU_SECONDS = 60
 MEMORY_BYTES = 4 * 1024 * 1024 * 1024
 FILE_BYTES = 512 * 1024 * 1024
@@ -412,8 +415,88 @@ def _capped(env_name: str, default: int, ceiling: int) -> int:
     return max(1, min(value, ceiling))
 
 
-def wall_seconds() -> int:
-    return _capped("AICAD_SCRIPT_WALL_SECONDS", WALL_SECONDS, WALL_SECONDS)
+def _wall_file() -> Path:
+    return config_dir() / "script_wall.json"
+
+
+def _read_wall_table() -> dict:
+    path = _wall_file()
+    try:
+        from aicad.file_access import read_text
+
+        data = json.loads(read_text(path, maximum=1_000_000))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {"projects": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("projects"), dict):
+        return {"projects": {}}
+    return data
+
+
+def _write_wall_table(data: dict) -> None:
+    path = _wall_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from aicad.paths import publish_text
+
+    publish_text(path, json.dumps(data, indent=2) + "\n", root=path.parent, private=True)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def project_wall_seconds(workspace: str | Path) -> int | None:
+    """The wall clock chosen for this project, or None when it stays at the default.
+
+    A value above the cap is read as the cap. A project file is not consulted.
+    """
+
+    root = str(Path(workspace).resolve())
+    entry = _read_wall_table()["projects"].get(root)
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get("wall_seconds")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return min(value, WALL_SECONDS_CAP)
+
+
+def set_project_wall_seconds(workspace: str | Path, seconds: int) -> dict:
+    """Record how long a design script in this project may run.
+
+    The value lives in the account config, outside the project. A script
+    cannot call this. The cap stays in force even if the file is edited.
+    """
+
+    from aicad.sandbox_state import in_sandbox
+
+    if in_sandbox():
+        raise ScriptError("A script cannot change how long a script may run.")
+    if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 1 or seconds > WALL_SECONDS_CAP:
+        raise ScriptError(
+            f"The script time limit must be a whole number of seconds from 1 to {WALL_SECONDS_CAP}."
+        )
+    root = Path(workspace).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    data = _read_wall_table()
+    data["projects"][str(root)] = {"wall_seconds": seconds}
+    _write_wall_table(data)
+    return {
+        "workspace": str(root),
+        "wall_seconds": seconds,
+        "default": WALL_SECONDS,
+        "cap": WALL_SECONDS_CAP,
+    }
+
+
+def wall_seconds(workspace: str | Path | None = None) -> int:
+    """Seconds a script may run. The environment can lower this and cannot raise it."""
+
+    limit = WALL_SECONDS
+    if workspace is not None:
+        chosen = project_wall_seconds(workspace)
+        if chosen is not None:
+            limit = chosen
+    return _capped("AICAD_SCRIPT_WALL_SECONDS", limit, limit)
 
 
 def cpu_seconds() -> int:
@@ -557,6 +640,7 @@ def design_script_status(workspace: str | Path, network_once: bool = False, netw
         "warning": WARNING,
         "enable": hide_project_path(f"aicad allow-scripts --workspace {root}", root),
         "network": network,
+        "wall_seconds": wall_seconds(root),
         "log": hide_project_path(str(root / ".aicad" / "script_log.jsonl"), root),
     }
 
@@ -4536,7 +4620,7 @@ class _DesignRecord:
         if descriptor is not None:
             os.close(descriptor)
         try:
-            self.proc.communicate(timeout=wall_seconds())
+            self.proc.communicate(timeout=wall_seconds(self.workspace))
         except subprocess.TimeoutExpired:
             # Stop part scripts before the model. Killing the model first
             # reparents them, and on Windows they still hold the check record.
@@ -4717,7 +4801,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             profile_dir = None
             raise
         command = [*command_prefix(str(profile_path), workspace), *command]
-    wall = wall_seconds()
+    wall = wall_seconds(workspace)
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
     disk.child_report = job / "child-writes.json"
     quota_hold: list[int | None] = [None]
