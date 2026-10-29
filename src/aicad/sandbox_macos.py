@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import ctypes
 import os
+import stat
 import subprocess
+import sys
 import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -206,6 +209,8 @@ class _ProcTaskInfo(ctypes.Structure):
 
 _libproc = None
 _libproc_failed = False
+_fdinfo_ready = False
+_fdinfo_lock = threading.Lock()
 
 
 def _proc_pidinfo():
@@ -575,3 +580,228 @@ def close_sentinel(fd: int, path: str) -> None:
         os.unlink(path)
     except OSError:
         pass
+
+
+# libproc flavors. The layouts are the LP64 ones from <libproc.h>.
+_PROC_PIDLISTFDS = 1
+_PROC_PIDFDVNODEPATHINFO = 2
+_PROX_FDTYPE_VNODE = 1
+_MAXPATHLEN = 1024
+
+
+class _ProcFdInfo(ctypes.Structure):
+    _fields_ = [
+        ("proc_fd", ctypes.c_int32),
+        ("proc_fdtype", ctypes.c_uint32),
+    ]
+
+
+class _ProcFileInfo(ctypes.Structure):
+    _fields_ = [
+        ("fi_openflags", ctypes.c_uint32),
+        ("fi_status", ctypes.c_uint32),
+        ("fi_offset", ctypes.c_int64),
+        ("fi_type", ctypes.c_int32),
+        ("fi_guardflags", ctypes.c_uint32),
+    ]
+
+
+class _VinfoStat(ctypes.Structure):
+    _fields_ = [
+        ("vst_dev", ctypes.c_uint32),
+        ("vst_mode", ctypes.c_uint16),
+        ("vst_nlink", ctypes.c_uint16),
+        ("vst_ino", ctypes.c_uint64),
+        ("vst_uid", ctypes.c_uint32),
+        ("vst_gid", ctypes.c_uint32),
+        ("vst_atime", ctypes.c_int64),
+        ("vst_atimensec", ctypes.c_int64),
+        ("vst_mtime", ctypes.c_int64),
+        ("vst_mtimensec", ctypes.c_int64),
+        ("vst_ctime", ctypes.c_int64),
+        ("vst_ctimensec", ctypes.c_int64),
+        ("vst_birthtime", ctypes.c_int64),
+        ("vst_birthtimensec", ctypes.c_int64),
+        ("vst_size", ctypes.c_int64),
+        ("vst_blocks", ctypes.c_int64),
+        ("vst_blksize", ctypes.c_int32),
+        ("vst_flags", ctypes.c_uint32),
+        ("vst_gen", ctypes.c_uint32),
+        ("vst_rdev", ctypes.c_int32),
+        ("vst_qspare", ctypes.c_int64 * 2),
+    ]
+
+
+class _VnodeInfo(ctypes.Structure):
+    _fields_ = [
+        ("vi_stat", _VinfoStat),
+        ("vi_type", ctypes.c_int),
+        ("vi_pad", ctypes.c_int),
+        ("vi_fsid", ctypes.c_int32 * 2),
+    ]
+
+
+class _VnodeInfoPath(ctypes.Structure):
+    _fields_ = [
+        ("vip_vi", _VnodeInfo),
+        ("vip_path", ctypes.c_char * _MAXPATHLEN),
+    ]
+
+
+class _VnodeFdInfoWithPath(ctypes.Structure):
+    _fields_ = [
+        ("pfi", _ProcFileInfo),
+        ("pvip", _VnodeInfoPath),
+    ]
+
+
+def _bind_fdinfo(lib) -> bool:
+    """Bind ``proc_pidfdinfo`` once. Two threads must not set its signature together."""
+    global _fdinfo_ready
+    with _fdinfo_lock:
+        if _fdinfo_ready:
+            return True
+        if not hasattr(lib, "proc_pidfdinfo"):
+            return False
+        lib.proc_pidfdinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidfdinfo.restype = ctypes.c_int
+        _fdinfo_ready = True
+        return True
+
+
+def open_file_sizes(pid: int, root: Path) -> dict[str, int]:
+    """Sizes of regular files ``pid`` has open under ``root``.
+
+    An unlinked file stays visible until its descriptor is closed. The path
+    is the one the process opened. A file outside ``root`` is not counted.
+    """
+    if pid <= 0 or sys.platform != "darwin" or pid != os.getpid():
+        # Another process's descriptor list has stopped the parent.
+        return {}
+    lib = _proc_pidinfo()
+    if lib is None or not _bind_fdinfo(lib):
+        return {}
+    count = 64
+    used = 0
+    infos = None
+    while count <= 8192:
+        infos = (_ProcFdInfo * count)()
+        try:
+            used = int(lib.proc_pidinfo(pid, _PROC_PIDLISTFDS, 0, ctypes.byref(infos), ctypes.sizeof(infos)))
+        except (OSError, ctypes.ArgumentError):
+            return {}
+        if used <= 0:
+            return {}
+        if used < ctypes.sizeof(infos):
+            break
+        count *= 2
+    if infos is None or used <= 0:
+        return {}
+    root_resolved = root.resolve()
+    sizes: dict[str, int] = {}
+    slots = min(len(infos), used // ctypes.sizeof(_ProcFdInfo))
+    for index in range(slots):
+        item = infos[index]
+        if int(item.proc_fdtype) != _PROX_FDTYPE_VNODE or int(item.proc_fd) < 0:
+            continue
+        # The kernel writes at most this many bytes. A short struct must not be the target.
+        buf = ctypes.create_string_buffer(4096)
+        try:
+            written = int(
+                lib.proc_pidfdinfo(
+                    pid,
+                    int(item.proc_fd),
+                    _PROC_PIDFDVNODEPATHINFO,
+                    buf,
+                    len(buf),
+                )
+            )
+        except (OSError, ctypes.ArgumentError):
+            continue
+        need = ctypes.sizeof(_VnodeFdInfoWithPath)
+        if written < need or written > len(buf):
+            continue
+        info = _VnodeFdInfoWithPath.from_buffer_copy(buf.raw[:need])
+        mode = int(info.pvip.vip_vi.vi_stat.vst_mode)
+        if not stat.S_ISREG(mode):
+            continue
+        raw = bytes(info.pvip.vip_path).split(b"\x00", 1)[0]
+        text = os.fsdecode(raw)
+        if text.endswith(" (deleted)"):
+            text = text[: -len(" (deleted)")]
+        if not text.startswith("/"):
+            continue
+        path = Path(text)
+        try:
+            path.resolve().relative_to(root_resolved)
+        except (OSError, ValueError):
+            continue
+        key = os.path.normcase(os.path.abspath(text))
+        size = int(info.pvip.vip_vi.vi_stat.vst_size)
+        if size > sizes.get(key, 0):
+            sizes[key] = size
+    return sizes
+
+
+def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None:
+    """Watch ``root`` until ``stop`` is set.
+
+    A new file is opened while its name is still there, so a name that is
+    gone before the next timer is still measured. This does not use kqueue:
+    a kqueue wait in this process while a script process is created stops
+    the parent. This thread does not ask libproc; the other sampler does.
+    """
+    if sys.platform != "darwin":
+        mark(False)
+        return
+    known: dict[str, set[str]] = {}
+
+    def rescan() -> None:
+        pending = [str(root)]
+        visited: set[str] = set()
+        while pending:
+            directory = pending.pop()
+            if directory in visited:
+                continue
+            visited.add(directory)
+            previous = known.get(directory)
+            live: set[str] = set()
+            try:
+                entries = list(os.scandir(directory))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                    is_file = entry.is_file(follow_symlinks=False)
+                except OSError:
+                    continue
+                if is_dir:
+                    pending.append(entry.path)
+                elif is_file:
+                    live.add(entry.path)
+                    if previous is not None and entry.path not in previous:
+                        retain(Path(entry.path))
+            if previous is not None:
+                for gone in previous - live:
+                    release(Path(gone))
+            known[directory] = live
+
+    rescan()
+    mark(True)
+    while not stop.is_set():
+        if stop.wait(0.005):
+            break
+        try:
+            rescan()
+            reread()
+        except Exception:
+            continue
