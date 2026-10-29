@@ -115,6 +115,9 @@ _network_off_rules_sid: str | None = None
 # It is not proof the rules still exist. It lives in the real local profile,
 # which is not the project and is not a folder the script is allowed to write.
 _network_off_marker_path: Path | None = None
+# Held from profile creation until the confined process has exited, so another
+# start does not delete the profile that process is using.
+_profile_lock_handle = None
 _profile_local_app_data_known = False
 _profile_local_app_data_path: Path | None = None
 _FOLDERID_LOCAL_APPDATA = "{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}"
@@ -391,6 +394,8 @@ def _bind() -> None:
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.InitializeProcThreadAttributeList.argtypes = [
         ctypes.c_void_p,
         wintypes.DWORD,
@@ -494,29 +499,363 @@ def _sid_to_string(sid: ctypes.c_void_p) -> str:
         _kernel32().LocalFree(out)
 
 
-def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
+def _create_appcontainer_profile() -> tuple[int, ctypes.c_void_p]:
+    """Create the script profile with no stored capabilities."""
+
     userenv = _userenv()
     sid = ctypes.c_void_p()
-    result = userenv.CreateAppContainerProfile(
-        _PROFILE_NAME,
-        _PROFILE_DISPLAY,
-        _PROFILE_DESCRIPTION,
-        None,
-        0,
-        ctypes.byref(sid),
+    result = int(
+        userenv.CreateAppContainerProfile(
+            _PROFILE_NAME,
+            _PROFILE_DISPLAY,
+            _PROFILE_DESCRIPTION,
+            None,
+            0,
+            ctypes.byref(sid),
+        )
     )
+    return result & 0xFFFFFFFF, sid
+
+
+def _delete_appcontainer_profile() -> int:
+    """Delete the named script profile. A missing profile is not an error."""
+
+    return int(_userenv().DeleteAppContainerProfile(_PROFILE_NAME)) & 0xFFFFFFFF
+
+
+def _free_partial_sid(sid: ctypes.c_void_p | None) -> None:
+    if sid is None or not getattr(sid, "value", None):
+        return
+    _advapi32().FreeSid(sid)
+
+
+def _profile_lock_path() -> Path:
+    """A lock outside every project. The script cannot unlink it."""
+
+    base = _profile_local_app_data()
+    if base is None:
+        import tempfile
+
+        base = Path(tempfile.gettempdir())
+    return base / "aicad" / "script-profile.lock"
+
+
+def _acquire_profile_lock() -> None:
+    """Wait until no confined script is using the shared profile name."""
+
+    global _profile_lock_handle
+    if _profile_lock_handle is not None:
+        raise OSError("The script profile is already in use, so the script was not started.")
+    path = _profile_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    try:
+        if handle.seek(0, os.SEEK_END) < 1:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+            import time
+
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    # 13 and 36 are the Windows errors for a region another process holds.
+                    if exc.errno not in (13, 36):
+                        raise
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        handle.close()
+        raise
+    _profile_lock_handle = handle
+
+
+def _release_profile_lock() -> None:
+    global _profile_lock_handle
+    handle = _profile_lock_handle
+    _profile_lock_handle = None
+    if handle is None:
+        return
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
+def _profile_use_path() -> Path:
+    return _profile_lock_path().with_name("script-profile-use")
+
+
+def _pid_alive(pid: int) -> bool:
+    """True when that process is still running.
+
+    On Windows, ``os.kill(pid, 0)`` is not an existence check. It raises
+    ``SystemError`` and can terminate the process. Open the process instead.
+    """
+
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        _bind()
+        kernel32 = _kernel32()
+        # PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return int(code.value) == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _load_profile_use() -> dict[int, int]:
+    """Live processes that are using the script profile. A dead pid is dropped."""
+
+    found: dict[int, int] = {}
+    try:
+        text = _profile_use_path().read_text(encoding="utf-8")
+    except OSError:
+        return found
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+            count = int(parts[1])
+        except ValueError:
+            continue
+        if count > 0 and _pid_alive(pid):
+            found[pid] = count
+    return found
+
+
+def _store_profile_use(found: dict[int, int]) -> None:
+    path = _profile_use_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = "".join(f"{pid} {count}\n" for pid, count in sorted(found.items()))
+    path.write_text(data, encoding="utf-8")
+
+
+def _profile_is_in_use() -> bool:
+    """True when a live process is already running in the script profile."""
+
+    found = _load_profile_use()
+    try:
+        _store_profile_use(found)
+    except OSError:
+        pass
+    return bool(found)
+
+
+def _change_profile_use(delta: int) -> None:
+    found = _load_profile_use()
+    pid = os.getpid()
+    count = found.get(pid, 0) + delta
+    if count > 0:
+        found[pid] = count
+    else:
+        found.pop(pid, None)
+    _store_profile_use(found)
+
+
+def _release_profile_use() -> None:
+    """Drop this process's use of the profile. The caller does not hold the lock."""
+
+    _acquire_profile_lock()
+    try:
+        _change_profile_use(-1)
+    finally:
+        _release_profile_lock()
+
+
+def _derive_profile_sid() -> tuple[int, ctypes.c_void_p]:
+    sid = ctypes.c_void_p()
+    result = int(
+        _userenv().DeriveAppContainerSidFromAppContainerName(
+            _PROFILE_NAME,
+            ctypes.byref(sid),
+        )
+    )
+    return result & 0xFFFFFFFF, sid
+
+
+def _process_capability_sids(process: int) -> list[str]:
+    """Capability SIDs on a suspended process token."""
+
+    kernel32 = _kernel32()
+    advapi32 = _advapi32()
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+        raise OSError(_win_error("Could not read the script profile token"))
+    try:
+        returned = wintypes.DWORD(0)
+        advapi32.GetTokenInformation(token, _TokenCapabilities, None, 0, ctypes.byref(returned))
+        size = int(returned.value)
+        if size <= 0 or size > 1024 * 1024:
+            raise OSError("Could not read the script profile capabilities.")
+        buffer = ctypes.create_string_buffer(size)
+        if not advapi32.GetTokenInformation(
+            token,
+            _TokenCapabilities,
+            buffer,
+            size,
+            ctypes.byref(returned),
+        ):
+            raise OSError("Could not read the script profile capabilities.")
+        return _token_group_sids(
+            buffer,
+            lambda pointer: _sid_to_string(ctypes.c_void_p(pointer)),
+        )
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _stored_capabilities_are_empty(sid: ctypes.c_void_p) -> bool:
+    """True when this profile adds no capabilities.
+
+    A suspended process is created with no capabilities and terminated
+    before it runs. Any capability on its token was stored in the profile.
+    """
+
+    kernel32 = _kernel32()
+    security = _SecurityCapabilities()
+    security.AppContainerSid = sid
+    security.Capabilities = None
+    security.CapabilityCount = 0
+    size = ctypes.c_size_t(0)
+    kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+    attributes = ctypes.create_string_buffer(size.value)
+    if not kernel32.InitializeProcThreadAttributeList(attributes, 1, 0, ctypes.byref(size)):
+        raise OSError(_win_error("Could not prepare the script profile check"))
+    try:
+        if not kernel32.UpdateProcThreadAttribute(
+            attributes,
+            0,
+            _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+            ctypes.c_void_p(ctypes.addressof(security)),
+            ctypes.sizeof(security),
+            None,
+            None,
+        ):
+            raise OSError(_win_error("Could not attach the script profile"))
+        startup = _StartupInfoEx()
+        startup.StartupInfo.cb = ctypes.sizeof(startup)
+        startup.lpAttributeList = ctypes.c_void_p(ctypes.addressof(attributes))
+        command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline([sys.executable, "-c", ""]))
+        process = _ProcessInformation()
+        created = False
+        for breakaway in (True, False):
+            created = bool(
+                kernel32.CreateProcessW(
+                    sys.executable,
+                    command_line,
+                    None,
+                    None,
+                    False,
+                    _creation_flags(breakaway=breakaway),
+                    None,
+                    None,
+                    ctypes.byref(startup),
+                    ctypes.byref(process),
+                )
+            )
+            if created:
+                break
+            code = _last_error(kernel32)
+            if breakaway and code == _ERROR_ACCESS_DENIED:
+                continue
+            raise OSError(f"Could not check the script profile (Windows error {code}).")
+        if not created:
+            raise OSError("Could not check the script profile.")
+        try:
+            return _process_capability_sids(int(process.hProcess)) == []
+        finally:
+            kernel32.TerminateProcess(process.hProcess, 1)
+            kernel32.CloseHandle(process.hThread)
+            kernel32.CloseHandle(process.hProcess)
+    finally:
+        kernel32.DeleteProcThreadAttributeList(attributes)
+
+
+def _open_proven_profile() -> tuple[ctypes.c_void_p, str]:
+    """Open the profile a live script is using, when it has no capabilities.
+
+    The profile is not deleted. A profile with stored capabilities is not used.
+    """
+
+    result, sid = _derive_profile_sid()
     if result != 0:
-        if (result & 0xFFFFFFFF) != _ERROR_ALREADY_EXISTS:
+        _free_partial_sid(sid)
+        raise OSError(
+            f"Windows could not read the AppContainer profile (code 0x{result & 0xFFFFFFFF:08X})."
+        )
+    try:
+        if not _stored_capabilities_are_empty(sid):
             raise OSError(
-                f"Windows could not create an AppContainer profile (code 0x{result & 0xFFFFFFFF:08X})."
+                "The Windows script profile has capabilities, so the script was not started."
             )
-        derived = userenv.DeriveAppContainerSidFromAppContainerName(_PROFILE_NAME, ctypes.byref(sid))
-        if derived != 0:
-            raise OSError(
-                f"Windows could not open the AppContainer profile (code 0x{derived & 0xFFFFFFFF:08X})."
-            )
-    text = _sid_to_string(sid)
+        text = _sid_to_string(sid)
+    except Exception:
+        _free_partial_sid(sid)
+        raise
     return sid, text
+
+
+def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
+    """A script profile with no stored capabilities.
+
+    When no script is using the name, an existing profile is deleted and
+    created again. A profile a live script is using is opened only after its
+    token has no capabilities. The lock covers that decision, not the script.
+    """
+
+    _acquire_profile_lock()
+    try:
+        result, sid = _create_appcontainer_profile()
+        if result != 0:
+            _free_partial_sid(sid)
+            if _profile_is_in_use():
+                sid, text = _open_proven_profile()
+            else:
+                _delete_appcontainer_profile()
+                result, sid = _create_appcontainer_profile()
+                if result != 0:
+                    _free_partial_sid(sid)
+                    raise OSError(
+                        "Windows could not create an AppContainer profile "
+                        f"(code 0x{result & 0xFFFFFFFF:08X})."
+                    )
+                text = _sid_to_string(sid)
+        else:
+            text = _sid_to_string(sid)
+        _change_profile_use(1)
+        return sid, text
+    finally:
+        _release_profile_lock()
 
 
 def _is_volume_root_text(path: str) -> bool:
@@ -1922,8 +2261,23 @@ def _firewall_script(sid: str | None = None, *, install: bool) -> str:
     if sid is None or _PACKAGE_SID_TEXT.fullmatch(sid) is None:
         raise OSError("The AppContainer id is not a package SID, so the network was not blocked.")
     package = sid.upper()
+    # Remove returns before the firewall service drops the name. Wait until
+    # the name is gone, then create the block. The script has not started.
+    fresh = ", ".join(repr(name) for name in _NETWORK_OFF_RULES)
+    wait = (
+        f"  foreach ($name in @({fresh})) {{\n"
+        "    $gone = $false\n"
+        "    foreach ($attempt in 1..40) {\n"
+        "      $left = @(Get-NetFirewallRule -Name $name -ErrorAction Ignore)\n"
+        "      if ($left.Count -eq 0) { $gone = $true; break }\n"
+        "      Start-Sleep -Milliseconds 250\n"
+        "    }\n"
+        "    if (-not $gone) { throw 'the network block name is still registered' }\n"
+        "  }\n"
+    )
     return (
         remove
+        + wait
         + "  New-NetFirewallRule -Name 'aicad-script-network-off-out' "
         + "-DisplayName 'aicad script network off outbound' "
         + "-Direction Outbound -Action Block -Protocol Any "
@@ -2134,28 +2488,31 @@ def _firewall_block_is_present(sid: str) -> bool:
 
 
 def _hold_network_block(sid_text: str) -> None:
-    """Install the container block. A second overlapping child reuses it.
+    """Install the container block before a network-off script starts.
 
-    The firewall rules stay after the last child. A record names the package
-    for the next process, and that record is used only after both rules are
-    read back. A missing rule is installed again. The filter is installed for
-    each hold, because closing it drops the dynamic session.
+    A block the read-back already accepts is left in place. A missing record
+    does not remove it. A missing block is installed, and this returns only
+    after the read-back accepts it. The filter is installed for each hold,
+    because closing it drops the dynamic session.
     """
 
     global _network_off_holders, _network_off_sid, _network_off_rules_sid
     with _network_off_lock:
-        if _network_off_holders and _network_off_sid != sid_text.upper():
+        wanted = sid_text.upper()
+        if _network_off_holders and _network_off_sid != wanted:
             raise OSError(
                 "A script still has the network blocked, so this script was not started."
             )
         if _network_off_holders == 0:
-            wanted = sid_text.upper()
-            if _network_off_rules_sid != wanted:
-                recorded = _recorded_rules_sid() == wanted
-                if not recorded or not _firewall_block_is_present(wanted):
-                    _run_firewall_script(_firewall_script(sid_text, install=True))
-                    _record_rules_sid(wanted)
-                _network_off_rules_sid = wanted
+            if not _firewall_block_is_present(wanted):
+                _run_firewall_script(_firewall_script(sid_text, install=True))
+                if not _firewall_block_is_present(wanted):
+                    raise OSError(
+                        "The script network block is not in place, so the script was not started."
+                    )
+            if _recorded_rules_sid() != wanted:
+                _record_rules_sid(wanted)
+            _network_off_rules_sid = wanted
             try:
                 if _wfp_engine is None:
                     _install_wfp_block(sid_text)
@@ -2174,8 +2531,9 @@ def _hold_network_block(sid_text: str) -> None:
 def _release_network_block() -> None:
     """Drop the filter once the last network-off child has exited.
 
-    The firewall rules stay. The next network-off script with this package
-    reuses them. A network-on script removes them before it starts.
+    The firewall rules stay. The next network-off script reads them back and
+    leaves a block that already matches this package. A network-on script
+    removes them before it starts.
     """
 
     global _network_off_holders, _network_off_sid
@@ -2224,11 +2582,12 @@ def spawn(
 
     _bind()
     mode = ensure_mode(read_paths)
-    sid, sid_text = _appcontainer_sid()
+    sid = None
     job = None
     process = None
     held_block = False
     try:
+        sid, sid_text = _appcontainer_sid()
         # Do not rewrite this process's access list. An AppContainer can open
         # a process only when that process grants the container, and this
         # process does not. Adding a deny entry here stopped later scripts
@@ -2310,18 +2669,23 @@ def spawn(
             mechanism,
         )
     finally:
-        # Terminate the job on the way out, not only on the wall-clock timeout,
-        # so a child the script started does not keep running after the tool returns.
-        if job is not None:
-            _kernel32().TerminateJobObject(job, 1)
-        if process is not None:
-            _kernel32().CloseHandle(process.hThread)
-            _kernel32().CloseHandle(process.hProcess)
-        if job is not None:
-            _kernel32().CloseHandle(job)
-        if held_block:
-            _release_network_block()
-        _advapi32().FreeSid(sid)
+        try:
+            # Terminate the job on the way out, not only on the wall-clock timeout,
+            # so a child the script started does not keep running after the tool returns.
+            if job is not None:
+                _kernel32().TerminateJobObject(job, 1)
+            if process is not None:
+                _kernel32().CloseHandle(process.hThread)
+                _kernel32().CloseHandle(process.hProcess)
+            if job is not None:
+                _kernel32().CloseHandle(job)
+            if held_block:
+                _release_network_block()
+            if sid is not None:
+                _advapi32().FreeSid(sid)
+        finally:
+            if sid is not None:
+                _release_profile_use()
 
 
 def _probe_source() -> str:
@@ -2357,6 +2721,7 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
 
     _bind()
     root = Path(tempfile.mkdtemp(prefix="aicad-win-probe-"))
+    sid = None
     try:
         sid, sid_text = _appcontainer_sid()
         try:
@@ -2402,6 +2767,11 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
     except OSError as exc:
         return str(exc)
     finally:
+        if sid is not None:
+            try:
+                _release_profile_use()
+            except OSError:
+                pass
         try:
             import shutil
 

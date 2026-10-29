@@ -32,7 +32,12 @@ def test_a_home_ezdxf_config_is_not_loaded(tmp_path, monkeypatch):
     fresh = options.Options()
     assert _MARKER not in fresh.get("core", "SUPPORT_DIRS")
     assert all(path.resolve() != ini.resolve() for path in fresh.loaded_config_files)
-    assert os.environ.get("FONTCONFIG_FILE") is None
+    from aicad.paths import packaged_fontconfig_file
+
+    fontconfig = Path(os.environ["FONTCONFIG_FILE"])
+    assert fontconfig == packaged_fontconfig_file()
+    assert home.resolve() not in fontconfig.resolve().parents
+    assert _MARKER not in fontconfig.read_text(encoding="utf-8")
     config = Path(os.environ["MPLCONFIGDIR"])
     assert config.is_dir()
     assert home.resolve() not in config.resolve().parents

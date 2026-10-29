@@ -1615,6 +1615,7 @@ class Document:
 
         A down-facing span held along an edge is a bridge, not support, up to
         ``bridge_mm`` (default 5). A face with no path to the bed still counts.
+        ``layer_height_mm`` is passed to the slicer when a slice is requested.
         An assembly is checked in its stored pose, as one print, without
         uniting the solids.
         """
