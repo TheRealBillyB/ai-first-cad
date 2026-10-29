@@ -1,5 +1,7 @@
 """Print orientation, overhangs, printer fit, and the slicer skip path."""
 
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -268,6 +270,47 @@ def test_a_reparse_that_is_not_a_symlink_is_removed_before_slicing(tmp_path, mon
     _drop_link(path)
     assert removed == [path]
     assert not path.exists()
+
+
+def test_a_support_warning_slices_again_with_supports(tmp_path, monkeypatch):
+    script = tmp_path / "prusa-slicer"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "supported = '--support-material' in args\n"
+        "for arg in args:\n"
+        "    if str(arg).endswith('.gcode'):\n"
+        "        text = '; estimated printing time (normal mode) = 2m\\n'\n"
+        "        text += '; filament used [g] = 1.5\\n'\n"
+        "        text += '; supports\\n' if supported else '; plain\\n'\n"
+        "        Path(arg).write_text(text, encoding='utf-8')\n"
+        "if not supported:\n"
+        "    print('The print has floating regions. Consider enabling supports.', file=sys.stderr)\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr("aicad.printprep.find_slicers", lambda: [str(script)])
+    if os.name == "nt":
+        # Windows will not start a shebang script. The interpreter runs the same file.
+        from aicad.printprep import _slice_command
+
+        def command(executable, gcode, stl, price_per_kg, export, layer_height_mm=None, supports=False):
+            built = _slice_command(
+                executable, gcode, stl, price_per_kg, export, layer_height_mm, supports
+            )
+            return [sys.executable, *built]
+
+        monkeypatch.setattr("aicad.printprep._slice_command", command)
+    report = slice_mesh(np.zeros((1, 3)), np.zeros((0, 3), dtype=int), tmp_path / "out")
+    assert report["status"] == "sliced"
+    assert report["supports"] == "on"
+    assert "; supports" in Path(report["gcode"]).read_text(encoding="utf-8")
+    from aicad.printprep import _support_flags
+
+    assert _support_flags("OrcaSlicer") == ["--enable-support=1"]
+    assert _support_flags("prusa-slicer") == ["--support-material"]
 
 
 def test_check_print_accepts_a_layer_height(tmp_path):
