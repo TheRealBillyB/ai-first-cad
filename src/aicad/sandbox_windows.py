@@ -734,25 +734,6 @@ def _process_capability_sids(process: int) -> list[str]:
         kernel32.CloseHandle(token)
 
 
-def _profile_check_programs() -> list[str]:
-    """Programs that can be started suspended to read a profile token.
-
-    The Windows command processor is enough. Starting the Python interpreter
-    loads the whole runtime before the process can be measured, and a design
-    script pays that cost on its wall clock for every nested part script.
-    """
-
-    programs: list[str] = []
-    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
-    if root:
-        command = Path(root) / "System32" / "cmd.exe"
-        if command.is_file():
-            programs.append(str(command))
-    if sys.executable not in programs:
-        programs.append(sys.executable)
-    return programs
-
-
 def _stored_capabilities_are_empty(sid: ctypes.c_void_p) -> bool:
     """True when this profile adds no capabilities.
 
@@ -765,63 +746,59 @@ def _stored_capabilities_are_empty(sid: ctypes.c_void_p) -> bool:
     security.AppContainerSid = sid
     security.Capabilities = None
     security.CapabilityCount = 0
-    last_error = "Could not check the script profile."
-    for program in _profile_check_programs():
-        size = ctypes.c_size_t(0)
-        kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
-        attributes = ctypes.create_string_buffer(size.value)
-        if not kernel32.InitializeProcThreadAttributeList(attributes, 1, 0, ctypes.byref(size)):
-            raise OSError(_win_error("Could not prepare the script profile check"))
-        try:
-            if not kernel32.UpdateProcThreadAttribute(
-                attributes,
-                0,
-                _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-                ctypes.c_void_p(ctypes.addressof(security)),
-                ctypes.sizeof(security),
-                None,
-                None,
-            ):
-                raise OSError(_win_error("Could not attach the script profile"))
-            startup = _StartupInfoEx()
-            startup.StartupInfo.cb = ctypes.sizeof(startup)
-            startup.lpAttributeList = ctypes.c_void_p(ctypes.addressof(attributes))
-            command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline([program]))
-            process = _ProcessInformation()
-            created = False
-            for breakaway in (True, False):
-                created = bool(
-                    kernel32.CreateProcessW(
-                        program,
-                        command_line,
-                        None,
-                        None,
-                        False,
-                        _creation_flags(breakaway=breakaway),
-                        None,
-                        None,
-                        ctypes.byref(startup),
-                        ctypes.byref(process),
-                    )
+    size = ctypes.c_size_t(0)
+    kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+    attributes = ctypes.create_string_buffer(size.value)
+    if not kernel32.InitializeProcThreadAttributeList(attributes, 1, 0, ctypes.byref(size)):
+        raise OSError(_win_error("Could not prepare the script profile check"))
+    try:
+        if not kernel32.UpdateProcThreadAttribute(
+            attributes,
+            0,
+            _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+            ctypes.c_void_p(ctypes.addressof(security)),
+            ctypes.sizeof(security),
+            None,
+            None,
+        ):
+            raise OSError(_win_error("Could not attach the script profile"))
+        startup = _StartupInfoEx()
+        startup.StartupInfo.cb = ctypes.sizeof(startup)
+        startup.lpAttributeList = ctypes.c_void_p(ctypes.addressof(attributes))
+        command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline([sys.executable, "-c", ""]))
+        process = _ProcessInformation()
+        created = False
+        for breakaway in (True, False):
+            created = bool(
+                kernel32.CreateProcessW(
+                    sys.executable,
+                    command_line,
+                    None,
+                    None,
+                    False,
+                    _creation_flags(breakaway=breakaway),
+                    None,
+                    None,
+                    ctypes.byref(startup),
+                    ctypes.byref(process),
                 )
-                if created:
-                    break
-                code = _last_error(kernel32)
-                last_error = f"Could not check the script profile (Windows error {code})."
-                if breakaway and code == _ERROR_ACCESS_DENIED:
-                    continue
+            )
+            if created:
                 break
-            if not created:
+            code = _last_error(kernel32)
+            if breakaway and code == _ERROR_ACCESS_DENIED:
                 continue
-            try:
-                return _process_capability_sids(int(process.hProcess)) == []
-            finally:
-                kernel32.TerminateProcess(process.hProcess, 1)
-                kernel32.CloseHandle(process.hThread)
-                kernel32.CloseHandle(process.hProcess)
+            raise OSError(f"Could not check the script profile (Windows error {code}).")
+        if not created:
+            raise OSError("Could not check the script profile.")
+        try:
+            return _process_capability_sids(int(process.hProcess)) == []
         finally:
-            kernel32.DeleteProcThreadAttributeList(attributes)
-    raise OSError(last_error)
+            kernel32.TerminateProcess(process.hProcess, 1)
+            kernel32.CloseHandle(process.hThread)
+            kernel32.CloseHandle(process.hProcess)
+    finally:
+        kernel32.DeleteProcThreadAttributeList(attributes)
 
 
 def _open_proven_profile() -> tuple[ctypes.c_void_p, str]:
