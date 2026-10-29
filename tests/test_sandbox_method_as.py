@@ -1,8 +1,8 @@
 """glTF, OBJ, and COLLADA imports do not open a path outside the file.
 
-The marker is CANARY_HIT. Embedded data and one same-folder file are read
-through the shared file reader. Any other buffer, image, or material library
-is refused.
+The marker is CANARY_HIT. Embedded data and a file inside the mesh folder,
+including a subfolder, are read through the shared file reader. Any other
+buffer, image, or material library is refused.
 """
 
 from __future__ import annotations
@@ -131,7 +131,8 @@ def test_a_gltf_buffer_outside_the_folder_is_not_opened(tmp_path, monkeypatch):
     for uri in (
         str(marker),
         "../outside/marker.bin",
-        "textures/marker.bin",
+        "textures/../marker.bin",
+        "textures/./marker.bin",
         "./positions.bin",
         "http://example.test/marker.bin",
         "C:/marker.bin",

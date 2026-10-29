@@ -384,6 +384,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Span in millimeters that still counts as a bridge. 0 counts every overhang.",
     )
     printed.add_argument("--slice", action="store_true", help="Ask OrcaSlicer or PrusaSlicer for time and grams.")
+    printed.add_argument(
+        "--layer-height",
+        type=float,
+        default=None,
+        help="Slicer layer height in millimeters. Omit to use the slicer's profile.",
+    )
     printed.add_argument("--price-per-kg", type=float, default=None, help="Used when the gcode has no filament cost.")
 
     robot = commands.add_parser(
@@ -948,6 +954,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             setup["printer"] = args.printer
         if args.price_per_kg is not None:
             setup["price_per_kg"] = args.price_per_kg
+        if args.layer_height is not None:
+            setup["layer_height_mm"] = args.layer_height
         return emit(document.check_print(args.name, setup))
     if args.command == "robot":
         return emit(document.export_robot(args.name, args.out))

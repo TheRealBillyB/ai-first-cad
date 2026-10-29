@@ -204,7 +204,9 @@ def divert_native_stdio(*, stderr: bool = False):
     try:
         if stderr:
             saved_err = os.dup(2)
-        null_fd = os.open(os.devnull, flags)
+        from aicad.sandbox import open_null_device
+
+        null_fd = open_null_device(flags)
         os.dup2(null_fd, 1)
         if saved_err is not None:
             os.dup2(null_fd, 2)
@@ -1804,9 +1806,9 @@ def import_step_file(path: Path) -> Shape:
     by naming some other path. A file past the size cap is not read.
 
     A glTF, OBJ, or COLLADA file is read the same way. An external buffer, image,
-    or material library is opened only when it is one file in the same folder,
-    and only through the shared file reader. The project path is not given to
-    a geometry reader.
+    or material library is opened only when it stays inside that file's folder,
+    including a subfolder, and only through the shared file reader. The project
+    path is not given to a geometry reader.
     """
     if path.suffix.lower() in {".gltf", ".glb", ".obj", ".dae"}:
         from aicad.mesh_import import import_mesh_file
