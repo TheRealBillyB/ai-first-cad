@@ -61,6 +61,31 @@ def test_a_picture_is_read_from_the_project(tmp_path):
     assert image.data == _PNG
 
 
+def test_a_picture_under_a_linked_project_is_read_from_the_project(tmp_path):
+    from aicad.server import _View, _with_images
+
+    outside = tmp_path / "outside"
+    canary = _canary(outside)
+    (outside / "sheet.png").write_bytes(b"\x89PNG\r\n\x1a\n" + _CANARY_TEXT.encode())
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "session.json").write_text("{}\n", encoding="utf-8")
+    picture = real / "renders" / "part.png"
+    picture.parent.mkdir(parents=True)
+    picture.write_bytes(_PNG)
+    _link(real / "docs", outside, directory=True)
+    link = tmp_path / "link"
+    _link(link, real, directory=True)
+    blocks = _with_images({"ok": True}, [_View("iso", str(link / "renders" / "part.png"))])
+    image = blocks[-1]
+    assert image.path is None
+    assert image.data == _PNG
+    hidden = _with_images({"ok": True}, [_View("iso", str(link / "docs" / "sheet.png"))])
+    rendered = "\n".join(block if isinstance(block, str) else block.data.decode("utf-8", "replace") for block in hidden)
+    assert _CANARY_TEXT not in rendered
+    assert canary.read_text(encoding="utf-8") == _CANARY_TEXT
+
+
 def test_a_picture_behind_a_directory_link_is_not_read(tmp_path):
     from aicad.server import _View, _with_images
 

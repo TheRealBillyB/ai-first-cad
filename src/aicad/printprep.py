@@ -66,6 +66,16 @@ _DEFAULT_BRIDGE_MM = 5.0
 # Vertices closer than this are the same point when a mesh splits a shared edge.
 _WELD_MM = 0.02
 _BRIDGE_PAIR_LIMIT = 4_000_000
+_NEEDS_SUPPORT = re.compile(
+    r"may need supports?|"
+    r"might need supports?|"
+    r"consider enabling supports?|"
+    r"floating (?:regions?|parts?|objects?)|"
+    r"low bed adhesion|"
+    r"print stability issues|"
+    r"unsupported extrusions?",
+    re.IGNORECASE,
+)
 _TIME = re.compile(r"estimated printing time[^=]*=\s*([^\n]+)", re.IGNORECASE)
 _GRAMS = re.compile(r"filament used \[g\]\s*=\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
 _COST = re.compile(r"(?:total )?filament cost\s*=\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
@@ -264,6 +274,7 @@ def slice_mesh(
     _drop_link(gcode)
     last = ""
     last_name = Path(executables[-1]).name
+    from aicad.labels import plain_line
     from aicad.paths import publish_bytes
     from aicad.tool_directory import (
         held_is_file,
@@ -278,39 +289,47 @@ def slice_mesh(
         held_write_bytes(work, "oriented.stl", _stl_bytes(vertices, triangles))
         for executable in executables:
             last_name = Path(executable).name
-            commands = [
-                _slice_command(
-                    executable,
-                    Path("print.gcode"),
-                    Path("oriented.stl"),
-                    price_per_kg,
-                    export=True,
-                    layer_height_mm=layer_height_mm,
-                ),
-                _slice_command(
-                    executable,
-                    Path("print.gcode"),
-                    Path("oriented.stl"),
-                    price_per_kg,
-                    export=False,
-                    layer_height_mm=layer_height_mm,
-                ),
-            ]
-            for command in commands:
+            for export in (True, False):
                 from aicad.sandbox import program_environment
 
-                completed = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    stdin=subprocess.DEVNULL,
-                    timeout=180,
-                    check=False,
-                    env=program_environment(),
-                    **held_run_kwargs(work),
-                )
-                last = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
-                payload = held_read_bytes(work, "print.gcode", maximum=64 * 1024 * 1024)
+                def run_once(supports: bool) -> tuple[str, bytes]:
+                    command = _slice_command(
+                        executable,
+                        Path("print.gcode"),
+                        Path("oriented.stl"),
+                        price_per_kg,
+                        export,
+                        layer_height_mm,
+                        supports,
+                    )
+                    completed = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        stdin=subprocess.DEVNULL,
+                        timeout=180,
+                        check=False,
+                        env=program_environment(),
+                        **held_run_kwargs(work),
+                    )
+                    text = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
+                    return text, held_read_bytes(work, "print.gcode", maximum=64 * 1024 * 1024)
+
+                last, payload = run_once(False)
+                supports_state = None
+                if payload and _needs_supports(last):
+                    if held_is_file(work, "print.gcode"):
+                        held_unlink(work, "print.gcode")
+                    retry_text, retry_payload = run_once(True)
+                    if retry_text:
+                        last = retry_text
+                    if retry_payload:
+                        payload = retry_payload
+                        supports_state = "on"
+                    else:
+                        supports_state = "warned"
                 if payload:
                     publish_bytes(gcode, payload)
                     gcode_text = payload.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
@@ -318,7 +337,12 @@ def slice_mesh(
                     parsed["status"] = "sliced" if parsed.get("grams") is not None or parsed.get("seconds") is not None else "unparsed"
                     parsed["slicer"] = Path(executable).name
                     parsed["gcode"] = str(gcode.resolve())
-                    parsed["note"] = _slicer_note(parsed, price_per_kg)
+                    parsed["note"] = plain_line(_slicer_note(parsed, price_per_kg))
+                    parsed["supports"] = supports_state
+                    if supports_state == "on":
+                        parsed["note"] += " Supports were turned on because the slicer warned they were needed."
+                    elif supports_state == "warned":
+                        parsed["note"] += " The slicer warned that supports were needed, and the supported slice did not write gcode."
                     if parsed.get("grams") and price_per_kg is not None and not parsed.get("cost"):
                         parsed["cost"] = round(float(parsed["grams"]) * float(price_per_kg) / 1000.0, 2)
                         parsed["cost_source"] = "price_per_kg"
@@ -334,13 +358,19 @@ def slice_mesh(
                         "Time and grams come from the gcode comments. A different profile changes both.",
                         "Cost is the slicer's filament cost when the gcode has one, otherwise grams times price_per_kg / 1000.",
                     ]
+                    if supports_state == "on":
+                        parsed["assumptions"].append(
+                            "Supports were enabled because the slicer warned that the print needs them."
+                        )
                     return parsed
                 if held_is_file(work, "print.gcode"):
                     held_unlink(work, "print.gcode")
+    from aicad.labels import plain_line
+
     return {
         "status": "failed",
         "slicer": last_name,
-        "note": "The slicer ran and did not write gcode. " + " ".join(last.split()),
+        "note": plain_line("The slicer ran and did not write gcode. " + last),
         "assumptions": ["The slicer is installed, but this headless command did not produce a toolpath."],
     }
 
@@ -716,6 +746,16 @@ def _drop_link(path: Path) -> None:
         path.unlink()
 
 
+def _read_tool_output(path: Path) -> bytes:
+    """Bytes written by a helper in its private folder. A missing file is empty."""
+    from aicad.file_access import read_file
+
+    try:
+        return read_file(path, maximum=64 * 1024 * 1024)
+    except OSError:
+        return b""
+
+
 def _stl_bytes(vertices: np.ndarray, triangles: np.ndarray) -> bytes:
     payload = bytearray(b"aicad oriented" + b"\0" * 66)
     payload += struct.pack("<I", len(triangles))
@@ -728,6 +768,12 @@ def _stl_bytes(vertices: np.ndarray, triangles: np.ndarray) -> bytes:
     return bytes(payload)
 
 
+def _write_stl(vertices: np.ndarray, triangles: np.ndarray, path: Path) -> None:
+    from aicad.paths import publish_bytes
+
+    publish_bytes(path, _stl_bytes(vertices, triangles))
+
+
 def _parse_duration(text: str) -> int | None:
     total = 0
     found = False
@@ -738,6 +784,18 @@ def _parse_duration(text: str) -> int | None:
     return total if found else None
 
 
+def _needs_supports(text: str) -> bool:
+    """True when the slicer says this print should be sliced again with supports."""
+    return _NEEDS_SUPPORT.search(text) is not None
+
+
+def _support_flags(executable: str) -> list[str]:
+    """The switch that turns supports on for this slicer."""
+    if "orca" in Path(executable).name.lower():
+        return ["--enable-support=1"]
+    return ["--support-material"]
+
+
 def _slice_command(
     executable: str,
     gcode: Path,
@@ -745,6 +803,7 @@ def _slice_command(
     price_per_kg,
     export: bool,
     layer_height_mm=None,
+    supports: bool = False,
 ) -> list[str]:
     command = [executable]
     if export:
@@ -756,6 +815,8 @@ def _slice_command(
         command.extend(["--filament-cost", str(price_per_kg)])
     if layer_height_mm is not None:
         command.extend(["--layer-height", f"{float(layer_height_mm):g}"])
+    if supports:
+        command.extend(_support_flags(executable))
     command.append(str(stl))
     return command
 
