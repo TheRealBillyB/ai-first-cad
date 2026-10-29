@@ -144,15 +144,17 @@ def replace_file(root: Path, relative: str | Path, write, *, private: bool = Fal
     _posix_replace_file(root, relative, write, private=private)
 
 
-def create_file(directory: Path, name: str) -> int:
+def create_file(directory: Path, name: str, *, private: bool = True) -> int:
     """Create a new file in ``directory``. A link is not followed.
 
     The name is created only when it is absent. The caller closes the
-    descriptor. The file is owner read and write.
+    descriptor. ``private`` leaves the file readable by its owner only.
+    A file a confined process must read is created with ``private`` false,
+    so an access grant on its directory still applies.
     """
     _check_component(name)
     if sys.platform == "win32":
-        return _windows_create_new(Path(directory), name)
+        return _windows_create_new(Path(directory), name, private=private)
     return _posix_create_new(Path(directory), name)
 
 
@@ -557,18 +559,36 @@ def _windows_open_inplace(path: Path) -> int:
         os.close(directory)
 
 
-def _windows_create_new(directory: Path, name: str) -> int:
-    """Create ``name`` in ``directory``. An existing link is not opened."""
+def _windows_create_new(directory: Path, name: str, *, private: bool = True) -> int:
+    """Create ``name`` in ``directory``. An existing link is not opened.
+
+    ``private`` gives the new file an owner-only access list. Otherwise the
+    file keeps the access list of ``directory``, including a grant for a
+    confined process.
+    """
+    from aicad import paths
+
     parent = _windows_open_root(directory, write=True)
     handle = None
+    security = None
+    kernel32 = None
     try:
+        security_value = None
+        if private:
+            security, kernel32 = paths._owner_only_descriptor()
+            security_value = int(security.value)
         handle = _nt_open(
             _os_handle(parent),
             name,
             access=_FILE_WRITE_ACCESS,
             directory=False,
             create=True,
+            security=security_value,
         )
+        if security is not None:
+            held = security
+            security = None
+            kernel32.LocalFree(held)
         _refuse_reparse(handle, name)
         descriptor = _descriptor(handle, os.O_WRONLY | getattr(os, "O_BINARY", 0))
         handle = None
@@ -577,6 +597,8 @@ def _windows_create_new(directory: Path, name: str) -> int:
         if handle is not None:
             _close_handle(handle)
         os.close(parent)
+        if security is not None and kernel32 is not None:
+            kernel32.LocalFree(security)
 
 
 def _windows_open_write(directory: Path, name: str) -> int:
