@@ -1056,6 +1056,10 @@ def test_windows_stale_profile_is_replaced_before_the_script_starts():
     assert "TerminateProcess" in check
     assert "ResumeThread" not in check
     assert "CapabilityCount = 0" in check
+    assert "_profile_check_programs" in check
+    picker = inspect.getsource(win._profile_check_programs)
+    assert "cmd.exe" in picker
+    assert "System32" in picker
     assert "_creation_flags" in check
     assert "_CREATE_SUSPENDED" in inspect.getsource(win._creation_flags)
     alive = inspect.getsource(win._pid_alive)
@@ -1154,41 +1158,6 @@ def test_windows_stale_profile_is_replaced_before_the_script_starts():
         win._acquire_profile_lock = original_acquire
         win._release_profile_lock = original_release
         win._open_proven_profile = original_open
-
-
-def test_design_model_reuses_a_proved_windows_mode(monkeypatch, tmp_path):
-    """The design-script model reuses a mode the parent already proved.
-
-    The untrusted script does not receive that choice. Nested part scripts
-    then do not repeat the confinement probe on the design script's clock.
-    """
-
-    import inspect
-
-    from aicad import sandbox_windows as win
-    from aicad.design_calls import model_main
-    from aicad.sandbox import _child_env, _spawn
-
-    monkeypatch.setenv("AICAD_WIN_SANDBOX_MODE", "lpac")
-    env = _child_env(tmp_path, tmp_path / "job", False)
-    assert "AICAD_WIN_SANDBOX_MODE" not in env
-    saved_mode = win._mode
-    saved_error = win._mode_error
-    try:
-        win._mode = None
-        win._mode_error = None
-        win.adopt_probed_mode("nope")
-        assert win._mode is None
-        win.adopt_probed_mode("appcontainer")
-        assert win._mode == "appcontainer"
-        win.adopt_probed_mode("lpac")
-        assert win._mode == "appcontainer"
-    finally:
-        win._mode = saved_mode
-        win._mode_error = saved_error
-    source = inspect.getsource(_spawn)
-    assert source.index("ensure_mode") < source.index("design_record.start")
-    assert "adopt_probed_mode" in inspect.getsource(model_main)
 
 
 def test_windows_stale_firewall_block_is_not_removed():

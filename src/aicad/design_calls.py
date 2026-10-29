@@ -372,11 +372,6 @@ def model_main(job: Path, record_path: Path, record_fd: int | None = None) -> in
     from aicad.file_access import open_inplace
 
     workspace = Path(os.environ["AICAD_WORKSPACE"]).resolve()
-    mode = os.environ.get("AICAD_WIN_SANDBOX_MODE", "")
-    if mode in ("lpac", "appcontainer"):
-        from aicad.sandbox_windows import adopt_probed_mode
-
-        adopt_probed_mode(mode)
     document = Document(workspace)
     before = {row["name"]: row for row in document.session_payload().get("parts", [])}
     calls: list[dict] = []
