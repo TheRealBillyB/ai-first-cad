@@ -175,6 +175,7 @@ def test_create_file_creates_a_private_file(tmp_path):
     import stat
 
     from aicad.file_access import create_file
+    from aicad.paths import file_is_user_private
 
     descriptor = create_file(tmp_path, "fresh.log")
     try:
@@ -183,10 +184,25 @@ def test_create_file_creates_a_private_file(tmp_path):
             assert stat.S_IMODE(os.fstat(descriptor).st_mode) == 0o600
     finally:
         os.close(descriptor)
+    assert file_is_user_private(tmp_path / "fresh.log")
     assert (tmp_path / "fresh.log").read_text(encoding="utf-8") == "ok\n"
     with pytest.raises(OSError):
         create_file(tmp_path, "fresh.log")
     assert (tmp_path / "fresh.log").read_text(encoding="utf-8") == "ok\n"
+
+
+def test_a_published_file_keeps_the_directory_access_list(tmp_path):
+    from aicad.paths import _OWNER_ONLY_SDDL, publish_text
+
+    target = tmp_path / "probe.py"
+    publish_text(target, "print('sandbox-ok')\n")
+    assert target.read_text(encoding="utf-8") == "print('sandbox-ok')\n"
+    if sys.platform != "win32":
+        return
+    from aicad.paths import _windows_dacl_text
+
+    published = _windows_dacl_text(target).upper().replace(" ", "")
+    assert published != _OWNER_ONLY_SDDL
 
 
 def test_create_file_does_not_follow_a_link(tmp_path):
@@ -377,6 +393,73 @@ def test_the_design_record_stop_and_record_are_opened_from_their_directories(tmp
     assert seen_read == [tmp_path / "record.json"]
     assert (calls / "STOP").is_file()
     assert not (calls / "STOP").is_symlink()
+
+
+def test_closing_the_design_record_retries_while_windows_reports_it_in_use(tmp_path, monkeypatch):
+    import os
+
+    from aicad.sandbox import _DesignRecord
+
+    path = tmp_path / "aicad-design-checks.json"
+    path.write_text("{}\n", encoding="utf-8")
+    record = _DesignRecord(tmp_path, tmp_path / "job")
+    record.record = path
+    real = os.unlink
+    calls = {"n": 0}
+
+    def unlink(name, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3 and os.fspath(name) == os.fspath(path):
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process", os.fspath(name))
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    record.close()
+    assert calls["n"] >= 3
+    assert not path.exists()
+
+
+def test_closing_the_design_record_stops_the_model_before_removing_the_file(tmp_path):
+    import subprocess
+
+    from aicad.sandbox import _DesignRecord
+
+    path = tmp_path / "aicad-design-checks.json"
+    path.write_text("{}\n", encoding="utf-8")
+    removed: list[int | None] = []
+
+    class Fake:
+        def __init__(self):
+            self.returncode = None
+            self.pid = 2_000_000_003
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("model", timeout)
+            removed.append(self.returncode)
+            return self.returncode
+
+    record = _DesignRecord(tmp_path, tmp_path / "job")
+    record.proc = Fake()
+    record.record = path
+    record.close()
+    assert removed == [-9]
+    assert not path.exists()
+
+
+def test_the_model_keeps_the_design_record_private_before_it_runs_calls():
+    import inspect
+
+    from aicad.design_calls import model_main
+
+    source = inspect.getsource(model_main)
+    assert source.index("_keep_record_private") < source.index("serve_calls")
 
 
 def test_the_stop_file_is_not_created_through_a_directory_link(tmp_path):

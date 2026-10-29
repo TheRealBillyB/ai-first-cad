@@ -736,6 +736,8 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
             cwd=str(path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
