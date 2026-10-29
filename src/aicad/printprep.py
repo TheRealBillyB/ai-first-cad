@@ -274,6 +274,7 @@ def slice_mesh(
     _drop_link(gcode)
     last = ""
     last_name = Path(executables[-1]).name
+    from aicad.labels import plain_line
     from aicad.paths import private_tool_directory, publish_bytes
 
     with private_tool_directory() as work:
@@ -298,6 +299,8 @@ def slice_mesh(
                         cwd=str(work),
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         stdin=subprocess.DEVNULL,
                         timeout=180,
                         check=False,
@@ -328,7 +331,7 @@ def slice_mesh(
                     parsed["status"] = "sliced" if parsed.get("grams") is not None or parsed.get("seconds") is not None else "unparsed"
                     parsed["slicer"] = Path(executable).name
                     parsed["gcode"] = str(gcode.resolve())
-                    parsed["note"] = _slicer_note(parsed, price_per_kg)
+                    parsed["note"] = plain_line(_slicer_note(parsed, price_per_kg))
                     parsed["supports"] = supports_state
                     if supports_state == "on":
                         parsed["note"] += " Supports were turned on because the slicer warned they were needed."
@@ -357,10 +360,12 @@ def slice_mesh(
                 private_gcode = work / "print.gcode"
                 if private_gcode.is_file():
                     private_gcode.unlink()
+    from aicad.labels import plain_line
+
     return {
         "status": "failed",
         "slicer": last_name,
-        "note": "The slicer ran and did not write gcode. " + " ".join(last.split()),
+        "note": plain_line("The slicer ran and did not write gcode. " + last),
         "assumptions": ["The slicer is installed, but this headless command did not produce a toolpath."],
     }
 
