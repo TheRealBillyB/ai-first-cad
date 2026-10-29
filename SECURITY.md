@@ -91,6 +91,7 @@ That stops another website, including one that tries to reach this computer by a
 - **AJ.** A copy, an export, a render, and a picture response do not follow a symlink or junction, and do not send bytes from outside the project.
 
 - **R.** A picture is read from the project before it is shown, and a robot mesh is read from the project before a simulator opens it.
+- A design script's disk quota counts writes from every thread in the process, not from one thread alone.
 - A file a script removes is still counted at the size it reached, including toward the per-file cap. A file that appears and is removed between timer samples is counted too. macOS counts an unlinked file that is still open. Windows counts the file from the directory change.
 - A design script's check record is written to the file the parent opened. A different file at that path is not the record.
 - **AK.** A request to the model API or the local workspace app does not use a proxy or a certificate file named by the environment. Those variables stay in the process environment.
@@ -142,6 +143,8 @@ That stops another website, including one that tries to reach this computer by a
 
 - CalculiX output is read as UTF-8. A byte that is not UTF-8 does not stop the error report.
 
+- A session picture's width and height are read from its header before the picture is decoded. A picture past the pixel limit is refused.
+
 - **BD.** A file created for the design record is readable and writable by its owner only, on Windows and on other systems.
 
 - **BD.** The OpenCascade glTF reader does not open a file. A glTF import reads the file through the shared file reader.
@@ -155,6 +158,8 @@ That stops another website, including one that tries to reach this computer by a
 - **BF.** A project folder that is a link is opened from the directory it points at, including when another directory link sits further out. A nested link is not followed.
 
 - **BF.** Opening a session record draws each step from its stored mesh. A picture that already matches that drawing is left as it is. A step with no mesh does not return its stored picture. A path outside the project is not opened.
+
+- **BH.** Slicer output is read as UTF-8. A byte that is not UTF-8 does not stop the report, and a terminal sequence in that output is not shown.
 
 - **BG.** When confinement stops, the script result is opened from its parent directory. A link at that name is not followed, and another name for the file is not changed.
 
