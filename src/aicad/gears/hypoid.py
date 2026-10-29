@@ -25,8 +25,10 @@ from aicad.errors import GeometryError
 _BIAS_MM = 0.012
 _TOOL_STOCK_MM = 0.04
 _SAGITTA_MM = 0.006
-# One ring tooth is rolled across this many pitches, in steps fine enough that
-# the scallop between poses stays inside the stock.
+# One ring tooth is rolled across this many pitches. ``_ROLL_STEP_DEG`` is the
+# coarsest step. ``_roll_step_rad`` tightens it so the scallop between poses
+# stays inside the tool stock. A fixed step leaves a ridge that grows with the
+# ring, and that ridge reads as interference.
 _ROLL_HALF_PITCHES = 1.8
 _ROLL_STEP_DEG = 3.5
 
@@ -943,7 +945,9 @@ def _station_counts(design: dict) -> tuple[int, int, int, int]:
     arc = 2.0 * design["theta_face"]
     step = 2.0 * math.acos(max(-1.0, min(1.0, 1.0 - _SAGITTA_MM / radius)))
     face_count = int(math.ceil(arc / max(step, 1.0e-3))) + 1
-    face_count = max(7, min(face_count, 11))
+    # A long face needs more stations to hold the sagitta. The cap keeps a
+    # very large ring from building an unbounded loft.
+    face_count = max(7, min(face_count, 32))
     return face_count, 8, 2, 3
 
 
@@ -1180,14 +1184,23 @@ def tool_tooth_rings(design: dict) -> list[list[tuple[float, float, float]]]:
     """One ring tooth, closed on its root and slightly larger than the blade.
 
     The extra stock is what the pinion blank loses. The real ring tooth is
-    smaller by ``_BIAS_MM``, so the two keep a gap after the cut.
+    smaller by ``_BIAS_MM``, so the two keep a gap after the cut. The tool
+    uses the ring tooth's station count. A coarser tool chord falls inside
+    the ring facet, and on a large ring that chord is the interference.
     """
-    counts = (7, 6, 2, 2)
+    face_n, flank_n, tip_n, _root_n = _station_counts(design)
     extra = min(0.05, design["theta_face"] * 0.3)
-    thetas = _linspace(-design["theta_face"] - extra, design["theta_face"] + extra, counts[0])
+    # The same stations as the ring tooth, plus one past each end of the face.
+    # A different station set lofts across the ring facet and the tooth sticks
+    # out of the groove.
+    ring_thetas = _linspace(-design["theta_face"], design["theta_face"], face_n)
+    thetas = [ring_thetas[0] - extra, *ring_thetas, ring_thetas[-1] + extra]
+    counts = (len(thetas), flank_n, tip_n, 2)
     # Longer than the real tip, so the pinion root is deeper than the ring tip.
+    # The root is also past the ring root. The same root radius leaves a skin
+    # of the ring tooth outside the cutter, and that skin is the overlap.
     tip_target = -design["ha_ring"] - design["clearance"]
-    root_target = design["hf_ring"] + 0.6
+    root_target = design["hf_ring"] + 0.6 + design["clearance"]
     return _closed_tooth_profiles(design, thetas, -_TOOL_STOCK_MM, tip_target, root_target, counts)
 
 
@@ -1216,11 +1229,22 @@ def pinion_blank_rings(design: dict) -> list[list[tuple[float, float, float]]]:
 
 
 def roll_angles(design: dict) -> list[float]:
-    """Gear angles, around the index pose, at which the tooth is subtracted."""
+    """Gear angles, around the index pose, at which the tooth is subtracted.
+
+    The window is at least ``_ROLL_HALF_PITCHES`` pitches. A fine-pitch ring
+    has a small pitch, and teeth well outside that count still pass through
+    the pinion blank. The absolute span keeps those teeth out of the solid.
+    A coarse ring already covers that span in a pitch count, so it is unchanged.
+    """
     pitch = 2.0 * math.pi / design["z2"]
     half = _ROLL_HALF_PITCHES * pitch
     step = math.radians(_ROLL_STEP_DEG)
+    if pitch < math.radians(12.0):
+        half = max(half, math.radians(50.0))
+        # The coarse step leaves a ridge once the window is this wide.
+        step = min(step, math.radians(2.0))
     count = int(math.ceil((2.0 * half) / step)) + 1
+    count = max(3, min(count, 64))
     return [design["phi_star"] - half + (2.0 * half) * index / (count - 1) for index in range(count)]
 
 
