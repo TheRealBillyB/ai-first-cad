@@ -159,3 +159,5 @@ That stops another website, including one that tries to reach this computer by a
 - **BH.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
 
 - **BG.** A bill-of-materials cell that begins with =, +, -, or @ is stored as text.
+
+- **BM.** A design script's check record and its macOS confinement profile are written outside the project. The process temporary directory is not used when that directory is inside a project.
