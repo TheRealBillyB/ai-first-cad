@@ -130,6 +130,8 @@ That stops another website, including one that tries to reach this computer by a
 
 - **BA.** The design-record log is created from its parent directory handle. A link at that name is not followed.
 
+- A private directory used for Gmsh, CalculiX, a design-call job, a plugin part copy, or a robot export is opened by its handle. Replacing that directory's name does not change the files read or written there.
+
 - **BB.** A new project file or folder is created from a directory handle. When the project folder is a link, that handle is the directory the link points at. A link in the rest of the path is not followed.
 
 - **BB.** Fontconfig reads the file shipped with aicad. That file names system font folders. A configuration file in the account home is not read. Plugin consent stays on the account home.
