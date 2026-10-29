@@ -715,9 +715,9 @@ def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
 
 
 def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
-    from aicad.paths import private_tool_directory, publish_text
+    from aicad.paths import held_entry_is_file, held_subprocess_kwargs, held_tool_directory, publish_text
 
-    with private_tool_directory() as path:
+    with held_tool_directory() as path:
         publish_text(
             path / "job.inp",
             _frequency_deck(bodies, fixed_nodes, equations, nmodes),
@@ -733,7 +733,6 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
 
         completed = subprocess.run(
             [solver, "-i", "job"],
-            cwd=str(path),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -742,14 +741,15 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
             timeout=timeout,
             check=False,
             env=program_environment(),
+            **held_subprocess_kwargs(path),
         )
-        dat = path / "job.dat"
-        frd = path / "job.frd"
         stdout = completed.stdout or ""
         if "nonpositive jacobian" in stdout.lower():
             return None, None, "nonpositive jacobian"
-        if completed.returncode != 0 or not dat.is_file():
+        if completed.returncode != 0 or not held_entry_is_file(path, "job.dat"):
             return None, None, _ccx_error(stdout)
+        dat = path / "job.dat"
+        frd = path / "job.frd"
         node_count = sum(len(body["points"]) for body in bodies)
         try:
             from aicad.file_access import read_text
@@ -757,7 +757,7 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
             frequencies = _parse_dat(read_text(dat, maximum=64 * 1024 * 1024, errors="replace"), nmodes)
         except GeometryError as exc:
             return None, None, str(exc)
-        vectors = _parse_mode_shapes(frd, node_count) if frd.is_file() else []
+        vectors = _parse_mode_shapes(frd, node_count) if held_entry_is_file(path, "job.frd") else []
         while len(vectors) < len(frequencies):
             vectors.append(np.zeros((node_count, 3), dtype=np.float64))
         vectors = vectors[: len(frequencies)]
