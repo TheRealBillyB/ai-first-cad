@@ -17,7 +17,7 @@ from aicad.sandbox import _control_directory, allow_design_scripts, run_design_s
 _MARKER = "CANARY_HIT"
 
 
-def test_a_control_directory_stays_outside_the_project(tmp_path, monkeypatch):
+def test_bm_a_control_directory_stays_outside_the_project(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
     (project / "session.json").write_text("{}\n", encoding="utf-8")
@@ -36,7 +36,7 @@ def test_a_control_directory_stays_outside_the_project(tmp_path, monkeypatch):
         remove_tree(directory, ignore_errors=True)
 
 
-def test_a_design_check_file_is_created_outside_the_project(tmp_path, monkeypatch):
+def test_bm_a_design_check_file_is_created_outside_the_project(tmp_path, monkeypatch):
     supported, reason = sandbox_supported()
     if not supported:
         pytest.skip(reason)
