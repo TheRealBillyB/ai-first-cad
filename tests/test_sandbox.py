@@ -101,6 +101,54 @@ def test_traverse_is_skipped_only_when_that_container_can_already_walk():
     assert win._TRAVERSE_MASK & win._FILE_TRAVERSE
     assert win._TRAVERSE_MASK & win._SYNCHRONIZE
     assert not win._TRAVERSE_MASK & win._FILE_LIST_DIRECTORY
+    inherit = win._OBJECT_INHERIT_ACE | win._CONTAINER_INHERIT_ACE
+    assert win._ace_allows_modify(0, inherit, win._MODIFY_MASK) is True
+    assert win._ace_allows_modify(0, inherit, win._GENERIC_ALL) is True
+    assert win._ace_allows_modify(0, win._INHERIT_ONLY_ACE | inherit, win._MODIFY_MASK) is False
+    assert win._ace_allows_modify(0, 0, win._MODIFY_MASK) is False
+    assert win._ace_allows_modify(0, inherit, win._FILE_TRAVERSE) is False
+
+
+def test_grant_workspace_does_not_walk_a_folder_the_container_can_already_modify(tmp_path, monkeypatch):
+    from aicad import sandbox_windows as win
+
+    calls: list[str] = []
+    monkeypatch.setattr(win, "_directory_allows_modify", lambda path, sid: True)
+    monkeypatch.setattr(win, "_grant_tree", lambda *args: calls.append("tree"))
+    monkeypatch.setattr(win, "_grant_traverse", lambda *args, **kwargs: calls.append("traverse"))
+    win.grant_workspace(tmp_path, "S-1-15-2-1")
+    assert calls == ["traverse"]
+
+    calls.clear()
+    monkeypatch.setattr(win, "_directory_allows_modify", lambda path, sid: False)
+    win.grant_workspace(tmp_path, "S-1-15-2-1")
+    assert calls == ["tree", "traverse"]
+
+
+def test_a_live_firewall_read_is_reused_inside_the_script_limit(tmp_path, monkeypatch):
+    import os
+    import time
+
+    from aicad import sandbox_windows as win
+
+    package = "S-1-15-2-1-2-3-4-5-6-7"
+    monkeypatch.setattr(win, "_network_off_marker_path", tmp_path / "sid")
+    monkeypatch.setattr(win.sys, "platform", "win32")
+    monkeypatch.setattr(win, "_pid_alive", lambda pid: pid == os.getpid())
+    called: list[str] = []
+    monkeypatch.setattr(win, "_run_firewall_script", lambda script: called.append(script))
+    verified = tmp_path / "script-network-off-verified"
+    verified.write_text(f"{package} {os.getpid()} {time.time():.0f}\n", encoding="utf-8")
+    assert win._firewall_block_is_present(package) is True
+    assert called == []
+    verified.write_text(f"{package} {os.getpid()} {time.time() - 121:.0f}\n", encoding="utf-8")
+    assert win._firewall_block_is_present(package) is True
+    assert called
+    called.clear()
+    monkeypatch.setattr(win, "_pid_alive", lambda pid: False)
+    verified.write_text(f"{package} {os.getpid()} {time.time():.0f}\n", encoding="utf-8")
+    assert win._firewall_block_is_present(package) is True
+    assert called
 
 
 def test_traverse_write_is_skipped_when_the_directory_already_allows_it(monkeypatch):
@@ -928,6 +976,7 @@ def test_windows_network_block_reinstalls_when_the_record_has_no_rules():
     try:
         # A timed-out or failed read is not proof the rules exist.
         sys.platform = "win32"
+        win._forget_firewall_verified()
         win._run_firewall_script = lookup_fails
         assert win._firewall_block_is_present(package) is False
     finally:
