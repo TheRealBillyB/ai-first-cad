@@ -10,6 +10,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A hypoid pitch step scales with the ring | The axial unknown is a length and the other two unknowns are angles. The step and its clamp grow the axial part with the ring radius, so a larger blank still reaches the pitch point. A ring at the radius the step was written for is unchanged. |
 | The design-check record is removed after the model exits | The process that records a design script's checks keeps that file open until the script finishes. Removing the file while the process still has it fails on Windows. The process and a part script it started are stopped first. A nested part script does not inherit the file. A folder the container can already modify is not walked again, and a firewall read-back from a process that is still running is reused, so those steps do not consume the script's time limit. |
 
 ## 2026-10-27

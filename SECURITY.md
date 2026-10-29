@@ -171,6 +171,8 @@ That stops another website, including one that tries to reach this computer by a
 
 - **BK.** A part name in a PDF drawing stays inside one text string. Parentheses and a backslash in that name do not start another PDF command.
 
+- **BL.** A part name in a DXF drawing stays in one group. A newline in that name does not start another entity.
+
 - **BG.** A bill-of-materials cell that begins with =, +, -, or @ is stored as text.
 
 - **BM.** A design script's check record and its macOS confinement profile are written outside the project. The process temporary directory is not used when that directory is inside a project.
