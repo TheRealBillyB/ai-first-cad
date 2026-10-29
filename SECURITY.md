@@ -140,6 +140,8 @@ That stops another website, including one that tries to reach this computer by a
 
 - CalculiX output is read as UTF-8. A byte that is not UTF-8 does not stop the error report.
 
+- **BD.** A file created for the design record is readable and writable by its owner only, on Windows and on other systems.
+
 - **BD.** The OpenCascade glTF reader does not open a file. A glTF import reads the file through the shared file reader.
 
 - A file name that the Windows upcase table stores as an existing name is refused, including U+0131 LATIN SMALL LETTER DOTLESS I.
