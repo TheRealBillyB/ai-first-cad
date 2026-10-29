@@ -123,6 +123,7 @@ def analyze_print(
     if not 0 < threshold < 90:
         raise GeometryError("threshold_deg is how far from vertical a face may lean before it needs support, between 0 and 90.")
     bridge_mm = _bridge_span(setup.get("bridge_mm", _DEFAULT_BRIDGE_MM))
+    layer_height = _layer_height(setup.get("layer_height_mm"))
     mesh = kernel.tessellate(shape)
     scores = [_score(mesh, name, threshold, bridge_mm) for name in _ORIENTATIONS]
     requested = str(setup.get("orientation") or "best").lower().replace("-", "_").replace(" ", "_")
@@ -158,6 +159,7 @@ def analyze_print(
             _oriented_arrays(mesh, chosen_name)[1],
             Path(out_dir or "."),
             price_per_kg=setup.get("price_per_kg"),
+            layer_height_mm=layer_height,
         )
     status = "pass"
     if focus and not focus["fits"]:
@@ -171,6 +173,7 @@ def analyze_print(
         "orientation_automatic": automatic,
         "orientation_note": _ORIENTATIONS[chosen_name][1],
         "threshold_deg": threshold,
+        "layer_height_mm": layer_height,
         "support_area_mm2": chosen["support_area_mm2"],
         "support_fraction": chosen["support_fraction"],
         "bridge_area_mm2": chosen["bridge_area_mm2"],
@@ -191,7 +194,7 @@ def analyze_print(
         report,
         kind=ROUGH_ESTIMATE,
         name="Print",
-        what="Overhang, support area, and printer fit are rough estimates. A slicer time, when present, uses that slicer's default profile.",
+        what="Overhang, support area, and printer fit are rough estimates. A slicer time, when present, uses that slicer's default profile, and layer_height_mm when it is set.",
         limits=[
             "Only the six axis-up orientations are tried. A diagonal pose is not searched.",
             f"The bed face, within {_BED_MM:g} mm of the lowest point, is not counted as support.",
@@ -200,7 +203,7 @@ def analyze_print(
                 f"its farthest distance to that edge is at most {bridge_mm:g} mm. "
                 "A face with no path to the bed still counts."
             ),
-            "Time and grams follow the slicer's default profile. A missing slicer skips those numbers.",
+            "Time and grams follow the slicer's default profile. layer_height_mm, when set, is passed as the layer height. A missing slicer skips those numbers.",
         ],
     )
 
@@ -241,25 +244,18 @@ def fits_printer(size_mm: list[float], printer_name: str) -> dict:
 def _real_output_dir(path: Path) -> None:
     """Create ``path``. Do not follow a symlink or a junction to do it."""
 
-    import errno
-    import os
+    from aicad.paths import ensure_real_directory
 
-    from aicad.paths import is_reparse
-
-    raw = Path(os.path.abspath(path))
-    current = Path(raw.anchor)
-    for part in raw.relative_to(current).parts:
-        current = current / part
-        if is_reparse(current) or current.is_symlink():
-            raise OSError(errno.ELOOP, f"{path} is a link and was not followed.")
-        if current.exists():
-            if not current.is_dir():
-                raise OSError(errno.ENOTDIR, f"{path} is not a folder.")
-            continue
-        current.mkdir()
+    ensure_real_directory(path)
 
 
-def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price_per_kg=None) -> dict:
+def slice_mesh(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    out_dir: Path,
+    price_per_kg=None,
+    layer_height_mm=None,
+) -> dict:
     executables = find_slicers()
     if not executables:
         return {
@@ -294,6 +290,7 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
                         Path("oriented.stl"),
                         price_per_kg,
                         export,
+                        layer_height_mm,
                         supports,
                     )
                     completed = subprocess.run(
@@ -340,8 +337,14 @@ def slice_mesh(vertices: np.ndarray, triangles: np.ndarray, out_dir: Path, price
                     if parsed.get("grams") and price_per_kg is not None and not parsed.get("cost"):
                         parsed["cost"] = round(float(parsed["grams"]) * float(price_per_kg) / 1000.0, 2)
                         parsed["cost_source"] = "price_per_kg"
+                    layer_note = (
+                        f"Layer height is {layer_height_mm:g} mm."
+                        if layer_height_mm is not None
+                        else "Layer height is the profile's."
+                    )
+                    parsed["layer_height_mm"] = layer_height_mm
                     parsed["assumptions"] = [
-                        f"Sliced by {parsed['slicer']} with its default profile. Nozzle, layer height, and infill are whatever that profile says.",
+                        f"Sliced by {parsed['slicer']} with its default profile. Nozzle and infill are whatever that profile says. {layer_note}",
                         "Filament density 1.24 g/cm³ (PLA) is passed so a profile with no density does not report 0 g.",
                         "Time and grams come from the gcode comments. A different profile changes both.",
                         "Cost is the slicer's filament cost when the gcode has one, otherwise grams times price_per_kg / 1000.",
@@ -396,6 +399,19 @@ def parse_gcode(text: str) -> dict:
         "cost": cost,
         "cost_source": None if cost is None else "slicer",
     }
+
+
+def _layer_height(value) -> float | None:
+    """Slicer layer height in millimeters, or None to keep the slicer's profile."""
+    if value is None:
+        return None
+    try:
+        height = float(value)
+    except (TypeError, ValueError) as exc:
+        raise GeometryError("layer_height_mm is the slicer layer height in millimeters.") from exc
+    if isinstance(value, bool) or not math.isfinite(height) or height <= 0:
+        raise GeometryError("layer_height_mm is the slicer layer height in millimeters.")
+    return height
 
 
 def _bridge_span(value) -> float:
@@ -772,6 +788,7 @@ def _slice_command(
     stl: Path,
     price_per_kg,
     export: bool,
+    layer_height_mm=None,
     supports: bool = False,
 ) -> list[str]:
     command = [executable]
@@ -782,6 +799,8 @@ def _slice_command(
     command.extend(["--filament-density", "1.24"])
     if price_per_kg is not None:
         command.extend(["--filament-cost", str(price_per_kg)])
+    if layer_height_mm is not None:
+        command.extend(["--layer-height", f"{float(layer_height_mm):g}"])
     if supports:
         command.extend(_support_flags(executable))
     command.append(str(stl))
@@ -814,7 +833,7 @@ def _assumptions(threshold: float, bridge_mm: float) -> list[str]:
         "Best means the smallest support area, and the shorter part when two poses tie. When a printer is named, a pose that fits that bed is preferred over a shorter pose that does not.",
         "A printer fits when the oriented height is inside the bed height and the footprint fits, swapping X and Y if that helps.",
         "Printer sizes are the published volumes: A1 and P1 and X1 are 256 mm cubes, A1 mini is 180, MK4 is 250×210×220, Ender 3 is 220×220×250.",
-        "The slicer, when it is installed, uses its own default profile for layer height and infill. Filament density is passed as 1.24 g/cm³ so the gram comment is not zero.",
+        "The slicer, when it is installed, uses its own default profile for infill. Layer height is layer_height_mm when that is set, and otherwise the profile's layer height. Filament density is passed as 1.24 g/cm³ so the gram comment is not zero.",
     ]
 
 

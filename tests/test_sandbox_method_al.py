@@ -111,8 +111,10 @@ def test_a_slicer_does_not_run_in_the_project(tmp_path, monkeypatch):
         # same file. The working directory still comes from the slicer call.
         from aicad.printprep import _slice_command
 
-        def command(executable, gcode, stl, price_per_kg, export, supports=False):
-            built = _slice_command(executable, gcode, stl, price_per_kg, export, supports)
+        def command(executable, gcode, stl, price_per_kg, export, layer_height_mm=None, supports=False):
+            built = _slice_command(
+                executable, gcode, stl, price_per_kg, export, layer_height_mm, supports
+            )
             return [sys.executable, *built]
 
         monkeypatch.setattr("aicad.printprep._slice_command", command)

@@ -296,8 +296,10 @@ def test_a_support_warning_slices_again_with_supports(tmp_path, monkeypatch):
         # Windows will not start a shebang script. The interpreter runs the same file.
         from aicad.printprep import _slice_command
 
-        def command(executable, gcode, stl, price_per_kg, export, supports=False):
-            built = _slice_command(executable, gcode, stl, price_per_kg, export, supports)
+        def command(executable, gcode, stl, price_per_kg, export, layer_height_mm=None, supports=False):
+            built = _slice_command(
+                executable, gcode, stl, price_per_kg, export, layer_height_mm, supports
+            )
             return [sys.executable, *built]
 
         monkeypatch.setattr("aicad.printprep._slice_command", command)
@@ -309,6 +311,29 @@ def test_a_support_warning_slices_again_with_supports(tmp_path, monkeypatch):
 
     assert _support_flags("OrcaSlicer") == ["--enable-support=1"]
     assert _support_flags("prusa-slicer") == ["--support-material"]
+
+
+def test_check_print_accepts_a_layer_height(tmp_path):
+    document = Document(tmp_path)
+    _plate(document)
+    report = document.check_print(
+        "plate",
+        {"orientation": "z_up", "render": False, "slice": False, "layer_height_mm": 0.16},
+    )
+    assert report["layer_height_mm"] == pytest.approx(0.16)
+    with pytest.raises(GeometryError, match="layer_height_mm"):
+        document.check_print("plate", {"layer_height_mm": 0, "render": False, "slice": False})
+    with pytest.raises(GeometryError, match="layer_height_mm"):
+        document.check_print("plate", {"layer_height_mm": "thick", "render": False, "slice": False})
+
+
+def test_the_slicer_command_passes_layer_height():
+    from aicad.printprep import _slice_command
+
+    command = _slice_command("prusa-slicer", Path("print.gcode"), Path("oriented.stl"), None, True, 0.2)
+    assert command[command.index("--layer-height") + 1] == "0.2"
+    plain = _slice_command("orca-slicer", Path("print.gcode"), Path("oriented.stl"), None, False)
+    assert "--layer-height" not in plain
 
 
 def test_a_slicer_link_still_unlinks_a_symlink_and_leaves_the_target(tmp_path):
