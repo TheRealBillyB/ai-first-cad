@@ -6,6 +6,26 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-27
+
+| Decision | Rationale |
+| --- | --- |
+| A junction is handled like a symlink | A slicer output name and an orphan plan-sheet walk treat a Windows junction the same way as a symlink. |
+| A motion can sweep a joint from its lower stop to its upper stop | A study driver had to name every angle. range true travels from the joint's min to its max, and both ends are inside the stops, so they are not limit hits. |
+| A motion records when a joint's two solids overlap | The collision list still skips a joint pair, so a pin that fills its bore stayed clear. Each frame now records that overlap, and the study names the joint. |
+| A nested link under a linked project is opened from the project | When the project folder is a link, a file under it is opened from the directory that link points at, so a nested link is not followed. |
+| A print-in-place clearance check measures joint pairs | Motion collisions skip the two solids of a joint, so a pin that fills its bore was not reported. The print clearance check measures those pairs and fails when they overlap or the gap is under the fuse line. |
+| A removed file stays in the per-file total | The per-file total keeps the largest size a script's file reached. Removing that file before the next snapshot does not drop those bytes, and an open file that has already been unlinked is included on Linux. |
+| A script's disk quota is read at exit | On Linux and macOS the bytes a script has written are read again when that process exits, before it is collected. A run that finishes before the next periodic sample is still counted. The script does not run until that counter can be read. |
+| A session path and a STEP import do not follow a directory link | A directory link is refused when it stays inside the project, the same way other project reads refuse it. |
+| A short bridge is not counted as support | Faces within 0.05 mm of the bed sit on the plate. A down-facing span held along an edge and at most 5 mm across is a bridge, not support. A floating face and a one-ended overhang still count. |
+| A Windows directory is created from its parent handle | Creating the directory and opening that name are one request on the parent handle, so a link at the name is not followed. |
+| An assembly exports as one print without uniting the parts | Print prep and export took one part. An assembly is now one STEP, STL, or 3MF in its current pose, and each part stays its own solid so a gap is not filled. |
+| Print meshing skips the texture atlas | Print checks and pictures discard texture coordinates. Packing those coordinates overflows the call stack on a housing that holds two spur gears, so the mesh is built without an atlas. |
+| The design-record log is created from its directory | The log file is created from the parent directory handle, so a link at that name is not followed. |
+| The sketch solver is built from source in CI | CI compiles python-solvespace 3.0.8 on Ubuntu, macOS, and Windows with an empty pip cache and no binary wheel. The build uses the installer's compiler flags. A C file has to be compiled with the standard that installer selected, and a C++ file keeps its own standard. MSVC is left unset, and that path is still compiled from source. |
+| Tool text is marked even when it already starts with the marker | A tool result or a project resource that began with the marker was returned as it was. The marker and its closing line are written around that text every time, and a tool result keeps this program's marker sentence. |
+
 ## 2026-10-26
 
 | Decision | Rationale |
