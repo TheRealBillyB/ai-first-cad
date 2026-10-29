@@ -3156,18 +3156,45 @@ def _wchar_from_text(text: str) -> int | None:
     return None
 
 
+def _thread_group_leader(pid: int) -> int:
+    """The thread-group id for ``pid``.
+
+    ``/proc/<tgid>/task/<tid>/io`` is one thread. ``/proc/<tgid>/io`` is every
+    thread in the process. The quota uses the group total, once.
+    """
+    if pid <= 0 or not sys.platform.startswith("linux"):
+        return pid
+    try:
+        text = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    except OSError:
+        return pid
+    for line in text.splitlines():
+        if not line.startswith("Tgid:"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            return pid
+        try:
+            tgid = int(parts[1])
+        except ValueError:
+            return pid
+        return tgid if tgid > 0 else pid
+    return pid
+
+
 def _process_write_bytes(pid: int) -> int | None:
     """Logical bytes this process has written, or None when the system will not say.
 
-    On Linux this is ``wchar``, the bytes passed to write. A file removed
-    before the next directory look is still included. ``write_bytes`` is only
-    what has reached storage, so it misses that file. Opening that file after
-    the process has exited fails, so the caller keeps a descriptor from while
-    the process was alive and reads it again at exit.
+    On Linux this is ``wchar`` for the whole thread group, the bytes passed to
+    write. A file removed before the next directory look is still included.
+    ``write_bytes`` is only what has reached storage, so it misses that file.
+    Opening that file after the process has exited fails, so the caller keeps
+    a descriptor from while the process was alive and reads it again at exit.
     """
     if sys.platform.startswith("linux"):
+        leader = _thread_group_leader(pid)
         try:
-            text = Path(f"/proc/{pid}/io").read_text(encoding="utf-8")
+            text = Path(f"/proc/{leader}/io").read_text(encoding="utf-8")
         except OSError:
             return None
         return _wchar_from_text(text)
@@ -3253,6 +3280,7 @@ class _DiskWatch:
         """
         if pid <= 0 or not sys.platform.startswith("linux"):
             return
+        pid = _thread_group_leader(pid)
         with self._lock:
             if pid in self._io_fds:
                 return
@@ -3641,18 +3669,27 @@ class _DiskWatch:
         A process that was not seen here counts from zero on the first sample.
         That sample is not itself a baseline.
         """
+        pid = _thread_group_leader(pid)
         current = self._counter(pid)
         with self._lock:
             if pid not in self._io_base:
                 self._io_base[pid] = 0 if current is None else current
 
     def note_io(self, pids: set[int]) -> None:
+        leaders: list[int] = []
+        seen: set[int] = set()
+        for pid in pids:
+            leader = _thread_group_leader(pid)
+            if leader in seen:
+                continue
+            seen.add(leader)
+            leaders.append(leader)
         with self._lock:
             self._pids = set(pids)
             folded = set(self._folded)
         total = 0
         live: dict[int, int] = {}
-        for pid in pids:
+        for pid in leaders:
             if pid in folded:
                 continue
             current = self._counter(pid)
