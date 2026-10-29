@@ -198,7 +198,9 @@ def attach_sheet(payload: dict, directory: Path | str, stem: str, root: Path | s
     else:
         folder = Path(directory)
         try:
-            folder.mkdir(parents=True, exist_ok=True)
+            from aicad.paths import ensure_real_directory
+
+            ensure_real_directory(folder)
         except OSError as exc:
             raise GeometryError(
                 f"Could not create the folder for {folder}. {exc.strerror or exc}."
