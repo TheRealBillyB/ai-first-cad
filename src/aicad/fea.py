@@ -1017,6 +1017,8 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
             [solver, "-i", "job"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=180,
             check=False,
