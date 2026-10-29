@@ -267,3 +267,141 @@ def test_model_dispatch_accepts_an_open_file(monkeypatch):
     assert sandbox_run.main(["--model", "job", "record", "7"]) == 0
     assert seen["fd"] == 7
     assert sandbox_run.main(["--model", "job", "record", "nope"]) == 2
+
+
+def _directory_link(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        if sys.platform == "win32":
+            import subprocess
+
+            completed = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode == 0:
+                return
+        pytest.skip(f"this machine cannot create a directory link ({exc})")
+
+
+def test_open_inplace_does_not_follow_a_directory_link(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    note = real / "note"
+    note.write_bytes(b"kept")
+    linked = tmp_path / "linked"
+    _directory_link(linked, real)
+    with pytest.raises(OSError):
+        open_inplace(linked / "note")
+    assert note.read_bytes() == b"kept"
+
+
+def test_open_read_does_not_follow_a_link(tmp_path):
+    from aicad.file_access import open_read
+
+    target = tmp_path / "target"
+    target.write_bytes(b"CANARY_HIT\n")
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    with pytest.raises(OSError):
+        open_read(link)
+    assert target.read_bytes() == b"CANARY_HIT\n"
+    real = tmp_path / "real"
+    real.mkdir()
+    note = real / "note"
+    note.write_bytes(b"CANARY_HIT\n")
+    linked = tmp_path / "linked"
+    _directory_link(linked, real)
+    with pytest.raises(OSError):
+        open_read(linked / "note")
+    assert note.read_bytes() == b"CANARY_HIT\n"
+
+
+def test_the_design_record_stop_and_record_are_opened_from_their_directories(tmp_path, monkeypatch):
+    from aicad import file_access
+    from aicad.sandbox import _DesignRecord
+
+    if sys.platform != "win32":
+        from aicad.paths import _libc
+
+        _libc()
+    seen_create: list[tuple[Path, str]] = []
+    seen_read: list[Path] = []
+    real_create = file_access.create_file
+    real_read = file_access.open_read
+
+    def spy_create(directory: Path, name: str) -> int:
+        seen_create.append((Path(directory), name))
+        return real_create(directory, name)
+
+    def spy_read(path: str | Path) -> int:
+        seen_read.append(Path(path))
+        return real_read(path)
+
+    monkeypatch.setattr(file_access, "create_file", spy_create)
+    monkeypatch.setattr(file_access, "open_read", spy_read)
+    job = tmp_path / "job"
+    calls = job / "calls"
+    calls.mkdir(parents=True)
+    payload = b'{"checks": [], "changed_parts": [], "deleted_parts": [], "views": [], "notes": []}\n'
+    descriptor = os.open(os.fspath(tmp_path / "record.json"), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(descriptor, payload)
+    info = os.fstat(descriptor)
+    os.close(descriptor)
+
+    class Fake:
+        def __init__(self) -> None:
+            self.returncode = None
+
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            self.returncode = 0
+            return b"", b""
+
+    record = _DesignRecord(tmp_path, job)
+    record.proc = Fake()
+    record.record = tmp_path / "record.json"
+    record._device = info.st_dev
+    record._inode = info.st_ino
+    result = record.merge({})
+    assert result["checks"] == []
+    assert seen_create == [(calls, "STOP")]
+    assert seen_read == [tmp_path / "record.json"]
+    assert (calls / "STOP").is_file()
+    assert not (calls / "STOP").is_symlink()
+
+
+def test_the_stop_file_is_not_created_through_a_directory_link(tmp_path):
+    from aicad.errors import ScriptError
+    from aicad.sandbox import _DesignRecord
+
+    real = tmp_path / "real"
+    real.mkdir()
+    kept = real / "kept"
+    kept.write_bytes(b"CANARY_HIT\n")
+    job = tmp_path / "job"
+    job.mkdir()
+    _directory_link(job / "calls", real)
+
+    class Fake:
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            raise AssertionError("the record process was signalled")
+
+    record = _DesignRecord(tmp_path, job)
+    record.proc = Fake()
+    record.record = tmp_path / "record.json"
+    with pytest.raises(ScriptError, match="could not record its checks"):
+        record.merge({})
+    assert not (real / "STOP").exists()
+    assert kept.read_bytes() == b"CANARY_HIT\n"
