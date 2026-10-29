@@ -19,13 +19,16 @@ def face_count(shape: kernel.Shape) -> int:
     return len(shape.impl.faces())
 
 
-def heal(shape: kernel.Shape, tolerance_mm: float) -> tuple[kernel.Shape, str, bool]:
+def heal(shape, tolerance_mm: float) -> tuple[kernel.Shape, str, bool]:
     """Sew and fix the solid. ``changed`` is true when the volume moved.
 
-    A build123d solid is often wrapped in a compound. Sewing that compound
-    returns a shell. The shell is turned back into a solid. If that fails,
-    the original solid is kept so a later mesh can still run.
+    A script can pass the solid it just built. The result is always a kernel
+    shape; a part script assigns ``part`` from ``healed.impl``. A build123d
+    solid is often wrapped in a compound. Sewing that compound returns a
+    shell. The shell is turned back into a solid. If that fails, the original
+    solid is kept so a later mesh can still run.
     """
+    shape = _kernel_shape(shape)
     before = volume_mm3(shape)
     try:
         healed = _cast(_heal_topo(shape.impl.wrapped, tolerance_mm), shape.features)
@@ -164,6 +167,15 @@ def _explore(wrapped, kind, cast):
         found.append(cast(explorer.Current()))
         explorer.Next()
     return found
+
+
+def _kernel_shape(shape) -> kernel.Shape:
+    """Accept the kernel shape, or the solid a script assigned to ``part``."""
+    if isinstance(shape, kernel.Shape):
+        return shape
+    if getattr(shape, "wrapped", None) is not None and hasattr(shape, "volume"):
+        return kernel.Shape(shape)
+    raise GeometryError("heal needs a solid. A script can pass the solid it built.")
 
 
 def _cast(topo, features) -> kernel.Shape:

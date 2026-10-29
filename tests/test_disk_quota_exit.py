@@ -232,3 +232,44 @@ def test_a_thread_group_is_counted_once(tmp_path):
         release.set()
         thread.join(timeout=5)
         disk.close_counters()
+
+
+def test_the_exit_reading_runs_when_waitid_is_unavailable(monkeypatch):
+    monkeypatch.setattr("aicad.sandbox._exited_unreaped", lambda pid: None)
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.2)"])
+    seen: dict[str, object] = {}
+
+    def before_reap() -> None:
+        # The process is still uncollected. returncode is set only by wait.
+        seen["returncode"] = proc.returncode
+        if sys.platform.startswith("linux"):
+            text = Path(f"/proc/{proc.pid}/stat").read_text(encoding="utf-8")
+            close = text.rfind(")")
+            seen["zombie"] = close >= 0 and close + 2 < len(text) and text[close + 2] == "Z"
+        elif sys.platform == "darwin":
+            from aicad.sandbox_macos import process_runtime
+
+            runtime = process_runtime(proc.pid)
+            seen["zombie"] = runtime is not None and runtime[1]
+            try:
+                os.kill(proc.pid, 0)
+                seen["present"] = True
+            except OSError:
+                seen["present"] = False
+        else:
+            seen["zombie"] = True
+
+    try:
+        _wait_script(proc, 30, None, before_reap=before_reap)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+    assert seen["returncode"] is None
+    if sys.platform == "darwin":
+        # libproc does not always mark the unreaped process as a zombie.
+        # The process is still there, so it has not been collected.
+        assert seen["zombie"] is True or seen["present"] is True
+    else:
+        assert seen["zombie"] is True
+    assert proc.returncode is not None
