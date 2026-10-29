@@ -138,7 +138,11 @@ That stops another website, including one that tries to reach this computer by a
 
 - **BC.** The design-record stop file is created from its parent directory, and the record is read from its parent directory. A link at either name is not followed.
 
+- CalculiX output is read as UTF-8. A byte that is not UTF-8 does not stop the error report.
+
 - **BD.** The OpenCascade glTF reader does not open a file. A glTF import reads the file through the shared file reader.
+
+- A file name that the Windows upcase table stores as an existing name is refused, including U+0131 LATIN SMALL LETTER DOTLESS I.
 
 - **BE.** A glTF, OBJ, or COLLADA import may read a file in a subfolder of the mesh file's folder. Each name in that path stays inside the folder. A link is not followed. The file is read through the shared file reader.
 
