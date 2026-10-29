@@ -304,7 +304,9 @@ def _make_icosphere(radius: float):
         (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
         (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
     ]
-    for _level in range(2):
+    # One subdivision is a closed ball. A second subdivision is four times the
+    # faces and is what made a full catalog pass crash a test worker.
+    for _level in range(1):
         midpoint: dict[tuple[int, int], int] = {}
         divided = []
         for a, b, c in faces:

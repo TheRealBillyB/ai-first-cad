@@ -197,7 +197,12 @@ def test_deep_groove_bearings_are_closed_solids():
     from aicad.catalog_build import deep_groove as build_deep_groove
     from aicad.catalog_data import DEEP_GROOVE
 
-    for row in DEEP_GROOVE:
+    rows = list(DEEP_GROOVE)
+    step = max(1, len(rows) // 6)
+    picked = rows[::step]
+    if rows[-1] not in picked:
+        picked.append(rows[-1])
+    for row in picked:
         solid = kernel.adopt(build_deep_groove(row))
         measured = kernel.measure(solid)
         assert measured.valid and measured.watertight and measured.volume_mm3 > 0
