@@ -144,6 +144,8 @@ That stops another website, including one that tries to reach this computer by a
 
 - A file name that the Windows upcase table stores as an existing name is refused, including U+0131 LATIN SMALL LETTER DOTLESS I.
 
+- **BE.** A picture under a project folder that is a link is read from the directory that link points at. A nested link is not followed.
+
 - **BE.** A glTF, OBJ, or COLLADA import may read a file in a subfolder of the mesh file's folder. Each name in that path stays inside the folder. A link is not followed. The file is read through the shared file reader.
 
 - **BF.** A project folder that is a link is opened from the directory it points at, including when another directory link sits further out. A nested link is not followed.
