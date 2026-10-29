@@ -109,6 +109,8 @@ _SCRIPT_OUTPUT_CAP = 1_000_000
 
 _REAL_IMPORT = builtins.__import__
 _GUARD = False
+_REAL_OS_OPEN = None
+_NULL_DEVICE: str | None = None
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 
 _FS_EXECUTE = 1 << 0
@@ -707,13 +709,15 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
     Native libraries still use the kernel rules. This wrapper is the message
     a script sees when it calls open() itself.
     """
-    global _GUARD
+    global _GUARD, _NULL_DEVICE, _REAL_OS_OPEN
     if _GUARD:
         return
     import io
 
     real_open = builtins.open
     real_os_open = os.open
+    _REAL_OS_OPEN = real_os_open
+    _NULL_DEVICE = os.devnull
     root = workspace.resolve()
 
     def py_open(file, mode="r", *args, **kwargs):
@@ -738,6 +742,32 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
     io.open = py_open  # type: ignore[assignment]
     os.open = os_open  # type: ignore[assignment]
     _GUARD = True
+
+
+def open_null_device(flags: int) -> int:
+    """Open a sink so a reader can discard native logs.
+
+    The script file check wraps ``os.open``. The STEP reader uses this instead,
+    and only for the null device recorded when that check was installed. A
+    confined Windows process cannot open that device, so the log is discarded
+    in the temporary directory instead. A script that names the device, or any
+    other path, still goes through the check.
+    """
+    target = os.devnull
+    try:
+        if (
+            _GUARD
+            and _REAL_OS_OPEN is not None
+            and _NULL_DEVICE is not None
+            and os.path.normcase(os.fspath(target)) == os.path.normcase(_NULL_DEVICE)
+        ):
+            return _REAL_OS_OPEN(target, flags)
+        return os.open(target, flags)
+    except OSError:
+        raw, name = tempfile.mkstemp(prefix="aicad-discard-")
+        os.close(raw)
+        temporary = getattr(os, "O_TEMPORARY", 0)
+        return os.open(name, flags | temporary)
 
 
 def _read_roots() -> list[Path]:
@@ -1705,11 +1735,9 @@ def apply_sandbox(
         fd = result_fd
         opened = False
         if fd is None and result_path is not None:
-            fd = os.open(
-                result_path,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0),
-                0o600,
-            )
+            from aicad.file_access import open_write
+
+            fd = open_write(result_path.parent, result_path.name)
             opened = True
         _block_new_files(fd)
         if opened and fd is not None:
@@ -1904,14 +1932,18 @@ def library_env_steers(name: str) -> bool:
 def scrub_library_environment() -> None:
     """Drop geometry and font configuration variables from this process.
 
-    Matplotlib then uses a fresh directory instead of the account home. A
-    design script keeps the empty library directory installed for that script.
+    Matplotlib then uses a fresh directory instead of the account home.
+    Fontconfig uses the file shipped with aicad. A design script keeps the
+    empty library directory installed for that script.
     """
 
     owned = _LIBRARY_HOME
     for key in list(os.environ):
         if library_env_steers(key):
             os.environ.pop(key, None)
+    from aicad.paths import packaged_fontconfig_file
+
+    os.environ["FONTCONFIG_FILE"] = str(packaged_fontconfig_file())
     if owned and Path(owned).is_dir():
         os.environ["MPLCONFIGDIR"] = owned
     else:
@@ -3073,6 +3105,9 @@ class _DiskWatch:
         self._io_fds: dict[int, int] = {}
         self._pids: set[int] = set()
         self._file_peak: dict[str, int] = {}
+        self._folded: set[int] = set()
+        self._child_extra = 0
+        self.child_report: Path | None = None
         self.io_peak = 0
         self._lock = threading.Lock()
 
@@ -3150,21 +3185,98 @@ class _DiskWatch:
             leaders.append(leader)
         with self._lock:
             self._pids = set(pids)
+            folded = set(self._folded)
         total = 0
+        live: dict[int, int] = {}
         for pid in leaders:
+            if pid in folded:
+                continue
             current = self._counter(pid)
             if current is None:
                 continue
             with self._lock:
+                if pid in self._folded:
+                    continue
                 base = self._io_base.get(pid)
                 if base is None:
                     base = 0
                     self._io_base[pid] = 0
-            total += max(0, current - base)
+            delta = max(0, current - base)
+            live[pid] = delta
+            total += delta
         with self._lock:
+            # A child collected while this sample was reading is owned by the
+            # report. Drop the live delta so that child is not added twice.
+            for pid, delta in live.items():
+                if pid in self._folded:
+                    total -= delta
+            total += self._child_extra
             self.io_peak = max(self.io_peak, total)
         if total > self.disk_cap:
             self.hit.set()
+
+    def account_io(self, pids: set[int]) -> None:
+        """Read a child report, then the live counters, as one sample."""
+        self.absorb_child_report()
+        self.note_io(pids)
+
+    def note_reported_children(self, amounts: dict[int, int]) -> None:
+        """Add logical writes of children that were collected before a counter was opened.
+
+        ``amounts`` maps a pid to the bytes that process had written. A pid
+        already included here is left out of later live samples so it is not
+        counted twice.
+        """
+        extra = 0
+        fresh: set[int] = set()
+        for pid, total in amounts.items():
+            if not isinstance(pid, int) or pid <= 0:
+                continue
+            with self._lock:
+                if pid in self._folded:
+                    continue
+                base = self._io_base.get(pid, 0)
+            try:
+                amount = int(total)
+            except (TypeError, ValueError):
+                continue
+            if amount < 0:
+                continue
+            extra += max(0, amount - base)
+            fresh.add(pid)
+        if not fresh:
+            return
+        with self._lock:
+            self._folded.update(fresh)
+            self._child_extra += extra
+            self.io_peak = max(self.io_peak, self._child_extra)
+        if self.io_peak > self.disk_cap:
+            self.hit.set()
+
+    def absorb_child_report(self) -> None:
+        """Read the script's record of children it collected, when that file exists."""
+        path = self.child_report
+        if path is None:
+            return
+        from aicad.file_access import read_text
+
+        try:
+            text = read_text(path, maximum=1_000_000)
+        except OSError:
+            return
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        amounts: dict[int, int] = {}
+        for key, value in payload.items():
+            try:
+                amounts[int(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        self.note_reported_children(amounts)
 
     def note_job_io(self, written: int, baseline: int | None) -> None:
         delta = written if baseline is None else max(0, written - baseline)
@@ -3368,7 +3480,7 @@ def _watch_descendants(
             watched = {leader, *found}
             for pid in watched:
                 disk.hold_counter(pid)
-            disk.note_io(watched)
+            disk.account_io(watched)
             disk.note_files()
             if disk.hit.is_set():
                 _kill_process_tree(leader, seen, lock, extra=found)
@@ -3480,6 +3592,30 @@ def _sandbox_runner() -> Path:
     if not isinstance(origin, str) or not origin:
         raise ScriptError("The sandbox runner is not a file in this install.")
     return Path(origin).resolve()
+
+
+def _write_new_temp(prefix: str, suffix: str, data: bytes, directory: str | None = None) -> Path:
+    """A new temporary file, written on the descriptor that created it.
+
+    The temporary directory may itself be a link. The bytes go to the file
+    this call created, so that link is not opened again to write them.
+    """
+
+    descriptor, name = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=directory)
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+    except OSError:
+        os.close(descriptor)
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    os.close(descriptor)
+    return Path(name)
 
 
 def _child_command(job: Path) -> list[str]:
@@ -3601,13 +3737,10 @@ class _DesignRecord:
         if self.proc.poll() not in (0, None):
             self._refuse()
         stop = self.job / "calls" / "STOP"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        if hasattr(os, "O_CLOEXEC"):
-            flags |= os.O_CLOEXEC
+        from aicad.file_access import create_file
+
         try:
-            descriptor = os.open(stop, flags, 0o600)
+            descriptor = create_file(stop.parent, stop.name)
         except FileExistsError:
             descriptor = None
         except OSError as exc:
@@ -3626,13 +3759,10 @@ class _DesignRecord:
             self._refuse()
         if self.proc.returncode != 0:
             self._refuse()
-        read_flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            read_flags |= os.O_NOFOLLOW
-        if hasattr(os, "O_CLOEXEC"):
-            read_flags |= os.O_CLOEXEC
+        from aicad.file_access import open_read
+
         try:
-            descriptor = os.open(self.record, read_flags)
+            descriptor = open_read(self.record)
         except OSError as exc:
             raise ScriptError("The design script could not record its checks.") from exc
         try:
@@ -3733,13 +3863,11 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             [str(workspace)],
             network=network,
         )
-        descriptor, name = tempfile.mkstemp(prefix="aicad-seatbelt-", suffix=".sb")
-        os.close(descriptor)
-        profile_path = Path(name)
-        publish_text(profile_path, profile, root=profile_path.parent)
+        profile_path = _write_new_temp("aicad-seatbelt-", ".sb", profile.encode("utf-8"))
         command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds()
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
+    disk.child_report = job / "child-writes.json"
     quota_hold: list[int | None] = [None]
     disk_stop = threading.Event()
     stop_watch: threading.Event | None = None
@@ -3864,7 +3992,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 pass
             for pid in pids:
                 disk.hold_counter(pid)
-            disk.note_io(pids)
+            disk.account_io(pids)
 
         if account is not None and sentinel_path is not None:
             identity = process_identity(proc.pid)
