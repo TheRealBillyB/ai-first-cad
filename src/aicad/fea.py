@@ -418,6 +418,7 @@ def solve_part(
                 f"von Mises  max {peak:.3g} MPa",
                 "MPa",
                 "von Mises",
+                maximum=peak,
             )
         )
         views.extend(
@@ -431,6 +432,7 @@ def solve_part(
                 f"displacement  max {float(magnitude[move_index]):.3g} mm",
                 "mm",
                 "displacement",
+                maximum=float(magnitude[move_index]),
             )
         )
     note = _summary(material, peak, safety, magnitude[move_index], review, warnings)
