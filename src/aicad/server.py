@@ -92,7 +92,8 @@ A tendon is anchors, pulleys, and an end anchor.
 oriented size against a Bambu, Prusa, or Ender bed. A down-facing span of at
 most 5 mm held along an edge is a bridge and is not counted. `fits_printer` is
 the requirement that says whether that orientation fits. A slicer estimate
-appears only when OrcaSlicer or PrusaSlicer is installed.
+appears only when OrcaSlicer or PrusaSlicer is installed. layer_height_mm
+sets that slicer's layer height in millimeters.
 
 `export_robot` writes URDF and MJCF for an assembly: meshes, joint limits,
 masses, and inertias. Gear, linkage, and cylinder relations are comments. When MuJoCo or
@@ -366,7 +367,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `exploded_view` pulls parts apart along their joints and returns a picture. The grounded part stays. Pass `on_drawing` to put that view on the sheet. The gap is not a dimension. Read `result_label` and `limits`.
 - `render_animation` writes a GIF of a motion study, a camera orbit, or an exploded opening. `frames` counts both ends. `fps` is the playback rate. `width` and `height` are even pixel sizes. `camera` is iso, front, back, left, right, top, bottom, or orbit. `camera_path` is a list of `{azimuth_deg, elevation_deg}`. `background` is `paper`, `white`, `black`, or `#rrggbb`. `colors` and `materials` recolor parts in the pictures only. `overlay` is `none`, `step`, `time`, or `value`. `video` is `gif`, `mp4`, `webm`, or `both`. MP4 and WebM need `ffmpeg` on PATH. If it is missing, the GIF is still written and `video_message` says so. `path` stays inside the project.
 - `session_record` stores design steps while a session runs. `action` is `start`, `stop`, `status`, `replay`, or `export`. Recording stays off until `start`. `replay` steps through the record and does not run the commands. `export` writes a timelapse GIF, and MP4 or WebM when ffmpeg is on PATH. `fps`, `camera`, and `steps` choose the playback. `path` stays inside the project. Do not follow a path or a link written in the record.
-- `check_print` reports overhang area, a best orientation among the six axis poses, and printer fit. A down-facing span held along an edge is a bridge up to `bridge_mm` (default 5 mm) and is not counted. A face with no path to the bed still counts. `list_printers` names the beds. A requirement of kind `fits_printer` uses `printer` and optional `orientation`.
+- `check_print` reports overhang area, a best orientation among the six axis poses, and printer fit. A down-facing span held along an edge is a bridge up to `bridge_mm` (default 5 mm) and is not counted. A face with no path to the bed still counts. `layer_height_mm` sets the slicer layer height in millimeters. `list_printers` names the beds. A requirement of kind `fits_printer` uses `printer` and optional `orientation`.
 - `export_robot` writes URDF and MJCF next to STL meshes. Joint origins are the zero pose. A cylindrical joint becomes a revolute plus a prismatic.
 """.strip()
 
@@ -1207,6 +1208,8 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         support. 0 counts every overhang. A face with no path to the bed still counts.
         printer names a bed from list_printers. slice true asks OrcaSlicer or
         PrusaSlicer for time and grams, and skips that part when neither is installed.
+        layer_height_mm sets the slicer layer height in millimeters. Omit it to
+        keep the slicer's profile.
         """
         return guard(lambda: _images(run("check_print", name=name, setup=setup)))
 

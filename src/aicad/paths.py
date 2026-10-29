@@ -36,6 +36,11 @@ def packaged_font_config() -> Path:
     return Path(__file__).resolve().parent / "data" / "ezdxf.ini"
 
 
+def packaged_fontconfig_file() -> Path:
+    """Fontconfig file shipped with aicad. It does not include the account home."""
+    return Path(__file__).resolve().parent / "data" / "fonts.conf"
+
+
 def _is_project_ini(path: Path) -> bool:
     """True for ``ezdxf.ini`` in the working directory, not the packaged file."""
     if path.name.lower() != "ezdxf.ini":
@@ -211,10 +216,11 @@ def prepare_geometry_import() -> None:
     a font folder outside the project. ``EZDXF_CONFIG_FILE`` points at the file
     shipped with aicad. The working-directory file and the home file are not
     read. Variables that name a font, Gmsh, or OpenCascade configuration are
-    removed before those libraries load. Matplotlib uses a private config
-    directory. The image library asks to enter the interpreter directory while
-    it loads. That request is refused, so a relative path in the project still
-    opens.
+    removed before those libraries load. Fontconfig then uses the file
+    shipped with aicad, which names system font folders only. Matplotlib
+    uses a private config directory. The image library asks to enter the
+    interpreter directory while it loads. That request is refused, so a
+    relative path in the project still opens.
     """
     from aicad.sandbox import scrub_library_environment
 
@@ -2133,4 +2139,31 @@ def _replace_path_prefix(text: str, variant: str) -> str:
     return "".join(pieces)
 
 
+def lock_unused_gltf_reader() -> None:
+    """Refuse the unused OpenCascade glTF reader and writer.
+
+    A glTF import in this program reads bytes through the shared file reader.
+    The OpenCascade reader is not given a path.
+    """
+
+    if getattr(lock_unused_gltf_reader, "_done", False):
+        return
+    try:
+        from OCP.RWGltf import RWGltf_CafReader, RWGltf_CafWriter
+    except ImportError:
+        lock_unused_gltf_reader._done = True
+        return
+
+    def blocked(*_args, **_kwargs):
+        from aicad.errors import GeometryError
+
+        raise GeometryError("The glTF reader is not used.")
+
+    RWGltf_CafReader.Perform = blocked
+    RWGltf_CafReader.ProbeHeader = blocked
+    RWGltf_CafWriter.Perform = blocked
+    lock_unused_gltf_reader._done = True
+
+
 prepare_geometry_import()
+lock_unused_gltf_reader()
