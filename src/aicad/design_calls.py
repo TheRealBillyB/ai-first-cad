@@ -307,8 +307,11 @@ def _apply_request(directory: Path, number: int, request: dict, document, calls:
             {"ok": False, "error_type": "TypeError", "error": "The call was refused."},
         )
         return
+    from aicad.sandbox_state import design_call
+
     try:
-        result = getattr(document, name)(*args, **kwargs)
+        with design_call():
+            result = getattr(document, name)(*args, **kwargs)
     except Exception as exc:
         calls.append({"method": name, "error": f"{type(exc).__name__}: {exc}"})
         _write_json(

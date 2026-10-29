@@ -558,6 +558,7 @@ class Document:
             require_in_project(path, self.workspace, writing=True)
             model = self._print_model(name)
             from aicad.paths import refuse_reserved_device, require_export_path
+            from aicad.sandbox_state import in_design_call
 
             refuse_reserved_device(path, self.workspace, "Export path", GeometryError)
             destination = Path(path)
@@ -566,8 +567,12 @@ class Document:
                 # trailing dot or space before creating the file, and that
                 # trimmed path is refused when it would leave the project.
                 destination = require_export_path(self.workspace, path, "Export path", GeometryError)
+            # A person may name an absolute path. A design script may not.
             destination = _project_file(
-                self.workspace, destination, "Export path", allow_absolute_outside=True
+                self.workspace,
+                destination,
+                "Export path",
+                allow_absolute_outside=not in_design_call(),
             )
             kind = kind.lower()
             if kind == "step":
@@ -2486,12 +2491,14 @@ def _vec3(value, label: str) -> tuple[float, float, float]:
 def _step_import_source(root: Path, raw: str | Path) -> Path:
     """The file ``import_step`` reads.
 
-    An absolute path is a file the person chose. A relative path stays inside
-    the project. A directory link in that path is not followed, including one
-    whose target stays inside the project. A file in the project that has
-    another name is not opened.
+    An absolute path is a file the person chose. A design script does not get
+    that choice: its path stays inside the project. A relative path stays
+    inside the project. A directory link in that path is not followed,
+    including one whose target stays inside the project. A file in the project
+    that has another name is not opened.
     """
     from aicad.paths import _reparse_between, shared_file, stays_inside
+    from aicad.sandbox_state import in_design_call
 
     original = Path(raw)
     given = original if original.is_absolute() else root / original
@@ -2502,7 +2509,8 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
     except ValueError:
         lexical_inside = False
     source = given.resolve()
-    if not original.is_absolute() or lexical_inside:
+    # An absolute path is a file the person chose, unless a design script asked.
+    if in_design_call() or not original.is_absolute() or lexical_inside:
         if not stays_inside(root_resolved, source):
             raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
         lexical = given if given.is_absolute() else root_resolved / given
