@@ -1056,6 +1056,10 @@ def test_windows_stale_profile_is_replaced_before_the_script_starts():
     assert "TerminateProcess" in check
     assert "ResumeThread" not in check
     assert "CapabilityCount = 0" in check
+    assert "_profile_check_programs" in check
+    picker = inspect.getsource(win._profile_check_programs)
+    assert "cmd.exe" in picker
+    assert "System32" in picker
     assert "_creation_flags" in check
     assert "_CREATE_SUSPENDED" in inspect.getsource(win._creation_flags)
     alive = inspect.getsource(win._pid_alive)
