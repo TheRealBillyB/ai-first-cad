@@ -254,6 +254,39 @@ def test_macos_python_threads_get_a_geometry_stack():
     assert seen["bytes"] >= GEOMETRY_THREAD_STACK
 
 
+def test_a_small_stack_runs_clearance_on_a_larger_thread(monkeypatch):
+    """A deep boolean does not stay on a thread that is too small for it.
+
+    On macOS the pytest worker's main thread is the process stack. A rod
+    handler mesh and the booleans that seat its parts overflow that stack,
+    and the worker exits with no traceback. The same call from a short
+    stack runs on the geometry thread instead.
+    """
+    import threading
+
+    from aicad import thread_stack
+    from aicad.kernel import clearance_between, make_from_ops
+
+    def needs_a_larger_stack() -> bool:
+        return threading.current_thread() is threading.main_thread()
+
+    monkeypatch.setattr(thread_stack, "geometry_call_needs_a_larger_stack", needs_a_larger_stack)
+    started: list[str] = []
+    real = threading.Thread
+
+    def spy(*args, **kwargs):
+        started.append(kwargs.get("name", ""))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(thread_stack.threading, "Thread", spy)
+    left = make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10]}])
+    right = make_from_ops([{"op": "add", "shape": "box", "size": [4, 4, 4]}])
+    overlap, distance, _first, _second = clearance_between(left, right)
+    assert started == ["aicad-geometry"]
+    assert overlap == pytest.approx(64, abs=0.1)
+    assert distance == pytest.approx(0, abs=0.01)
+
+
 def test_child_processes_inherit_a_geometry_stack():
     from aicad.thread_stack import _limit_covers_geometry, child_inherits_geometry_stack
 

@@ -2438,13 +2438,17 @@ def _kill_pid(pid: int) -> None:
 
 
 def _terminate_windows(pid: int) -> None:
-    """End one Windows process. ``SIGKILL`` is not termination there."""
+    """End one Windows process.
+
+    ``SIGKILL`` is not termination there. ``os.kill`` asks for every process
+    right, which an AppContainer part script refuses, so the process is
+    opened with the terminate right only.
+    """
     if pid <= 1 or pid == os.getpid() or sys.platform != "win32":
         return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        pass
+    from aicad.sandbox_windows import terminate_pid
+
+    terminate_pid(pid)
 
 
 def _unlink_when_released(path: Path | None) -> None:
@@ -2521,16 +2525,34 @@ class _Account:
             return self.ok, set(self.ids)
 
 
-def _descendants(leader: int) -> set[int]:
-    """Pids whose parent is ``leader`` or one of its descendants."""
+def _descendants_from(leader: int, parent_of: dict[int, int]) -> set[int]:
+    """Pids that descend from ``leader`` in ``parent_of``."""
     if leader <= 1:
         return set()
+    children: dict[int, list[int]] = {}
+    for pid, ppid in parent_of.items():
+        if not isinstance(pid, int) or pid <= 1:
+            continue
+        children.setdefault(int(ppid), []).append(pid)
+    found: set[int] = set()
+    stack = list(children.get(leader, []))
+    while stack:
+        pid = stack.pop()
+        if pid in found or pid <= 1 or pid == leader:
+            continue
+        found.add(pid)
+        stack.extend(children.get(pid, []))
+    return found
+
+
+def _parent_map() -> dict[int, int]:
+    """Pid to parent pid. Empty when this system cannot list processes."""
     parent_of: dict[int, int] = {}
     if sys.platform.startswith("linux"):
         try:
             names = os.listdir("/proc")
         except OSError:
-            return set()
+            return {}
         for name in names:
             if not name.isdigit():
                 continue
@@ -2542,7 +2564,8 @@ def _descendants(leader: int) -> set[int]:
                             break
             except (OSError, ValueError):
                 continue
-    elif sys.platform == "darwin":
+        return parent_of
+    if sys.platform == "darwin":
         try:
             completed = subprocess.run(
                 ["ps", "-axo", "pid=,ppid="],
@@ -2553,7 +2576,7 @@ def _descendants(leader: int) -> set[int]:
                 env=program_environment(),
             )
         except (OSError, subprocess.TimeoutExpired):
-            return set()
+            return {}
         for line in completed.stdout.splitlines():
             parts = line.split()
             if len(parts) != 2:
@@ -2562,20 +2585,17 @@ def _descendants(leader: int) -> set[int]:
                 parent_of[int(parts[0])] = int(parts[1])
             except ValueError:
                 continue
-    else:
-        return set()
-    children: dict[int, list[int]] = {}
-    for pid, ppid in parent_of.items():
-        children.setdefault(ppid, []).append(pid)
-    found: set[int] = set()
-    stack = list(children.get(leader, []))
-    while stack:
-        pid = stack.pop()
-        if pid in found or pid <= 1:
-            continue
-        found.add(pid)
-        stack.extend(children.get(pid, []))
-    return found
+        return parent_of
+    if sys.platform == "win32":
+        from aicad.sandbox_windows import process_parents
+
+        return process_parents()
+    return {}
+
+
+def _descendants(leader: int) -> set[int]:
+    """Pids whose parent is ``leader`` or one of its descendants."""
+    return _descendants_from(leader, _parent_map())
 
 
 def _tree_resident_bytes(leader: int, children: set[int]) -> int | None:
@@ -4509,8 +4529,9 @@ class _DesignRecord:
         try:
             self.proc.communicate(timeout=wall_seconds())
         except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.communicate(timeout=5)
+            # Stop part scripts before the model. Killing the model first
+            # reparents them, and on Windows they still hold the check record.
+            self._stop_model()
             self._refuse()
         if self.proc.returncode != 0:
             self._refuse()
@@ -4562,18 +4583,19 @@ class _DesignRecord:
         proc = self.proc
         if proc is None or proc.poll() is not None:
             return
+        try:
+            children = _descendants(proc.pid)
+        except OSError:
+            children = set()
         if sys.platform == "win32":
-            # ``SIGKILL`` does not terminate a Windows process. Stop the model
-            # and any part script it started, which may still hold the record.
-            _terminate_windows(proc.pid)
-            try:
-                children = _descendants(proc.pid)
-            except OSError:
-                children = set()
+            # ``SIGKILL`` does not terminate a Windows process. A part script
+            # the model started is stopped first, while the model is still
+            # its parent, so the check record is not left open.
             for pid in children:
                 _terminate_windows(pid)
+            _terminate_windows(proc.pid)
         else:
-            _kill_process_tree(proc.pid, set(), threading.Lock())
+            _kill_process_tree(proc.pid, children, threading.Lock())
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
