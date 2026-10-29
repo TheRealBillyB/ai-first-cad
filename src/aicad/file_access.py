@@ -961,6 +961,9 @@ def _delete_open(descriptor: int) -> None:
 
 
 def _delete_handle(handle) -> None:
+    class _DispositionEx(ctypes.Structure):
+        _fields_ = (("Flags", ctypes.c_uint32),)
+
     class _Disposition(ctypes.Structure):
         _fields_ = (("DeleteFile", ctypes.c_byte),)
 
@@ -968,6 +971,12 @@ def _delete_handle(handle) -> None:
     set_info = kernel32.SetFileInformationByHandle
     set_info.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
     set_info.restype = ctypes.c_int
+    # Unlink the name now. A reader that shares delete, such as the quota
+    # watch, can keep the bytes. The older call leaves the name until every
+    # handle closes, and the following replace then hits that name.
+    posix = _DispositionEx(0x1 | 0x2)
+    if set_info(handle, 21, ctypes.byref(posix), ctypes.sizeof(posix)):
+        return
     info = _Disposition(1)
     if not set_info(handle, _FILE_DISPOSITION_INFO, ctypes.byref(info), ctypes.sizeof(info)):
         raise OSError(errno.EIO, "could not remove")

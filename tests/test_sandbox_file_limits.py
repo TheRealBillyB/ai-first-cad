@@ -159,8 +159,8 @@ def test_an_unlinked_open_file_counts_toward_the_per_file_total(tmp_path):
     import os
     import sys
 
-    if not sys.platform.startswith("linux"):
-        pytest.skip("Linux reports an unlinked file through the open descriptor")
+    if sys.platform == "win32":
+        pytest.skip("Windows reports an unlinked file through the directory watch")
     disk = _DiskWatch(tmp_path, {}, file_cap=100_000, disk_cap=4000)
     descriptor = os.open(tmp_path / "gone.bin", os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -174,6 +174,51 @@ def test_an_unlinked_open_file_counts_toward_the_per_file_total(tmp_path):
     message = disk.settle()
     assert message is not None
     assert "wrote more than 4000 bytes" in message
+
+
+def test_a_retained_file_counts_after_it_is_unlinked(tmp_path):
+    disk = _DiskWatch(tmp_path, {}, file_cap=1000, disk_cap=100_000)
+    path = tmp_path / "gone.bin"
+    path.write_bytes(b"x" * 4000)
+    disk.retain(path)
+    path.unlink()
+    assert not path.exists()
+    disk.release(path)
+    assert disk.hit.is_set()
+    message = disk.settle()
+    assert message is not None
+    assert "wrote more than 1000 bytes" in message
+    disk.close_counters()
+
+
+def test_a_file_removed_between_snapshots_is_counted(tmp_path):
+    import time
+
+    disk = _DiskWatch(tmp_path, {}, file_cap=1000, disk_cap=100_000)
+    try:
+        assert disk.arm()
+        path = tmp_path / "gone.bin"
+        # Yield while the bytes are written so the watch thread can open the
+        # file. One write can finish before that thread runs.
+        with path.open("wb") as handle:
+            left = 2_000_000
+            while left and not disk.hit.is_set():
+                piece = min(left, 65_536)
+                handle.write(b"x" * piece)
+                handle.flush()
+                left -= piece
+                time.sleep(0)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not disk.hit.is_set():
+            time.sleep(0.01)
+        assert disk.hit.is_set()
+        path.unlink(missing_ok=True)
+        assert not path.exists()
+    finally:
+        disk.close_counters()
+    message = disk.settle()
+    assert message is not None
+    assert "wrote more than 1000 bytes" in message
 
 
 def test_extra_files_are_removed_when_the_disk_quota_is_passed(tmp_path):

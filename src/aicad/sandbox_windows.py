@@ -2743,8 +2743,10 @@ def spawn(
         wait_ms = max(1, int(timeout_seconds * 1000))
         spent = 0
         finished = False
+        # The directory watch records a file as it appears. This wait is how
+        # soon the job stops after that cap is hit.
         while spent < wait_ms:
-            step = min(100, wait_ms - spent)
+            step = min(20, wait_ms - spent)
             waited = _kernel32().WaitForSingleObject(process.hProcess, step)
             if waited != _WAIT_TIMEOUT:
                 finished = True
@@ -3131,3 +3133,253 @@ def network_error_is_confined(error: OSError) -> bool:
 def system_file_probe() -> str:
     windir = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR") or r"C:\Windows"
     return str(Path(windir) / "win.ini")
+
+
+class _Overlapped(ctypes.Structure):
+    _fields_ = [
+        ("Internal", ctypes.c_void_p),
+        ("InternalHigh", ctypes.c_void_p),
+        ("Offset", wintypes.DWORD),
+        ("OffsetHigh", wintypes.DWORD),
+        ("hEvent", wintypes.HANDLE),
+    ]
+
+
+_directory_watch_bound = False
+
+
+def _bind_directory_watch(kernel32) -> None:
+    global _directory_watch_bound
+    if _directory_watch_bound:
+        return
+    kernel32.ReadDirectoryChangesW.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    kernel32.ReadDirectoryChangesW.restype = wintypes.BOOL
+    kernel32.CreateEventW.argtypes = [
+        ctypes.c_void_p,
+        wintypes.BOOL,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    ]
+    kernel32.CreateEventW.restype = wintypes.HANDLE
+    kernel32.ResetEvent.argtypes = [wintypes.HANDLE]
+    kernel32.ResetEvent.restype = wintypes.BOOL
+    kernel32.GetOverlappedResult.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.BOOL,
+    ]
+    kernel32.GetOverlappedResult.restype = wintypes.BOOL
+    kernel32.CancelIo.argtypes = [wintypes.HANDLE]
+    kernel32.CancelIo.restype = wintypes.BOOL
+    kernel32.GetLastError.restype = wintypes.DWORD
+    _directory_watch_bound = True
+
+
+def _apply_directory_events(buffer, nbytes: int, root: Path, retain, release) -> None:
+    """Report each file name in a ``ReadDirectoryChangesW`` buffer."""
+    offset = 0
+    data = bytes(buffer)[:nbytes]
+    while offset + 12 <= len(data):
+        next_offset = int.from_bytes(data[offset : offset + 4], "little")
+        action = int.from_bytes(data[offset + 4 : offset + 8], "little")
+        name_len = int.from_bytes(data[offset + 8 : offset + 12], "little")
+        if name_len < 0 or offset + 12 + name_len > len(data):
+            break
+        name = data[offset + 12 : offset + 12 + name_len].decode("utf-16-le", errors="replace")
+        path = Path(root) / name
+        # 1 added, 3 modified, 5 renamed to this name. 2 removed, 4 renamed away.
+        if action in (1, 3, 5):
+            retain(path)
+        elif action in (2, 4):
+            release(path)
+        if next_offset <= 0:
+            break
+        offset += next_offset
+
+
+class _FindData(ctypes.Structure):
+    """WIN32_FIND_DATAW. The name fields have to be present so the call does not write past the struct."""
+
+    _fields_ = [
+        ("dwFileAttributes", wintypes.DWORD),
+        ("ftCreationTime", wintypes.FILETIME),
+        ("ftLastAccessTime", wintypes.FILETIME),
+        ("ftLastWriteTime", wintypes.FILETIME),
+        ("nFileSizeHigh", wintypes.DWORD),
+        ("nFileSizeLow", wintypes.DWORD),
+        ("dwReserved0", wintypes.DWORD),
+        ("dwReserved1", wintypes.DWORD),
+        ("cFileName", wintypes.WCHAR * 260),
+        ("cAlternateFileName", wintypes.WCHAR * 14),
+    ]
+
+
+_find_bound = False
+
+
+def shared_read(path: Path) -> int | None:
+    """A read descriptor that shares delete.
+
+    The script can replace the file while this descriptor stays open, and the
+    size can still be read after the name is gone. ``os.open`` does not share
+    delete, so it is not used here.
+    """
+    if sys.platform != "win32":
+        return None
+    _bind()
+    kernel32 = _kernel32()
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x1 | 0x80 | 0x100000,  # read data, read attributes, synchronize
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+        None,
+        _OPEN_EXISTING,
+        0x80,  # FILE_ATTRIBUTE_NORMAL
+        None,
+    )
+    if not handle or handle == _INVALID_HANDLE:
+        return None
+    import msvcrt
+
+    try:
+        return msvcrt.open_osfhandle(int(handle), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except (OSError, ValueError):
+        kernel32.CloseHandle(handle)
+        return None
+
+
+def named_size(path: Path) -> int | None:
+    """The directory entry's size. This does not leave the file open.
+
+    An open read handle would stop the script from replacing the file. The
+    directory entry still reports the size, including while another open
+    holds the file.
+    """
+    if sys.platform != "win32":
+        return None
+    _bind()
+    kernel32 = _kernel32()
+    global _find_bound
+    if not _find_bound:
+        kernel32.FindFirstFileW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_FindData)]
+        kernel32.FindFirstFileW.restype = wintypes.HANDLE
+        kernel32.FindClose.argtypes = [wintypes.HANDLE]
+        kernel32.FindClose.restype = wintypes.BOOL
+        _find_bound = True
+    data = _FindData()
+    handle = kernel32.FindFirstFileW(str(path), ctypes.byref(data))
+    if not handle or handle == _INVALID_HANDLE:
+        return None
+    kernel32.FindClose(handle)
+    if int(data.dwFileAttributes) & 0x10:
+        return None
+    if int(data.dwFileAttributes) & 0x400:
+        return None
+    return (int(data.nFileSizeHigh) << 32) | int(data.nFileSizeLow)
+
+
+def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None:
+    """Watch ``root`` until ``stop`` is set.
+
+    ``ReadDirectoryChangesW`` reports a new file when its name appears, which
+    is sooner than the next timer. The timer used to wait 100 ms, so a file
+    created and removed in that gap was never counted.
+    """
+    if sys.platform != "win32":
+        mark(False)
+        return
+    _bind()
+    kernel32 = _kernel32()
+    _bind_directory_watch(kernel32)
+    handle = kernel32.CreateFileW(
+        str(root),
+        0x0001,  # FILE_LIST_DIRECTORY
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE | 0x00000004,
+        None,
+        _OPEN_EXISTING,
+        0x02000000 | 0x40000000,  # FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED
+        None,
+    )
+    if not handle or handle == _INVALID_HANDLE:
+        mark(False)
+        return
+    event = kernel32.CreateEventW(None, True, False, None)
+    if not event:
+        kernel32.CloseHandle(handle)
+        mark(False)
+        return
+    overlapped = _Overlapped()
+    overlapped.hEvent = event
+    buffer = ctypes.create_string_buffer(64 * 1024)
+    # File and directory names, size, and last write.
+    notify = 0x00000001 | 0x00000002 | 0x00000008 | 0x00000010
+    pending = False
+
+    def issue() -> bool:
+        nonlocal pending
+        kernel32.ResetEvent(event)
+        ok = kernel32.ReadDirectoryChangesW(
+            handle,
+            buffer,
+            ctypes.sizeof(buffer),
+            True,
+            notify,
+            None,
+            ctypes.byref(overlapped),
+            None,
+        )
+        if not ok and int(kernel32.GetLastError()) != 997:
+            return False
+        pending = True
+        return True
+
+    try:
+        if not issue():
+            mark(False)
+            return
+        def note_tree() -> None:
+            for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+                for name in filenames:
+                    retain(Path(dirpath) / name)
+
+        mark(True)
+        while not stop.is_set():
+            try:
+                note_tree()
+            except OSError:
+                pass
+            reread()
+            waited = int(kernel32.WaitForSingleObject(event, 1))
+            if stop.is_set():
+                break
+            if waited == _WAIT_OBJECT_0 and pending:
+                transferred = wintypes.DWORD(0)
+                got = kernel32.GetOverlappedResult(
+                    handle, ctypes.byref(overlapped), ctypes.byref(transferred), False
+                )
+                pending = False
+                if got and transferred.value:
+                    _apply_directory_events(buffer, int(transferred.value), Path(root), retain, release)
+                elif not got and int(kernel32.GetLastError()) == 1022:
+                    scan()
+                if not issue():
+                    break
+            reread()
+            scan()
+    finally:
+        try:
+            kernel32.CancelIo(handle)
+        except OSError:
+            pass
+        kernel32.CloseHandle(event)
+        kernel32.CloseHandle(handle)
