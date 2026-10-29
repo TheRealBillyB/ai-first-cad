@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-29
+
+| Decision | Rationale |
+| --- | --- |
+| The design-check record is removed after the model exits | The process that records a design script's checks keeps that file open until the script finishes. Removing the file while the process still has it fails on Windows. The process and a part script it started are stopped first. A nested part script does not inherit the file. A folder the container can already modify is not walked again, and a firewall read-back from a process that is still running is reused, so those steps do not consume the script's time limit. |
+
 ## 2026-10-27
 
 | Decision | Rationale |
