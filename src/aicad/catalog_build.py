@@ -260,10 +260,98 @@ def _revolve(profile: list[tuple[float, float]]):
 
 
 def _placed_sphere(pitch: float, z: float, radius: float, index: int, count: int):
-    from build123d import Pos, Sphere
+    from build123d import Pos
 
     angle = 2 * math.pi * index / count
-    return Pos(pitch * math.cos(angle), pitch * math.sin(angle), z) * Sphere(radius)
+    # A kernel sphere has a seam edge with one face, so the bearing fails the
+    # closed-solid check. The ball is a faceted sphere whose vertices lie on
+    # that radius and whose every edge is shared by two faces.
+    return Pos(pitch * math.cos(angle), pitch * math.sin(angle), z) * _icosphere(radius)
+
+
+_ICOSPHERES: dict[float, object] = {}
+
+
+def _icosphere(radius: float):
+    key = round(float(radius), 6)
+    cached = _ICOSPHERES.get(key)
+    if cached is None:
+        cached = _make_icosphere(key)
+        _ICOSPHERES[key] = cached
+    return cached
+
+
+def _make_icosphere(radius: float):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon, BRepBuilderAPI_Sewing
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.ShapeFix import ShapeFix_Solid
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.gp import gp_Pnt
+    from build123d import Solid
+
+    phi = (1.0 + math.sqrt(5.0)) / 2.0
+    verts = [_unit(point) for point in (
+        (-1.0, phi, 0.0), (1.0, phi, 0.0), (-1.0, -phi, 0.0), (1.0, -phi, 0.0),
+        (0.0, -1.0, phi), (0.0, 1.0, phi), (0.0, -1.0, -phi), (0.0, 1.0, -phi),
+        (phi, 0.0, -1.0), (phi, 0.0, 1.0), (-phi, 0.0, -1.0), (-phi, 0.0, 1.0),
+    )]
+    faces = [
+        (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
+        (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+        (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
+        (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
+    ]
+    for _level in range(2):
+        midpoint: dict[tuple[int, int], int] = {}
+        divided = []
+        for a, b, c in faces:
+            ab = _edge_midpoint(verts, midpoint, a, b)
+            bc = _edge_midpoint(verts, midpoint, b, c)
+            ca = _edge_midpoint(verts, midpoint, c, a)
+            divided.extend(((a, ab, ca), (b, bc, ab), (c, ca, bc), (ab, bc, ca)))
+        faces = divided
+    verts = [tuple(component * radius for component in point) for point in verts]
+    sewing = BRepBuilderAPI_Sewing(max(1.0e-5, radius * 1.0e-6))
+    for a, b, c in faces:
+        polygon = BRepBuilderAPI_MakePolygon(gp_Pnt(*verts[a]), gp_Pnt(*verts[b]), gp_Pnt(*verts[c]), True)
+        made = BRepBuilderAPI_MakeFace(polygon.Wire())
+        if made.IsDone():
+            sewing.Add(made.Face())
+    sewing.Perform()
+    if sewing.NbFreeEdges():
+        raise GeometryError("The bearing ball did not close.")
+    explorer = TopExp_Explorer(sewing.SewedShape(), TopAbs_SHELL)
+    if not explorer.More():
+        raise GeometryError("The bearing ball did not close.")
+    fixer = ShapeFix_Solid()
+    solid_shape = fixer.SolidFromShell(TopoDS.Shell(explorer.Current()))
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(solid_shape, props)
+    if props.Mass() < 0:
+        solid_shape.Reverse()
+    wrapped = Solid(solid_shape)
+    if wrapped.volume <= 0 or not wrapped.is_manifold:
+        raise GeometryError("The bearing ball did not close.")
+    return wrapped
+
+
+def _unit(point: tuple[float, float, float]) -> tuple[float, float, float]:
+    length = math.sqrt(sum(component * component for component in point)) or 1.0
+    return tuple(component / length for component in point)
+
+
+def _edge_midpoint(verts, midpoint, left: int, right: int) -> int:
+    key = (left, right) if left < right else (right, left)
+    found = midpoint.get(key)
+    if found is not None:
+        return found
+    average = tuple((verts[left][axis] + verts[right][axis]) * 0.5 for axis in range(3))
+    verts.append(_unit(average))
+    midpoint[key] = len(verts) - 1
+    return midpoint[key]
 
 
 def _tilted_roller(pitch: float, z: float, radius: float, length: float, angle_deg: float, index: int, count: int):

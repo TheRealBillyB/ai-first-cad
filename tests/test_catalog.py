@@ -192,6 +192,17 @@ def test_solids_match_the_boundary_and_are_not_boxes(tmp_path):
     assert document.check_clearance("washer", "washer_hit").intersecting is True
 
 
+def test_deep_groove_bearings_are_closed_solids():
+    from aicad import kernel
+    from aicad.catalog_build import deep_groove as build_deep_groove
+    from aicad.catalog_data import DEEP_GROOVE
+
+    for row in DEEP_GROOVE:
+        solid = kernel.adopt(build_deep_groove(row))
+        measured = kernel.measure(solid)
+        assert measured.valid and measured.watertight and measured.volume_mm3 > 0
+
+
 def test_a_size_outside_the_local_table_still_builds(tmp_path):
     note = library.metadata("socket_head_cap_screw", "M30-3.5", 40)["dimension_note"]
     assert "bd_warehouse" in note
