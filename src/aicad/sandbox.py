@@ -2217,6 +2217,31 @@ def _kill_pid(pid: int) -> None:
         pass
 
 
+def _terminate_windows(pid: int) -> None:
+    """End one Windows process. ``SIGKILL`` is not termination there."""
+    if pid <= 1 or pid == os.getpid() or sys.platform != "win32":
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def _unlink_when_released(path: Path | None) -> None:
+    """Remove ``path``. A file Windows still calls in use is tried again."""
+    if path is None:
+        return
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
 def _related_pids(
     root_ids: set[int],
     identities: dict[int, tuple[int, int]],
@@ -3804,19 +3829,48 @@ class _DesignRecord:
         return payload
 
     def close(self) -> None:
+        """Stop the model process, then remove the record it had open.
+
+        The record is created without sharing delete, so Windows refuses to
+        remove it while that process, or a child that inherited the handle,
+        still has it. The wait is bounded. A sharing error after the process
+        has exited is the handle closing, and it is tried again.
+        """
+        self._stop_model()
+        record = self.record
+        log = self._log
+        self.record = None
+        self._log = None
+        _unlink_when_released(record)
+        _unlink_when_released(log)
+
+    def _stop_model(self) -> None:
         proc = self.proc
-        if proc is not None and proc.poll() is None:
-            proc.kill()
+        if proc is None or proc.poll() is not None:
+            return
+        if sys.platform == "win32":
+            # ``SIGKILL`` does not terminate a Windows process. Stop the model
+            # and any part script it started, which may still hold the record.
+            _terminate_windows(proc.pid)
+            try:
+                children = _descendants(proc.pid)
+            except OSError:
+                children = set()
+            for pid in children:
+                _terminate_windows(pid)
+        else:
+            _kill_process_tree(proc.pid, set(), threading.Lock())
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        if self.record is not None:
-            self.record.unlink(missing_ok=True)
-            self.record = None
-        if self._log is not None:
-            self._log.unlink(missing_ok=True)
-            self._log = None
 
 
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
