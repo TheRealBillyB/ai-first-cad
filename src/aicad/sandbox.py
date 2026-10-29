@@ -3604,10 +3604,12 @@ class _DesignRecord:
         self.record: Path | None = None
         self._log: Path | None = None
         self._directory: Path | None = None
+        self._windows_mode: str | None = None
         self._device = None
         self._inode = None
 
-    def start(self) -> None:
+    def start(self, windows_mode: str | None = None) -> None:
+        self._windows_mode = windows_mode
         calls = self.job / "calls"
         calls.mkdir(mode=0o700)
         directory = _control_directory()
@@ -3646,6 +3648,10 @@ class _DesignRecord:
         # This process runs the calls. It is not the confined script.
         # It still does not inherit loader variables or the parent PYTHONPATH.
         env.pop("AICAD_SANDBOX_CHILD", None)
+        # The parent already proved this mode. The untrusted script does not
+        # receive this name; _child_env does not copy it.
+        if self._windows_mode in ("lpac", "appcontainer"):
+            env["AICAD_WIN_SANDBOX_MODE"] = self._windows_mode
         trusted = _trusted_pythonpath(self.workspace)
         if trusted:
             env["PYTHONPATH"] = trusted
@@ -3893,9 +3899,17 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     sentinel_path: str | None = None
     keep_job = False
     try:
+        windows_mode = None
+        if sys.platform == "win32":
+            # Prove confinement before the design script's clock starts. The
+            # model then reuses that mode, so nested part scripts do not
+            # repeat the probe while the script is running.
+            from aicad.sandbox_windows import ensure_mode
+
+            windows_mode = ensure_mode(_read_roots())
         if kind == "design":
             design_record = _DesignRecord(workspace, job)
-            design_record.start()
+            design_record.start(windows_mode)
         if sys.platform == "win32":
             from aicad.sandbox_windows import spawn as windows_spawn
 
