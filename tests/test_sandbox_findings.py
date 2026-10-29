@@ -1437,3 +1437,43 @@ def test_a_script_is_not_run_when_another_thread_already_exists(tmp_path):
         helper.wait(timeout=5)
         marker.unlink(missing_ok=True)
         canary.unlink(missing_ok=True)
+
+
+def test_a_design_script_can_read_a_step_file_and_heal_it(tmp_path, config_home):
+    """The STEP reader opens the null device. A script that names it is still refused."""
+    _sandbox_or_skip()
+    from aicad.kernel import export_step_file, make_from_ops
+
+    project = tmp_path / "project"
+    project.mkdir()
+    export_step_file(
+        make_from_ops([{"op": "add", "shape": "box", "size": [4, 4, 4]}]),
+        project / "box.step",
+    )
+    allow_design_scripts(project)
+    payload = run_design_script(
+        project,
+        textwrap.dedent(
+            """
+            from pathlib import Path
+            from aicad.kernel import import_step_file
+            from aicad.mesh import heal
+            try:
+                open("/dev/null", "w")
+                print("NULL OPEN")
+            except Exception:
+                print("NULL BLOCKED")
+            loaded = import_step_file(Path("box.step"))
+            healed, note, changed = heal(loaded, 0.1)
+            print(note)
+            print("VOL", float(healed.impl.volume))
+            """
+        ),
+    )
+    assert payload["ok"] is True, payload.get("error")
+    stdout = payload["stdout"]
+    assert "NULL BLOCKED" in stdout
+    assert "NULL OPEN" not in stdout
+    assert "Sewed and fixed" in stdout
+    volume = next(float(line.split()[1]) for line in stdout.splitlines() if line.startswith("VOL "))
+    assert volume == pytest.approx(64)
