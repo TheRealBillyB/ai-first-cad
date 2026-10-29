@@ -813,6 +813,23 @@ def test_a_hypoid_without_a_pitch_point_is_refused_before_the_roll():
         assert "did not leave a toothed" not in text
 
 
+def test_a_hypoid_pitch_point_survives_when_every_length_is_scaled():
+    """Cone angles are scale-free. Growing the blank must not lose the pitch point."""
+    small = gear_data(_hypoid_member("ring"))
+    factor = 3.0
+    grown = dict(_hypoid_member("ring"))
+    grown["offset_mm"] = 12.0 * factor
+    grown["ring_diameter_mm"] = 80.0 * factor
+    grown["face_width_mm"] = 10.0 * factor
+    data = gear_data(grown)
+    assert data["offset_mm"] == pytest.approx(36.0)
+    assert data["ring_pitch_diameter_mm"] == pytest.approx(240.0)
+    assert data["pinion_pitch_angle_deg"] == pytest.approx(small["pinion_pitch_angle_deg"], abs=0.05)
+    assert data["ring_pitch_angle_deg"] == pytest.approx(small["ring_pitch_angle_deg"], abs=0.05)
+    assert data["pinion_spiral_angle_deg"] == pytest.approx(small["pinion_spiral_angle_deg"], abs=0.05)
+    assert data["normal_module_mm"] == pytest.approx(small["normal_module_mm"] * factor, rel=0.01)
+
+
 def test_a_hypoid_tooth_that_cannot_be_cut_is_refused_before_the_roll():
     # 120 degrees and a 6 mm offset has a pitch point, and the tooth at that
     # point does not leave a valid pinion. The refusal names the inputs.
