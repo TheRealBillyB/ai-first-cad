@@ -420,30 +420,40 @@ def _pitch_rank(solved: dict, delta1_ref: float, delta2_ref: float) -> float:
     return solved["sliding"] + 0.15 * solved["rm2"] * angle_gap
 
 
+# The axial unknown is millimetres and the other two are radians. The step
+# and the clamp below were written against a ring radius of this size. A
+# larger ring keeps the same angular step and lets the axial step grow with
+# the radius, so the walk can still reach the pitch point.
+_PITCH_STEP_RADIUS_MM = 40.0
+
+
 def _newton_pitch(z1, z2, rm2, beta2, ratio, k1, k2, origin_a, xi, h, delta2, cos_sign, sigma):
     def residual(xi_value, h_value, d2_value):
         return _pitch_residual(
             z1, z2, rm2, beta2, ratio, k1, k2, origin_a, xi_value, h_value, d2_value, cos_sign, sigma
         )
 
-    for _ in range(22):
+    axial_scale = max(rm2 / _PITCH_STEP_RADIUS_MM, 1.0)
+    passes = max(22, int(math.ceil(22 * axial_scale)))
+    steps = (1.0e-6, 1.0e-6 * axial_scale, 1.0e-6)
+    for _ in range(passes):
         current = residual(xi, h, delta2)
         if current is None:
             return None
         error = current["res"]
         if _norm(error) < 1.0e-10:
             break
-        step = 1.0e-6
         bumped = []
+        trial_base = (xi, h, delta2)
         for index in range(3):
-            trial = [xi, h, delta2]
-            trial[index] += step
+            trial = list(trial_base)
+            trial[index] += steps[index]
             bumped_state = residual(*trial)
             if bumped_state is None:
                 return None
-            bumped.append(_scale(_sub(bumped_state["res"], error), 1.0 / step))
+            bumped.append(_scale(_sub(bumped_state["res"], error), 1.0 / steps[index]))
         dxi, dh, dd = _least_squares_n(error, bumped)
-        jump = math.sqrt(dxi * dxi + dh * dh + dd * dd)
+        jump = math.sqrt(dxi * dxi + (dh / axial_scale) ** 2 + dd * dd)
         if jump > 0.35:
             scale = 0.35 / jump
             dxi *= scale
