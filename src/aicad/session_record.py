@@ -333,14 +333,13 @@ def _export_image(root, step, basis, camera, width, height, overlay, frame_scale
             return _render_mesh(mesh, basis, width, height, overlay, frame_scale, render_frame), True
     frame_rel = step.get("frame") if isinstance(step, dict) else None
     if isinstance(frame_rel, str) and frame_rel:
+        # A stored picture is not the model. An outside path is still refused.
         try:
-            picture = _load_png(root, frame_rel)
+            _project_file(root, frame_rel)
         except RecordRefused:
             raise
-        except (GeometryError, OSError, ValueError):
-            picture = None
-        if picture is not None:
-            return picture.resize((width, height), Image.Resampling.BOX), False
+        except GeometryError:
+            pass
     return _blank(width, height, overlay, paper), False
 
 
@@ -491,6 +490,39 @@ def _load_mesh(root: Path, relative: str) -> TriangleMesh:
     )
 
 
+def _png_bytes(image: Image.Image) -> bytes:
+    buffer = BytesIO()
+    image.convert("RGB").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _refresh_frame_picture(root: Path, step: dict) -> bool:
+    """Draw the stored mesh again. A picture that already matches is left as it is.
+
+    A step with no mesh does not return its stored picture. A path outside
+    the project is not opened.
+    """
+
+    if not isinstance(step, dict):
+        return False
+    mesh_rel = step.get("mesh")
+    frame_rel = step.get("frame")
+    if not isinstance(mesh_rel, str) or not mesh_rel or not isinstance(frame_rel, str) or not frame_rel:
+        return False
+    destination = _project_file(root, frame_rel)
+    mesh = _load_mesh(root, mesh_rel)
+    overlay = _one_line(_text(step.get("summary"))) or _command_text(step.get("command"))
+    image = _frame_image(mesh, overlay, *_CAPTURE_SIZE)
+    fresh = _png_bytes(image)
+    try:
+        existing = _read_bytes(root, destination, _MAX_PICTURE_BYTES)
+    except (GeometryError, RecordRefused, OSError):
+        existing = None
+    if existing != fresh:
+        _write_png(root, frame_rel, image)
+    return True
+
+
 def _load_png(root: Path, relative: str) -> Image.Image:
     path = _project_file(root, relative)
     raw = _read_bytes(root, path, _MAX_PICTURE_BYTES)
@@ -517,13 +549,14 @@ def _public_step(root: Path, step: dict) -> dict:
     frame = step.get("frame")
     if isinstance(frame, str):
         try:
-            _project_file(root, frame)
+            if _refresh_frame_picture(root, step):
+                public["frame"] = _safe_relative(frame)
+            else:
+                public["frame_omitted"] = True
         except RecordRefused:
             public["frame_omitted"] = True
         except GeometryError:
             public["frame_omitted"] = True
-        else:
-            public["frame"] = _safe_relative(frame)
     return public
 
 
