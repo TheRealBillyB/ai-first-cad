@@ -161,9 +161,15 @@ That stops another website, including one that tries to reach this computer by a
 
 - **BH.** Slicer output is read as UTF-8. A byte that is not UTF-8 does not stop the report, and a terminal sequence in that output is not shown.
 
+- **BI.** The directory where a slicer or ffmpeg runs is opened by its handle. Replacing that directory's name does not change the files read or written there.
+
 - **BG.** When confinement stops, the script result is opened from its parent directory. A link at that name is not followed, and another name for the file is not changed.
 
 - **BH.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
+
+- **BJ.** Matplotlib's private config directory is opened by its handle. Replacing that directory's name does not change the directory that is used.
+
+- **BK.** A part name in a PDF drawing stays inside one text string. Parentheses and a backslash in that name do not start another PDF command.
 
 - **BG.** A bill-of-materials cell that begins with =, +, -, or @ is stored as text.
 
