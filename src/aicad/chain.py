@@ -318,7 +318,11 @@ def _inverse_status(solutions, rejected, found, pose_task) -> tuple[str, bool, s
         extra = ""
         limited = [item for item in rejected if item.get("reason") == "limit"]
         if limited:
-            extra = f" {len(limited)} more would pass a joint limit and were not used."
+            count = len(limited)
+            if count == 1:
+                extra = " 1 more is outside a joint stop and was not used."
+            else:
+                extra = f" {count} more are outside a joint stop and were not used."
         return "solved", True, f"{count} {noun} reach this {'pose' if pose_task else 'position'}: {names}.{extra}"
     limited = [item for item in rejected if item.get("reason") == "limit"]
     if limited and not found.get("unreachable"):

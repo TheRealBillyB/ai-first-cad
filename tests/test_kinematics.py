@@ -203,6 +203,8 @@ def test_joint_limits_drop_the_elbow_that_cannot_reach():
     rejected = inverse["rejected"]
     assert rejected[0]["reason"] == "limit"
     assert rejected[0]["violations"][0]["joint"] == "elbow"
+    assert "outside a joint stop" in inverse["message"]
+    assert "pass a joint limit" not in inverse["message"]
 
     tight = _planar([0, 0, 1], {"shoulder": {"min": -1, "max": 1}, "elbow": {"min": -1, "max": 1}})
     blocked = solve_kinematics(tight, None, {"tool": "link2", "at": at, "target": {"position": origin}})
