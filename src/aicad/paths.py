@@ -2152,26 +2152,69 @@ def _open_child(dirfd: int, name: str, *, create: bool) -> int:
     return _call(libc.openat(dirfd, encoded, flags, 0), name)
 
 
+def _permissions_within(actual: int, requested: int) -> bool:
+    """True when ``actual`` grants no access bit that ``requested`` does not."""
+
+    return (actual & 0o777 & ~int(requested)) == 0
+
+
+def _directory_mode_ok(mode: int, requested: int = 0o755) -> bool:
+    """A new project directory the owner can use, and that is not more open."""
+
+    return stat.S_ISDIR(mode) and (mode & 0o700) == 0o700 and _permissions_within(mode, requested)
+
+
 def _chmod_new_directory(dirfd: int, name: str) -> None:
     """Give a directory this process just created owner search and write.
 
     ``chmod`` through the parent descriptor does not need the new directory to
     be searchable. Some systems reject that for a directory, and then the
     directory is opened and ``fchmod`` is used on the descriptor instead.
+
+    A filesystem that refuses ``chmod`` with ``EPERM`` (some network and FUSE
+    mounts) still keeps the directory when ``mkdir`` already left it no more
+    open than this mode. A directory that is more open is not accepted.
     """
+    requested = 0o755
     try:
-        os.chmod(name, 0o755, dir_fd=dirfd, follow_symlinks=False)
+        os.chmod(name, requested, dir_fd=dirfd, follow_symlinks=False)
         return
     except NotImplementedError:
         pass
     except OSError as exc:
-        if exc.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL}:
+        if exc.errno == errno.EPERM and _stat_mode_ok(dirfd, name, requested):
+            return
+        if exc.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.EPERM}:
             raise
     descriptor = _call(_libc().openat(dirfd, os.fsencode(name), _directory_flags(), 0), name)
     try:
-        os.fchmod(descriptor, 0o755)
+        try:
+            os.fchmod(descriptor, requested)
+        except OSError as exc:
+            if exc.errno == errno.EPERM and _directory_mode_ok(os.fstat(descriptor).st_mode, requested):
+                return
+            raise
     finally:
         os.close(descriptor)
+
+
+def _stat_mode_ok(dirfd: int, name: str, requested: int) -> bool:
+    try:
+        info = os.stat(name, dir_fd=dirfd, follow_symlinks=False)
+    except OSError:
+        return False
+    return _directory_mode_ok(info.st_mode, requested)
+
+
+def _fchmod_requested(descriptor: int, requested: int) -> None:
+    """Set ``requested`` on an open file. ``EPERM`` is kept when the mode is already no more open."""
+
+    try:
+        os.fchmod(descriptor, requested)
+    except OSError as exc:
+        if exc.errno == errno.EPERM and _permissions_within(os.fstat(descriptor).st_mode, requested):
+            return
+        raise
 
 
 def open_relative(root: Path, relative: str | Path, *, create: bool = False) -> int:
@@ -2233,11 +2276,16 @@ def _posix_replace_file(root: Path, relative: str | Path, write, *, private: boo
         mode = 0o600 if private else 0o644
         descriptor = _call(_libc().openat(dirfd, os.fsencode(temporary), flags, mode), temporary)
         # openat's mode is not applied on every system, so set it on the descriptor
-        # before any bytes are written.
-        os.fchmod(descriptor, mode)
+        # before any bytes are written. A mount that refuses chmod keeps the file
+        # only when it is already no more open than this mode.
+        _fchmod_requested(descriptor, mode)
         target, staged = _writer_target(descriptor, Path(name).suffix)
         if private and staged is not None:
-            os.chmod(staged, 0o600)
+            try:
+                os.chmod(staged, 0o600)
+            except OSError as exc:
+                if exc.errno != errno.EPERM or not _permissions_within(staged.stat().st_mode, 0o600):
+                    raise
         write(target)
         if staged is not None:
             _copy_into_descriptor(descriptor, staged)

@@ -1,6 +1,8 @@
 """The command layer the UI, the chat, and MCP all call."""
 
+import errno
 import json
+import os
 import threading
 from http.client import HTTPConnection
 from pathlib import Path
@@ -277,3 +279,68 @@ def test_cli_app_help_lists_the_workspace(tmp_path):
     assert completed.returncode == 0
     assert "--no-browser" in completed.stdout
     assert (ROOT / "src" / "aicad" / "app_static" / "index.html").is_file()
+
+
+def _refuse_chmod(*_args, **_kwargs):
+    raise PermissionError(errno.EPERM, "Operation not permitted")
+
+
+def _posix_chmod() -> bool:
+    """True where ``os.fchmod`` exists and ``stat`` mode bits are the access check.
+
+    Windows has no ``os.fchmod``. A directory there reports mode ``0o777`` even
+    when the access list is not world-writable, so these POSIX checks do not
+    apply.
+    """
+
+    return hasattr(os, "fchmod")
+
+
+def test_a_new_project_directory_is_not_left_world_writable(tmp_path):
+    if not _posix_chmod():
+        pytest.skip("POSIX mode bits; Windows has no os.fchmod and stat mode stays writable")
+    workspace = Workspace(tmp_path / "proj")
+    documents = workspace.root / "documents"
+    mode = documents.stat().st_mode
+    assert mode & 0o700 == 0o700
+    assert mode & 0o022 == 0
+    note = documents / "requirements.md"
+    assert note.is_file()
+    assert note.stat().st_mode & 0o022 == 0
+
+
+def test_a_project_folder_is_created_when_chmod_is_refused(tmp_path, monkeypatch):
+    if not _posix_chmod():
+        pytest.skip("POSIX chmod refusal; Windows has no os.fchmod")
+    monkeypatch.setattr(os, "chmod", _refuse_chmod)
+    monkeypatch.setattr(os, "fchmod", _refuse_chmod)
+    workspace = Workspace(tmp_path / "proj")
+    documents = workspace.root / "documents"
+    assert documents.is_dir()
+    assert (documents / "requirements.md").is_file()
+    assert (workspace.root / "requirements.json").is_file()
+    mode = documents.stat().st_mode
+    assert mode & 0o700 == 0o700
+    assert mode & 0o022 == 0
+    assert (documents / "requirements.md").stat().st_mode & 0o022 == 0
+
+
+def test_a_refused_chmod_does_not_accept_a_world_writable_directory(tmp_path, monkeypatch):
+    if not _posix_chmod():
+        pytest.skip("POSIX chmod refusal; Windows has no os.fchmod")
+    from aicad.paths import _chmod_new_directory, open_directory
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    loose = parent / "loose"
+    loose.mkdir()
+    loose.chmod(0o777)
+    monkeypatch.setattr(os, "chmod", _refuse_chmod)
+    monkeypatch.setattr(os, "fchmod", _refuse_chmod)
+    descriptor = open_directory(parent)
+    try:
+        with pytest.raises(PermissionError):
+            _chmod_new_directory(descriptor, "loose")
+    finally:
+        os.close(descriptor)
+    assert loose.stat().st_mode & 0o022 != 0
