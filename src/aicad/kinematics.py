@@ -28,6 +28,26 @@ _RELATIONS = ("gear", "linkage", "cylinder")
 _MISSING = object()
 
 
+def _stored_cables(raw) -> list:
+    """Cable and tendon records with names that stay on one line."""
+
+    stored = []
+    for index, cable in enumerate(raw or []):
+        if not isinstance(cable, dict):
+            stored.append(copy.deepcopy(cable))
+            continue
+        item = copy.deepcopy(cable)
+        if item.get("name") not in (None, ""):
+            item["name"] = _one_line(item["name"], "A cable name")
+        points = item.get("points")
+        if isinstance(points, list):
+            for point_index, point in enumerate(points):
+                if isinstance(point, dict) and point.get("name") not in (None, ""):
+                    point["name"] = _one_line(point["name"], "A tendon name")
+        stored.append(item)
+    return stored
+
+
 def _one_line(value: object, label: str) -> str:
     from aicad.labels import require_one_line
 
@@ -147,7 +167,7 @@ def normalize(spec: dict) -> dict:
         "poses": poses,
         "motions": motions,
         "studies": studies,
-        "cables": copy.deepcopy(spec.get("cables") or []),
+        "cables": _stored_cables(spec.get("cables")),
         "actuators": copy.deepcopy(spec.get("actuators") or []),
         "ignore_collisions": ignore,
     }
