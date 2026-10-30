@@ -1358,7 +1358,12 @@ def _darwin_libc():
 def held_subprocess_kwargs(directory: Path) -> dict:
     """Arguments that run a program in ``directory`` rather than at a replaced name."""
     held = _find_held(directory)
-    if held is not None and held.descriptor >= 0 and not _path_tracks_directory(held):
+    if held is not None and held.descriptor >= 0 and (
+        not _path_tracks_directory(held) or sys.platform == "darwin"
+    ):
+        # A volume-id path stays on the directory for this process. The
+        # helper's profile needs the directory's ordinary path, which is the
+        # one the operating system will name as its working directory.
         descriptor = held.descriptor
 
         def enter() -> None:
@@ -1370,6 +1375,10 @@ def held_subprocess_kwargs(directory: Path) -> dict:
         found = _directory_from_handle(descriptor)
         if found is not None:
             kwargs["cwd"] = os.fspath(found)
+        elif not _path_tracks_directory(held):
+            return kwargs
+        else:
+            kwargs["cwd"] = os.fspath(held.original)
         return kwargs
     public = held.public if held is not None else directory
     return {"cwd": os.fspath(public)}
