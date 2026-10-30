@@ -954,11 +954,11 @@ async function applyConstraint(kind) {
   const spec = structuredClone(ui.sketch.spec);
   const selected = ui.sketchSelection;
   if (kind === "distance") {
-    const value = await ask("Distance", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: "distance" }]);
+    const value = await ask("Distance", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: uniqueConstraintName(spec, "distance") }]);
     if (!value || selected.length < 2) return;
     spec.constraints.push({ type: "distance", a: selected[0], b: selected[1], value: Number(value.value), name: value.name });
   } else if (kind === "diameter") {
-    const value = await ask("Diameter", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: "diameter" }]);
+    const value = await ask("Diameter", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: uniqueConstraintName(spec, "diameter") }]);
     if (!value || !selected.length) return;
     spec.constraints.push({ type: "diameter", entity: selected[0], value: Number(value.value), name: value.name });
   } else if (kind === "coincident") {

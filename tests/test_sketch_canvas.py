@@ -188,6 +188,8 @@ def test_the_sketch_canvas_uses_the_solved_sketch(tmp_path):
     assert "sketchProfile" in script
     assert "sketchLineClick" in script
     assert "sketchCircleClick" in script
+    assert 'uniqueConstraintName(spec, "distance")' in script
+    assert 'uniqueConstraintName(spec, "diameter")' in script
     node = shutil.which("node")
     assert node
     probe = tmp_path / "sketch-canvas.js"
