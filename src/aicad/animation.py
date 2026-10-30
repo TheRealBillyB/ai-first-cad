@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from aicad.assembly import _concatenate, _instance_color, _transform_mesh
+from aicad.assembly import _byte_channels, _concatenate, _instance_color, _transform_mesh
 from aicad.errors import GeometryError
 from aicad.fea import lookup_material
 from aicad.kinematics import solve as solve_joints
@@ -644,7 +644,7 @@ def _parse_color(value, label: str) -> tuple[float, float, float]:
             if not math.isfinite(number) or number < 0 or number > 255:
                 raise GeometryError(f"{label} channels must be from 0 to 255.")
             channels.append(number)
-        return (channels[0], channels[1], channels[2])
+        return _byte_channels(channels)
     raise GeometryError(f"{label} must be #rrggbb or three numbers from 0 to 255.")
 
 
