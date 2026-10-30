@@ -2483,12 +2483,32 @@ def _windows_helper_command(command: list[str]) -> list[str]:
     return list(command)
 
 
+def _windows_helper_environment(env: dict[str, str], cwd: Path) -> dict[str, str]:
+    """Environment Windows needs to start a confined helper.
+
+    Temporary files and the profile stay in the helper folder. The account
+    profile is not copied. ``SystemRoot`` and the other session names are
+    required for the process to start.
+    """
+
+    merged = dict(env)
+    for name in _WINDOWS_SESSION:
+        value = os.environ.get(name)
+        if value and name not in merged:
+            merged[name] = value
+    location = str(cwd)
+    for name in ("TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"):
+        merged[name] = location
+    return merged
+
+
 def _run_confined_helper_windows(command, *, env, timeout, cwd: Path, reads: list[Path]):
     import subprocess
 
     from aicad.sandbox_windows import spawn
 
     command = _windows_helper_command(list(command))
+    env = _windows_helper_environment(env, cwd)
     stdout_path = cwd / "helper-stdout.txt"
     stderr_path = cwd / "helper-stderr.txt"
     code, stdout, stderr, timed_out, _memory, _mechanism = spawn(
