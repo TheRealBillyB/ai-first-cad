@@ -3634,7 +3634,10 @@ class _DiskWatch:
         self._stop.set()
         thread = self._event_thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=2)
+            # The watch is holding the tree, or it is inside a scan, until
+            # this thread returns. Cleanup of the project folder waits for
+            # that, so the two never remove and scan the same tree at once.
+            thread.join()
         with self._lock:
             held = list(self._held.items())
             self._held.clear()
@@ -4274,16 +4277,22 @@ def _file_growth(root: Path, before: dict[str, int]):
 
 
 def _restore_file(key: str, before: dict[str, int]) -> None:
+    from aicad.file_access import unlink_name
+
     path = Path(key)
     old = before.get(key)
     try:
         if old is None:
-            path.unlink(missing_ok=True)
+            try:
+                unlink_name(path)
+            except OSError as exc:
+                if exc.errno != errno.ENOENT:
+                    raise
             return
         os.truncate(path, old)
     except OSError:
         try:
-            path.unlink(missing_ok=True)
+            unlink_name(path)
         except OSError:
             return
 
@@ -4845,7 +4854,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 )
             if timed_out:
                 detail = design_record.failure_detail() if design_record is not None else ""
-                shutil.rmtree(job, ignore_errors=True)
+                # The job folder is removed after the watch releases the tree.
                 message = f"The script ran longer than {wall} seconds, so it was stopped."
                 if detail:
                     message = f"{message}\n{detail}"
@@ -4854,7 +4863,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 design_record._refuse()
             disk_message = disk.settle()
             if disk_message:
-                shutil.rmtree(job, ignore_errors=True)
+                # The job folder is removed after the watch releases the tree.
                 raise ScriptError(disk_message)
             payload = _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
             if design_record is not None:

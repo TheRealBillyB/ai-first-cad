@@ -3419,6 +3419,8 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
             return
         def note_tree() -> None:
             for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+                if stop.is_set():
+                    return
                 for name in filenames:
                     retain(Path(dirpath) / name)
 

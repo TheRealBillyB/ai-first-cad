@@ -14,7 +14,17 @@ from aicad.app import _MAX_SERVED_BYTES, make_server
 from aicad.document import Document
 from aicad.errors import GeometryError, ScriptError
 from aicad.kernel import MAX_STEP_BYTES, import_step_file, read_step_bytes, tessellate, viewport_mesh
-from aicad.sandbox import DISK_BYTES, FILE_BYTES, _DiskWatch, _snapshot_files, disk_bytes, file_bytes, run_part_script, sandbox_supported
+from aicad.sandbox import (
+    DISK_BYTES,
+    FILE_BYTES,
+    _DiskWatch,
+    _file_key,
+    _snapshot_files,
+    disk_bytes,
+    file_bytes,
+    run_part_script,
+    sandbox_supported,
+)
 
 
 def _sparse(path: Path, size: int) -> None:
@@ -396,6 +406,14 @@ def test_a_file_written_and_deleted_instantly_is_still_counted(tmp_path, monkeyp
     project.mkdir()
     script = (
         "from pathlib import Path\n"
+        "for index in range(12):\n"
+        "    folder = Path('pile') / str(index)\n"
+        "    folder.mkdir(parents=True)\n"
+        "    path = folder / 'gone.bin'\n"
+        "    path.write_bytes(b'y' * 1000)\n"
+        "    path.unlink()\n"
+        "    folder.rmdir()\n"
+        "Path('pile').rmdir()\n"
         "path = Path('area') / 'gone.bin'\n"
         "path.parent.mkdir()\n"
         "path.write_bytes(b'x' * 300000)\n"
@@ -405,6 +423,7 @@ def test_a_file_written_and_deleted_instantly_is_still_counted(tmp_path, monkeyp
     )
     with pytest.raises(ScriptError, match="wrote more than 200000"):
         run_part_script(script, project)
+    assert not (project / "pile").exists()
     assert not (project / "area").exists()
     assert not (project / "area" / "gone.bin").exists()
 
@@ -429,6 +448,72 @@ def test_a_script_that_exits_immediately_still_counts_a_removed_file(tmp_path, m
     with pytest.raises(ScriptError, match="wrote more than"):
         run_part_script(script, project)
     assert not (project / "gone.bin").exists()
+
+
+def _watch_holds(disk, path: Path) -> bool:
+    key = _file_key(path)
+    with disk._lock:
+        return key in disk._held
+
+
+def _watch_peak(disk, path: Path) -> int:
+    key = _file_key(path)
+    with disk._lock:
+        return int(disk._file_peak.get(key, 0))
+
+
+def test_folders_are_removed_while_the_quota_watch_holds_them(tmp_path):
+    """Create and remove folders while the watch is holding each file.
+
+    The watch keeps its scan and the bytes. The folder has to disappear on
+    every system, including while that read is still open.
+    """
+    import time
+
+    from aicad.file_access import remove_empty_directory, unlink_name
+
+    rounds = 20
+    size = 4000
+    disk = _DiskWatch(tmp_path, {}, file_cap=1000, disk_cap=1000)
+    # The folders are in place first so each system is already watching them.
+    # The files and the folders are removed while that watch is holding them.
+    for index in range(rounds):
+        (tmp_path / f"area-{index}").mkdir()
+    assert disk.arm()
+    try:
+        for index in range(rounds):
+            folder = tmp_path / f"area-{index}"
+            target = folder / "gone.bin"
+            target.write_bytes(b"x" * size)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and (
+                not _watch_holds(disk, target) or _watch_peak(disk, target) < size
+            ):
+                time.sleep(0.01)
+            assert _watch_holds(disk, target)
+            assert _watch_peak(disk, target) >= size
+            unlink_name(target)
+            assert not target.exists()
+            remove_empty_directory(folder)
+            assert not folder.exists()
+        assert disk.hit.is_set()
+        with disk._lock:
+            counted = sum(disk._file_peak.values())
+        assert counted >= size * rounds
+    finally:
+        disk.close_counters()
+
+
+def test_a_directory_that_still_has_a_file_is_not_removed(tmp_path):
+    from aicad.file_access import remove_empty_directory
+
+    folder = tmp_path / "area"
+    folder.mkdir()
+    (folder / "kept.bin").write_bytes(b"x")
+    with pytest.raises(OSError):
+        remove_empty_directory(folder)
+    assert folder.is_dir()
+    assert (folder / "kept.bin").is_file()
 
 
 def test_a_removed_file_still_counts_toward_the_disk_quota(tmp_path, monkeypatch):

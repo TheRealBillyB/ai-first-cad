@@ -29,6 +29,10 @@ _OPEN_EXISTING = 3
 _DIR_READ = 0x1 | 0x20 | 0x80 | 0x100000
 _DIR_ACCESS = _DIR_READ | 0x2 | 0x4 | 0x100
 _FILE_READ_ACCESS = 0x1 | 0x80 | 0x100000
+# DELETE plus the attributes and synchronize bits NtCreateFile expects.
+# FILE_LIST_DIRECTORY is added for a directory. A read of the parent does
+# not ask for DELETE: that right deletes the directory itself.
+_FILE_DELETE_ACCESS = 0x80 | 0x10000 | 0x100000
 # FILE_READ_ATTRIBUTES (0x80) is required to read the file record on a write handle.
 _FILE_WRITE_ACCESS = 0x1 | 0x2 | 0x80 | 0x100 | 0x10000 | 0x100000
 _FILE_OPEN = 1
@@ -142,6 +146,67 @@ def replace_file(root: Path, relative: str | Path, write, *, private: bool = Fal
     from aicad.paths import _posix_replace_file
 
     _posix_replace_file(root, relative, write, private=private)
+
+
+def unlink_name(path: str | Path) -> None:
+    """Remove a file name. A reader that shares delete keeps the bytes.
+
+    On Windows a normal remove leaves the name until every handle closes, so a
+    folder cannot be removed while the quota watch still has the file. This
+    removes the name immediately. The watch's read handle stays open and the
+    size can still be counted.
+    """
+
+    file = Path(path)
+    if sys.platform != "win32":
+        os.unlink(file)
+        return
+    _remove_windows_name(file, directory=False)
+
+
+def remove_empty_directory(path: str | Path) -> None:
+    """Remove an empty directory. A scan that still has it open does not keep the name.
+
+    On Windows the quota watch lists the tree while a script removes a folder.
+    The name is removed immediately, including during that list. A directory
+    that still has a name in it is left in place.
+    """
+
+    directory = Path(path)
+    if sys.platform != "win32":
+        os.rmdir(directory)
+        return
+    _remove_windows_name(directory, directory=True)
+
+
+def install_name_removal() -> None:
+    """Remove Windows file and directory names with :func:`unlink_name`.
+
+    A design script's ``Path.unlink`` and ``Path.rmdir`` go through ``os``.
+    Installing this once in that process lets those calls remove a folder the
+    quota watch is holding or scanning. Other systems already remove the name
+    while a reader keeps the file.
+    """
+
+    if sys.platform != "win32" or getattr(os, "_aicad_name_removal", False):
+        return
+    original_unlink = os.unlink
+    original_rmdir = os.rmdir
+
+    def unlink(path, *, dir_fd=None):
+        if dir_fd is not None:
+            return original_unlink(path, dir_fd=dir_fd)
+        unlink_name(path)
+
+    def rmdir(path, *, dir_fd=None):
+        if dir_fd is not None:
+            return original_rmdir(path, dir_fd=dir_fd)
+        remove_empty_directory(path)
+
+    os.unlink = unlink  # type: ignore[assignment]
+    os.remove = unlink  # type: ignore[assignment]
+    os.rmdir = rmdir  # type: ignore[assignment]
+    os._aicad_name_removal = True  # type: ignore[attr-defined]
 
 
 def create_file(directory: Path, name: str, *, private: bool = True) -> int:
@@ -980,6 +1045,57 @@ def _delete_open(descriptor: int) -> None:
         _delete_handle(_os_handle(descriptor))
     except OSError:
         return
+
+
+def _remove_windows_name(path: Path, *, directory: bool) -> None:
+    """Remove ``path``'s name. The bytes stay until the last handle closes."""
+
+    name = path.name
+    if name in {"", ".", ".."}:
+        raise OSError(errno.EINVAL, "path is empty", os.fspath(path))
+    parent = open_directory(path.parent)
+    handle = None
+    try:
+        access = _FILE_DELETE_ACCESS | (0x1 if directory else 0)
+        handle = _nt_open(
+            _os_handle(parent),
+            name,
+            access=access,
+            directory=directory,
+            create=False,
+        )
+        _posix_dispose(handle, name)
+    finally:
+        if handle is not None:
+            _close_handle(handle)
+        os.close(parent)
+
+
+def _posix_dispose(handle, name: str) -> None:
+    """Unlink ``name`` now. A share-delete reader keeps the open file."""
+
+    class _DispositionEx(ctypes.Structure):
+        _fields_ = (("Flags", ctypes.c_uint32),)
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_info = kernel32.SetFileInformationByHandle
+    set_info.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    set_info.restype = ctypes.c_int
+    # DELETE | POSIX_SEMANTICS. The older disposition leaves the name until
+    # every handle closes, and the folder that held the file then stays.
+    info = _DispositionEx(0x1 | 0x2)
+    if set_info(handle, 21, ctypes.byref(info), ctypes.sizeof(info)):
+        return
+    error = int(ctypes.get_last_error() or 0)
+    mapping = {
+        2: errno.ENOENT,
+        3: errno.ENOENT,
+        5: errno.EACCES,
+        32: errno.EBUSY,
+        145: errno.ENOTEMPTY,
+    }
+    err = mapping.get(error, errno.EIO)
+    raise OSError(err, os.strerror(err), name, error or None)
 
 
 def _delete_handle(handle) -> None:
