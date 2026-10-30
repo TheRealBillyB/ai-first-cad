@@ -14,7 +14,17 @@ from aicad.app import _MAX_SERVED_BYTES, make_server
 from aicad.document import Document
 from aicad.errors import GeometryError, ScriptError
 from aicad.kernel import MAX_STEP_BYTES, import_step_file, read_step_bytes, tessellate, viewport_mesh
-from aicad.sandbox import DISK_BYTES, FILE_BYTES, _DiskWatch, _snapshot_files, disk_bytes, file_bytes, run_part_script, sandbox_supported
+from aicad.sandbox import (
+    DISK_BYTES,
+    FILE_BYTES,
+    _DiskWatch,
+    _file_key,
+    _snapshot_files,
+    disk_bytes,
+    file_bytes,
+    run_part_script,
+    sandbox_supported,
+)
 
 
 def _sparse(path: Path, size: int) -> None:
@@ -396,6 +406,14 @@ def test_a_file_written_and_deleted_instantly_is_still_counted(tmp_path, monkeyp
     project.mkdir()
     script = (
         "from pathlib import Path\n"
+        "for index in range(12):\n"
+        "    folder = Path('pile') / str(index)\n"
+        "    folder.mkdir(parents=True)\n"
+        "    path = folder / 'gone.bin'\n"
+        "    path.write_bytes(b'y' * 1000)\n"
+        "    path.unlink()\n"
+        "    folder.rmdir()\n"
+        "Path('pile').rmdir()\n"
         "path = Path('area') / 'gone.bin'\n"
         "path.parent.mkdir()\n"
         "path.write_bytes(b'x' * 300000)\n"
@@ -405,6 +423,7 @@ def test_a_file_written_and_deleted_instantly_is_still_counted(tmp_path, monkeyp
     )
     with pytest.raises(ScriptError, match="wrote more than 200000"):
         run_part_script(script, project)
+    assert not (project / "pile").exists()
     assert not (project / "area").exists()
     assert not (project / "area" / "gone.bin").exists()
 
@@ -429,6 +448,141 @@ def test_a_script_that_exits_immediately_still_counts_a_removed_file(tmp_path, m
     with pytest.raises(ScriptError, match="wrote more than"):
         run_part_script(script, project)
     assert not (project / "gone.bin").exists()
+
+
+def _watch_holds(disk, path: Path) -> bool:
+    key = _file_key(path)
+    with disk._lock:
+        return key in disk._held
+
+
+def _watch_peak(disk, path: Path) -> int:
+    key = _file_key(path)
+    with disk._lock:
+        return int(disk._file_peak.get(key, 0))
+
+
+def test_folders_are_removed_while_the_quota_watch_holds_them(tmp_path):
+    """Create and remove folders while the watch is holding each file.
+
+    The watch keeps its scan and the bytes. The folder has to disappear on
+    every system, including while that read is still open.
+    """
+    import time
+
+    from aicad.file_access import remove_empty_directory, unlink_name
+
+    rounds = 20
+    size = 4000
+    disk = _DiskWatch(tmp_path, {}, file_cap=1000, disk_cap=1000)
+    # The folders are in place first so each system is already watching them.
+    # The files and the folders are removed while that watch is holding them.
+    for index in range(rounds):
+        (tmp_path / f"area-{index}").mkdir()
+    assert disk.arm()
+    try:
+        for index in range(rounds):
+            folder = tmp_path / f"area-{index}"
+            target = folder / "gone.bin"
+            target.write_bytes(b"x" * size)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and (
+                not _watch_holds(disk, target) or _watch_peak(disk, target) < size
+            ):
+                time.sleep(0.01)
+            assert _watch_holds(disk, target)
+            assert _watch_peak(disk, target) >= size
+            unlink_name(target)
+            assert not target.exists()
+            assert _watch_peak(disk, target) >= size
+            remove_empty_directory(folder)
+            assert not folder.exists()
+        assert disk.hit.is_set()
+        with disk._lock:
+            counted = sum(disk._file_peak.values())
+        assert counted >= size * rounds
+    finally:
+        disk.close_counters()
+
+
+def test_a_wedged_quota_watch_does_not_hang_the_run(tmp_path, monkeypatch):
+    """A watch stuck in a read must not hold the script, and must not lose the tree to cleanup."""
+    import threading
+    import time
+
+    from aicad import sandbox as sandbox_mod
+
+    release = threading.Event()
+
+    def wedged(self):
+        self._mark_watch(True)
+        release.wait()
+
+    monkeypatch.setattr(sandbox_mod._DiskWatch, "_event_main", wedged)
+    monkeypatch.setattr(sandbox_mod._DiskWatch, "_stop_timeout", 0.3)
+    disk = sandbox_mod._DiskWatch(tmp_path, {}, file_cap=10**9, disk_cap=10**9)
+    assert disk.arm()
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "script.py").write_text("part = Box(1, 1, 1)\n", encoding="utf-8")
+    started = time.monotonic()
+    released = sandbox_mod._finish_script_disk(disk, job, keep_job=False)
+    assert time.monotonic() - started < 2
+    assert released is False
+    assert disk.hit.is_set()
+    assert job.is_dir()
+    assert (job / "script.py").is_file()
+    release.set()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and job.exists():
+        time.sleep(0.01)
+    assert not job.exists()
+
+
+def test_a_timed_out_or_over_quota_script_removes_its_job_folder(tmp_path, monkeypatch):
+    supported, reason = sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+    monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
+    monkeypatch.delenv("AICAD_SCRIPT_NETWORK", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    jobs = project / ".aicad" / "jobs"
+    monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "1")
+    with pytest.raises(ScriptError, match="ran longer than"):
+        run_part_script(
+            "import time\ntime.sleep(30)\npart = Box(1, 1, 1)\n",
+            project,
+        )
+    assert not jobs.exists() or list(jobs.iterdir()) == []
+    monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "60")
+    monkeypatch.setenv("AICAD_SCRIPT_DISK_BYTES", "200000")
+    monkeypatch.setenv("AICAD_SCRIPT_FILE_BYTES", str(512 * 1024 * 1024))
+    with pytest.raises(ScriptError, match="wrote more than"):
+        run_part_script(
+            "from pathlib import Path\n"
+            "Path('big.bin').write_bytes(b'x' * 300000)\n"
+            "part = Box(1, 1, 1)\n",
+            project,
+        )
+    assert not jobs.exists() or list(jobs.iterdir()) == []
+    written = project / "big.bin"
+    assert not written.exists() or written.stat().st_size <= 200000
+    for path in project.rglob("*"):
+        if path.is_file():
+            assert path.stat().st_size <= 200000
+
+
+def test_a_directory_that_still_has_a_file_is_not_removed(tmp_path):
+    from aicad.file_access import remove_empty_directory
+
+    folder = tmp_path / "area"
+    folder.mkdir()
+    (folder / "kept.bin").write_bytes(b"x")
+    with pytest.raises(OSError):
+        remove_empty_directory(folder)
+    assert folder.is_dir()
+    assert (folder / "kept.bin").is_file()
 
 
 def test_a_removed_file_still_counts_toward_the_disk_quota(tmp_path, monkeypatch):
