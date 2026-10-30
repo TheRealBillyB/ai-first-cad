@@ -443,11 +443,9 @@ def test_part_name_and_operation_name_are_not_executed(tmp_path, config_home, mo
     )
     calls = _watch(monkeypatch)
     workspace = _open_shared(tmp_path, project)
-    listed = workspace.document.list_parts()
-    assert listed[0].name == text
-    assert listed[0].built is True
-    with pytest.raises(GeometryError, match="Part names must"):
-        workspace.execute("get_state", {}, source="chat")
+    assert workspace.document.list_parts() == []
+    assert any("one line" in problem for problem in workspace.document.problems)
+    workspace.execute("get_state", {}, source="chat")
     _assert_quiet(tmp_path, calls)
 
 
