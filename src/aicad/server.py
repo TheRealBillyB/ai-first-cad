@@ -889,6 +889,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         keeps the rod eye on the moving clevis without adding a joint cycle.
         When the driver is cylindrical, its slide moves that clevis along the joint axis.
         poses, motions, studies, cables, and actuators live on the same spec.
+        motions maps a name to a motion, or is a list of motions that each have a name.
         gear_train, when present, is {shafts, meshes, fixed, differentials}.
         A shaft is {name, gears, joint}. A gear is an instance name, or
         {name, instance, teeth}. Teeth come from the generated gear unless teeth
