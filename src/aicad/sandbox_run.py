@@ -170,10 +170,12 @@ def _helper_read(workspace: Path, outside: str) -> str:
     executable = sys.executable
     if sys.platform == "win32":
         executable, env = _helper_interpreter(env)
+    # The confined process cannot open the null device itself. The files are
+    # in the project, which it can already use, and the child inherits them.
+    stdin_path = workspace / "helper-stdin.txt"
+    output_path = workspace / "helper-output.txt"
+    stdin_path.write_text("", encoding="utf-8")
     kwargs = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
         "cwd": str(workspace),
         "env": env,
         "timeout": 30,
@@ -181,10 +183,14 @@ def _helper_read(workspace: Path, outside: str) -> str:
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        completed = subprocess.run(
-            [executable, "-P", "-B", str(program), str(inside), outside, str(report)],
-            **kwargs,
-        )
+        with stdin_path.open("rb") as stdin, output_path.open("wb") as output:
+            completed = subprocess.run(
+                [executable, "-P", "-B", str(program), str(inside), outside, str(report)],
+                stdin=stdin,
+                stdout=output,
+                stderr=output,
+                **kwargs,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         code = getattr(exc, "winerror", None)
         if code is None:
@@ -373,14 +379,21 @@ def _part(workspace: Path, job: Path) -> int:
         return 0
     from aicad.kernel import _execute_part_script, export_step_file
 
+    # A script can fork. Only the process that started the script publishes
+    # the result. The forked process must not replace that result.
+    owner = os.getpid()
     try:
         shape = _execute_part_script(code)
         step = job / "part.step"
         export_step_file(shape, step)
     except Exception as exc:
+        if os.getpid() != owner:
+            os._exit(1)
         message = str(exc) if str(exc) else _format(code, exc, "<aicad-script>")
         _write(job, {"ok": False, "error": message})
         return 0
+    if os.getpid() != owner:
+        os._exit(0)
     _write(job, {"ok": True, "step": str(step), "features": shape.feature_report().to_dict()})
     return 0
 
