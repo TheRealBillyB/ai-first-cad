@@ -977,27 +977,17 @@ async function buildSolid() {
   const height = Number($("extrude-height").value);
   const op = $("extrude-op").value;
   const name = $("extrude-name").value.trim() || "part";
-  const entities = spec.entities || [];
-  const circles = entities.filter((entity) => entity.type === "circle" && !entity.construction).map((entity) => entity.id);
-  const loop = loopPoints(spec);
-  let steps;
-  if (op === "revolve") {
-    if (loop.length < 3) throw new Error("A revolve needs a profile of at least three points.");
-    steps = [{ op: "revolve", points: loop, axis: "y", name: "revolve" }];
-  } else if (op === "cut") {
-    if (circles.length) steps = [{ op: "cut", circle: circles[0], height, name: "cut" }];
-    else if (loop.length >= 3) steps = [{ op: "cut", points: loop, height, name: "cut" }];
-    else throw new Error("A cut needs a circle or a profile of at least three points.");
-  } else if (loop.length >= 3) {
-    steps = [{ op: "extrude", points: loop, height, name: "extrude" }];
-    circles.forEach((circle) => {
-      steps.push({ op: "cut", circle, height: height + 2, z: -1, name: "cut_" + circle });
-    });
-  } else if (circles.length) {
-    steps = [{ op: "extrude", circle: circles[0], height, name: "extrude" }];
-  } else {
-    throw new Error("Extrude needs a profile of at least three points, or a circle.");
+  let previous = null;
+  if (op === "cut") {
+    const named = (ui.state.parts || []).some((part) => part.name === name);
+    if (named) {
+      const source = await command("get_part_source", { name });
+      if (source && source.sketch === ui.sketchName && Array.isArray(source.steps)) previous = source.steps;
+    }
   }
+  const built = sketchSolidSteps(op, spec, height, previous);
+  if (built.error) throw new Error(built.error);
+  const steps = built.steps;
   const exists = (ui.state.parts || []).some((part) => part.name === name);
   if (exists) await command("update_part_from_sketch", { name, sketch: ui.sketchName, steps });
   else await command("create_part_from_sketch", { name, sketch: ui.sketchName, steps });
