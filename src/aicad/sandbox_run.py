@@ -87,20 +87,49 @@ def _write(job: Path, payload: dict) -> None:
             pass
 
 
+def _helper_environment() -> dict[str, str]:
+    """Environment for a process the confined script starts.
+
+    The script points ``USERPROFILE`` at the library folder after Windows has
+    already started this process. A new process cannot start with that path.
+    It receives the profile path this process was started with. The container
+    still decides which files open.
+    """
+
+    env = dict(os.environ)
+    if sys.platform != "win32":
+        return env
+    from aicad.sandbox_state import account_home
+
+    home = account_home()
+    if home is None:
+        return env
+    text = str(home)
+    replaced = False
+    for key in list(env):
+        if key.upper() == "USERPROFILE":
+            env[key] = text
+            replaced = True
+    if not replaced:
+        env["USERPROFILE"] = text
+    return env
+
+
 def _helper_read(workspace: Path, outside: str) -> str:
     """What a child process could read. ``closed`` means the outside file stayed closed.
 
-    The result is a file in the project. A pipe is not used, because a second
-    Python started on Windows does not always inherit one. ``-P`` is the same
-    flag the sandbox child uses. ``-I`` keeps that interpreter from starting.
+    The result is a file in the project. The child does not inherit a pipe,
+    because a second Python started on Windows does not always inherit one.
+    ``-P`` is the same flag the sandbox child uses.
     """
 
     import subprocess
 
     inside = workspace / "helper-inside.txt"
     report = workspace / "helper-result.txt"
+    program = workspace / "helper-read.py"
     inside.write_text("inside-ok\n", encoding="utf-8")
-    code = (
+    program.write_text(
         "import pathlib, sys\n"
         "inside, outside, dest = sys.argv[1], sys.argv[2], sys.argv[3]\n"
         "parts = []\n"
@@ -112,29 +141,36 @@ def _helper_read(workspace: Path, outside: str) -> str:
         "    parts.append('OUT|' + pathlib.Path(outside).read_text(encoding='utf-8').strip())\n"
         "except Exception as exc:\n"
         "    parts.append('OUT|' + type(exc).__name__)\n"
-        "pathlib.Path(dest).write_text(' '.join(parts), encoding='utf-8')\n"
+        "pathlib.Path(dest).write_text(' '.join(parts), encoding='utf-8')\n",
+        encoding="utf-8",
     )
     kwargs = {
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
         "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "cwd": str(workspace),
+        "env": _helper_environment(),
         "timeout": 30,
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        subprocess.run(
-            [sys.executable, "-P", "-B", "-c", code, str(inside), outside, str(report)],
+        completed = subprocess.run(
+            [sys.executable, "-P", "-B", str(program), str(inside), outside, str(report)],
             **kwargs,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return "not-started"
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        code = getattr(exc, "winerror", None)
+        if code is None:
+            code = getattr(exc, "errno", None)
+        if code is None:
+            return "not-started"
+        return f"not-started:{type(exc).__name__}:{code}"
     try:
         text = report.read_text(encoding="utf-8")
     except OSError:
-        return "not-started"
+        code = completed.returncode
+        return "not-started" if code in (0, None) else f"not-started:{code}"
     if "OUT|aicad-confinement-probe" in text:
         return "opened"
     if "IN|inside-ok" in text:
