@@ -2457,12 +2457,44 @@ def run_confined_helper(command: list[str], *, env: dict[str, str], timeout: flo
     return _HelperResult(completed.returncode, completed.stdout or "", completed.stderr or "")
 
 
+def _helper_write_root(cwd: Path, pass_fds) -> Path:
+    """The folder the helper writes in, under the name it has now.
+
+    The path recorded for that folder can have been replaced. The open
+    directory is the one the helper uses.
+    """
+
+    if not pass_fds:
+        return cwd
+    import stat
+
+    from aicad.tool_directory import _directory_from_handle
+
+    for raw in pass_fds:
+        try:
+            fd = int(raw)
+            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                continue
+        except (OSError, TypeError, ValueError):
+            continue
+        found = _directory_from_handle(fd)
+        if found is None:
+            continue
+        try:
+            if found.is_dir() and not found.is_symlink():
+                return found
+        except OSError:
+            continue
+    return cwd
+
+
 def _run_confined_helper_macos(command, *, env, timeout, cwd: Path, reads: list[Path], preexec_fn, pass_fds, close_fds):
     import subprocess
     import tempfile
 
     from aicad.sandbox_macos import build_profile, command_prefix
 
+    cwd = _helper_write_root(cwd, pass_fds)
     profile = build_profile([str(path) for path in reads], [str(cwd)], network=False)
     directory = _control_directory()
     try:

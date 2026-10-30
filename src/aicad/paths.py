@@ -1364,7 +1364,13 @@ def held_subprocess_kwargs(directory: Path) -> dict:
         def enter() -> None:
             os.fchdir(descriptor)
 
-        return {"preexec_fn": enter, "pass_fds": (descriptor,), "close_fds": True}
+        kwargs: dict = {"preexec_fn": enter, "pass_fds": (descriptor,), "close_fds": True}
+        from aicad.tool_directory import _directory_from_handle
+
+        found = _directory_from_handle(descriptor)
+        if found is not None:
+            kwargs["cwd"] = os.fspath(found)
+        return kwargs
     public = held.public if held is not None else directory
     return {"cwd": os.fspath(public)}
 
