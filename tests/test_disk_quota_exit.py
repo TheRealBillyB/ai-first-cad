@@ -164,6 +164,76 @@ def test_the_exit_reading_happens_before_the_process_is_collected():
     assert not Path(f"/proc/{proc.pid}").exists()
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux reports logical writes in /proc")
+def test_a_write_on_another_thread_counts_in_the_group(tmp_path):
+    import threading
+
+    from aicad.sandbox import _process_write_bytes, _thread_group_leader
+
+    before = _process_write_bytes(os.getpid())
+    assert before is not None
+    started = threading.Event()
+    release = threading.Event()
+    found: dict[str, int] = {}
+
+    def write() -> None:
+        found["tid"] = threading.get_native_id()
+        path = tmp_path / "thread.bin"
+        path.write_bytes(b"x" * 100_000)
+        path.unlink()
+        started.set()
+        release.wait(5)
+
+    thread = threading.Thread(target=write)
+    thread.start()
+    assert started.wait(5)
+    try:
+        tid = found["tid"]
+        assert _thread_group_leader(tid) == os.getpid()
+        group = _process_write_bytes(tid)
+        assert group is not None
+        assert group - before >= 100_000
+    finally:
+        release.set()
+        thread.join(timeout=5)
+
+
+def test_a_thread_group_is_counted_once(tmp_path):
+    import threading
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux reports one counter for the whole thread group")
+    from aicad.sandbox import _thread_group_leader
+
+    started = threading.Event()
+    release = threading.Event()
+    found: dict[str, int] = {}
+
+    def write() -> None:
+        found["tid"] = threading.get_native_id()
+        path = tmp_path / "thread.bin"
+        path.write_bytes(b"y" * 100_000)
+        path.unlink()
+        started.set()
+        release.wait(5)
+
+    disk = _DiskWatch(tmp_path, {}, file_cap=10**9, disk_cap=10**9)
+    disk.baseline(os.getpid())
+    thread = threading.Thread(target=write)
+    thread.start()
+    assert started.wait(5)
+    try:
+        tid = found["tid"]
+        assert _thread_group_leader(tid) == os.getpid()
+        disk.note_io({os.getpid(), tid})
+        assert disk.io_peak >= 100_000
+        assert disk.io_peak < 180_000
+    finally:
+        release.set()
+        thread.join(timeout=5)
+        disk.close_counters()
+
+
 def test_the_exit_reading_runs_when_waitid_is_unavailable(monkeypatch):
     monkeypatch.setattr("aicad.sandbox._exited_unreaped", lambda pid: None)
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.2)"])

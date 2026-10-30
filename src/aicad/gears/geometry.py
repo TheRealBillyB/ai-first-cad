@@ -222,10 +222,30 @@ def _require_consistent_bevel(
         )
 
 
+def _authored_spec(spec: dict) -> dict:
+    """The input spec when ``spec`` is a record :func:`gear_data` already computed.
+
+    That record repeats input names for results. A bevel profile shift and a
+    hypoid pinion spiral are results. Building or pairing from the record uses
+    the spec stored on it, which is the input that produced those results.
+    """
+    inner = spec.get("spec")
+    if not isinstance(inner, dict):
+        return spec
+    if inner.get("type") != spec.get("type"):
+        return spec
+    if spec.get("axis_layout") not in ("parallel", "intersecting", "offset"):
+        return spec
+    if "module_mm" not in inner and "ring_diameter_mm" not in inner:
+        return spec
+    return inner
+
+
 def normalize_spec(spec: dict) -> dict:
     """Fill defaults and reject an unknown family."""
     if not isinstance(spec, dict):
         raise GeometryError("A gear spec must be an object.")
+    spec = _authored_spec(spec)
     raw_type = str(spec.get("type") or "").strip().lower().replace("-", "_").replace(" ", "_")
     aliases = {
         "straight": "straight_bevel",

@@ -998,10 +998,592 @@ def private_tool_directory():
         remove_tree(path, ignore_errors=True)
 
 
-def _make_private_tool_directory() -> Path:
+class _HeldDirectory:
+    """One private directory kept open until the caller finishes."""
+
+    def __init__(self, descriptor: int, original: Path, public: Path, windows_handle: int | None) -> None:
+        self.descriptor = descriptor
+        self.original = original
+        self.public = public
+        self.windows_handle = windows_handle
+        self.keys: tuple[str, ...] = ()
+
+
+_HELD_DIRECTORIES: dict[str, _HeldDirectory] = {}
+_HELD_LOCK = threading.Lock()
+
+
+def _held_key(path: Path) -> str:
+    text = os.fspath(path).replace("\\", "/")
+    if text.startswith("/proc/self/fd/") or text.startswith("/dev/fd/") or text.startswith("/.vol/"):
+        return text
+    try:
+        return os.path.normcase(os.path.normpath(os.path.abspath(text)))
+    except OSError:
+        return text
+
+
+def _remember_held(held: _HeldDirectory) -> None:
+    keys = {_held_key(held.public), _held_key(held.original), os.fspath(held.public)}
+    held.keys = tuple(keys)
+    with _HELD_LOCK:
+        for key in held.keys:
+            _HELD_DIRECTORIES[key] = held
+
+
+def _find_held(path: Path) -> _HeldDirectory | None:
+    key = _held_key(path)
+    with _HELD_LOCK:
+        found = _HELD_DIRECTORIES.get(key)
+        if found is None:
+            found = _HELD_DIRECTORIES.get(os.fspath(path))
+        return found
+
+
+def _pop_held(path: Path) -> _HeldDirectory | None:
+    with _HELD_LOCK:
+        found = _HELD_DIRECTORIES.get(_held_key(path))
+        if found is None:
+            found = _HELD_DIRECTORIES.get(os.fspath(path))
+        if found is None:
+            return None
+        for key in found.keys:
+            if _HELD_DIRECTORIES.get(key) is found:
+                _HELD_DIRECTORIES.pop(key, None)
+        return found
+
+
+def _path_tracks_directory(held: _HeldDirectory) -> bool:
+    """True when the public path stays on the opened directory."""
+    if os.name == "nt":
+        return True
+    text = os.fspath(held.public).replace("\\", "/")
+    return text.startswith("/proc/self/fd/") or text.startswith("/.vol/")
+
+
+def _dup_held_directory(path: Path) -> int | None:
+    """Duplicate the handle for a directory this process is holding open."""
+    held = _find_held(path)
+    if held is None or held.descriptor < 0:
+        return None
+    try:
+        info = os.fstat(held.descriptor)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        return None
+    return os.dup(held.descriptor)
+
+
+def _stable_directory_path(descriptor: int, original: Path) -> Path:
+    """A path that refers to this directory handle, when the system has one."""
+    proc = Path(f"/proc/self/fd/{descriptor}")
+    try:
+        if proc.parent.is_dir():
+            return proc
+    except OSError:
+        pass
+    volfs = _volfs_directory(descriptor)
+    if volfs is not None:
+        return volfs
+    return Path(original)
+
+
+def _volfs_directory(descriptor: int) -> Path | None:
+    """A directory path addressed by its id, when listing and creating both work."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        info = os.fstat(descriptor)
+    except OSError:
+        return None
+    directory = Path(f"/.vol/{info.st_dev}/{info.st_ino}")
+    probe = f".aicad-probe-{os.getpid()}-{uuid.uuid4().hex}"
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        raw = os.open(probe, flags, 0o600, dir_fd=descriptor)
+    except OSError:
+        return None
+    os.close(raw)
+    try:
+        listed = probe in os.listdir(directory)
+        opened = os.open(probe, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
+        os.close(opened)
+    except OSError:
+        listed = False
+    try:
+        os.unlink(probe, dir_fd=descriptor)
+    except OSError:
+        pass
+    if not listed:
+        return None
+    return directory
+
+
+def _hold_created_directory(original: Path) -> Path:
+    if os.name == "nt":
+        return _hold_windows_directory(original)
+    descriptor = os.open(os.fspath(original), _directory_flags())
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode):
+            raise OSError(errno.ENOTDIR, "not a directory", os.fspath(original))
+        public = _stable_directory_path(descriptor, original)
+        held = _HeldDirectory(descriptor, Path(original), public, None)
+        _remember_held(held)
+        return public
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _hold_windows_directory(original: Path) -> Path:
+    """Keep the directory open without sharing delete, so its name stays put."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create.restype = ctypes.c_void_p
+    # Read access only. Share read and write so this process can still add
+    # files. Do not share delete: replacing the directory name is refused
+    # while this handle is open.
+    handle = create(
+        os.fspath(original),
+        0x1 | 0x80,
+        0x1 | 0x2,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if not handle or handle == invalid:
+        error = ctypes.get_last_error()
+        raise OSError(None, None, os.fspath(original), error or errno.EIO)
+    try:
+        if _windows_handle_is_reparse(kernel32, handle):
+            raise OSError(errno.ELOOP, "is a link", os.fspath(original))
+        public = Path(original)
+        held = _HeldDirectory(-1, public, public, int(handle))
+        _remember_held(held)
+        handle = None
+        return public
+    finally:
+        if handle:
+            _close_windows_handle(handle)
+
+
+def _windows_handle_is_reparse(kernel32, handle) -> bool:
+    class _FileTime(ctypes.Structure):
+        _fields_ = (("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32))
+
+    class _ByHandle(ctypes.Structure):
+        _fields_ = (
+            ("dwFileAttributes", ctypes.c_uint32),
+            ("ftCreationTime", _FileTime),
+            ("ftLastAccessTime", _FileTime),
+            ("ftLastWriteTime", _FileTime),
+            ("dwVolumeSerialNumber", ctypes.c_uint32),
+            ("nFileSizeHigh", ctypes.c_uint32),
+            ("nFileSizeLow", ctypes.c_uint32),
+            ("nNumberOfLinks", ctypes.c_uint32),
+            ("nFileIndexHigh", ctypes.c_uint32),
+            ("nFileIndexLow", ctypes.c_uint32),
+        )
+
+    info = _ByHandle()
+    get = kernel32.GetFileInformationByHandle
+    get.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ByHandle)]
+    get.restype = ctypes.c_int
+    if not get(handle, ctypes.byref(info)):
+        raise OSError(errno.EIO, "could not read the directory")
+    if not info.dwFileAttributes & 0x10:
+        raise OSError(errno.ENOTDIR, "not a directory")
+    return bool(info.dwFileAttributes & 0x400)
+
+
+def _close_windows_handle(handle) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close = kernel32.CloseHandle
+    close.argtypes = [ctypes.c_void_p]
+    close.restype = ctypes.c_int
+    close(handle)
+
+
+def open_held_directory(prefix: str = "aicad-tool-") -> Path:
+    """Create a private directory and return a path that stays on that directory.
+
+    The directory is opened by its handle before the path is returned. Later
+    reads and writes use that handle. The caller closes it with
+    ``close_held_directory``.
+    """
+    original = _make_private_tool_directory(prefix)
+    try:
+        return _hold_created_directory(original)
+    except Exception:
+        remove_tree(original, ignore_errors=True)
+        raise
+
+
+def close_held_directory(path: Path) -> None:
+    """Close a directory opened by ``open_held_directory`` and remove it."""
+    held = _pop_held(Path(path))
+    if held is None:
+        return
+    info = None
+    current: Path | None = None
+    if held.descriptor >= 0:
+        try:
+            info = os.fstat(held.descriptor)
+        except OSError:
+            info = None
+        current = _directory_path_from_handle(held.descriptor)
+    if held.windows_handle:
+        _close_windows_handle(held.windows_handle)
+        held.windows_handle = None
+    if held.descriptor >= 0:
+        os.close(held.descriptor)
+        held.descriptor = -1
+    if current is not None and info is not None:
+        _remove_directory_if_same(current, info)
+        return
+    remove_tree(held.original, ignore_errors=True)
+
+
+def _directory_path_from_handle(descriptor: int) -> Path | None:
+    proc = Path(f"/proc/self/fd/{descriptor}")
+    try:
+        if proc.parent.is_dir():
+            return Path(os.readlink(proc))
+    except OSError:
+        pass
+    if sys.platform != "darwin":
+        return None
+    import fcntl
+
+    # fcntl returns a new bytes object of the same length. It does not write
+    # the path back into the buffer it was given. The length is PATH_MAX.
+    command = getattr(fcntl, "F_GETPATH", 50)
+    try:
+        result = fcntl.fcntl(descriptor, command, bytes(1024))
+    except OSError:
+        return None
+    if isinstance(result, str):
+        raw = os.fsencode(result)
+    elif isinstance(result, (bytes, bytearray)):
+        raw = bytes(result)
+    else:
+        return None
+    raw = raw.split(b"\x00", 1)[0]
+    if not raw:
+        return None
+    return Path(os.fsdecode(raw))
+
+
+def _remove_directory_if_same(path: Path, info: os.stat_result) -> None:
+    try:
+        current = os.stat(path)
+    except OSError:
+        return
+    if not os.path.samestat(info, current):
+        return
+    remove_tree(path, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def held_tool_directory(prefix: str = "aicad-tool-"):
+    """A private directory opened by its handle. It is removed when the caller finishes."""
+    path = open_held_directory(prefix)
+    try:
+        yield path
+    finally:
+        close_held_directory(path)
+
+
+def guest_path(directory: Path, relative: str) -> Path:
+    """A path for ``relative`` that stays on a held directory.
+
+    On a system whose public path does not stay on the handle, the result is
+    relative. The caller then uses ``use_held_thread`` for that call.
+    """
+    parts = _relative_parts(relative)
+    held = _find_held(directory)
+    if held is not None and _path_tracks_directory(held):
+        path = Path(held.public)
+        for part in parts:
+            path /= part
+        return path
+    path = Path()
+    for part in parts:
+        path /= part
+    return path
+
+
+@contextlib.contextmanager
+def use_held_thread(directory: Path | None):
+    """Use a held directory as this thread's working directory when that is required."""
+    if directory is None:
+        yield
+        return
+    held = _find_held(directory)
+    if held is None or held.descriptor < 0 or _path_tracks_directory(held) or sys.platform != "darwin":
+        yield
+        return
+    libc = _darwin_libc()
+    if libc.pthread_fchdir_np(held.descriptor) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err), os.fspath(directory))
+    try:
+        yield
+    finally:
+        libc.pthread_fchdir_np(-1)
+
+
+def _darwin_libc():
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.pthread_fchdir_np.argtypes = [ctypes.c_int]
+    libc.pthread_fchdir_np.restype = ctypes.c_int
+    return libc
+
+
+def held_subprocess_kwargs(directory: Path) -> dict:
+    """Arguments that run a program in ``directory`` rather than at a replaced name."""
+    held = _find_held(directory)
+    if held is not None and held.descriptor >= 0 and not _path_tracks_directory(held):
+        descriptor = held.descriptor
+
+        def enter() -> None:
+            os.fchdir(descriptor)
+
+        return {"preexec_fn": enter, "pass_fds": (descriptor,), "close_fds": True}
+    public = held.public if held is not None else directory
+    return {"cwd": os.fspath(public)}
+
+
+def run_in_held_directory(directory: Path, args, **kwargs):
+    """Run a program with its working directory on the held directory."""
+    import subprocess
+
+    kwargs.update(held_subprocess_kwargs(directory))
+    return subprocess.run(args, **kwargs)
+
+
+def held_entry_names(directory: Path) -> list[str]:
+    """Names in ``directory``. A held directory is listed from its handle."""
+    held = _find_held(directory)
+    if held is None or held.descriptor < 0:
+        return sorted(item.name for item in Path(directory).iterdir())
+    return sorted(_list_directory_handle(held.descriptor))
+
+
+def held_directory_exists(directory: Path) -> bool:
+    held = _find_held(directory)
+    if held is not None and held.descriptor >= 0:
+        try:
+            return stat.S_ISDIR(os.fstat(held.descriptor).st_mode)
+        except OSError:
+            return False
+    if held is not None and held.windows_handle:
+        return Path(held.original).exists()
+    return Path(directory).exists()
+
+
+def held_entry_exists(directory: Path, name: str) -> bool:
+    held = _find_held(directory)
+    if held is None or held.descriptor < 0:
+        return (Path(directory) / name).exists()
+    try:
+        os.lstat(name, dir_fd=held.descriptor)
+    except OSError:
+        return False
+    return True
+
+
+def held_entry_is_symlink(directory: Path, name: str) -> bool:
+    held = _find_held(directory)
+    if held is None or held.descriptor < 0:
+        return (Path(directory) / name).is_symlink()
+    try:
+        info = os.lstat(name, dir_fd=held.descriptor)
+    except OSError:
+        return False
+    return stat.S_ISLNK(info.st_mode)
+
+
+def held_entry_is_file(directory: Path, name: str) -> bool:
+    held = _find_held(directory)
+    if held is None or held.descriptor < 0:
+        candidate = Path(directory) / name
+        return candidate.is_file() and not candidate.is_symlink()
+    try:
+        info = os.lstat(name, dir_fd=held.descriptor)
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode)
+
+
+def _list_directory_handle(descriptor: int) -> list[str]:
+    proc = Path(f"/proc/self/fd/{descriptor}")
+    try:
+        if proc.parent.is_dir():
+            return os.listdir(proc)
+    except OSError:
+        pass
+    if sys.platform == "darwin":
+        libc = _darwin_libc()
+        if libc.pthread_fchdir_np(descriptor) != 0:
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err))
+        try:
+            return os.listdir(".")
+        finally:
+            libc.pthread_fchdir_np(-1)
+    raise OSError(errno.ENOTSUP, "the directory cannot be listed from its handle")
+
+
+def ensure_held_directory(directory: Path, relative: str) -> None:
+    """Create a directory inside a held directory. Existing directories stay."""
+    parts = _relative_parts(relative)
+    held = _find_held(directory)
+    if held is None or held.descriptor < 0:
+        (Path(directory).joinpath(*parts)).mkdir(parents=True, exist_ok=True)
+        return
+    current = held.descriptor
+    owned: list[int] = []
+    try:
+        for name in parts:
+            try:
+                os.mkdir(name, 0o700, dir_fd=current)
+            except FileExistsError:
+                pass
+            nxt = os.open(name, _directory_flags(), dir_fd=current)
+            owned.append(nxt)
+            current = nxt
+    finally:
+        for descriptor in owned:
+            os.close(descriptor)
+
+
+def write_held_bytes(directory: Path, relative: str, data: bytes) -> None:
+    """Write ``relative`` inside a held directory from its handle."""
+    parts = _relative_parts(relative)
+    held = _find_held(directory)
+    if held is None or held.descriptor < 0:
+        destination = Path(directory).joinpath(*parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+        return
+    parent, name, owned = _held_parent(held.descriptor, parts, create=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    raw = -1
+    try:
+        raw = os.open(name, flags, 0o600, dir_fd=parent)
+        os.fchmod(raw, 0o600)
+        view = memoryview(data)
+        while len(view):
+            count = os.write(raw, view)
+            if count <= 0:
+                raise OSError(errno.EIO, "could not write the file", name)
+            view = view[count:]
+        os.fsync(raw)
+    finally:
+        if raw >= 0:
+            os.close(raw)
+        for descriptor in owned:
+            os.close(descriptor)
+
+
+def _held_parent(directory: int, parts: tuple[str, ...], *, create: bool) -> tuple[int, str, list[int]]:
+    current = directory
+    owned: list[int] = []
+    for name in parts[:-1]:
+        if create:
+            try:
+                os.mkdir(name, 0o700, dir_fd=current)
+            except FileExistsError:
+                pass
+        nxt = os.open(name, _directory_flags(), dir_fd=current)
+        owned.append(nxt)
+        current = nxt
+    return current, parts[-1], owned
+
+
+def _publish_held(held: _HeldDirectory, name: str, write) -> None:
+    """Replace ``name`` in a held directory. The directory name is not looked up."""
+    _check_component(name)
+    if held.descriptor < 0:
+        raise OSError(errno.ENOTSUP, "the directory is not open")
+    directory = os.dup(held.descriptor)
+    temporary = f".aicad-{os.getpid()}-{uuid.uuid4().hex}{Path(name).suffix}"
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    raw = -1
+    staged: Path | None = None
+    placed = False
+    try:
+        raw = os.open(temporary, flags, 0o600, dir_fd=directory)
+        os.fchmod(raw, 0o600)
+        target = _fd_path(raw)
+        if _reopen_accepts_create(target):
+            write(target)
+        else:
+            scratch = tempfile.mkstemp(prefix=".aicad-", suffix=Path(name).suffix)
+            os.close(scratch[0])
+            staged = Path(scratch[1])
+            before = staged.stat()
+            write(staged)
+            check = os.open(os.fspath(staged), os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                if not os.path.samestat(before, os.fstat(check)):
+                    raise OSError(errno.ELOOP, "temporary file changed", os.fspath(staged))
+                _copy_from_descriptor(raw, check)
+            finally:
+                os.close(check)
+        os.fsync(raw)
+        os.rename(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        placed = True
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+        if raw >= 0 and not placed:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except OSError:
+                pass
+        if raw >= 0:
+            os.close(raw)
+        os.close(directory)
+
+
+def _copy_from_descriptor(destination: int, source: int) -> None:
+    os.lseek(source, 0, os.SEEK_SET)
+    os.lseek(destination, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(source, 1024 * 1024)
+        if not chunk:
+            break
+        offset = 0
+        while offset < len(chunk):
+            offset += os.write(destination, chunk[offset:])
+    os.ftruncate(destination, os.lseek(destination, 0, os.SEEK_CUR))
+
+
+def _make_private_tool_directory(prefix: str = "aicad-tool-") -> Path:
     for root in _tool_temp_roots():
         try:
-            path = Path(tempfile.mkdtemp(prefix="aicad-tool-", dir=os.fspath(root)))
+            path = Path(tempfile.mkdtemp(prefix=prefix, dir=os.fspath(root)))
         except OSError:
             continue
         if _inside_any_project(path):
@@ -1533,7 +2115,14 @@ def open_directory(path: Path) -> int:
 
 
 def _posix_open_directory(path: Path) -> int:
-    """Open one directory on POSIX. A symlink is refused."""
+    """Open one directory on POSIX. A symlink is refused.
+
+    A directory this process is holding open is duplicated. The name is not
+    looked up again.
+    """
+    duped = _dup_held_directory(path)
+    if duped is not None:
+        return duped
     if not nofollow_writes():
         raise OSError(errno.ENOTSUP, "no-follow directory open is not available")
     return os.open(os.fspath(path), _directory_flags())
@@ -2027,6 +2616,19 @@ def shared_file(path: Path) -> bool:
     return stat.S_ISREG(info.st_mode) and info.st_nlink > 1
 
 
+def _publish_if_held(path: Path, root: Path | None, write) -> bool:
+    """Write ``path`` through a held directory handle. Return whether that happened."""
+    candidates = [path.parent]
+    if root is not None:
+        candidates.insert(0, Path(root))
+    for candidate in candidates:
+        held = _find_held(candidate)
+        if held is not None and held.descriptor >= 0:
+            _publish_held(held, path.name, write)
+            return True
+    return False
+
+
 def publish_file(path: Path, write, *, root: Path | None = None, private: bool = False) -> Path:
     """Write a temp file beside ``path``, then replace ``path``.
 
@@ -2037,6 +2639,8 @@ def publish_file(path: Path, write, *, root: Path | None = None, private: bool =
     that cannot do that.
     """
     path = Path(path)
+    if _publish_if_held(path, root, write):
+        return path
     chosen = Path(root).resolve() if root is not None else _project_containing(path)
     lexical = path if path.is_absolute() else (chosen / path if chosen is not None else path)
     if nofollow_writes():

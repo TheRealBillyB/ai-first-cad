@@ -9,7 +9,6 @@ from __future__ import annotations
 import errno
 import json
 import os
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -177,7 +176,9 @@ def design_proxy(directory: Path | None = None, live: dict | None = None, *, cal
                 time.sleep(0.01)
         finally:
             if owned is not None:
-                shutil.rmtree(owned, ignore_errors=True)
+                from aicad.paths import close_held_directory
+
+                close_held_directory(owned)
 
     def dispatch(name: str, args, kwargs):
         _dispatch_name(name, tuple(args), dict(kwargs))
@@ -234,17 +235,32 @@ def _effects(document, before: dict, calls: list[dict]) -> dict:
     }
 
 
+def _entry_names(directory: Path, suffix: str) -> list[str]:
+    from aicad.paths import held_entry_is_file, held_entry_is_symlink, held_entry_names
+
+    return [
+        name
+        for name in held_entry_names(directory)
+        if name.endswith(suffix) and held_entry_is_file(directory, name) and not held_entry_is_symlink(directory, name)
+    ]
+
+
+def _entry_exists(directory: Path, name: str) -> bool:
+    from aicad.paths import held_entry_exists, held_entry_is_symlink
+
+    return held_entry_is_symlink(directory, name) or held_entry_exists(directory, name)
+
+
 def serve_calls(directory: Path, document, calls: list[dict], before: dict, live: dict | None = None) -> dict:
     """Run calls from ``directory`` until ``STOP`` appears. Return the report."""
     directory.mkdir(parents=True, exist_ok=True)
     number = 0
     busy = 0
     while True:
-        stop = directory / "STOP"
-        if stop.is_symlink() or stop.exists():
+        if _entry_exists(directory, "STOP"):
             break
         path = directory / f"{number}.req.json"
-        if not path.exists():
+        if not _entry_exists(directory, path.name):
             time.sleep(0.01)
             continue
         try:
@@ -291,8 +307,11 @@ def _apply_request(directory: Path, number: int, request: dict, document, calls:
             {"ok": False, "error_type": "TypeError", "error": "The call was refused."},
         )
         return
+    from aicad.sandbox_state import design_call
+
     try:
-        result = getattr(document, name)(*args, **kwargs)
+        with design_call():
+            result = getattr(document, name)(*args, **kwargs)
     except Exception as exc:
         calls.append({"method": name, "error": f"{type(exc).__name__}: {exc}"})
         _write_json(
@@ -308,13 +327,15 @@ def _apply_request(directory: Path, number: int, request: dict, document, calls:
 
 def _serve_one(directory: Path, document, calls: list[dict], before: dict, live: dict | None) -> None:
     """Run the one request in ``directory``. Return when it is gone or answered."""
+    from aicad.paths import held_directory_exists
+
     busy = 0
-    while directory.exists():
-        paths = sorted(item for item in directory.glob("*.req.json") if item.is_file() and not item.is_symlink())
-        if not paths:
+    while held_directory_exists(directory):
+        names = _entry_names(directory, ".req.json")
+        if not names:
             time.sleep(0.01)
             continue
-        path = paths[0]
+        path = directory / names[0]
         number_text = path.name.split(".", 1)[0]
         if not number_text.isdigit():
             time.sleep(0.01)
@@ -416,7 +437,6 @@ def model_main(job: Path, record_path: Path, record_fd: int | None = None) -> in
 def script_document(document, calls: list[dict]):
     """Run calls in this process, for tests. The proxy does not hold ``document``."""
     import queue
-    import tempfile
     import threading
     import weakref
 
@@ -447,7 +467,9 @@ def script_document(document, calls: list[dict]):
     threading.Thread(target=run, name="aicad-design-calls", daemon=True).start()
 
     def call_directory() -> Path:
-        folder = Path(tempfile.mkdtemp(prefix="aicad-calls-"))
+        from aicad.paths import open_held_directory
+
+        folder = open_held_directory("aicad-calls-")
         pending.put(folder)
         return folder
 

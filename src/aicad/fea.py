@@ -418,6 +418,7 @@ def solve_part(
                 f"von Mises  max {peak:.3g} MPa",
                 "MPa",
                 "von Mises",
+                maximum=peak,
             )
         )
         views.extend(
@@ -431,6 +432,7 @@ def solve_part(
                 f"displacement  max {float(magnitude[move_index]):.3g} mm",
                 "mm",
                 "displacement",
+                maximum=float(magnitude[move_index]),
             )
         )
     note = _summary(material, peak, safety, magnitude[move_index], review, warnings)
@@ -795,12 +797,10 @@ def _mesh_attempts(shape: kernel.Shape, mesh_size: float, order: int) -> list[di
 
 def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorithm: int, optimize: int, occ_fix: bool) -> dict:
     import gmsh
+    from aicad.paths import guest_path, held_tool_directory, use_held_thread
 
-    from aicad.paths import private_tool_directory
-
-    with private_tool_directory() as directory:
-        step_path = directory / "part.step"
-        kernel.export_step_file(shape, step_path)
+    with held_tool_directory() as directory:
+        kernel.export_step_file(shape, Path(directory) / "part.step")
         from aicad.sandbox import scrub_library_environment
 
         scrub_library_environment()
@@ -809,7 +809,8 @@ def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorith
             _gmsh_option(gmsh, "General.Terminal", 0)
             _gmsh_option(gmsh, "General.Verbosity", 0)
             gmsh.model.add("part")
-            gmsh.model.occ.importShapes(str(step_path))
+            with use_held_thread(directory):
+                gmsh.model.occ.importShapes(str(guest_path(directory, "part.step")))
             gmsh.model.occ.synchronize()
             gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
             _gmsh_option(gmsh, "Mesh.ElementOrder", order)
@@ -968,9 +969,9 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
     order = mesh["order"]
     element_type = "C3D10" if order == 2 else "C3D4"
     width = 10 if order == 2 else 4
-    from aicad.paths import private_tool_directory
+    from aicad.paths import held_entry_is_file, held_subprocess_kwargs, held_tool_directory
 
-    with private_tool_directory() as path:
+    with held_tool_directory() as path:
         lines = ["*HEADING", "aicad linear static", "*NODE"]
         for index, point in enumerate(points, start=1):
             lines.append(f"{index}, {point[0]:.6f}, {point[1]:.6f}, {point[2]:.6f}")
@@ -1016,7 +1017,6 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
 
         completed = subprocess.run(
             [solver, "-i", "job"],
-            cwd=str(path),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1025,14 +1025,14 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
             timeout=180,
             check=False,
             env=program_environment(),
+            **held_subprocess_kwargs(path),
         )
-        frd = path / "job.frd"
-        if completed.returncode != 0 or not frd.is_file():
+        if completed.returncode != 0 or not held_entry_is_file(path, "job.frd"):
             detail = _ccx_error(completed.stdout)
             return None, None, detail or "CalculiX stopped without a result file."
         if "nonpositive jacobian" in completed.stdout.lower():
             return None, None, "nonpositive jacobian"
-        return _parse_frd(frd, len(points)) + (None,)
+        return _parse_frd(path / "job.frd", len(points)) + (None,)
 
 
 def _parse_frd(path: Path, node_count: int):
