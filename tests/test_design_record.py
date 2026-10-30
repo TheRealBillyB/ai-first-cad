@@ -453,6 +453,54 @@ def test_closing_the_design_record_stops_the_model_before_removing_the_file(tmp_
     assert not path.exists()
 
 
+def test_stopping_the_model_ends_part_scripts_before_the_model(tmp_path, monkeypatch):
+    import subprocess
+
+    from aicad import sandbox
+
+    order: list[int] = []
+
+    class Fake:
+        def __init__(self):
+            self.returncode = None
+            self.pid = 77
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("model", timeout)
+            return self.returncode
+
+    def terminate(pid: int) -> None:
+        order.append(pid)
+        if pid == 77:
+            record.proc.returncode = -9
+
+    record = sandbox._DesignRecord(tmp_path, tmp_path / "job")
+    record.proc = Fake()
+    monkeypatch.setattr(sandbox.sys, "platform", "win32")
+    monkeypatch.setattr(sandbox, "_descendants", lambda pid: {88, 99} if pid == 77 else set())
+    monkeypatch.setattr(sandbox, "_terminate_windows", terminate)
+    record._stop_model()
+    assert set(order) == {88, 99, 77}
+    assert order.index(77) > order.index(88)
+    assert order.index(77) > order.index(99)
+
+
+def test_a_part_script_descends_through_its_parent():
+    from aicad.sandbox import _descendants_from
+
+    parents = {10: 1, 11: 10, 12: 11, 20: 2}
+    assert _descendants_from(10, parents) == {11, 12}
+    assert _descendants_from(1, parents) == set()
+    assert _descendants_from(2, parents) == {20}
+
+
 def test_the_model_keeps_the_design_record_private_before_it_runs_calls():
     import inspect
 

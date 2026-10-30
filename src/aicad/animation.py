@@ -874,13 +874,17 @@ def _write_videos(root: Path, targets: dict, images: list[Image.Image], fps: int
     executable = find_program("ffmpeg", project=root)
     if not executable:
         return {}, _FFMPEG_MISSING
-    from aicad.paths import private_tool_directory
+    import io
+
+    from aicad.tool_directory import held_subprocess_directory, held_write_bytes
 
     videos = {}
     failures = []
-    with private_tool_directory() as frame_dir:
+    with held_subprocess_directory() as frame_dir:
         for index, image in enumerate(images):
-            _write_png(frame_dir / f"frame_{index:04d}.png", image)
+            buffer = io.BytesIO()
+            image.convert("RGB").save(buffer, format="PNG")
+            held_write_bytes(frame_dir, f"frame_{index:04d}.png", buffer.getvalue())
         for fmt in formats:
             try:
                 _encode(executable, frame_dir, len(images), fps, fmt, targets["videos"][fmt])
@@ -924,24 +928,24 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
     ]
     try:
         from aicad.sandbox import program_environment
+        from aicad.tool_directory import held_read_bytes, held_run_kwargs
 
         completed = subprocess.run(
             command,
-            cwd=str(frame_dir),
             capture_output=True,
             timeout=90,
             check=False,
             env=program_environment(),
+            **held_run_kwargs(frame_dir),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("ffmpeg did not finish") from exc
-    output = frame_dir / produced
-    if completed.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
+    payload = held_read_bytes(frame_dir, produced, maximum=512 * 1024 * 1024)
+    if completed.returncode != 0 or not payload:
         raise RuntimeError(_encoder_reason(completed.stderr or b"", completed.returncode))
-    from aicad.file_access import read_file
     from aicad.paths import publish_bytes
 
-    publish_bytes(destination, read_file(output, maximum=512 * 1024 * 1024))
+    publish_bytes(destination, payload)
 
 
 def _encoder_reason(stderr: bytes, code: int) -> str:

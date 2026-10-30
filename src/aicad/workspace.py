@@ -764,7 +764,14 @@ def _cmd_place(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_import(workspace: Workspace, arguments: dict) -> dict:
-    info = workspace.document.import_step(arguments["name"], arguments["path"])
+    path = arguments["path"]
+    # The page and the command line may name a file the person chose.
+    # The assistant stays inside the project, the same as an export.
+    if workspace.document.actor != "user":
+        from aicad.paths import require_export_path
+
+        path = require_export_path(workspace.root, path, "STEP file", GeometryError)
+    info = workspace.document.import_step(arguments["name"], path)
     return {"part": info.to_dict()}
 
 

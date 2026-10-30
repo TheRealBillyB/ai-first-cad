@@ -378,6 +378,37 @@ def test_job_io_is_counted_from_the_baseline(tmp_path, monkeypatch):
     assert not quiet.hit.is_set()
 
 
+def test_a_file_written_and_deleted_instantly_is_still_counted(tmp_path, monkeypatch):
+    """A file created and removed with no pause is still in the quota.
+
+    The directory watch can see the name only after the name is already
+    gone. The quota check still has to count those bytes. The script would
+    finish a solid if the deleted file were ignored.
+    """
+    supported, reason = sandbox_supported()
+    if not supported:
+        pytest.skip(reason)
+    monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
+    monkeypatch.setenv("AICAD_SCRIPT_DISK_BYTES", "200000")
+    monkeypatch.setenv("AICAD_SCRIPT_FILE_BYTES", str(512 * 1024 * 1024))
+    monkeypatch.delenv("AICAD_SCRIPT_NETWORK", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    script = (
+        "from pathlib import Path\n"
+        "path = Path('area') / 'gone.bin'\n"
+        "path.parent.mkdir()\n"
+        "path.write_bytes(b'x' * 300000)\n"
+        "path.unlink()\n"
+        "path.parent.rmdir()\n"
+        "part = Box(1, 1, 1)\n"
+    )
+    with pytest.raises(ScriptError, match="wrote more than 200000"):
+        run_part_script(script, project)
+    assert not (project / "area").exists()
+    assert not (project / "area" / "gone.bin").exists()
+
+
 def test_a_script_that_exits_immediately_still_counts_a_removed_file(tmp_path, monkeypatch):
     supported, reason = sandbox_supported()
     if not supported:
