@@ -135,7 +135,8 @@ def test_the_sketch_canvas_uses_the_solved_sketch(tmp_path):
     assert "sketchSolvedPoint" in script
     assert "sketchSelectionAfter" in script
     assert "sketchArcSamples" in script
-    assert "sketchProfile" in script
+    assert "sketchProfile" in GEOM.read_text(encoding="utf-8")
+    assert "sketchSolidSteps" in script
     node = shutil.which("node")
     assert node
     probe = tmp_path / "sketch-canvas.js"
@@ -163,3 +164,48 @@ def test_the_sketch_canvas_uses_the_solved_sketch(tmp_path):
     assert abs(report["mid"][0] - 7.0710678118654755) < 1e-6
     assert abs(report["mid"][1] - 7.0710678118654755) < 1e-6
     assert report["profile"] == ["p0", "p1", "p2", "p3"]
+
+
+_STEPS = r"""
+const fs = require("fs");
+const vm = require("vm");
+const sandbox = {};
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), sandbox, { filename: "sketch_geom.js" });
+const plate = {
+  entities: [
+    { id: "p0", type: "point", at: [0, 0] },
+    { id: "p1", type: "point", at: [40, 0] },
+    { id: "p2", type: "point", at: [40, 20] },
+    { id: "p3", type: "point", at: [0, 20] },
+    { id: "c", type: "circle", center: "o", radius: 3 },
+    { id: "bottom", type: "line", start: "p0", end: "p1" },
+    { id: "right", type: "line", start: "p1", end: "p2" },
+    { id: "top", type: "line", start: "p2", end: "p3" },
+    { id: "left", type: "line", start: "p3", end: "p0" },
+  ],
+};
+const extruded = sandbox.sketchSolidSteps("extrude", plate, 4, null);
+const bare = sandbox.sketchSolidSteps("cut", plate, 4, null);
+const cut = sandbox.sketchSolidSteps("cut", plate, 4, extruded.steps);
+const again = sandbox.sketchSolidSteps("cut", plate, 4, cut.steps);
+process.stdout.write(JSON.stringify({ extruded, bare, cut, again }));
+"""
+
+
+def test_a_sketch_cut_keeps_the_solid_it_cuts(tmp_path):
+    node = shutil.which("node")
+    assert node
+    probe = tmp_path / "sketch-steps.js"
+    probe.write_text(_STEPS, encoding="utf-8")
+    result = subprocess.run([node, str(probe), str(GEOM)], check=True, capture_output=True, text=True)
+    report = json.loads(result.stdout)
+    assert [step["op"] for step in report["extruded"]["steps"]] == ["extrude", "cut"]
+    assert report["extruded"]["steps"][1]["z"] == -1
+    assert report["extruded"]["steps"][1]["height"] == 6
+    assert "solid" in report["bare"]["error"].lower()
+    assert [step["op"] for step in report["cut"]["steps"]] == ["extrude", "cut", "cut"]
+    assert report["cut"]["steps"][0]["points"] == ["p0", "p1", "p2", "p3"]
+    assert report["cut"]["steps"][2]["circle"] == "c"
+    assert report["cut"]["steps"][2]["name"] == "cut"
+    assert report["again"]["steps"][-1]["name"] == "cut2"

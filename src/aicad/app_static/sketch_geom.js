@@ -180,3 +180,43 @@ function sketchChainCloses(edges, chain) {
     (edge.start === end && edge.end === start) || (edge.start === start && edge.end === end)
   );
 }
+
+function sketchStepName(steps, base) {
+  const used = new Set((steps || []).map((step) => step && step.name).filter((name) => typeof name === "string"));
+  if (!used.has(base)) return base;
+  let index = 2;
+  while (used.has(base + index)) index += 1;
+  return base + index;
+}
+
+function sketchSolidSteps(op, spec, height, previousSteps) {
+  const entities = (spec && spec.entities) || [];
+  const circles = entities
+    .filter((entity) => entity && entity.type === "circle" && !entity.construction)
+    .map((entity) => entity.id);
+  const loop = sketchProfile(spec);
+  const h = Number(height);
+  if (op === "revolve") {
+    if (loop.length < 3) return { error: "A revolve needs a profile of at least three points." };
+    return { steps: [{ op: "revolve", points: loop, axis: "y", name: "revolve" }] };
+  }
+  if (op === "cut") {
+    const prior = Array.isArray(previousSteps) ? previousSteps.map((step) => Object.assign({}, step)) : [];
+    const hasBase = prior.some((step) => step && (step.op === "extrude" || step.op === "revolve" || step.op === "gusset"));
+    if (!hasBase) return { error: "A cut needs a solid. Extrude or revolve a profile first." };
+    let cut;
+    if (circles.length) cut = { op: "cut", circle: circles[0], height: h, name: sketchStepName(prior, "cut") };
+    else if (loop.length >= 3) cut = { op: "cut", points: loop.slice(), height: h, name: sketchStepName(prior, "cut") };
+    else return { error: "A cut needs a circle or a profile of at least three points." };
+    return { steps: prior.concat([cut]) };
+  }
+  if (loop.length >= 3) {
+    const steps = [{ op: "extrude", points: loop, height: h, name: "extrude" }];
+    circles.forEach((circle) => {
+      steps.push({ op: "cut", circle, height: h + 2, z: -1, name: "cut_" + circle });
+    });
+    return { steps };
+  }
+  if (circles.length) return { steps: [{ op: "extrude", circle: circles[0], height: h, name: "extrude" }] };
+  return { error: "Extrude needs a profile of at least three points, or a circle." };
+}
