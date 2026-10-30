@@ -182,3 +182,8 @@ That stops another website, including one that tries to reach this computer by a
 - **BX.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
 
 - A script remove opens that name only to delete it. It does not read or write the file, and a link is removed without opening the file it names. The quota still counts a removed file the watch is holding.
+- **BY.** Only the person at the workspace can open a project folder or save a copy and switch to it. The assistant cannot. A session file cannot.
+
+- **CA.** A CalculiX input line is one card. A part name, a note, or a material name is not written into that file. A line break in a card is refused, so it cannot add another card.
+
+- **CD.** The assistant lists folders only inside the open project. A person can list a folder they chose. A folder outside the project is not listed for the assistant.
