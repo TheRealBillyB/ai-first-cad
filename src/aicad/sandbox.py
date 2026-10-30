@@ -94,8 +94,11 @@ except Exception as exc:
 raise SystemExit(main([str(job)]))
 """
 
-# Defaults. A test may set a lower value. Nothing can set a higher one.
+# Defaults. A test or the environment may set a lower value. The account
+# config may raise the wall clock for one project up to WALL_SECONDS_CAP.
+# A file in the project, the environment, and a script cannot raise it.
 WALL_SECONDS = 120
+WALL_SECONDS_CAP = 600
 CPU_SECONDS = 60
 MEMORY_BYTES = 4 * 1024 * 1024 * 1024
 FILE_BYTES = 512 * 1024 * 1024
@@ -412,8 +415,88 @@ def _capped(env_name: str, default: int, ceiling: int) -> int:
     return max(1, min(value, ceiling))
 
 
-def wall_seconds() -> int:
-    return _capped("AICAD_SCRIPT_WALL_SECONDS", WALL_SECONDS, WALL_SECONDS)
+def _wall_file() -> Path:
+    return config_dir() / "script_wall.json"
+
+
+def _read_wall_table() -> dict:
+    path = _wall_file()
+    try:
+        from aicad.file_access import read_text
+
+        data = json.loads(read_text(path, maximum=1_000_000))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {"projects": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("projects"), dict):
+        return {"projects": {}}
+    return data
+
+
+def _write_wall_table(data: dict) -> None:
+    path = _wall_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from aicad.paths import publish_text
+
+    publish_text(path, json.dumps(data, indent=2) + "\n", root=path.parent, private=True)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def project_wall_seconds(workspace: str | Path) -> int | None:
+    """The wall clock chosen for this project, or None when it stays at the default.
+
+    A value above the cap is read as the cap. A project file is not consulted.
+    """
+
+    root = str(Path(workspace).resolve())
+    entry = _read_wall_table()["projects"].get(root)
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get("wall_seconds")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return min(value, WALL_SECONDS_CAP)
+
+
+def set_project_wall_seconds(workspace: str | Path, seconds: int) -> dict:
+    """Record how long a design script in this project may run.
+
+    The value lives in the account config, outside the project. A script
+    cannot call this. The cap stays in force even if the file is edited.
+    """
+
+    from aicad.sandbox_state import in_sandbox
+
+    if in_sandbox():
+        raise ScriptError("A script cannot change how long a script may run.")
+    if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 1 or seconds > WALL_SECONDS_CAP:
+        raise ScriptError(
+            f"The script time limit must be a whole number of seconds from 1 to {WALL_SECONDS_CAP}."
+        )
+    root = Path(workspace).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    data = _read_wall_table()
+    data["projects"][str(root)] = {"wall_seconds": seconds}
+    _write_wall_table(data)
+    return {
+        "workspace": str(root),
+        "wall_seconds": seconds,
+        "default": WALL_SECONDS,
+        "cap": WALL_SECONDS_CAP,
+    }
+
+
+def wall_seconds(workspace: str | Path | None = None) -> int:
+    """Seconds a script may run. The environment can lower this and cannot raise it."""
+
+    limit = WALL_SECONDS
+    if workspace is not None:
+        chosen = project_wall_seconds(workspace)
+        if chosen is not None:
+            limit = chosen
+    return _capped("AICAD_SCRIPT_WALL_SECONDS", limit, limit)
 
 
 def cpu_seconds() -> int:
@@ -510,18 +593,27 @@ def warn_design_scripts(workspace: str | Path) -> None:
 
 
 def require_in_project(path: str | Path, workspace: str | Path, *, writing: bool) -> None:
-    """Refuse a design-script path that leaves the project. No-op outside the sandbox child."""
-    from aicad.sandbox_state import in_sandbox
+    """Refuse a design-script path that leaves the project.
 
-    if not in_sandbox():
+    No-op unless this process is the confined script, or it is running a call
+    that script asked for. A call the script asked for stays in the project.
+    It does not use the library directories the confined script may read.
+    """
+    from aicad.sandbox_state import in_design_call, in_sandbox
+
+    script_call = in_design_call()
+    if not in_sandbox() and not script_call:
         return
     root = Path(workspace).resolve()
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = root / candidate
-    if _inside(candidate, root):
-        return
-    if not writing and _under(candidate, _read_roots()):
+    if script_call:
+        from aicad.paths import _lexical_inside
+
+        if _lexical_inside(candidate, root) and _inside(candidate, root):
+            return
+    elif _inside(candidate, root) or (not writing and _under(candidate, _read_roots())):
         return
     action = "write" if writing else "read"
     from aicad.paths import hide_project_path
@@ -548,6 +640,7 @@ def design_script_status(workspace: str | Path, network_once: bool = False, netw
         "warning": WARNING,
         "enable": hide_project_path(f"aicad allow-scripts --workspace {root}", root),
         "network": network,
+        "wall_seconds": wall_seconds(root),
         "log": hide_project_path(str(root / ".aicad" / "script_log.jsonl"), root),
     }
 
@@ -1951,14 +2044,234 @@ def scrub_library_environment() -> None:
 
 
 def _private_matplotlib_dir() -> Path:
-    """A new config directory. It is not the account home and not a project file."""
+    """A new config directory. It is not the account home and not a project file.
+
+    The directory is opened by its handle. The returned path stays on that
+    directory when the system can name an open directory.
+    """
     global _MATPLOTLIB_CONFIG
-    if _MATPLOTLIB_CONFIG is not None and _MATPLOTLIB_CONFIG.is_dir():
+    if _MATPLOTLIB_CONFIG is not None:
         return _MATPLOTLIB_CONFIG
+    _MATPLOTLIB_CONFIG = open_matplotlib_directory().public
+    return _MATPLOTLIB_CONFIG
+
+
+class MatplotlibDirectory:
+    """One config directory kept open for the process."""
+
+    def __init__(self, original: Path, public: Path, descriptor: int, windows_handle: int | None) -> None:
+        self.original = original
+        self.public = public
+        self.descriptor = descriptor
+        self.windows_handle = windows_handle
+
+
+def open_matplotlib_directory() -> MatplotlibDirectory:
+    """Create a private config directory and open it before returning its path."""
     import tempfile
 
-    _MATPLOTLIB_CONFIG = Path(tempfile.mkdtemp(prefix="aicad-mpl-"))
-    return _MATPLOTLIB_CONFIG
+    original = Path(tempfile.mkdtemp(prefix="aicad-mpl-"))
+    try:
+        if os.name == "nt":
+            handle = _open_windows_config_directory(original)
+            return MatplotlibDirectory(original, original, -1, handle)
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor = os.open(os.fspath(original), flags)
+    except Exception:
+        shutil.rmtree(original, ignore_errors=True)
+        raise
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode):
+            raise OSError(errno.ENOTDIR, "not a directory", os.fspath(original))
+        public = _config_directory_path(descriptor, original)
+        return MatplotlibDirectory(original, public, descriptor, None)
+    except Exception:
+        os.close(descriptor)
+        shutil.rmtree(original, ignore_errors=True)
+        raise
+
+
+def close_matplotlib_directory(held: MatplotlibDirectory) -> None:
+    """Close a config directory and remove it when its name still refers to it."""
+    info = None
+    current: Path | None = None
+    if held.descriptor >= 0:
+        try:
+            info = os.fstat(held.descriptor)
+        except OSError:
+            info = None
+        current = _directory_path_from_descriptor(held.descriptor)
+        os.close(held.descriptor)
+        held.descriptor = -1
+    if held.windows_handle:
+        _close_windows_config_handle(held.windows_handle)
+        held.windows_handle = None
+    if current is not None and info is not None:
+        try:
+            found = os.lstat(current)
+        except OSError:
+            found = None
+        if found is not None and stat.S_ISDIR(found.st_mode) and os.path.samestat(info, found):
+            shutil.rmtree(current, ignore_errors=True)
+        try:
+            if held.original.is_symlink():
+                held.original.unlink()
+        except OSError:
+            pass
+        return
+    shutil.rmtree(held.original, ignore_errors=True)
+
+
+def _config_directory_path(descriptor: int, original: Path) -> Path:
+    proc = Path(f"/proc/self/fd/{descriptor}")
+    try:
+        if proc.parent.is_dir():
+            return proc
+    except OSError:
+        pass
+    volfs = _volfs_config_directory(descriptor)
+    if volfs is not None:
+        return volfs
+    return original
+
+
+def _volfs_config_directory(descriptor: int) -> Path | None:
+    """A directory path addressed by its id, when listing and creating both work."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        info = os.fstat(descriptor)
+    except OSError:
+        return None
+    directory = Path(f"/.vol/{info.st_dev}/{info.st_ino}")
+    probe = f".aicad-probe-{os.getpid()}-{uuid.uuid4().hex}"
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        raw = os.open(probe, flags, 0o600, dir_fd=descriptor)
+    except OSError:
+        return None
+    os.close(raw)
+    try:
+        listed = probe in os.listdir(directory)
+    except OSError:
+        listed = False
+    try:
+        os.unlink(probe, dir_fd=descriptor)
+    except OSError:
+        pass
+    if not listed:
+        return None
+    return directory
+
+
+def _directory_path_from_descriptor(descriptor: int) -> Path | None:
+    proc = f"/proc/self/fd/{descriptor}"
+    try:
+        if os.path.isdir(os.path.dirname(proc)):
+            return Path(os.readlink(proc))
+    except OSError:
+        pass
+    if sys.platform != "darwin":
+        return None
+    import fcntl
+
+    # fcntl returns a new bytes object of the same length. It does not write
+    # the path back into the buffer it was given. The length is PATH_MAX.
+    command = getattr(fcntl, "F_GETPATH", 50)
+    try:
+        result = fcntl.fcntl(descriptor, command, bytes(1024))
+    except OSError:
+        return None
+    if isinstance(result, str):
+        raw = os.fsencode(result)
+    elif isinstance(result, (bytes, bytearray)):
+        raw = bytes(result)
+    else:
+        return None
+    raw = raw.split(b"\x00", 1)[0]
+    if not raw:
+        return None
+    return Path(os.fsdecode(raw))
+
+
+def _open_windows_config_directory(original: Path) -> int:
+    """Keep the directory open without sharing delete, so its name stays put."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create.restype = ctypes.c_void_p
+    handle = create(
+        os.fspath(original),
+        0x1 | 0x80,
+        0x1 | 0x2,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if not handle or handle == invalid:
+        error = ctypes.get_last_error()
+        raise OSError(None, None, os.fspath(original), error or errno.EIO)
+    try:
+        if _windows_config_handle_is_reparse(kernel32, handle):
+            raise OSError(errno.ELOOP, "is a link", os.fspath(original))
+        kept = int(handle)
+        handle = None
+        return kept
+    finally:
+        if handle:
+            _close_windows_config_handle(handle)
+
+
+def _windows_config_handle_is_reparse(kernel32, handle) -> bool:
+    class _FileTime(ctypes.Structure):
+        _fields_ = (("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32))
+
+    class _ByHandle(ctypes.Structure):
+        _fields_ = (
+            ("dwFileAttributes", ctypes.c_uint32),
+            ("ftCreationTime", _FileTime),
+            ("ftLastAccessTime", _FileTime),
+            ("ftLastWriteTime", _FileTime),
+            ("dwVolumeSerialNumber", ctypes.c_uint32),
+            ("nFileSizeHigh", ctypes.c_uint32),
+            ("nFileSizeLow", ctypes.c_uint32),
+            ("nNumberOfLinks", ctypes.c_uint32),
+            ("nFileIndexHigh", ctypes.c_uint32),
+            ("nFileIndexLow", ctypes.c_uint32),
+        )
+
+    info = _ByHandle()
+    get = kernel32.GetFileInformationByHandle
+    get.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ByHandle)]
+    get.restype = ctypes.c_int
+    if not get(handle, ctypes.byref(info)):
+        raise OSError(errno.EIO, "could not read the directory")
+    if not info.dwFileAttributes & 0x10:
+        raise OSError(errno.ENOTDIR, "not a directory")
+    return bool(info.dwFileAttributes & 0x400)
+
+
+def _close_windows_config_handle(handle) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close = kernel32.CloseHandle
+    close.argtypes = [ctypes.c_void_p]
+    close.restype = ctypes.c_int
+    close(handle)
 
 
 _MATPLOTLIB_CONFIG: Path | None = None
@@ -2218,13 +2531,17 @@ def _kill_pid(pid: int) -> None:
 
 
 def _terminate_windows(pid: int) -> None:
-    """End one Windows process. ``SIGKILL`` is not termination there."""
+    """End one Windows process.
+
+    ``SIGKILL`` is not termination there. ``os.kill`` asks for every process
+    right, which an AppContainer part script refuses, so the process is
+    opened with the terminate right only.
+    """
     if pid <= 1 or pid == os.getpid() or sys.platform != "win32":
         return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        pass
+    from aicad.sandbox_windows import terminate_pid
+
+    terminate_pid(pid)
 
 
 def _unlink_when_released(path: Path | None) -> None:
@@ -2301,16 +2618,34 @@ class _Account:
             return self.ok, set(self.ids)
 
 
-def _descendants(leader: int) -> set[int]:
-    """Pids whose parent is ``leader`` or one of its descendants."""
+def _descendants_from(leader: int, parent_of: dict[int, int]) -> set[int]:
+    """Pids that descend from ``leader`` in ``parent_of``."""
     if leader <= 1:
         return set()
+    children: dict[int, list[int]] = {}
+    for pid, ppid in parent_of.items():
+        if not isinstance(pid, int) or pid <= 1:
+            continue
+        children.setdefault(int(ppid), []).append(pid)
+    found: set[int] = set()
+    stack = list(children.get(leader, []))
+    while stack:
+        pid = stack.pop()
+        if pid in found or pid <= 1 or pid == leader:
+            continue
+        found.add(pid)
+        stack.extend(children.get(pid, []))
+    return found
+
+
+def _parent_map() -> dict[int, int]:
+    """Pid to parent pid. Empty when this system cannot list processes."""
     parent_of: dict[int, int] = {}
     if sys.platform.startswith("linux"):
         try:
             names = os.listdir("/proc")
         except OSError:
-            return set()
+            return {}
         for name in names:
             if not name.isdigit():
                 continue
@@ -2322,7 +2657,8 @@ def _descendants(leader: int) -> set[int]:
                             break
             except (OSError, ValueError):
                 continue
-    elif sys.platform == "darwin":
+        return parent_of
+    if sys.platform == "darwin":
         try:
             completed = subprocess.run(
                 ["ps", "-axo", "pid=,ppid="],
@@ -2333,7 +2669,7 @@ def _descendants(leader: int) -> set[int]:
                 env=program_environment(),
             )
         except (OSError, subprocess.TimeoutExpired):
-            return set()
+            return {}
         for line in completed.stdout.splitlines():
             parts = line.split()
             if len(parts) != 2:
@@ -2342,20 +2678,17 @@ def _descendants(leader: int) -> set[int]:
                 parent_of[int(parts[0])] = int(parts[1])
             except ValueError:
                 continue
-    else:
-        return set()
-    children: dict[int, list[int]] = {}
-    for pid, ppid in parent_of.items():
-        children.setdefault(ppid, []).append(pid)
-    found: set[int] = set()
-    stack = list(children.get(leader, []))
-    while stack:
-        pid = stack.pop()
-        if pid in found or pid <= 1:
-            continue
-        found.add(pid)
-        stack.extend(children.get(pid, []))
-    return found
+        return parent_of
+    if sys.platform == "win32":
+        from aicad.sandbox_windows import process_parents
+
+        return process_parents()
+    return {}
+
+
+def _descendants(leader: int) -> set[int]:
+    """Pids whose parent is ``leader`` or one of its descendants."""
+    return _descendants_from(leader, _parent_map())
 
 
 def _tree_resident_bytes(leader: int, children: set[int]) -> int | None:
@@ -3156,18 +3489,45 @@ def _wchar_from_text(text: str) -> int | None:
     return None
 
 
+def _thread_group_leader(pid: int) -> int:
+    """The thread-group id for ``pid``.
+
+    ``/proc/<tgid>/task/<tid>/io`` is one thread. ``/proc/<tgid>/io`` is every
+    thread in the process. The quota uses the group total, once.
+    """
+    if pid <= 0 or not sys.platform.startswith("linux"):
+        return pid
+    try:
+        text = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    except OSError:
+        return pid
+    for line in text.splitlines():
+        if not line.startswith("Tgid:"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            return pid
+        try:
+            tgid = int(parts[1])
+        except ValueError:
+            return pid
+        return tgid if tgid > 0 else pid
+    return pid
+
+
 def _process_write_bytes(pid: int) -> int | None:
     """Logical bytes this process has written, or None when the system will not say.
 
-    On Linux this is ``wchar``, the bytes passed to write. A file removed
-    before the next directory look is still included. ``write_bytes`` is only
-    what has reached storage, so it misses that file. Opening that file after
-    the process has exited fails, so the caller keeps a descriptor from while
-    the process was alive and reads it again at exit.
+    On Linux this is ``wchar`` for the whole thread group, the bytes passed to
+    write. A file removed before the next directory look is still included.
+    ``write_bytes`` is only what has reached storage, so it misses that file.
+    Opening that file after the process has exited fails, so the caller keeps
+    a descriptor from while the process was alive and reads it again at exit.
     """
     if sys.platform.startswith("linux"):
+        leader = _thread_group_leader(pid)
         try:
-            text = Path(f"/proc/{pid}/io").read_text(encoding="utf-8")
+            text = Path(f"/proc/{leader}/io").read_text(encoding="utf-8")
         except OSError:
             return None
         return _wchar_from_text(text)
@@ -3253,6 +3613,7 @@ class _DiskWatch:
         """
         if pid <= 0 or not sys.platform.startswith("linux"):
             return
+        pid = _thread_group_leader(pid)
         with self._lock:
             if pid in self._io_fds:
                 return
@@ -3641,18 +4002,27 @@ class _DiskWatch:
         A process that was not seen here counts from zero on the first sample.
         That sample is not itself a baseline.
         """
+        pid = _thread_group_leader(pid)
         current = self._counter(pid)
         with self._lock:
             if pid not in self._io_base:
                 self._io_base[pid] = 0 if current is None else current
 
     def note_io(self, pids: set[int]) -> None:
+        leaders: list[int] = []
+        seen: set[int] = set()
+        for pid in pids:
+            leader = _thread_group_leader(pid)
+            if leader in seen:
+                continue
+            seen.add(leader)
+            leaders.append(leader)
         with self._lock:
             self._pids = set(pids)
             folded = set(self._folded)
         total = 0
         live: dict[int, int] = {}
-        for pid in pids:
+        for pid in leaders:
             if pid in folded:
                 continue
             current = self._counter(pid)
@@ -4124,13 +4494,27 @@ class _DesignRecord:
         self.proc: subprocess.Popen | None = None
         self.record: Path | None = None
         self._log: Path | None = None
+        self._directory: Path | None = None
         self._device = None
         self._inode = None
 
     def start(self) -> None:
         calls = self.job / "calls"
         calls.mkdir(mode=0o700)
-        descriptor, name = tempfile.mkstemp(prefix="aicad-design-checks-", suffix=".json")
+        directory = _control_directory()
+        self._directory = directory
+        try:
+            descriptor, name = tempfile.mkstemp(
+                prefix="aicad-design-checks-",
+                suffix=".json",
+                dir=directory,
+            )
+        except OSError:
+            from aicad.paths import remove_tree
+
+            remove_tree(directory, ignore_errors=True)
+            self._directory = None
+            raise
         try:
             self._start_record_process(descriptor, name)
         finally:
@@ -4236,10 +4620,11 @@ class _DesignRecord:
         if descriptor is not None:
             os.close(descriptor)
         try:
-            self.proc.communicate(timeout=wall_seconds())
+            self.proc.communicate(timeout=wall_seconds(self.workspace))
         except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.communicate(timeout=5)
+            # Stop part scripts before the model. Killing the model first
+            # reparents them, and on Windows they still hold the check record.
+            self._stop_model()
             self._refuse()
         if self.proc.returncode != 0:
             self._refuse()
@@ -4287,38 +4672,23 @@ class _DesignRecord:
         ]
         return payload
 
-    def close(self) -> None:
-        """Stop the model process, then remove the record it had open.
-
-        The record is created without sharing delete, so Windows refuses to
-        remove it while that process, or a child that inherited the handle,
-        still has it. The wait is bounded. A sharing error after the process
-        has exited is the handle closing, and it is tried again.
-        """
-        self._stop_model()
-        record = self.record
-        log = self._log
-        self.record = None
-        self._log = None
-        _unlink_when_released(record)
-        _unlink_when_released(log)
-
     def _stop_model(self) -> None:
         proc = self.proc
         if proc is None or proc.poll() is not None:
             return
+        try:
+            children = _descendants(proc.pid)
+        except OSError:
+            children = set()
         if sys.platform == "win32":
-            # ``SIGKILL`` does not terminate a Windows process. Stop the model
-            # and any part script it started, which may still hold the record.
-            _terminate_windows(proc.pid)
-            try:
-                children = _descendants(proc.pid)
-            except OSError:
-                children = set()
+            # ``SIGKILL`` does not terminate a Windows process. A part script
+            # the model started is stopped first, while the model is still
+            # its parent, so the check record is not left open.
             for pid in children:
                 _terminate_windows(pid)
+            _terminate_windows(proc.pid)
         else:
-            _kill_process_tree(proc.pid, set(), threading.Lock())
+            _kill_process_tree(proc.pid, children, threading.Lock())
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -4330,6 +4700,42 @@ class _DesignRecord:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
+
+    def close(self) -> None:
+        """Stop the model process, then remove the record it had open.
+
+        The record is created without sharing delete, so Windows refuses to
+        remove it while that process, or a child that inherited the handle,
+        still has it. The wait is bounded. A sharing error after the process
+        has exited is the handle closing, and it is tried again. The record
+        and its log live in a private directory outside the project.
+        """
+
+        self._stop_model()
+        directory = self._directory
+        record = self.record
+        log = self._log
+        self.record = None
+        self._log = None
+        self._directory = None
+        _unlink_when_released(record)
+        _unlink_when_released(log)
+        if directory is not None:
+            from aicad.paths import remove_tree
+
+            remove_tree(directory, ignore_errors=True)
+
+
+def _control_directory() -> Path:
+    """A new folder outside every project.
+
+    A check record and a confinement profile are written here. The process
+    temporary directory is not used when that directory is inside a project.
+    """
+
+    from aicad.paths import _make_private_tool_directory
+
+    return _make_private_tool_directory()
 
 
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
@@ -4368,6 +4774,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     # the working directory.
     command = _child_command(job)
     profile_path: Path | None = None
+    profile_dir: Path | None = None
     if sys.platform == "darwin":
         from aicad.sandbox_macos import build_profile, command_prefix
 
@@ -4376,9 +4783,25 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             [str(workspace)],
             network=network,
         )
-        profile_path = _write_new_temp("aicad-seatbelt-", ".sb", profile.encode("utf-8"))
+        profile_dir = _control_directory()
+        try:
+            # Write on the descriptor that created the file. Passing the
+            # private directory keeps that file out of a project temporary
+            # directory, including when the temporary directory is a link.
+            profile_path = _write_new_temp(
+                "aicad-seatbelt-",
+                ".sb",
+                profile.encode("utf-8"),
+                directory=str(profile_dir),
+            )
+        except Exception:
+            from aicad.paths import remove_tree
+
+            remove_tree(profile_dir, ignore_errors=True)
+            profile_dir = None
+            raise
         command = [*command_prefix(str(profile_path), workspace), *command]
-    wall = wall_seconds()
+    wall = wall_seconds(workspace)
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
     disk.child_report = job / "child-writes.json"
     quota_hold: list[int | None] = [None]
@@ -4593,8 +5016,10 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             watcher.join(timeout=1)
         disk.close_counters()
         _release_pids_cgroup(pids_cgroup)
-        if profile_path is not None:
-            profile_path.unlink(missing_ok=True)
+        if profile_dir is not None:
+            from aicad.paths import remove_tree
+
+            remove_tree(profile_dir, ignore_errors=True)
         if sentinel_fd is not None and sentinel_path is not None:
             from aicad.sandbox_macos import close_sentinel
 

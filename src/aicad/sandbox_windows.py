@@ -606,6 +606,76 @@ def _profile_use_path() -> Path:
     return _profile_lock_path().with_name("script-profile-use")
 
 
+class _PROCESSENTRY32W(ctypes.Structure):
+    """PROCESSENTRY32W. The heap id is pointer-sized so the parent id stays aligned."""
+
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
+
+
+def process_parents() -> dict[int, int]:
+    """Pid to parent pid from a process snapshot. Empty when the snapshot fails."""
+
+    if sys.platform != "win32":
+        return {}
+    _bind()
+    kernel32 = _kernel32()
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    # TH32CS_SNAPPROCESS
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+    if snapshot is None or ctypes.cast(snapshot, ctypes.c_void_p).value in {None, _INVALID_HANDLE}:
+        return {}
+    entry = _PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(entry)
+    parents: dict[int, int] = {}
+    try:
+        ok = bool(kernel32.Process32FirstW(snapshot, ctypes.byref(entry)))
+        while ok:
+            parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+            ok = bool(kernel32.Process32NextW(snapshot, ctypes.byref(entry)))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return parents
+
+
+def terminate_pid(pid: int) -> None:
+    """End ``pid`` and wait until it has left. A missing process is already gone.
+
+    The open asks only for terminate and wait. Asking for every process right
+    fails for a part script in an AppContainer, and that script would keep
+    the design-check file open.
+    """
+
+    if sys.platform != "win32" or pid <= 1 or pid == os.getpid():
+        return
+    _bind()
+    kernel32 = _kernel32()
+    # PROCESS_TERMINATE | SYNCHRONIZE
+    handle = kernel32.OpenProcess(0x0001 | 0x00100000, False, int(pid))
+    if not handle:
+        return
+    try:
+        kernel32.TerminateProcess(handle, 1)
+        kernel32.WaitForSingleObject(handle, 5000)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _pid_alive(pid: int) -> bool:
     """True when that process is still running.
 
