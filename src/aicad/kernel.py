@@ -591,6 +591,9 @@ def clearance_between(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Ve
     """Return intersection volume, surface gap, and the closest point on each solid.
 
     The gap is zero when the solids interfere. It is not a penetration depth.
+    A pair that already intersects does not need a closest-point search: that
+    search is discarded, and on a toothed solid it does not finish. The point
+    is then the center of the intersection.
     """
     from aicad.thread_stack import call_with_geometry_stack
 
@@ -603,9 +606,11 @@ def _clearance_between_on_this_thread(a: Shape, b: Shape) -> tuple[float, float,
     overlap = float(common.volume) if common is not None else 0.0
     if overlap < 0:
         overlap = 0.0
+    if overlap > _INTERFERENCE_VOLUME and common is not None:
+        center = common.center()
+        point = _vec(center)
+        return round_mm(overlap), 0.0, point, point
     distance, first, second = a.impl.distance_to_with_closest_points(b.impl)
-    if overlap > _INTERFERENCE_VOLUME:
-        distance = 0.0
     return round_mm(overlap), round_mm(distance), _vec(first), _vec(second)
 
 

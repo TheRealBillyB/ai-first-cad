@@ -127,6 +127,56 @@ def test_a_motion_study_draws_the_joint_value_and_moves(tmp_path):
     assert start != end
 
 
+def test_a_stored_motion_referenced_by_name_is_drawn(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [16, 16, 6], [0, 0, 3])
+    _box(document, "link", [20, 8, 6], [24, 0, 8])
+    document.create_assembly(
+        {
+            "name": "hinge",
+            "instances": [
+                {"name": "base", "part": "base"},
+                {"name": "link", "part": "link"},
+            ],
+            "joints": [
+                {
+                    "name": "hinge",
+                    "type": "revolute",
+                    "parent": "base",
+                    "child": "link",
+                    "axis": [0, 0, 1],
+                    "min": 0,
+                    "max": 90,
+                },
+            ],
+            "motions": {
+                "swing": {"sweep": {"joint": "hinge", "start": 0, "end": 90, "frames": 4}, "duration_s": 1}
+            },
+        }
+    )
+    report = document.render_animation(
+        "hinge",
+        kind="motion",
+        sequence="swing",
+        frames=2,
+        fps=4,
+        width=64,
+        height=48,
+        video="gif",
+        overlay="value",
+    )
+    assert report["kind"] == "motion"
+    assert report["frames"] == 2
+    assert report["overlays"] == ["hinge 0.000 deg", "hinge 90.000 deg"]
+    with _gif(Path(report["gif"])) as gif:
+        assert gif.n_frames == 2
+        gif.seek(0)
+        start = gif.convert("RGB").tobytes()
+        gif.seek(1)
+        end = gif.convert("RGB").tobytes()
+    assert start != end
+
+
 def test_an_exploded_opening_moves_between_the_ends(tmp_path):
     document = Document(tmp_path)
     _box(document, "base", [18, 12, 6], [0, 0, 3])

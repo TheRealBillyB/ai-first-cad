@@ -1897,7 +1897,8 @@ class Document:
     ) -> dict:
         """Write a GIF of this assembly, and a video when ffmpeg is on PATH.
 
-        ``kind`` is ``motion``, ``orbit``, or ``exploded``. ``frames`` counts
+        ``kind`` is ``motion``, ``orbit``, or ``exploded``. ``motion`` plays a
+        stored motion or a motion study named by ``sequence``. ``frames`` counts
         both ends. ``fps`` is the playback rate. ``width`` and ``height`` are
         even pixel sizes. ``camera`` is a view name or ``orbit``.
         ``camera_path`` is a list of ``{azimuth_deg, elevation_deg}``.

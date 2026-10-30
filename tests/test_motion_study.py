@@ -431,3 +431,47 @@ def test_clearance_uses_the_solid_gap_when_boxes_overlap(tmp_path: Path):
     assert hit["penetration_depth_mm"] == pytest.approx(1, abs=1e-3)
     assert hit["depth_method"] == "clearance"
     assert tight["collision_count"] == 2
+
+
+def test_a_gear_pair_collision_sweep_of_thirteen_frames_finishes(tmp_path):
+    """Meshing teeth still report interference. The sweep has to finish."""
+    document = Document(tmp_path)
+    _box(document, "body", [70, 36, 8], [16, 0, -6])
+    document.create_gear(
+        "pin",
+        {"type": "spur", "module_mm": 1.5, "teeth": 12, "face_width_mm": 5, "pressure_angle_deg": 20},
+    )
+    document.create_gear(
+        "wheel",
+        {"type": "spur", "module_mm": 1.5, "teeth": 18, "face_width_mm": 5, "pressure_angle_deg": 20},
+    )
+    document.create_assembly(
+        {
+            "name": "pair",
+            "instances": [
+                {"name": "body", "part": "body"},
+                {"name": "pin", "part": "pin", "placement": {"position": [0, 0, 4]}},
+                {"name": "wheel", "part": "wheel", "placement": {"position": [22.5, 0, 4]}},
+            ],
+            "joints": [
+                {"name": "pin", "type": "revolute", "parent": "body", "child": "pin", "axis": [0, 0, 1]},
+                {"name": "wheel", "type": "revolute", "parent": "body", "child": "wheel", "axis": [0, 0, 1]},
+            ],
+            "relations": [{"name": "mesh", "type": "gear", "driver": "pin", "driven": "wheel", "ratio": -12 / 18}],
+            "motions": {
+                "turn": {
+                    "duration_s": 1,
+                    "sweep": {"joint": "pin", "start": 0, "end": 30, "frames": 13},
+                }
+            },
+        }
+    )
+    report = document.run_motion("pair", sequence="turn", render=False)
+    assert len(report["frames"]) == 13
+    assert report["status"] == "collision"
+    assert report["collision_count"] > 0
+    hit = next(frame["collisions"][0] for frame in report["frames"] if frame["collisions"])
+    assert {hit["a"], hit["b"]} == {"pin", "wheel"}
+    assert hit["interference_volume_mm3"] > 1
+    assert hit["gap_mm"] == pytest.approx(0)
+    assert hit["at_mm"] is not None
