@@ -108,6 +108,34 @@ const rectangle = {
   ],
 };
 const profile = sandbox.sketchProfile(rectangle);
+const blank = { plane: "xy", entities: [{ id: "origin", type: "point", at: [0, 0] }], constraints: [] };
+const started = sandbox.sketchLineClick(blank, { points: { origin: { x: 0, y: 0 } } }, null, 12, 4, 2);
+const joined = sandbox.sketchLineClick(
+  started.spec,
+  { points: { origin: { x: 0, y: 0 }, [started.lineStart]: { x: 12, y: 4 } } },
+  started.lineStart,
+  30,
+  4,
+  2,
+);
+const lost = sandbox.sketchLineClick(blank, { points: { origin: { x: 0, y: 0 } } }, "missing", 8, 8, 2);
+const same = sandbox.sketchLineClick(
+  started.spec,
+  { points: { origin: { x: 0, y: 0 }, [started.lineStart]: { x: 12, y: 4 } } },
+  started.lineStart,
+  12,
+  4,
+  2,
+);
+const center = sandbox.sketchCircleClick(blank, { points: { origin: { x: 0, y: 0 } } }, null, 5, 0, 2);
+const drawn = sandbox.sketchCircleClick(
+  center.spec,
+  { points: { origin: { x: 0, y: 0 }, [center.circleCenter]: { x: 5, y: 0 } } },
+  center.circleCenter,
+  5,
+  8,
+  2,
+);
 process.stdout.write(JSON.stringify({
   tolerance,
   pointsOnly,
@@ -124,6 +152,28 @@ process.stdout.write(JSON.stringify({
   radius,
   mid,
   profile,
+  started: {
+    commit: started.commit,
+    finished: started.finished,
+    id: started.lineStart,
+    count: started.spec.entities.length,
+  },
+  joined: {
+    commit: joined.commit,
+    finished: joined.finished,
+    lineStart: joined.lineStart,
+    line: joined.spec.entities[joined.spec.entities.length - 1],
+  },
+  lost: { commit: lost.commit, finished: lost.finished, id: lost.lineStart },
+  same: { commit: same.commit, finished: same.finished, count: same.spec.entities.length },
+  center: { commit: center.commit, id: center.circleCenter },
+  drawn: {
+    commit: drawn.commit,
+    center: drawn.circleCenter,
+    entity: drawn.spec.entities[drawn.spec.entities.length - 1],
+    name: drawn.spec.constraints[0] && drawn.spec.constraints[0].name,
+    value: drawn.spec.constraints[0] && drawn.spec.constraints[0].value,
+  },
 }));
 """
 
@@ -132,10 +182,12 @@ def test_the_sketch_canvas_uses_the_solved_sketch(tmp_path):
     page = (ROOT / "src" / "aicad" / "app_static" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "src" / "aicad" / "app_static" / "app.js").read_text(encoding="utf-8")
     assert page.index("/static/sketch_geom.js") < page.index("/static/app.js")
-    assert "sketchSolvedPoint" in script
+    assert "sketchSolvedPoint" in GEOM.read_text(encoding="utf-8")
     assert "sketchSelectionAfter" in script
     assert "sketchArcSamples" in script
     assert "sketchProfile" in script
+    assert "sketchLineClick" in script
+    assert "sketchCircleClick" in script
     node = shutil.which("node")
     assert node
     probe = tmp_path / "sketch-canvas.js"
@@ -163,3 +215,21 @@ def test_the_sketch_canvas_uses_the_solved_sketch(tmp_path):
     assert abs(report["mid"][0] - 7.0710678118654755) < 1e-6
     assert abs(report["mid"][1] - 7.0710678118654755) < 1e-6
     assert report["profile"] == ["p0", "p1", "p2", "p3"]
+    assert report["started"]["commit"] is True
+    assert report["started"]["finished"] is False
+    assert report["started"]["count"] == 2
+    assert report["joined"]["finished"] is True
+    assert report["joined"]["lineStart"] is None
+    assert report["joined"]["line"]["type"] == "line"
+    assert report["joined"]["line"]["start"] == report["started"]["id"]
+    assert report["lost"]["finished"] is False
+    assert report["lost"]["id"] != "missing"
+    assert report["same"]["finished"] is False
+    assert report["same"]["count"] == report["started"]["count"]
+    assert report["center"]["commit"] is True
+    assert report["drawn"]["commit"] is True
+    assert report["drawn"]["center"] is None
+    assert report["drawn"]["entity"]["type"] == "circle"
+    assert report["drawn"]["entity"]["center"] == report["center"]["id"]
+    assert report["drawn"]["value"] == 16
+    assert report["drawn"]["name"].endswith("_diameter")
