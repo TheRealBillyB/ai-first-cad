@@ -767,18 +767,27 @@ def _point(value: Any, label: str, default: Any = _MISSING) -> list[float] | Non
     return [float(component) for component in value]
 
 
-def _color(value: Any) -> list[float] | None:
+def _color(value: Any) -> list[int | float] | None:
+    """Keep ints and floats apart so a byte and a fraction stay different.
+
+    The picture rule lives in ``assembly._byte_channels``. Storing every
+    channel as a float would make ``(1, 1, 0)`` indistinguishable from
+    ``(1.0, 1.0, 0.0)`` after the assembly is saved.
+    """
     if value is None:
         return None
     if not isinstance(value, (list, tuple)) or len(value) != 3:
-        raise GeometryError("An instance color is three numbers from 0 to 255.")
-    channels = []
+        raise GeometryError("An instance color is three ints from 0 to 255 or three floats from 0 to 1.")
+    from aicad.assembly import _byte_channels
+
+    _byte_channels(value)
+    stored: list[int | float] = []
     for component in value:
-        channel = float(component)
-        if channel < 0 or channel > 255:
-            raise GeometryError("An instance color channel is from 0 to 255.")
-        channels.append(channel)
-    return channels
+        if isinstance(component, int) and not isinstance(component, bool):
+            stored.append(int(component))
+        else:
+            stored.append(float(component))
+    return stored
 
 
 def _optional_float(value: Any, default: float) -> float:

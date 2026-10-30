@@ -7,6 +7,7 @@ solids, collision records, route checks, and a power estimate.
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 
 import numpy as np
@@ -732,16 +733,35 @@ def _near_waypoint(sample: list[float], points: list[dict], instance: str, seat:
 def _byte_channels(color) -> tuple[float, float, float]:
     """RGB bytes for a picture.
 
-    Shade is about 0.2 to 1 and the picture stores bytes. A channel of 1 or
-    less is a fraction of full scale: multiplied by the shade and truncated,
-    every face becomes 0 and the solid is black with no shading. Channels
-    above 1 are already bytes. Black stays black.
+    An int channel is a byte from 0 to 255, so ``(1, 1, 0)`` stays nearly
+    black. A float from 0 to 1 is a fraction of full scale: ``(1.0, 1.0, 0.0)``
+    is yellow, and ``(0.75, 0.78, 0.82)`` is scaled before shading. Shade is
+    about 0.2 to 1 and the picture stores bytes, so an unscaled fraction
+    truncates to 0 and the solid is black. A float above 1 is a byte already
+    on that scale, which is how a saved color is stored. Black stays black.
     """
-
-    channels = (float(color[0]), float(color[1]), float(color[2]))
-    if max(channels) <= 1.0:
-        return tuple(channel * 255.0 for channel in channels)
-    return channels
+    if not isinstance(color, (list, tuple)) or len(color) != 3:
+        raise GeometryError("A color is three ints from 0 to 255, or three floats from 0 to 1.")
+    kind = None
+    numbers = []
+    for channel in color:
+        if isinstance(channel, bool) or not isinstance(channel, (int, float)):
+            raise GeometryError("A color is three ints from 0 to 255, or three floats from 0 to 1.")
+        if isinstance(channel, float) and not math.isfinite(channel):
+            raise GeometryError("A color channel must be finite.")
+        this = "int" if isinstance(channel, int) else "float"
+        if kind is None:
+            kind = this
+        elif kind != this:
+            raise GeometryError("A color is three ints from 0 to 255, or three floats from 0 to 1.")
+        numbers.append(channel)
+    if any(channel < 0 or channel > 255 for channel in numbers):
+        if kind == "int":
+            raise GeometryError("An int color channel is a byte from 0 to 255.")
+        raise GeometryError("A float color is a fraction from 0 to 1, or a byte above 1 and at most 255.")
+    if kind == "float" and max(numbers) <= 1.0:
+        return tuple(float(channel) * 255.0 for channel in numbers)
+    return tuple(float(channel) for channel in numbers)
 
 
 def _instance_color(instance: dict, index: int) -> tuple[float, float, float]:

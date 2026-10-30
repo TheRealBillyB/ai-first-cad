@@ -1392,17 +1392,9 @@ function pickHit(x, y, rect) {
 }
 
 function pickEdge(x, y, rect) {
-  let best = null;
-  let bestD = 18;
-  ui.mesh.edges.forEach((edge) => {
-    edge.points.forEach((point) => {
-      const screen = project(point, rect);
-      if (!screen) return;
-      const d = Math.hypot(screen[0] - x, screen[1] - y);
-      if (d < bestD) { bestD = d; best = { ref: edge.ref, part: edge.part || ui.part }; }
-    });
-  });
-  return best;
+  const hit = edgePickHit(x, y, ui.mesh.edges, (point) => project(point, rect), 18);
+  if (!hit) return null;
+  return { ref: hit.ref, part: hit.part || ui.part };
 }
 
 function snapVertex(x, y, rect, part) {
