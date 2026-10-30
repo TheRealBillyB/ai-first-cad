@@ -747,16 +747,22 @@ def _draw_label(draw: ImageDraw.ImageDraw, text: str, x: float, y: float, font: 
 _SCALAR_VIEWS = ("front", "right", "top", "iso")
 
 
-def scalar_range(values: np.ndarray, maximum: float | None = None) -> tuple[float, float]:
+def scalar_range(
+    values: np.ndarray, maximum: float | None = None, minimum: float | None = None
+) -> tuple[float, float]:
     """Low and high for a colored picture.
 
     ``maximum`` is the reported peak. The scale reaches it when that peak is
     not one of ``values``, which is what happens when the hot node is inside
     the solid and the picture only draws the surface. A drawn sample above
     ``maximum`` still sets the top, so a surface value is never off the scale.
+    ``minimum`` lowers the bottom the same way when the scale starts at a
+    fixed value, such as a vertical wall.
     """
     low = float(np.min(values)) if len(values) else 0.0
     high = float(np.max(values)) if len(values) else 1.0
+    if minimum is not None:
+        low = min(low, float(minimum))
     if maximum is not None:
         high = max(high, float(maximum))
     if high - low < 1e-12:
@@ -775,17 +781,18 @@ def render_scalar_views(
     unit: str,
     legend: str,
     maximum: float | None = None,
+    minimum: float | None = None,
 ) -> list[RenderedView]:
     """Color a surface mesh by a scalar and write front, right, top, iso, and a contact sheet.
 
     Blue is the low end of the scale and red is the high end. The scale reaches
     ``maximum`` when that peak is not on the drawn surface, so the title and
     the color bar name the same number. Two pictures are not compared by color
-    alone: the title carries the maximum.
+    alone: the title carries the maximum. ``minimum`` pins the blue end.
     """
     ensure_real_directory(out_dir)
     normals = _vertex_normals(vertices, triangles)
-    low, high = scalar_range(scalars, maximum)
+    low, high = scalar_range(scalars, maximum, minimum)
     colors = _scalar_colors(scalars, low, high)
     mesh = TriangleMesh(vertices=vertices, normals=normals, triangles=triangles, edges=[], colors=colors)
     bases = {name: _camera_basis(eye, up) for name, eye, up, _label in _VIEWS if name in _SCALAR_VIEWS}
