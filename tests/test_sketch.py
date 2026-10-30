@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from aicad import Document, GeometryError, Sketch, solve_sketch
+from aicad.sketch import set_spec_dimension
 from aicad.kernel import solid_from_sketch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,6 +202,57 @@ def test_over_constrained_sketch_is_not_extruded(tmp_path):
             [{"op": "extrude", "points": ["a", "b", "a"], "height": 1}],
         )
     assert document.list_parts() == []
+
+
+def test_one_dimension_name_is_one_value():
+    """The same name can drive several equal constraints. A different value needs its own name."""
+    shared = (
+        Sketch()
+        .point("a", 0, 0)
+        .fix("a")
+        .point("b", 10, 0)
+        .point("c", 0, 20)
+        .line("ab", "a", "b")
+        .line("ac", "a", "c")
+        .horizontal("ab")
+        .vertical("ac")
+        .distance("a", "b", 10, name="distance")
+        .distance("a", "c", 20, name="distance")
+    )
+    with pytest.raises(GeometryError, match="already distance 10"):
+        solve_sketch(shared, "dup")
+    mixed = (
+        Sketch()
+        .point("a", 0, 0)
+        .fix("a")
+        .point("b", 10, 0)
+        .line("ab", "a", "b")
+        .horizontal("ab")
+        .circle("hole", "a", 4)
+        .distance("a", "b", 10, name="width")
+        .diameter("hole", 8, name="width")
+    )
+    with pytest.raises(GeometryError, match="already distance 10"):
+        solve_sketch(mixed, "mixed")
+    linked = (
+        Sketch()
+        .point("a", 0, 0)
+        .fix("a")
+        .point("b", 30, 0)
+        .point("c", 0, 30)
+        .line("ab", "a", "b")
+        .line("ac", "a", "c")
+        .horizontal("ab")
+        .vertical("ac")
+        .distance("a", "b", 30, name="side")
+        .distance("a", "c", 30, name="side")
+    )
+    report = solve_sketch(linked, "square")
+    assert [(item["name"], item["value"]) for item in report.dimensions] == [("side", 30.0)]
+    edited = set_spec_dimension(linked.to_spec(), "side", 16)
+    moved = solve_sketch(edited, "square")
+    assert moved.geometry["points"]["b"]["x"] == pytest.approx(16)
+    assert moved.geometry["points"]["c"]["y"] == pytest.approx(16)
 
 
 def _ring() -> Sketch:

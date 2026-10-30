@@ -105,9 +105,11 @@ async function applyRefresh(options = {}) {
     ui.parameterKey = "";
   }
   if (!ui.part && ui.state.parts.length) ui.part = ui.state.parts[0].name;
+  const pendingLine = sketchPendingPoint(ui.sketch, ui.lineStart);
+  const pendingCenter = sketchPendingPoint(ui.sketch, ui.circleCenter);
   if (ui.sketchName) {
     const found = (ui.state.sketches || []).find((item) => item.name === ui.sketchName);
-    if (found) ui.sketch = found;
+    if (found) ui.sketch = sketchWithPendingPoint(sketchWithPendingPoint(found, pendingLine), pendingCenter);
   }
   if (ui.state.project) {
     $("project-name").textContent = ui.state.project.name;
@@ -700,7 +702,15 @@ async function openSketch(name) {
   renderTree();
 }
 
+let sketchWrite = Promise.resolve();
+
 async function commitSketch(spec) {
+  const run = sketchWrite.then(() => writeSketch(spec));
+  sketchWrite = run.then(() => {}, () => {});
+  return run;
+}
+
+async function writeSketch(spec) {
   const report = await command("update_sketch", { name: ui.sketchName, spec });
   ui.sketch = report;
   ui.sketch.spec = spec;
@@ -869,35 +879,17 @@ async function onSketchClick(event) {
     return;
   }
   if (ui.tool === "line") {
-    const hit = nearestSketchPoint(x, y);
-    const id = hit || freshId("p", spec);
-    if (!hit) spec.entities.push({ id, type: "point", at: [round(x), round(y)] });
-    if (!ui.lineStart) {
-      ui.lineStart = id;
-      ui.sketch.spec = spec;
-      return;
-    }
-    const line = freshId("l", spec);
-    spec.entities.push({ id: line, type: "line", start: ui.lineStart, end: id });
-    ui.lineStart = null;
-    await commitSketch(spec);
+    const result = sketchLineClick(spec, ui.sketch.geometry, ui.lineStart, x, y, sketchPickTolerance());
+    ui.lineStart = result.lineStart;
+    ui.sketch.spec = result.spec;
+    if (result.commit) await commitSketch(result.spec);
     return;
   }
   if (ui.tool === "circle") {
-    if (!ui.circleCenter) {
-      const id = nearestSketchPoint(x, y) || freshId("p", spec);
-      if (!spec.entities.some((entity) => entity.id === id)) spec.entities.push({ id, type: "point", at: [round(x), round(y)] });
-      ui.circleCenter = id;
-      ui.sketch.spec = spec;
-      return;
-    }
-    const at = sketchSolvedPoint(spec, ui.sketch && ui.sketch.geometry, ui.circleCenter);
-    const radius = Math.max(0.5, Math.hypot(x - at[0], y - at[1]));
-    const id = freshId("c", spec);
-    spec.entities.push({ id, type: "circle", center: ui.circleCenter, radius });
-    spec.constraints.push({ type: "diameter", entity: id, value: round(radius * 2), name: id + "_diameter" });
-    ui.circleCenter = null;
-    await commitSketch(spec);
+    const result = sketchCircleClick(spec, ui.sketch.geometry, ui.circleCenter, x, y, sketchPickTolerance());
+    ui.circleCenter = result.circleCenter;
+    ui.sketch.spec = result.spec;
+    if (result.commit) await commitSketch(result.spec);
     return;
   }
   if (ui.tool === "rectangle") {
@@ -962,11 +954,11 @@ async function applyConstraint(kind) {
   const spec = structuredClone(ui.sketch.spec);
   const selected = ui.sketchSelection;
   if (kind === "distance") {
-    const value = await ask("Distance", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: "distance" }]);
+    const value = await ask("Distance", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: uniqueConstraintName(spec, "distance") }]);
     if (!value || selected.length < 2) return;
     spec.constraints.push({ type: "distance", a: selected[0], b: selected[1], value: Number(value.value), name: value.name });
   } else if (kind === "diameter") {
-    const value = await ask("Diameter", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: "diameter" }]);
+    const value = await ask("Diameter", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: uniqueConstraintName(spec, "diameter") }]);
     if (!value || !selected.length) return;
     spec.constraints.push({ type: "diameter", entity: selected[0], value: Number(value.value), name: value.name });
   } else if (kind === "coincident") {
