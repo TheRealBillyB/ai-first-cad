@@ -180,3 +180,5 @@ That stops another website, including one that tries to reach this computer by a
 - **BW.** When confinement stops, the script result is opened from its parent directory. A link at that name is not followed, and another name for the file is not changed.
 
 - **BX.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
+
+- A script remove opens that name only to delete it. It does not read or write the file, and a link is removed without opening the file it names. The quota still counts a removed file the watch is holding.
