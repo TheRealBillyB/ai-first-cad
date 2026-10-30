@@ -648,6 +648,21 @@ def _cut(blank, tool):
         raise GeometryError(f"Could not cut the bore, keyway, or spline: {exc}") from exc
 
 
+# A boolean sometimes returns an extra solid with no volume. It is not a second
+# body, and dropping the pose because of it leaves a ridge in the tooth.
+_DUST_MM3 = 1.0e-4
+
+
+def _real_solids(shape):
+    """Solids with volume. A sliver next to the main body is a boolean leftover."""
+    pieces = [piece for piece in shape.solids() if piece.volume > _DUST_MM3]
+    if len(pieces) <= 1:
+        return pieces
+    largest = max(piece.volume for piece in pieces)
+    floor = max(_DUST_MM3, largest * 1.0e-6)
+    return [piece for piece in pieces if piece.volume > floor]
+
+
 def _rolled_pose(current, tool):
     """One face-mill pose cut out of the pinion blank.
 
@@ -663,7 +678,7 @@ def _rolled_pose(current, tool):
     except Exception:
         exact = None
     if exact is not None and _roll_ok(exact, base):
-        return exact
+        return _real_solids(exact)[0]
     exact_volume = _solid_volume(exact)
     for fuzzy in (0.002, 0.005, 0.01, 0.02):
         healed = _fuzzy_cut(current, tool, fuzzy)
@@ -702,11 +717,14 @@ def _groove(blank, rolled):
 
 def _roll_ok(result, previous_volume: float) -> bool:
     """One solid that lost metal, or none, and did not collapse."""
-    solids = list(result.solids())
+    solids = _real_solids(result)
     if len(solids) != 1:
         return False
     volume = solids[0].volume
-    if volume > previous_volume + 0.2 or volume < previous_volume * 0.55:
+    # The allowance scales with the blank. A fixed tenth of a cubic millimetre
+    # rejects a valid cut once the pinion is large.
+    allowance = max(0.2, previous_volume * 1.0e-6)
+    if volume > previous_volume + allowance or volume < previous_volume * 0.55:
         return False
     if not solids[0].is_manifold:
         return False
@@ -718,7 +736,7 @@ def _roll_ok(result, previous_volume: float) -> bool:
 def _solid_volume(result) -> float | None:
     if result is None:
         return None
-    solids = list(result.solids())
+    solids = _real_solids(result)
     if len(solids) != 1:
         return None
     return solids[0].volume
@@ -746,18 +764,38 @@ def _fuzzy_cut(current, tool, fuzzy: float):
     found = []
     explorer = TopExp_Explorer(operation.Shape(), TopAbs_SOLID)
     while explorer.More():
-        found.append(TopoDS.Solid(explorer.Current()))
+        found.append(Solid(TopoDS.Solid(explorer.Current())))
         explorer.Next()
+    found = [piece for piece in found if piece.volume > _DUST_MM3]
+    if not found:
+        return None
+    largest = max(piece.volume for piece in found)
+    floor = max(_DUST_MM3, largest * 1.0e-6)
+    found = [piece for piece in found if piece.volume > floor]
     if len(found) != 1:
         return None
-    wrapped = Solid(found[0])
-    if wrapped.volume <= 0:
-        return None
-    return wrapped
+    return found[0]
 
 
 def _one(shape):
-    solids = list(shape.solids())
+    solids = _real_solids(shape)
     if len(solids) != 1 or solids[0].volume <= 0:
         raise GeometryError("The gear did not come out as one closed solid.")
-    return solids[0]
+    solid = solids[0]
+    if not solid.is_manifold:
+        solid = _heal_solid(solid)
+    if solid.volume <= 0 or not solid.is_manifold:
+        raise GeometryError("The gear did not come out as one closed solid.")
+    return solid
+
+
+def _heal_solid(solid):
+    """Close a single solid whose shell did not sew, when the kernel can."""
+    from OCP.ShapeFix import ShapeFix_Solid
+
+    fixer = ShapeFix_Solid(solid.wrapped)
+    fixer.Perform()
+    healed = Solid(fixer.Solid())
+    if healed.volume > 0 and healed.is_manifold:
+        return healed
+    return solid

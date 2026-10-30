@@ -3358,7 +3358,25 @@ def named_size(path: Path) -> int | None:
     return (int(data.nFileSizeHigh) << 32) | int(data.nFileSizeLow)
 
 
-def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None:
+def cancel_directory_watch(handle) -> None:
+    """Wake a directory read started on another thread.
+
+    ``CancelIo`` only cancels reads started by the calling thread. The watch
+    thread owns the read, so stopping it uses ``CancelIoEx``.
+    """
+
+    if sys.platform != "win32" or not handle:
+        return
+    kernel32 = _kernel32()
+    cancel = getattr(kernel32, "CancelIoEx", None)
+    if cancel is None:
+        return
+    cancel.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    cancel.restype = wintypes.BOOL
+    cancel(handle, None)
+
+
+def run_directory_watch(root, retain, release, reread, scan, stop, mark, remember=None) -> None:
     """Watch ``root`` until ``stop`` is set.
 
     ``ReadDirectoryChangesW`` reports a new file when its name appears, which
@@ -3383,8 +3401,12 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
     if not handle or handle == _INVALID_HANDLE:
         mark(False)
         return
+    if remember is not None:
+        remember(handle)
     event = kernel32.CreateEventW(None, True, False, None)
     if not event:
+        if remember is not None:
+            remember(None)
         kernel32.CloseHandle(handle)
         mark(False)
         return
@@ -3419,6 +3441,8 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
             return
         def note_tree() -> None:
             for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+                if stop.is_set():
+                    return
                 for name in filenames:
                     retain(Path(dirpath) / name)
 
@@ -3447,6 +3471,8 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
             reread()
             scan()
     finally:
+        if remember is not None:
+            remember(None)
         try:
             kernel32.CancelIo(handle)
         except OSError:
