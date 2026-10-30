@@ -220,3 +220,89 @@ function sketchSolidSteps(op, spec, height, previousSteps) {
   if (circles.length) return { steps: [{ op: "extrude", circle: circles[0], height: h, name: "extrude" }] };
   return { error: "Extrude needs a profile of at least three points, or a circle." };
 }
+
+function sketchPendingPoint(sketch, pointId) {
+  if (!sketch || typeof pointId !== "string" || pointId === "") return null;
+  const entities = (sketch.spec && sketch.spec.entities) || [];
+  const entity = entities.find((item) => item && item.id === pointId && item.type === "point");
+  if (!entity || !Array.isArray(entity.at) || entity.at.length < 2) return null;
+  const x = Number(entity.at[0]);
+  const y = Number(entity.at[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { id: pointId, at: [x, y] };
+}
+
+function sketchWithPendingPoint(sketch, pending) {
+  if (!sketch || !pending) return sketch;
+  const spec = sketch.spec || {};
+  const entities = Array.isArray(spec.entities) ? spec.entities.slice() : [];
+  const present = entities.some((item) => item && item.id === pending.id);
+  if (!present) entities.push({ id: pending.id, type: "point", at: [pending.at[0], pending.at[1]] });
+  const geometry = sketch.geometry ? { ...sketch.geometry } : {};
+  const points = { ...(geometry.points || {}) };
+  const known = points[pending.id];
+  if (!known) points[pending.id] = { x: pending.at[0], y: pending.at[1] };
+  if (present && known) return sketch;
+  return { ...sketch, spec: { ...spec, entities }, geometry: { ...geometry, points } };
+}
+
+function sketchCloneSpec(spec) {
+  const source = spec || {};
+  return {
+    plane: source.plane || "xy",
+    entities: (source.entities || []).map((entity) => Object.assign({}, entity)),
+    constraints: (source.constraints || []).map((constraint) => Object.assign({}, constraint)),
+  };
+}
+
+function sketchFreshId(prefix, spec) {
+  const used = new Set(((spec && spec.entities) || []).map((entity) => entity && entity.id));
+  let index = 0;
+  while (used.has(prefix + index)) index += 1;
+  return prefix + index;
+}
+
+function sketchRound(value) {
+  return Math.round(Number(value) * 1000) / 1000;
+}
+
+function sketchKnownStart(spec, startId) {
+  if (typeof startId !== "string" || !startId) return null;
+  const entities = (spec && spec.entities) || [];
+  return entities.some((entity) => entity && entity.id === startId) ? startId : null;
+}
+
+function sketchLineClick(spec, geometry, lineStart, x, y, tolerance) {
+  const next = sketchCloneSpec(spec);
+  const start = sketchKnownStart(next, lineStart);
+  const hit = sketchPointHit(geometry, x, y, tolerance);
+  const id = hit || sketchFreshId("p", next);
+  if (!hit) next.entities.push({ id, type: "point", at: [sketchRound(x), sketchRound(y)] });
+  if (!start || id === start) {
+    return { spec: next, lineStart: start || id, commit: !hit, finished: false };
+  }
+  next.entities.push({ id: sketchFreshId("l", next), type: "line", start, end: id });
+  return { spec: next, lineStart: null, commit: true, finished: true };
+}
+
+function sketchCircleClick(spec, geometry, centerId, x, y, tolerance) {
+  const next = sketchCloneSpec(spec);
+  const center = sketchKnownStart(next, centerId);
+  if (!center) {
+    const hit = sketchPointHit(geometry, x, y, tolerance);
+    const id = hit || sketchFreshId("p", next);
+    if (!hit) next.entities.push({ id, type: "point", at: [sketchRound(x), sketchRound(y)] });
+    return { spec: next, circleCenter: id, commit: !hit, finished: false };
+  }
+  const at = sketchSolvedPoint(next, geometry, center);
+  const radius = Math.max(0.5, Math.hypot(x - at[0], y - at[1]));
+  const id = sketchFreshId("c", next);
+  next.entities.push({ id, type: "circle", center, radius });
+  next.constraints.push({
+    type: "diameter",
+    entity: id,
+    value: sketchRound(radius * 2),
+    name: id + "_diameter",
+  });
+  return { spec: next, circleCenter: null, commit: true, finished: true };
+}
