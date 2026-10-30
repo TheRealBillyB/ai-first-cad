@@ -3417,17 +3417,21 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
         if not issue():
             mark(False)
             return
+
         def note_tree() -> None:
             for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
                 for name in filenames:
                     retain(Path(dirpath) / name)
 
+        # One pass for files already there. Walking on every change holds a
+        # search handle in a directory the script is about to remove, and
+        # RemoveDirectory then fails.
+        try:
+            note_tree()
+        except OSError:
+            pass
         mark(True)
         while not stop.is_set():
-            try:
-                note_tree()
-            except OSError:
-                pass
             reread()
             waited = int(kernel32.WaitForSingleObject(event, 1))
             if stop.is_set():
@@ -3445,7 +3449,6 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
                 if not issue():
                     break
             reread()
-            scan()
     finally:
         try:
             kernel32.CancelIo(handle)

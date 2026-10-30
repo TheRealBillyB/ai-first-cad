@@ -3710,27 +3710,23 @@ class _DiskWatch:
             if held is not None:
                 self._note_descriptor(key, held)
                 return
-            descriptor = shared_read(path)
-            if descriptor is None:
-                size = named_size(path)
-                if size is not None:
-                    self.note_size(key, size)
-                return
-            try:
-                info = os.fstat(descriptor)
-            except OSError:
+            # A handle kept open in this directory stops RemoveDirectory on
+            # Windows, even after the name is deleted. The size is already
+            # stored, so the handle is closed before the script removes the
+            # directory.
+            size = named_size(path)
+            if size is None:
+                descriptor = shared_read(path)
+                if descriptor is None:
+                    return
+                try:
+                    info = os.fstat(descriptor)
+                except OSError:
+                    os.close(descriptor)
+                    return
+                size = int(info.st_size)
                 os.close(descriptor)
-                return
-            self.note_size(key, int(info.st_size))
-            with self._lock:
-                current = self._held.get(key)
-                if current is not None or len(self._held) >= 256:
-                    drop = descriptor
-                else:
-                    self._held[key] = descriptor
-                    drop = None
-            if drop is not None:
-                os.close(drop)
+            self.note_size(key, size)
             return
         with self._lock:
             held = self._held.get(key)
