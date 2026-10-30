@@ -54,7 +54,7 @@ def _swap_before_run(monkeypatch, module: str, script: Path, canary: Path) -> No
             yield held
 
     monkeypatch.setattr(tool_directory, "held_subprocess_directory", wrapped)
-    real_run = subprocess.run
+    from aicad.sandbox import run_confined_helper
 
     def run(command, **kwargs):
         directory = helds[-1].original
@@ -67,9 +67,9 @@ def _swap_before_run(monkeypatch, module: str, script: Path, canary: Path) -> No
                 moved.rename(directory)
         if os.name == "nt" and command and Path(command[0]) == script:
             command = [sys.executable, *command]
-        return real_run(command, **kwargs)
+        return run_confined_helper(command, **kwargs)
 
-    monkeypatch.setattr(f"{module}.subprocess.run", run)
+    monkeypatch.setattr("aicad.sandbox.run_confined_helper", run)
 
 
 def test_a_slicer_keeps_the_directory_it_opened(tmp_path, monkeypatch):

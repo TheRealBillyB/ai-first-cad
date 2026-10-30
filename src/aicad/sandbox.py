@@ -2346,6 +2346,169 @@ def program_environment() -> dict[str, str]:
     return env
 
 
+class _HelperResult:
+    """The return code and text from one confined helper."""
+
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+_HELPER_BOOT = """
+import json, os, sys
+from pathlib import Path
+reads = [Path(item) for item in json.loads(sys.argv[1])]
+work = Path.cwd()
+from aicad.sandbox import _landlock
+try:
+    _landlock(work, False, reads)
+except Exception:
+    os._exit(127)
+os.execv(sys.argv[2], sys.argv[2:])
+"""
+
+
+def _helper_read_paths(command: list[str]) -> list[Path]:
+    """System locations a helper may read, plus the directory that holds the program."""
+
+    roots = _read_roots()
+    if command:
+        program = Path(command[0])
+        try:
+            if program.is_file():
+                roots.append(program.resolve().parent)
+        except OSError:
+            pass
+    return roots
+
+
+def run_confined_helper(command: list[str], *, env: dict[str, str], timeout: float, cwd=None, preexec_fn=None, pass_fds=(), close_fds=True):
+    """Run one helper under the same file limits as a design script.
+
+    The helper may read the locations needed to start the program. It may
+    read and write ``cwd``. It is not started when those limits cannot be
+    applied.
+    """
+
+    import subprocess
+
+    if not command:
+        raise ScriptError("The helper was not given a program, so it was not run.")
+    work = Path(cwd) if cwd is not None else Path.cwd()
+    reads = _helper_read_paths(command)
+    if sys.platform == "win32":
+        return _run_confined_helper_windows(command, env=env, timeout=timeout, cwd=work, reads=reads)
+    if sys.platform == "darwin":
+        return _run_confined_helper_macos(
+            command,
+            env=env,
+            timeout=timeout,
+            cwd=work,
+            reads=reads,
+            preexec_fn=preexec_fn,
+            pass_fds=pass_fds,
+            close_fds=close_fds,
+        )
+    boot = [sys.executable, "-c", _HELPER_BOOT, json.dumps([str(path) for path in reads]), *command]
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "stdin": subprocess.DEVNULL,
+        "timeout": timeout,
+        "check": False,
+        "env": env,
+        "cwd": str(work),
+        "close_fds": close_fds,
+    }
+    if pass_fds:
+        kwargs["pass_fds"] = pass_fds
+        kwargs["close_fds"] = True
+    if preexec_fn is not None:
+        kwargs["preexec_fn"] = preexec_fn
+    completed = subprocess.run(boot, **kwargs)
+    return _HelperResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+
+
+def _run_confined_helper_macos(command, *, env, timeout, cwd: Path, reads: list[Path], preexec_fn, pass_fds, close_fds):
+    import subprocess
+    import tempfile
+
+    from aicad.sandbox_macos import build_profile, command_prefix
+
+    profile = build_profile([str(path) for path in reads], [str(cwd)], network=False)
+    directory = _control_directory()
+    try:
+        handle = tempfile.NamedTemporaryFile(prefix="aicad-helper-", suffix=".sb", dir=directory, delete=False)
+        handle.write(profile.encode("utf-8"))
+        handle.close()
+        wrapped = [*command_prefix(handle.name, cwd), *command]
+        kwargs = {
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "stdin": subprocess.DEVNULL,
+            "timeout": timeout,
+            "check": False,
+            "env": env,
+            "cwd": str(cwd),
+            "close_fds": close_fds,
+        }
+        if pass_fds:
+            kwargs["pass_fds"] = pass_fds
+            kwargs["close_fds"] = True
+        if preexec_fn is not None:
+            kwargs["preexec_fn"] = preexec_fn
+        completed = subprocess.run(wrapped, **kwargs)
+    finally:
+        from aicad.paths import remove_tree
+
+        remove_tree(directory, ignore_errors=True)
+    return _HelperResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+
+
+def _windows_helper_command(command: list[str]) -> list[str]:
+    """Start a script with the interpreter. A batch file goes through the shell."""
+
+    program = command[0]
+    folded = program.lower()
+    if folded.endswith(".py"):
+        return [sys.executable, *command]
+    if folded.endswith(".cmd") or folded.endswith(".bat"):
+        shell = os.environ.get("COMSPEC", "cmd.exe")
+        return [shell, "/c", program, *command[1:]]
+    return list(command)
+
+
+def _run_confined_helper_windows(command, *, env, timeout, cwd: Path, reads: list[Path]):
+    import subprocess
+
+    from aicad.sandbox_windows import spawn
+
+    command = _windows_helper_command(list(command))
+    stdout_path = cwd / "helper-stdout.txt"
+    stderr_path = cwd / "helper-stderr.txt"
+    code, stdout, stderr, timed_out, _memory, _mechanism = spawn(
+        list(command),
+        cwd=str(cwd),
+        env=env,
+        read_paths=reads,
+        workspace=cwd,
+        cpu_seconds=max(1, int(timeout)),
+        memory_bytes=memory_bytes(),
+        network=False,
+        timeout_seconds=float(timeout),
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+    )
+    if timed_out:
+        raise subprocess.TimeoutExpired(command, timeout)
+    return _HelperResult(code, stdout or "", stderr or "")
+
+
 # Locale and clock names a script needs in order to format text and time.
 # Anything else in the parent environment stays there.
 _SCRIPT_LOCALE = (

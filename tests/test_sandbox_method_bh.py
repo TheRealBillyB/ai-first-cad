@@ -38,15 +38,6 @@ def test_slicer_output_that_is_not_utf8_stays_a_report(tmp_path, monkeypatch):
     )
     script.chmod(0o755)
     monkeypatch.setattr("aicad.printprep.find_slicers", lambda: [str(script)])
-    if os.name == "nt":
-        real_run = subprocess.run
-
-        def run(command, **kwargs):
-            if command and command[0] == str(script):
-                command = [sys.executable, *command]
-            return real_run(command, **kwargs)
-
-        monkeypatch.setattr("aicad.printprep.subprocess.run", run)
     vertices = np.zeros((1, 3))
     triangles = np.zeros((0, 3), dtype=int)
     report = slice_mesh(vertices, triangles, project / "slice")
