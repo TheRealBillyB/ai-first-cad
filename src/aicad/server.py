@@ -876,7 +876,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def create_assembly(spec: dict[str, Any]) -> dict:
         """Place parts that are already in the document.
 
-        spec needs name and instances [{name, part, material, payload_kg}].
+        spec needs name and instances [{name, part, material, payload_kg, color}].
+        An int color is three bytes from 0 to 255. A float color from 0 to 1 is
+        a fraction of full scale. A float above 1 is a byte already on that scale.
         joints are {name, type, parent, child, parent_anchor, child_anchor, axis, value, min, max}.
         type is fixed, revolute (degrees), prismatic (millimeters), or cylindrical
         (degrees in value, millimeters in slide). relations are gear {driver, driven, ratio, offset},
@@ -1335,7 +1337,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         even pixel sizes. camera is iso, front, back, left, right, top, bottom,
         or orbit. camera_path is a list of {azimuth_deg, elevation_deg}.
         background is paper, white, black, or #rrggbb. colors and materials
-        recolor the pictures only and do not change the assembly. overlay is
+        recolor the pictures only and do not change the assembly. An int color
+        is three bytes from 0 to 255. A float color from 0 to 1 is a fraction
+        of full scale. A float above 1 is a byte already on that scale. overlay is
         none, step, time, or value. value draws a joint angle, the explode
         gap, or the orbit angle. video is gif, mp4, webm, or both. MP4 and
         WebM need ffmpeg on PATH. If it is missing, the GIF is still written
