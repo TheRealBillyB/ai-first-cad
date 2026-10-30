@@ -172,6 +172,31 @@ function walkSketchChain(edges, startIndex) {
   return chain;
 }
 
+function sketchPendingPoint(sketch, pointId) {
+  if (!sketch || typeof pointId !== "string" || pointId === "") return null;
+  const entities = (sketch.spec && sketch.spec.entities) || [];
+  const entity = entities.find((item) => item && item.id === pointId && item.type === "point");
+  if (!entity || !Array.isArray(entity.at) || entity.at.length < 2) return null;
+  const x = Number(entity.at[0]);
+  const y = Number(entity.at[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { id: pointId, at: [x, y] };
+}
+
+function sketchWithPendingPoint(sketch, pending) {
+  if (!sketch || !pending) return sketch;
+  const spec = sketch.spec || {};
+  const entities = Array.isArray(spec.entities) ? spec.entities.slice() : [];
+  const present = entities.some((item) => item && item.id === pending.id);
+  if (!present) entities.push({ id: pending.id, type: "point", at: [pending.at[0], pending.at[1]] });
+  const geometry = sketch.geometry ? { ...sketch.geometry } : {};
+  const points = { ...(geometry.points || {}) };
+  const known = points[pending.id];
+  if (!known) points[pending.id] = { x: pending.at[0], y: pending.at[1] };
+  if (present && known) return sketch;
+  return { ...sketch, spec: { ...spec, entities }, geometry: { ...geometry, points } };
+}
+
 function sketchChainCloses(edges, chain) {
   if (!chain || chain.length < 3) return false;
   const start = chain[0];
