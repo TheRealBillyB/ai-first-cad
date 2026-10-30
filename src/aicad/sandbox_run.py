@@ -253,14 +253,21 @@ def _part(workspace: Path, job: Path) -> int:
         return 0
     from aicad.kernel import _execute_part_script, export_step_file
 
+    # A script can fork. Only the process that started the script publishes
+    # the result. The forked process must not replace that result.
+    owner = os.getpid()
     try:
         shape = _execute_part_script(code)
         step = job / "part.step"
         export_step_file(shape, step)
     except Exception as exc:
+        if os.getpid() != owner:
+            os._exit(1)
         message = str(exc) if str(exc) else _format(code, exc, "<aicad-script>")
         _write(job, {"ok": False, "error": message})
         return 0
+    if os.getpid() != owner:
+        os._exit(0)
     _write(job, {"ok": True, "step": str(step), "features": shape.feature_report().to_dict()})
     return 0
 
