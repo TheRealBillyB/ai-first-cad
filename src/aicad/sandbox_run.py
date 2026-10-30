@@ -115,6 +115,28 @@ def _helper_environment() -> dict[str, str]:
     return env
 
 
+def _helper_interpreter(env: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """The interpreter this confined process is already running.
+
+    A virtual-environment launcher is another program. The container was
+    given the base interpreter, so the helper starts that interpreter.
+    """
+
+    current = sys.executable
+    base = getattr(sys, "_base_executable", "") or ""
+    if not base:
+        return current, env
+    try:
+        same = os.path.normcase(os.path.normpath(base)) == os.path.normcase(os.path.normpath(current))
+    except (OSError, ValueError):
+        return current, env
+    if same:
+        return current, env
+    copied = dict(env)
+    copied["__PYVENV_LAUNCHER__"] = current
+    return base, copied
+
+
 def _helper_read(workspace: Path, outside: str) -> str:
     """What a child process could read. ``closed`` means the outside file stayed closed.
 
@@ -144,19 +166,23 @@ def _helper_read(workspace: Path, outside: str) -> str:
         "pathlib.Path(dest).write_text(' '.join(parts), encoding='utf-8')\n",
         encoding="utf-8",
     )
+    env = _helper_environment()
+    executable = sys.executable
+    if sys.platform == "win32":
+        executable, env = _helper_interpreter(env)
     kwargs = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "cwd": str(workspace),
-        "env": _helper_environment(),
+        "env": env,
         "timeout": 30,
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         completed = subprocess.run(
-            [sys.executable, "-P", "-B", str(program), str(inside), outside, str(report)],
+            [executable, "-P", "-B", str(program), str(inside), outside, str(report)],
             **kwargs,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
