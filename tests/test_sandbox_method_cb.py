@@ -17,7 +17,6 @@ _MARKER = "CANARY_HIT"
 
 
 def test_a_project_matplotlibrc_is_not_used(tmp_path, monkeypatch):
-    pytest.importorskip("matplotlib")
     rc = tmp_path / "matplotlibrc"
     rc.write_text("savefig.dpi: 13\n", encoding="utf-8")
     marker = tmp_path / "SANDBOX_CANARY.txt"
