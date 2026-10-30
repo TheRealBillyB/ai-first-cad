@@ -108,8 +108,23 @@ def list_recent() -> dict:
     }
 
 
-def list_folders(path: str | Path) -> dict:
-    folder = Path(path).expanduser().resolve()
+def list_folders(path: str | Path, *, project: Path | None = None, person: bool = True) -> dict:
+    """List folders under ``path``.
+
+    The assistant stays inside the open project. A person may list a folder
+    they chose, including one outside that project.
+    """
+
+    folder = Path(path).expanduser()
+    root = Path(project).resolve() if project is not None else None
+    if not person:
+        if root is None:
+            raise GeometryError("That folder is outside the project.")
+        if not folder.is_absolute():
+            folder = root / folder
+    folder = folder.resolve()
+    if not person and root is not None and folder != root and root not in folder.parents:
+        raise GeometryError("That folder is outside the project.")
     if not folder.is_dir():
         raise GeometryError(f"No folder at {folder}.")
     folders = []
@@ -140,6 +155,10 @@ def list_folders(path: str | Path) -> dict:
         if len(folders) >= _FOLDER_LIMIT:
             break
     parent = None if folder.parent == folder else str(folder.parent)
+    if not person and root is not None and parent is not None:
+        parent_path = Path(parent)
+        if parent_path != root and root not in parent_path.parents:
+            parent = None
     return {
         "path": str(folder),
         "parent": parent,
@@ -464,6 +483,15 @@ def note_for(name: str, arguments: dict | None, result: dict | None) -> dict:
     }
 
 
+def _list_folders_for(workspace, path: str | None) -> dict:
+    """List folders for one command. The assistant stays inside the open project."""
+
+    from aicad.sandbox_state import in_sandbox
+
+    person = workspace.document.actor == "user" and not in_sandbox()
+    return list_folders(path or workspace.root, project=workspace.root, person=person)
+
+
 def register(add) -> None:
     from aicad.workspace import Command
 
@@ -515,7 +543,7 @@ def register(add) -> None:
         "list_folders",
         "List the folders inside a path, so a person can pick a project.",
         _obj({"path": _string("Folder to list. Omit it to list the open project.")}, []),
-        lambda workspace, arguments: list_folders(arguments.get("path") or workspace.root),
+        lambda workspace, arguments: _list_folders_for(workspace, arguments.get("path")),
     ))
     add(Command(
         "list_parameters",
