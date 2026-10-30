@@ -2370,16 +2370,41 @@ os.execv(sys.argv[2], sys.argv[2:])
 
 
 def _helper_read_paths(command: list[str]) -> list[Path]:
-    """System locations a helper may read, plus the directory that holds the program."""
+    """System locations a helper may read, plus the directory that holds the program.
+
+    When the command is the interpreter and a script, the script's folder is
+    included. Later arguments are not: a path named there is not made readable.
+    """
 
     roots = _read_roots()
-    if command:
-        program = Path(command[0])
+    if not command:
+        return roots
+    program = Path(command[0])
+    try:
+        if program.is_file():
+            roots.append(program.resolve().parent)
+    except OSError:
+        pass
+    names = {os.path.normcase(os.path.normpath(sys.executable))}
+    base = getattr(sys, "_base_executable", "") or ""
+    if base:
+        names.add(os.path.normcase(os.path.normpath(base)))
+    try:
+        own = os.path.normcase(os.path.normpath(str(program)))
+    except (OSError, ValueError):
+        return roots
+    if own not in names:
+        return roots
+    for arg in command[1:]:
+        if not arg or arg.startswith("-"):
+            continue
+        candidate = Path(arg)
         try:
-            if program.is_file():
-                roots.append(program.resolve().parent)
+            if candidate.is_file():
+                roots.append(candidate.resolve().parent)
         except OSError:
             pass
+        break
     return roots
 
 
