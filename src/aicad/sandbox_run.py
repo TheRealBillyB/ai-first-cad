@@ -672,6 +672,14 @@ def main(argv: list[str] | None = None) -> int:
             if kind == "probe":
                 return _leave(_probe(workspace, job))
             install_python_guard(workspace, roots)
+            if sys.platform == "win32":
+                # The quota watch holds files it counts and lists the tree
+                # while this script removes them. Drop the name immediately
+                # so the folder can be removed, and leave the watch's read
+                # and its scan in place.
+                from aicad.file_access import install_name_removal
+
+                install_name_removal()
             if kind == "part":
                 return _leave(_part(workspace, job))
             if kind == "design":

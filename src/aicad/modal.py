@@ -799,7 +799,9 @@ def _frequency_deck(bodies, fixed_nodes, equations, nmodes: int) -> str:
                 f"{dependent + 1}, {dof}, 1., {independent + 1}, {dof}, -1.",
             ]
     lines += ["*STEP", "*FREQUENCY", str(int(nmodes)), "*NODE FILE", "U", "*END STEP"]
-    return "\n".join(lines) + "\n"
+    from aicad.fea import solver_deck
+
+    return solver_deck(lines)
 
 
 def _parse_dat(text: str, nmodes: int) -> list[dict]:

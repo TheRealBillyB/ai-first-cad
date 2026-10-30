@@ -962,6 +962,25 @@ def _execute(mesh, fixed_nodes, forces, material, order: int):
     return True, disp, stress, None, order
 
 
+def solver_deck(lines: list[str]) -> str:
+    """One CalculiX deck. Each entry is one line, with no break inside it.
+
+    A part name, a note, or a material name is not a line in this deck. A
+    line that already contains a break is refused, so it cannot add a card.
+    """
+
+    import unicodedata
+
+    rendered: list[str] = []
+    for line in lines:
+        if not isinstance(line, str) or any(
+            unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for char in line
+        ):
+            raise GeometryError("A solver input line has to stay on one line.")
+        rendered.append(line)
+    return "\n".join(rendered) + "\n"
+
+
 def _run_ccx(mesh, fixed_nodes, forces, material):
     points = mesh["points"]
     elements = mesh["elements"]
@@ -1005,7 +1024,7 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
         lines += ["*NODE FILE", "U", "*EL FILE", "S", "*END STEP"]
         from aicad.paths import publish_text
 
-        publish_text(path / "job.inp", "\n".join(lines) + "\n", root=path)
+        publish_text(path / "job.inp", solver_deck(lines), root=path)
         # ccx is GPL-2.0-only. It stays a separate process and is not linked.
         from aicad.prereqs import find_program
 
