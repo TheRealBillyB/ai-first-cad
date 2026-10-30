@@ -29,6 +29,7 @@ SMALL_CALLER_STACK = "The stack on this thread is too small for geometry, so the
 
 _lock = threading.Lock()
 _chosen: int | None = None
+_local = threading.local()
 
 
 def _measure_default_thread() -> int:
@@ -167,6 +168,54 @@ def child_inherits_geometry_stack() -> Iterator[None]:
             resource.setrlimit(resource.RLIMIT_STACK, (soft, hard))
         except (OSError, ValueError):
             pass
+
+
+def geometry_call_needs_a_larger_stack() -> bool:
+    """True when this thread is too small for a deep boolean or mesh on macOS.
+
+    A pytest worker and a command-line process keep the stack they were
+    started with, about 8 MiB. OpenCascade recurses further than that on a
+    solid with many faces, and the process is killed with no Python
+    traceback. A Python thread given the geometry stack is 16 MiB. Other
+    systems, a thread already on that stack, and a size that cannot be
+    read stay on the caller.
+    """
+
+    if getattr(_local, "ready", False):
+        return False
+    if sys.platform != "darwin":
+        return False
+    size = current_thread_stack_bytes()
+    if size is None:
+        return False
+    return size + _STACK_REPORT_SLACK < _PYTHON_THREAD_STACK
+
+
+def call_with_geometry_stack(func, /, *args, **kwargs):
+    """Run ``func`` on a thread whose stack can hold a deep geometry call.
+
+    The caller waits. A thread that is already large enough runs ``func``
+    directly, so a nested call does not start another thread.
+    """
+
+    if not geometry_call_needs_a_larger_stack():
+        return func(*args, **kwargs)
+    prepare_geometry_thread_stack()
+    box: dict = {}
+
+    def run() -> None:
+        _local.ready = True
+        try:
+            box["value"] = func(*args, **kwargs)
+        except BaseException as exc:
+            box["error"] = exc
+
+    thread = threading.Thread(target=run, name="aicad-geometry")
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def _raise_stack_limit(soft: int, hard: int, target: int) -> bool:
