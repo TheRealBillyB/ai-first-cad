@@ -88,37 +88,53 @@ def _write(job: Path, payload: dict) -> None:
 
 
 def _helper_read(workspace: Path, outside: str) -> str:
-    """What a child process could read. ``closed`` means the outside file stayed closed."""
+    """What a child process could read. ``closed`` means the outside file stayed closed.
+
+    The result is a file in the project. A pipe is not used, because a second
+    Python started on Windows does not always inherit one. ``-P`` is the same
+    flag the sandbox child uses. ``-I`` keeps that interpreter from starting.
+    """
 
     import subprocess
 
     inside = workspace / "helper-inside.txt"
+    report = workspace / "helper-result.txt"
     inside.write_text("inside-ok\n", encoding="utf-8")
     code = (
         "import pathlib, sys\n"
-        "inside, outside = sys.argv[1], sys.argv[2]\n"
+        "inside, outside, dest = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+        "parts = []\n"
         "try:\n"
-        "    sys.stdout.write('IN|' + pathlib.Path(inside).read_text(encoding='utf-8'))\n"
+        "    parts.append('IN|' + pathlib.Path(inside).read_text(encoding='utf-8').strip())\n"
         "except Exception as exc:\n"
-        "    sys.stdout.write('IN|' + type(exc).__name__)\n"
+        "    parts.append('IN|' + type(exc).__name__)\n"
         "try:\n"
-        "    sys.stdout.write('OUT|' + pathlib.Path(outside).read_text(encoding='utf-8'))\n"
+        "    parts.append('OUT|' + pathlib.Path(outside).read_text(encoding='utf-8').strip())\n"
         "except Exception as exc:\n"
-        "    sys.stdout.write('OUT|' + type(exc).__name__)\n"
+        "    parts.append('OUT|' + type(exc).__name__)\n"
+        "pathlib.Path(dest).write_text(' '.join(parts), encoding='utf-8')\n"
     )
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "stdin": subprocess.DEVNULL,
+        "timeout": 30,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        completed = subprocess.run(
-            [sys.executable, "-I", "-c", code, str(inside), outside],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdin=subprocess.DEVNULL,
-            timeout=20,
+        subprocess.run(
+            [sys.executable, "-P", "-B", "-c", code, str(inside), outside, str(report)],
+            **kwargs,
         )
     except (OSError, subprocess.TimeoutExpired):
         return "not-started"
-    text = completed.stdout or ""
+    try:
+        text = report.read_text(encoding="utf-8")
+    except OSError:
+        return "not-started"
     if "OUT|aicad-confinement-probe" in text:
         return "opened"
     if "IN|inside-ok" in text:
