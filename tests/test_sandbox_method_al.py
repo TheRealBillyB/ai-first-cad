@@ -225,7 +225,14 @@ def test_calculix_runs_in_a_private_folder(tmp_path, monkeypatch):
         "print('ARGV', ' '.join(sys.argv[1:]))\n",
     )
     notes = _capture(monkeypatch)
-    monkeypatch.setattr("aicad.prereqs.find_program", lambda name, project=None: str(script))
+    from aicad.prereqs import find_program as real_find
+
+    def find_ccx(name, project=None):
+        if name == "ccx":
+            return str(script)
+        return real_find(name, project=project)
+
+    monkeypatch.setattr("aicad.prereqs.find_program", find_ccx)
     _run_script(monkeypatch, "aicad.fea", script)
     _run_script(monkeypatch, "aicad.modal", script)
     from aicad import fea, modal
