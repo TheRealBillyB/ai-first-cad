@@ -125,13 +125,7 @@ def normalize(spec: dict) -> dict:
             raise GeometryError(f"Pose {pose_name!r} must map joint names to values.")
         pose = _one_line(pose_name, "A pose name")
         poses[pose] = {_one_line(key, "A joint name"): float(value) for key, value in values.items()}
-    motions = {}
-    for motion_name, motion in (spec.get("motions") or {}).items():
-        if not isinstance(motion, dict):
-            raise GeometryError(f"Motion {motion_name!r} must be an object.")
-        motion_key = _one_line(motion_name, "A motion name")
-        motions[motion_key] = copy.deepcopy(motion)
-        motions[motion_key]["name"] = motion_key
+    motions = _motions(spec.get("motions"))
     ignore = []
     for pair in spec.get("ignore_collisions") or []:
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
@@ -164,6 +158,47 @@ def _gear_train(spec: dict, instances: list[dict], joints: list[dict]):
     from aicad.gears.train import normalize_gear_train
 
     return normalize_gear_train(spec["gear_train"], joints, [item["name"] for item in instances])
+
+
+def _motions(raw) -> dict:
+    """A name-to-motion mapping, or a list of motions that each have a name.
+
+    Joints, cables, and actuators are lists of named objects. A motion list
+    is the same shape. Anything else is an error, not an attribute failure.
+    """
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        pairs = list(raw.items())
+    elif isinstance(raw, (list, tuple)):
+        pairs = []
+        for index, motion in enumerate(raw):
+            if not isinstance(motion, dict):
+                raise GeometryError(
+                    "motions must map a name to a motion, or be a list of motions that each have a name."
+                )
+            name = motion.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise GeometryError(
+                    f"Motion {index + 1} needs a name. "
+                    "motions must map a name to a motion, or be a list of motions that each have a name."
+                )
+            pairs.append((name, motion))
+    else:
+        raise GeometryError(
+            "motions must map a name to a motion, or be a list of motions that each have a name."
+        )
+    motions = {}
+    for motion_name, motion in pairs:
+        if not isinstance(motion, dict):
+            raise GeometryError(f"Motion {motion_name!r} must be an object.")
+        ident = _one_line(motion_name, "A motion name")
+        if ident in motions:
+            raise GeometryError(f"Two motions are named {ident!r}.")
+        stored = copy.deepcopy(motion)
+        stored["name"] = ident
+        motions[ident] = stored
+    return motions
 
 
 def _studies(raw, joints: list[dict], relations: list[dict]) -> dict:
@@ -776,18 +811,27 @@ def _point(value: Any, label: str, default: Any = _MISSING) -> list[float] | Non
     return [float(component) for component in value]
 
 
-def _color(value: Any) -> list[float] | None:
+def _color(value: Any) -> list[int | float] | None:
+    """Keep ints and floats apart so a byte and a fraction stay different.
+
+    The picture rule lives in ``assembly._byte_channels``. Storing every
+    channel as a float would make ``(1, 1, 0)`` indistinguishable from
+    ``(1.0, 1.0, 0.0)`` after the assembly is saved.
+    """
     if value is None:
         return None
     if not isinstance(value, (list, tuple)) or len(value) != 3:
-        raise GeometryError("An instance color is three numbers from 0 to 255.")
-    channels = []
+        raise GeometryError("An instance color is three ints from 0 to 255 or three floats from 0 to 1.")
+    from aicad.assembly import _byte_channels
+
+    _byte_channels(value)
+    stored: list[int | float] = []
     for component in value:
-        channel = float(component)
-        if channel < 0 or channel > 255:
-            raise GeometryError("An instance color channel is from 0 to 255.")
-        channels.append(channel)
-    return channels
+        if isinstance(component, int) and not isinstance(component, bool):
+            stored.append(int(component))
+        else:
+            stored.append(float(component))
+    return stored
 
 
 def _optional_float(value: Any, default: float) -> float:
