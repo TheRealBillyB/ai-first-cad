@@ -117,12 +117,7 @@ def normalize(spec: dict) -> dict:
         if not isinstance(values, dict):
             raise GeometryError(f"Pose {pose_name!r} must map joint names to values.")
         poses[str(pose_name)] = {str(key): float(value) for key, value in values.items()}
-    motions = {}
-    for motion_name, motion in (spec.get("motions") or {}).items():
-        if not isinstance(motion, dict):
-            raise GeometryError(f"Motion {motion_name!r} must be an object.")
-        motions[str(motion_name)] = copy.deepcopy(motion)
-        motions[str(motion_name)]["name"] = str(motion_name)
+    motions = _motions(spec.get("motions"))
     ignore = []
     for pair in spec.get("ignore_collisions") or []:
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
@@ -155,6 +150,49 @@ def _gear_train(spec: dict, instances: list[dict], joints: list[dict]):
     from aicad.gears.train import normalize_gear_train
 
     return normalize_gear_train(spec["gear_train"], joints, [item["name"] for item in instances])
+
+
+def _motions(raw) -> dict:
+    """A name-to-motion mapping, or a list of motions that each have a name.
+
+    Joints, cables, and actuators are lists of named objects. A motion list
+    is the same shape. Anything else is an error, not an attribute failure.
+    """
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        pairs = list(raw.items())
+    elif isinstance(raw, (list, tuple)):
+        pairs = []
+        for index, motion in enumerate(raw):
+            if not isinstance(motion, dict):
+                raise GeometryError(
+                    "motions must map a name to a motion, or be a list of motions that each have a name."
+                )
+            name = motion.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise GeometryError(
+                    f"Motion {index + 1} needs a name. "
+                    "motions must map a name to a motion, or be a list of motions that each have a name."
+                )
+            pairs.append((name.strip(), motion))
+    else:
+        raise GeometryError(
+            "motions must map a name to a motion, or be a list of motions that each have a name."
+        )
+    motions = {}
+    for motion_name, motion in pairs:
+        if not isinstance(motion, dict):
+            raise GeometryError(f"Motion {motion_name!r} must be an object.")
+        ident = str(motion_name).strip()
+        if not ident:
+            raise GeometryError("A motion needs a name.")
+        if ident in motions:
+            raise GeometryError(f"Two motions are named {ident!r}.")
+        stored = copy.deepcopy(motion)
+        stored["name"] = ident
+        motions[ident] = stored
+    return motions
 
 
 def _studies(raw, joints: list[dict], relations: list[dict]) -> dict:
