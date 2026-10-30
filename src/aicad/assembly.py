@@ -729,10 +729,25 @@ def _near_waypoint(sample: list[float], points: list[dict], instance: str, seat:
     return False
 
 
+def _byte_channels(color) -> tuple[float, float, float]:
+    """RGB bytes for a picture.
+
+    Shade is about 0.2 to 1 and the picture stores bytes. A channel of 1 or
+    less is a fraction of full scale: multiplied by the shade and truncated,
+    every face becomes 0 and the solid is black with no shading. Channels
+    above 1 are already bytes. Black stays black.
+    """
+
+    channels = (float(color[0]), float(color[1]), float(color[2]))
+    if max(channels) <= 1.0:
+        return tuple(channel * 255.0 for channel in channels)
+    return channels
+
+
 def _instance_color(instance: dict, index: int) -> tuple[float, float, float]:
     color = instance.get("color")
     if color:
-        return (float(color[0]), float(color[1]), float(color[2]))
+        return _byte_channels(color)
     return _PALETTE[index % len(_PALETTE)]
 
 
