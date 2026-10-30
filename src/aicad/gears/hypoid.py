@@ -1194,12 +1194,22 @@ def tool_tooth_rings(design: dict) -> list[list[tuple[float, float, float]]]:
     """One ring tooth, closed on its root and slightly larger than the blade.
 
     The extra stock is what the pinion blank loses. The real ring tooth is
-    smaller by ``_BIAS_MM``, so the two keep a gap after the cut. The tool
-    uses the ring tooth's station count. A coarser tool chord falls inside
-    the ring facet, and on a large ring that chord is the interference.
+    smaller by ``_BIAS_MM``, so the two keep a gap after the cut.
+
+    A short face on a coarse ring keeps the seven-station cutter those pairs
+    were built with. A longer face, or a fine pitch, uses the ring tooth's
+    own stations and a deeper root. A coarser chord on that ring falls inside
+    the facet, and the tooth then sticks out of the groove.
     """
     face_n, flank_n, tip_n, _root_n = _station_counts(design)
     extra = min(0.05, design["theta_face"] * 0.3)
+    pitch = 2.0 * math.pi / design["z2"]
+    if face_n <= 11 and pitch >= math.radians(12.0):
+        counts = (7, 6, 2, 2)
+        thetas = _linspace(-design["theta_face"] - extra, design["theta_face"] + extra, counts[0])
+        tip_target = -design["ha_ring"] - design["clearance"]
+        root_target = design["hf_ring"] + 0.6
+        return _closed_tooth_profiles(design, thetas, -_TOOL_STOCK_MM, tip_target, root_target, counts)
     # The same stations as the ring tooth, plus one past each end of the face.
     # A different station set lofts across the ring facet and the tooth sticks
     # out of the groove.
