@@ -87,6 +87,45 @@ def _write(job: Path, payload: dict) -> None:
             pass
 
 
+def _helper_read(workspace: Path, outside: str) -> str:
+    """What a child process could read. ``closed`` means the outside file stayed closed."""
+
+    import subprocess
+
+    inside = workspace / "helper-inside.txt"
+    inside.write_text("inside-ok\n", encoding="utf-8")
+    code = (
+        "import pathlib, sys\n"
+        "inside, outside = sys.argv[1], sys.argv[2]\n"
+        "try:\n"
+        "    sys.stdout.write('IN|' + pathlib.Path(inside).read_text(encoding='utf-8'))\n"
+        "except Exception as exc:\n"
+        "    sys.stdout.write('IN|' + type(exc).__name__)\n"
+        "try:\n"
+        "    sys.stdout.write('OUT|' + pathlib.Path(outside).read_text(encoding='utf-8'))\n"
+        "except Exception as exc:\n"
+        "    sys.stdout.write('OUT|' + type(exc).__name__)\n"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", code, str(inside), outside],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "not-started"
+    text = completed.stdout or ""
+    if "OUT|aicad-confinement-probe" in text:
+        return "opened"
+    if "IN|inside-ok" in text:
+        return "closed"
+    return "not-started"
+
+
 def _format(code: str, exc: BaseException, filename: str) -> str:
     line_no = None
     for frame in traceback.extract_tb(exc.__traceback__):
@@ -191,6 +230,9 @@ def _probe(workspace: Path, job: Path) -> int:
     inside = workspace / "probe_inside.txt"
     inside.write_text("ok", encoding="utf-8")
     found["write_inside"] = inside.read_text(encoding="utf-8")
+    helper_target = spec.get("helper_read")
+    if isinstance(helper_target, str) and helper_target:
+        found["helper_read"] = _helper_read(workspace, helper_target)
     stream = None
     try:
         stream = socket.socket()
