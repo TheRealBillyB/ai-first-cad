@@ -217,7 +217,9 @@ def render_table(report: dict, path: Path) -> dict:
     height = top + 28 + line_h * (len(rows) + 1) + 24
     image = Image.new("RGB", (width, max(height, 160)), (248, 246, 240))
     draw = ImageDraw.Draw(image)
-    draw.text((16, 12), f"{report['assembly']}  bill of materials", fill=ink, font=title_font)
+    from aicad.labels import plain_line
+
+    draw.text((16, 12), plain_line(f"{report.get('assembly') or ''}  bill of materials"), fill=ink, font=title_font)
     for index, line in enumerate(caption):
         draw.text((16, 36 + index * 18), line, fill=muted, font=small)
     headers = ("item", "qty", "category", "name", "line kg", "description")
@@ -240,7 +242,7 @@ def render_table(report: dict, path: Path) -> dict:
             row["description"],
         )
         for value, start, limit in zip(values, starts, limits):
-            draw.text((start, y), _fit(str(value), font, limit), fill=ink, font=font)
+            draw.text((start, y), _fit(plain_line(str(value)), font, limit), fill=ink, font=font)
     _save_png(path, image)
     return {"name": "bom", "path": str(path.resolve()), "width": image.width, "height": image.height}
 
@@ -499,12 +501,28 @@ def _covers(font, text: str) -> bool:
 
 
 def _csv_cell(value: object) -> object:
-    """A text cell stays text. A number stays a number."""
+    """A text cell stays text. A number stays a number.
+
+    A line break, a line separator, or a paragraph separator becomes a space
+    so the cell stays on one row. A cell that then looks like a formula is
+    stored as text.
+    """
     if not isinstance(value, str) or value == "":
         return value
-    if value.lstrip(" \t\r\n")[:1] in "=+-@":
-        return "'" + value
-    return value
+    import unicodedata
+
+    flat = []
+    for char in value:
+        if char in "\r\n" or unicodedata.category(char) in {"Zl", "Zp"}:
+            flat.append(" ")
+        elif unicodedata.category(char) in {"Cc", "Cf", "Cs"} and char != "\t":
+            continue
+        else:
+            flat.append(char)
+    text = "".join(flat)
+    if text.lstrip(" \t")[:1] in "=+-@":
+        return "'" + text
+    return text
 
 
 def _prepare(path: Path) -> None:

@@ -28,13 +28,20 @@ _RELATIONS = ("gear", "linkage", "cylinder")
 _MISSING = object()
 
 
+def _one_line(value: object, label: str) -> str:
+    from aicad.labels import require_one_line
+
+    return require_one_line(value if isinstance(value, str) else "" if value is None else str(value), label, GeometryError)
+
+
 def normalize(spec: dict) -> dict:
     """Return a cleaned assembly spec. Joint values are the stored commands."""
     if not isinstance(spec, dict):
         raise GeometryError("An assembly spec is an object.")
-    name = spec.get("name")
-    if not isinstance(name, str) or not name.strip():
+    raw_name = spec.get("name")
+    if not isinstance(raw_name, str):
         raise GeometryError("An assembly needs a name.")
+    name = _one_line(raw_name, "An assembly name")
     instances = spec.get("instances")
     if not isinstance(instances, list) or not instances:
         raise GeometryError(f"Assembly {name!r} needs at least one instance.")
@@ -43,15 +50,15 @@ def normalize(spec: dict) -> dict:
     for index, instance in enumerate(instances):
         if not isinstance(instance, dict) or not instance.get("name") or not instance.get("part"):
             raise GeometryError(f"Instance {index} needs a name and a part.")
-        ident = str(instance["name"])
+        ident = _one_line(instance["name"], "An instance name")
         if ident in seen:
             raise GeometryError(f"Two instances are named {ident!r}.")
         seen.add(ident)
         cleaned_instances.append(
             {
                 "name": ident,
-                "part": str(instance["part"]),
-                "material": str(instance.get("material") or "steel"),
+                "part": _one_line(instance["part"], "A part name"),
+                "material": _one_line(instance.get("material") or "steel", "A material name"),
                 "color": _color(instance.get("color")),
                 "placement": _placement(instance.get("placement")),
                 "payload_kg": _optional_float(instance.get("payload_kg"), 0.0),
@@ -69,7 +76,7 @@ def normalize(spec: dict) -> dict:
             raise GeometryError(
                 f"Joint {index} type {kind!r} is unknown. Use {', '.join(_STRUCTURAL)}."
             )
-        jname = str(joint.get("name") or f"joint_{index + 1}")
+        jname = _one_line(joint.get("name") or f"joint_{index + 1}", "A joint name")
         if jname in joint_names:
             raise GeometryError(f"Two joints are named {jname!r}.")
         parent = str(joint.get("parent") or "")
@@ -105,7 +112,7 @@ def normalize(spec: dict) -> dict:
                 continue
             if not isinstance(mate_name, str) or not mate_name.strip():
                 raise GeometryError(f"Joint {jname!r} {side}_mate must be a mate name.")
-            record[f"{side}_mate"] = mate_name.strip()
+            record[f"{side}_mate"] = _one_line(mate_name, "A mate name")
         joints.append(record)
     _roots_and_cycles(seen, joints)
     relations = []
@@ -116,18 +123,20 @@ def normalize(spec: dict) -> dict:
     for pose_name, values in (spec.get("poses") or {}).items():
         if not isinstance(values, dict):
             raise GeometryError(f"Pose {pose_name!r} must map joint names to values.")
-        poses[str(pose_name)] = {str(key): float(value) for key, value in values.items()}
+        pose = _one_line(pose_name, "A pose name")
+        poses[pose] = {_one_line(key, "A joint name"): float(value) for key, value in values.items()}
     motions = {}
     for motion_name, motion in (spec.get("motions") or {}).items():
         if not isinstance(motion, dict):
             raise GeometryError(f"Motion {motion_name!r} must be an object.")
-        motions[str(motion_name)] = copy.deepcopy(motion)
-        motions[str(motion_name)]["name"] = str(motion_name)
+        motion_key = _one_line(motion_name, "A motion name")
+        motions[motion_key] = copy.deepcopy(motion)
+        motions[motion_key]["name"] = motion_key
     ignore = []
     for pair in spec.get("ignore_collisions") or []:
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
             raise GeometryError("ignore_collisions entries are [instance, instance].")
-        ignore.append([str(pair[0]), str(pair[1])])
+        ignore.append([_one_line(pair[0], "An instance name"), _one_line(pair[1], "An instance name")])
     _ordered_relations(relations)
     studies = _studies(spec.get("studies"), joints, relations)
     cleaned = {
@@ -435,7 +444,7 @@ def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
         raise GeometryError(
             f"Relation {index} type {kind!r} is unknown. Use gear, linkage, or cylinder."
         )
-    name = str(relation.get("name") or f"{kind}_{index + 1}")
+    name = _one_line(relation.get("name") or f"{kind}_{index + 1}", "A relation name")
     driver = str(relation.get("driver") or "")
     driven = str(relation.get("driven") or "")
     if driver not in joints or driven not in joints:

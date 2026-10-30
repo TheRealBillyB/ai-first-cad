@@ -443,7 +443,9 @@ def note_for(name: str, arguments: dict | None, result: dict | None) -> dict:
     command = COMMANDS.get(name)
     record = bool(command and command.undo) or name in _LOUD
     parts = _affected_parts(name, arguments, result)
-    summary = _summary(name, arguments, result, parts)
+    from aicad.labels import plain_line
+
+    summary = plain_line(_summary(name, arguments, result, parts))
     frame = ""
     follow = False
     if record and name not in _NO_FRAME:
