@@ -282,7 +282,7 @@ def test_open_save_as_and_recent_projects(tmp_path, monkeypatch):
     assert (original / "session.json").is_file()
     with pytest.raises(GeometryError, match="Nothing to undo"):
         workspace.execute("undo")
-    opened = workspace.execute("open_project", {"path": str(original)}, source="mcp")
+    opened = workspace.execute("open_project", {"path": str(original)}, source="ui")
     assert opened["parts"] == ["block"]
     assert workspace.root == original.resolve()
     names = [item["path"] for item in workspace.execute("list_recent_projects")["projects"]]
