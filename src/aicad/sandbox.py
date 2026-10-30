@@ -3582,6 +3582,10 @@ class _DiskWatch:
     cap is stopped, and the extra bytes are removed afterwards.
     """
 
+    # How long to wait for the watch to leave the tree. A longer read is
+    # treated as a failed quota check instead of holding the run.
+    _stop_timeout = 2.0
+
     def __init__(self, root: Path, before: dict[str, int], file_cap: int, disk_cap: int):
         self.root = root
         self.before = before
@@ -3598,6 +3602,8 @@ class _DiskWatch:
         self._ready = threading.Event()
         self._event_thread: threading.Thread | None = None
         self._watch_ok = False
+        self._wake_write: int | None = None
+        self._windows_directory = None
         self._folded: set[int] = set()
         self._child_extra = 0
         self.child_report: Path | None = None
@@ -3630,14 +3636,47 @@ class _DiskWatch:
                 return
             self._io_fds[pid] = descriptor
 
-    def close_counters(self) -> None:
-        self._stop.set()
+    def close_counters(self) -> bool:
+        """Stop the watch. True when it has left the tree.
+
+        The watch is woken, then given ``_stop_timeout`` seconds. If it is
+        still inside a read, the quota is exceeded and the held files stay
+        with that thread. The caller must not remove the tree until the
+        thread returns.
+        """
+
+        self._wake_watch()
         thread = self._event_thread
         if thread is not None and thread is not threading.current_thread():
-            # The watch is holding the tree, or it is inside a scan, until
-            # this thread returns. Cleanup of the project folder waits for
-            # that, so the two never remove and scan the same tree at once.
-            thread.join()
+            thread.join(timeout=self._stop_timeout)
+            if thread.is_alive():
+                self.hit.set()
+                return False
+        self._release_held_files()
+        return True
+
+    def _wake_watch(self) -> None:
+        """Ask the watch to leave, and wake a read that is waiting."""
+
+        self._stop.set()
+        with self._lock:
+            wake = self._wake_write
+            if wake is not None:
+                try:
+                    os.write(wake, b"\0")
+                except OSError:
+                    pass
+            handle = self._windows_directory
+            if handle is not None and sys.platform == "win32":
+                from aicad.sandbox_windows import cancel_directory_watch
+
+                cancel_directory_watch(handle)
+
+    def _remember_windows_directory(self, handle) -> None:
+        with self._lock:
+            self._windows_directory = handle
+
+    def _release_held_files(self) -> None:
         with self._lock:
             held = list(self._held.items())
             self._held.clear()
@@ -3802,6 +3841,8 @@ class _DiskWatch:
         pending = [str(self.root)]
         visited: set[str] = set()
         while pending:
+            if self._stop.is_set():
+                return
             directory = pending.pop()
             if directory in visited:
                 continue
@@ -3880,6 +3921,7 @@ class _DiskWatch:
                     self.note_files,
                     self._stop,
                     self._mark_watch,
+                    self._remember_windows_directory,
                 )
             else:
                 self._mark_watch(False)
@@ -3920,6 +3962,8 @@ class _DiskWatch:
             from aicad.paths import is_reparse
 
             for dirpath, dirnames, _names in os.walk(self.root, followlinks=False):
+                if self._stop.is_set():
+                    break
                 current = Path(dirpath)
                 if current.is_symlink() or is_reparse(current):
                     dirnames.clear()
@@ -3938,16 +3982,30 @@ class _DiskWatch:
             os.close(descriptor)
             self._mark_watch(False)
             return
+        wake_flags = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+        if hasattr(os, "pipe2") and wake_flags:
+            wake_read, wake_write = os.pipe2(wake_flags)
+        else:
+            wake_read, wake_write = os.pipe()
+        with self._lock:
+            self._wake_write = wake_write
         self._mark_watch(True)
         try:
             while not self._stop.is_set():
-                readable, _, _ = select.select([descriptor], [], [], 0.02)
-                if self._stop.is_set():
-                    break
-                if readable:
+                try:
+                    readable, _, _ = select.select([descriptor, wake_read], [], [], 0.02)
+                except InterruptedError:
+                    continue
+                if descriptor in readable:
                     self._read_inotify(descriptor, watches, add_watch)
                 self._reread_held()
+                if self._stop.is_set() or wake_read in readable:
+                    break
         finally:
+            with self._lock:
+                self._wake_write = None
+                os.close(wake_write)
+            os.close(wake_read)
             os.close(descriptor)
 
     def _read_inotify(self, descriptor: int, watches: dict[int, Path], add_watch) -> None:
@@ -4747,6 +4805,36 @@ def _control_directory() -> Path:
     return _make_private_tool_directory()
 
 
+def _finish_script_disk(disk: _DiskWatch, job: Path, *, keep_job: bool) -> bool:
+    """Stop the quota watch, then remove ``job`` only after the watch has left.
+
+    False means the watch was still in the tree when the wait ended. The
+    quota is exceeded, and ``job`` is removed only once that thread returns.
+    """
+
+    released = disk.close_counters()
+    if released:
+        if not keep_job:
+            shutil.rmtree(job, ignore_errors=True)
+        return True
+    disk.hit.set()
+    threading.Thread(
+        target=_remove_job_when_watch_leaves,
+        args=(disk, job),
+        name="aicad-job-cleanup",
+        daemon=True,
+    ).start()
+    return False
+
+
+def _remove_job_when_watch_leaves(disk: _DiskWatch, job: Path) -> None:
+    thread = disk._event_thread
+    if thread is not None and thread is not threading.current_thread():
+        thread.join()
+    disk._release_held_files()
+    shutil.rmtree(job, ignore_errors=True)
+
+
 def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
@@ -5023,7 +5111,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             stop_watch.set()
         if watcher is not None:
             watcher.join(timeout=1)
-        disk.close_counters()
+        released = _finish_script_disk(disk, job, keep_job=keep_job)
         _release_pids_cgroup(pids_cgroup)
         if profile_dir is not None:
             from aicad.paths import remove_tree
@@ -5037,8 +5125,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             shutil.rmtree(probe_root, ignore_errors=True)
         if design_record is not None:
             design_record.close()
-        if not keep_job:
-            shutil.rmtree(job, ignore_errors=True)
+        if not released and sys.exc_info()[0] is None:
+            raise ScriptError("The script was stopped because the disk quota watch did not finish.")
 
 
 def _died_from_limit_signal(code: int) -> bool:

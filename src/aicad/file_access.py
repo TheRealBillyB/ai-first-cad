@@ -29,10 +29,9 @@ _OPEN_EXISTING = 3
 _DIR_READ = 0x1 | 0x20 | 0x80 | 0x100000
 _DIR_ACCESS = _DIR_READ | 0x2 | 0x4 | 0x100
 _FILE_READ_ACCESS = 0x1 | 0x80 | 0x100000
-# DELETE plus the attributes and synchronize bits NtCreateFile expects.
-# FILE_LIST_DIRECTORY is added for a directory. A read of the parent does
-# not ask for DELETE: that right deletes the directory itself.
-_FILE_DELETE_ACCESS = 0x80 | 0x10000 | 0x100000
+# DELETE and SYNCHRONIZE only. A plain remove asks for those, not to read
+# or write the bytes. The parent directory is opened for lookup, unchanged.
+_FILE_DELETE_ACCESS = 0x10000 | 0x100000
 # FILE_READ_ATTRIBUTES (0x80) is required to read the file record on a write handle.
 _FILE_WRITE_ACCESS = 0x1 | 0x2 | 0x80 | 0x100 | 0x10000 | 0x100000
 _FILE_OPEN = 1
@@ -1056,11 +1055,10 @@ def _remove_windows_name(path: Path, *, directory: bool) -> None:
     parent = open_directory(path.parent)
     handle = None
     try:
-        access = _FILE_DELETE_ACCESS | (0x1 if directory else 0)
         handle = _nt_open(
             _os_handle(parent),
             name,
-            access=access,
+            access=_FILE_DELETE_ACCESS,
             directory=directory,
             create=False,
         )
