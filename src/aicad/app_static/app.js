@@ -105,9 +105,11 @@ async function applyRefresh(options = {}) {
     ui.parameterKey = "";
   }
   if (!ui.part && ui.state.parts.length) ui.part = ui.state.parts[0].name;
+  const pendingLine = sketchPendingPoint(ui.sketch, ui.lineStart);
+  const pendingCenter = sketchPendingPoint(ui.sketch, ui.circleCenter);
   if (ui.sketchName) {
     const found = (ui.state.sketches || []).find((item) => item.name === ui.sketchName);
-    if (found) ui.sketch = found;
+    if (found) ui.sketch = sketchWithPendingPoint(sketchWithPendingPoint(found, pendingLine), pendingCenter);
   }
   if (ui.state.project) {
     $("project-name").textContent = ui.state.project.name;
