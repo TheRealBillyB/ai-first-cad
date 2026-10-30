@@ -490,6 +490,20 @@ def _load_mesh(root: Path, relative: str) -> TriangleMesh:
     )
 
 
+def _png_dimensions(raw: bytes) -> tuple[int, int]:
+    """Width and height from a PNG header. The picture is not decoded."""
+    if len(raw) < 24 or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise GeometryError("A session picture has to be a PNG.")
+    length = int.from_bytes(raw[8:12], "big")
+    if raw[12:16] != b"IHDR" or length != 13:
+        raise GeometryError("A session picture has to be a PNG.")
+    width = int.from_bytes(raw[16:20], "big")
+    height = int.from_bytes(raw[20:24], "big")
+    if width < 1 or height < 1 or width > 2_000_000 or height > 2_000_000 or width * height > 2_000_000:
+        raise GeometryError("A session picture is too large.")
+    return width, height
+
+
 def _png_bytes(image: Image.Image) -> bytes:
     buffer = BytesIO()
     image.convert("RGB").save(buffer, format="PNG")
@@ -526,6 +540,7 @@ def _refresh_frame_picture(root: Path, step: dict) -> bool:
 def _load_png(root: Path, relative: str) -> Image.Image:
     path = _project_file(root, relative)
     raw = _read_bytes(root, path, _MAX_PICTURE_BYTES)
+    _png_dimensions(raw)
     with Image.open(BytesIO(raw)) as picture:
         if picture.format != "PNG":
             raise GeometryError("A session picture has to be a PNG.")

@@ -25,6 +25,29 @@ from aicad.paths import prepare_geometry_import
 prepare_geometry_import()
 
 
+def _pin_opencascade_to_this_thread() -> None:
+    """Keep OpenCascade on this thread on macOS.
+
+    The default pool is created with ``pthread_create`` and a 512 KiB stack.
+    A boolean or a mesh that recurses there kills the process, and a pytest
+    worker exits with no traceback. One pool thread means the caller does
+    the work. A later import can grow that pool again, so a deep call pins
+    it once more before it runs.
+    """
+
+    if sys.platform != "darwin":
+        return
+    from OCP.OSD import OSD_Parallel, OSD_ThreadPool
+
+    # Prefer these threads over an auxiliary pool. A build without one
+    # ignores the request. Either way the pool below is a single thread.
+    OSD_Parallel.SetUseOcctThreads_s(True)
+    pool = OSD_ThreadPool.DefaultPool_s(1)
+    if pool.NbThreads() != 1 or pool.HasThreads() or pool.NbDefaultThreadsToLaunch() != 1:
+        pool.Init(1)
+        pool.SetNbDefaultThreadsToLaunch(1)
+
+
 def _keep_opencascade_on_the_calling_thread() -> None:
     """Run OpenCascade on the caller on macOS.
 
@@ -39,21 +62,14 @@ def _keep_opencascade_on_the_calling_thread() -> None:
     macOS gives those threads about 16 MiB when no size is set. The call
     below stores an explicit size of at least 8 MiB for threads started
     after this import. A sandboxed script runs on the child process main
-    thread, which keeps the stack the process was started with.
+    thread, which keeps the stack the process was started with. A caller
+    whose own stack is only the process limit runs the deep call on a
+    thread that has the larger stack.
     """
     from aicad.thread_stack import prepare_geometry_thread_stack
 
     prepare_geometry_thread_stack()
-    if sys.platform != "darwin":
-        return
-    from OCP.OSD import OSD_Parallel, OSD_ThreadPool
-
-    # Prefer these threads over an auxiliary pool. A build without one
-    # ignores the request. Either way the pool below is a single thread.
-    OSD_Parallel.SetUseOcctThreads_s(True)
-    pool = OSD_ThreadPool.DefaultPool_s(1)
-    pool.Init(1)
-    pool.SetNbDefaultThreadsToLaunch(1)
+    _pin_opencascade_to_this_thread()
 
 
 _keep_opencascade_on_the_calling_thread()
@@ -576,6 +592,13 @@ def clearance_between(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Ve
 
     The gap is zero when the solids interfere. It is not a penetration depth.
     """
+    from aicad.thread_stack import call_with_geometry_stack
+
+    return call_with_geometry_stack(_clearance_between_on_this_thread, a, b)
+
+
+def _clearance_between_on_this_thread(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Vec3 | None]:
+    _pin_opencascade_to_this_thread()
     common = a.impl & b.impl
     overlap = float(common.volume) if common is not None else 0.0
     if overlap < 0:
@@ -1829,20 +1852,29 @@ def import_step_bytes(path: Path, data: bytes) -> Shape:
         raise GeometryError(f"STEP file {path} is too large.")
     data = _accepted_step_bytes(path, data)
     _refuse_step_file_outside_folder(path, data)
+    from aicad.thread_stack import call_with_geometry_stack
+
     try:
-        # The STEP parser logs through C stdout. That descriptor is the MCP
-        # stream when `aicad serve` is running, so the bytes never reach it.
-        with divert_native_stdio(stderr=True):
-            imported = _read_step_bytes(path, data)
+        solid = call_with_geometry_stack(_import_step_on_this_thread, path, data)
     except GeometryError:
         raise
     except Exception as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
+    return Shape(solid)
+
+
+def _import_step_on_this_thread(path: Path, data: bytes):
+    """Read and sew one STEP solid. The caller has a stack large enough for it."""
+
+    _pin_opencascade_to_this_thread()
+    # The STEP parser logs through C stdout. That descriptor is the MCP
+    # stream when `aicad serve` is running, so the bytes never reach it.
+    with divert_native_stdio(stderr=True):
+        imported = _read_step_bytes(path, data)
     try:
-        solid = _require_solid(imported)
+        return _require_solid(imported)
     except GeometryError as exc:
         raise GeometryError(f"Could not read STEP file {path}: {exc}") from exc
-    return Shape(solid)
 
 
 def _accepted_step_bytes(path: Path, data: bytes) -> bytes:
@@ -2191,6 +2223,13 @@ def tessellate(shape: Shape) -> TriangleMesh:
     pictures discard them, and the packer overflows on a solid with many
     faces, such as two gears in a housing.
     """
+    from aicad.thread_stack import call_with_geometry_stack
+
+    return call_with_geometry_stack(_tessellate_on_this_thread, shape)
+
+
+def _tessellate_on_this_thread(shape: Shape) -> TriangleMesh:
+    _pin_opencascade_to_this_thread()
     impl = shape.impl
     _refuse_face_count(len(list(impl.faces())))
     box = impl.bounding_box()

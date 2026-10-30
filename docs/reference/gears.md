@@ -4,6 +4,8 @@
 
 The Python calls are `gear_data`, `build_gear`, `pair_geometry`, and `mesh_placement`. The command line is `aicad gear`. The assistant tool is `create_gear`. A part stored this way has source `gear` and is rebuilt from the spec.
 
+A record returned by `gear_data` can be passed to `build_gear`, `pair_geometry`, or `mesh_placement`. Those calls use the spec stored on the record. Reported numbers that share an input name, such as a bevel profile shift or a hypoid pinion spiral, stay results. They are not applied again as inputs. A profile shift written on a bevel or hypoid spec is still refused.
+
 ## Spur and helical
 
 Standards: ISO 21771:2007 for the involute geometry, ISO 53:1998 for the basic rack.
@@ -78,7 +80,7 @@ A spiral is a logarithmic spiral of constant angle βm,
 
 Positive βm is right-hand. It is not a circular-cutter trace. A pair needs opposite hands, and a same-hand spiral pair is refused. The transverse contact ratio is the virtual spur pair at the middle of the face both gears share, with addendum scaled by that radius over Re. The overlap ratio is the spiral's rotation along that shared face divided by the angular pitch.
 
-Do not pass `profile_shift` on a bevel. The addendum split above is the shift, and the two members sum to zero.
+Do not pass `profile_shift` on a bevel. The addendum split above is the shift, and the two members sum to zero. The same number on a `gear_data` record is that result. Passing the record does not set the shift again.
 
 ## Hypoid
 

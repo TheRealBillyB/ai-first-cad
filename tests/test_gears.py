@@ -290,6 +290,77 @@ def test_same_hand_gears_are_not_placed_as_a_mesh():
     assert meshed["backlash_mm"] == 0.0
 
 
+def test_a_computed_gear_record_builds_from_its_spec():
+    """Results that share an input name must not be applied a second time."""
+    bevel = {
+        "type": "straight_bevel",
+        "module_mm": 2,
+        "teeth": 16,
+        "mate_teeth": 32,
+        "face_width_mm": 8,
+        "pressure_angle_deg": 20,
+        "shaft_angle_deg": 90,
+    }
+    mate = {**bevel, "teeth": 32, "mate_teeth": 16}
+    data = gear_data(bevel)
+    again = gear_data(data)
+    assert data["profile_shift"] != pytest.approx(0)
+    assert again["profile_shift"] == pytest.approx(data["profile_shift"])
+    assert again["pitch_angle_deg"] == pytest.approx(data["pitch_angle_deg"])
+    assert again["addendum_mm"] == pytest.approx(data["addendum_mm"])
+    assert again["tip_diameter_mm"] == pytest.approx(data["tip_diameter_mm"])
+    placed = pair_geometry(data, gear_data(mate))
+    direct = pair_geometry(bevel, mate)
+    assert placed["transverse_contact_ratio"] == pytest.approx(direct["transverse_contact_ratio"])
+    assert mesh_placement(data, gear_data(mate))["gear"]["rotation_deg"] == pytest.approx(
+        mesh_placement(bevel, mate)["gear"]["rotation_deg"]
+    )
+    with pytest.raises(GeometryError, match="profile_shift"):
+        gear_data({**bevel, "profile_shift": 0.2})
+    solid = kernel.adopt(build_gear(data))
+    original = kernel.adopt(build_gear(bevel))
+    assert kernel.measure(solid).volume_mm3 == pytest.approx(
+        kernel.measure(original).volume_mm3, rel=1e-6
+    )
+
+    spiral = {
+        "type": "spiral_bevel",
+        "module_mm": 2,
+        "teeth": 16,
+        "mate_teeth": 32,
+        "face_width_mm": 8,
+        "pressure_angle_deg": 20,
+        "shaft_angle_deg": 90,
+        "spiral_angle_deg": 25,
+    }
+    spiral_data = gear_data(spiral)
+    spiral_again = gear_data(spiral_data)
+    assert spiral_again["spiral_angle_deg"] == pytest.approx(spiral_data["spiral_angle_deg"])
+    assert spiral_again["profile_shift"] == pytest.approx(spiral_data["profile_shift"])
+
+    pinion = gear_data(_hypoid_member("pinion"))
+    rebuilt = gear_data(pinion)
+    assert pinion["spiral_angle_deg"] != pytest.approx(pinion["spec"]["spiral_angle_deg"])
+    assert rebuilt["spiral_angle_deg"] == pytest.approx(pinion["spiral_angle_deg"])
+    assert rebuilt["ring_spiral_angle_deg"] == pytest.approx(35)
+    assert rebuilt["pitch_angle_deg"] == pytest.approx(pinion["pitch_angle_deg"])
+    assert rebuilt["normal_module_mm"] == pytest.approx(pinion["normal_module_mm"])
+
+    spur = {
+        "type": "spur",
+        "module_mm": 2,
+        "teeth": 20,
+        "face_width_mm": 8,
+        "profile_shift": 0.25,
+    }
+    spur_data = gear_data(spur)
+    spur_again = gear_data(spur_data)
+    assert spur_again["profile_shift"] == pytest.approx(0.25)
+    assert spur_again["tooth_thickness_transverse_mm"] == pytest.approx(
+        spur_data["tooth_thickness_transverse_mm"]
+    )
+
+
 def test_spur_pair_contact_ratio_is_the_path_of_contact():
     alpha = math.radians(20)
     radius_1, radius_2 = 20.0, 40.0
@@ -863,6 +934,23 @@ def test_a_hypoid_without_a_pitch_point_is_refused_before_the_roll():
         text = str(caught.value)
         assert "missed the pinion" not in text
         assert "did not leave a toothed" not in text
+
+
+def test_a_hypoid_pitch_point_survives_when_every_length_is_scaled():
+    """Cone angles are scale-free. Growing the blank must not lose the pitch point."""
+    small = gear_data(_hypoid_member("ring"))
+    factor = 3.0
+    grown = dict(_hypoid_member("ring"))
+    grown["offset_mm"] = 12.0 * factor
+    grown["ring_diameter_mm"] = 80.0 * factor
+    grown["face_width_mm"] = 10.0 * factor
+    data = gear_data(grown)
+    assert data["offset_mm"] == pytest.approx(36.0)
+    assert data["ring_pitch_diameter_mm"] == pytest.approx(240.0)
+    assert data["pinion_pitch_angle_deg"] == pytest.approx(small["pinion_pitch_angle_deg"], abs=0.05)
+    assert data["ring_pitch_angle_deg"] == pytest.approx(small["ring_pitch_angle_deg"], abs=0.05)
+    assert data["pinion_spiral_angle_deg"] == pytest.approx(small["pinion_spiral_angle_deg"], abs=0.05)
+    assert data["normal_module_mm"] == pytest.approx(small["normal_module_mm"] * factor, rel=0.01)
 
 
 def test_a_hypoid_tooth_that_cannot_be_cut_is_refused_before_the_roll():

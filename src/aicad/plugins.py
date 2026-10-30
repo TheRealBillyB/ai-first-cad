@@ -31,9 +31,7 @@ import importlib.metadata
 import importlib.util
 import json
 import re
-import shutil
 import sys
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -626,10 +624,16 @@ def export_with(
     opts = _options_dict(options)
     view, temp_dir = _part_view(document, part, permissions=loaded.permissions, step=True)
     try:
+        from aicad.paths import use_held_thread
+
+        def _call_exporter():
+            with use_held_thread(temp_dir):
+                return spec.call(view, opts)
+
         payload = _during(
             loaded.permissions,
             document.workspace,
-            lambda: spec.call(view, opts),
+            _call_exporter,
         )
     except PluginError:
         raise
@@ -850,9 +854,14 @@ def _part_view(document, name: str, *, permissions: frozenset[str], step: bool) 
     temp_dir = None
     step_file = None
     if step:
-        temp_dir = Path(tempfile.mkdtemp(prefix="aicad-plugin-"))
-        step_file = temp_dir / f"{name}.step"
-        document.export(name, step_file, "step")
+        from aicad.paths import guest_path, open_held_directory
+
+        temp_dir = open_held_directory("aicad-plugin-")
+        step_name = f"{name}.step"
+        if "/" in step_name or "\\" in step_name or step_name in {".", ".."}:
+            step_name = "part.step"
+        document.export(name, Path(temp_dir) / step_name, "step")
+        step_file = guest_path(temp_dir, step_name)
     workspace = Path(document.workspace) if "project_files" in permissions else None
     view = PartView(
         name=name,
@@ -870,7 +879,9 @@ def _part_view(document, name: str, *, permissions: frozenset[str], step: bool) 
 
 def _cleanup(temp_dir: Path | None) -> None:
     if temp_dir is not None:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        from aicad.paths import close_held_directory
+
+        close_held_directory(temp_dir)
 
 
 def _lookup(store: dict[str, _Registration], plugin: str, label: str, name: str) -> _Registration:

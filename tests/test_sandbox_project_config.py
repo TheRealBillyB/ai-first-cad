@@ -20,11 +20,13 @@ from aicad.kernel import measure
 from aicad.sandbox import (
     MEMORY_BYTES,
     WALL_SECONDS,
+    WALL_SECONDS_CAP,
     allow_design_scripts,
     memory_bytes,
     run_design_script,
     run_part_script,
     sandbox_supported,
+    set_project_wall_seconds,
     wall_seconds,
 )
 from aicad.workspace import Workspace
@@ -181,11 +183,59 @@ def test_project_config_cannot_enable_network_or_redirect_writes(tmp_path, confi
     assert status["enabled"] is False
     assert status["network"] == "off"
     assert wall_seconds() == WALL_SECONDS
+    assert wall_seconds(project) == WALL_SECONDS
     assert memory_bytes() == MEMORY_BYTES
     shape = run_part_script(_write_attempt(canary), project)
     assert measure(shape).volume_mm3 == pytest.approx(1)
     assert {key: os.environ.get(key) for key in _ENV_KEYS} == before
     _assert_canary_absent(outside)
+
+
+def test_a_project_can_raise_the_wall_clock_up_to_the_cap(tmp_path, config_home, monkeypatch):
+    project, _outside = _project(tmp_path)
+    from aicad.cli import main as cli_main
+
+    assert wall_seconds(project) == WALL_SECONDS
+    with pytest.raises(ScriptError, match=str(WALL_SECONDS_CAP)):
+        set_project_wall_seconds(project, WALL_SECONDS_CAP + 1)
+    assert cli_main(["script-wall", "600", "--workspace", str(project)]) == 0
+    assert wall_seconds(project) == WALL_SECONDS_CAP
+    monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "999999")
+    assert wall_seconds(project) == WALL_SECONDS_CAP
+    monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "15")
+    assert wall_seconds(project) == 15
+    monkeypatch.delenv("AICAD_SCRIPT_WALL_SECONDS", raising=False)
+    assert wall_seconds(project) == WALL_SECONDS_CAP
+    assert wall_seconds() == WALL_SECONDS
+
+
+def test_a_script_cannot_raise_its_own_wall_clock(tmp_path, config_home):
+    _sandbox_or_skip()
+    project, _outside = _project(tmp_path)
+    script = (
+        "import aicad.sandbox as sandbox\n"
+        "sandbox.set_project_wall_seconds('.', 600)\n"
+        "part = Box(1, 1, 1)\n"
+    )
+    with pytest.raises(ScriptError):
+        run_part_script(script, project)
+    assert wall_seconds(project) == WALL_SECONDS
+
+
+def test_the_project_wall_clock_is_the_limit_that_stops_the_script(tmp_path, config_home):
+    _sandbox_or_skip()
+    project, _outside = _project(tmp_path)
+    set_project_wall_seconds(project, 2)
+    script = (
+        "import math\n"
+        "n = 0\n"
+        "while n < 100000000:\n"
+        "    n += 1\n"
+        "    math.sqrt(n)\n"
+        "part = Box(1, 1, 1)\n"
+    )
+    with pytest.raises(ScriptError, match="longer than 2 seconds"):
+        run_part_script(script, project)
 
 
 def test_script_log_symlink_is_not_written(tmp_path, config_home):

@@ -729,6 +729,9 @@ function drawSketch() {
     visit(circle.center.x - circle.radius, circle.center.y - circle.radius);
     visit(circle.center.x + circle.radius, circle.center.y + circle.radius);
   });
+  Object.values(geometry.arcs || {}).forEach((arc) => {
+    sketchArcSamples(arc, 16).forEach((point) => visit(point[0], point[1]));
+  });
   if (!Number.isFinite(minX)) { minX = 0; maxX = 0; minY = 0; maxY = 0; }
   let span = Math.max(maxX - minX, maxY - minY);
   if (span < 40) {
@@ -761,6 +764,18 @@ function drawSketch() {
     const [x1, y1] = toScreen(line.end.x, line.end.y);
     ctx.strokeStyle = selected.has(id) ? "#8d4e22" : "#1d1a16";
     ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  });
+  Object.entries(geometry.arcs || {}).forEach(([id, arc]) => {
+    const samples = sketchArcSamples(arc, 32);
+    if (samples.length < 2) return;
+    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : "#1d1a16";
+    ctx.beginPath();
+    samples.forEach((point, index) => {
+      const [sx, sy] = toScreen(point[0], point[1]);
+      if (index === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    });
+    ctx.stroke();
   });
   Object.entries(geometry.circles || {}).forEach(([id, circle]) => {
     const [sx, sy] = toScreen(circle.center.x, circle.center.y);
@@ -816,15 +831,18 @@ function screenToSketch(event) {
   return [map.cx + (x - map.width / 2) / map.scale, map.cy - (y - map.height / 2) / map.scale];
 }
 
+function sketchPickTolerance() {
+  const canvas = $("sketch-canvas");
+  const map = canvas && canvas._map;
+  return sketchSnapTolerance(map && map.scale);
+}
+
+function nearestSketchPoint(x, y) {
+  return sketchPointHit(ui.sketch && ui.sketch.geometry, x, y, sketchPickTolerance());
+}
+
 function nearestSketchEntity(x, y) {
-  const geometry = ui.sketch.geometry || {};
-  let best = null;
-  let bestD = 8;
-  Object.entries(geometry.points || {}).forEach(([id, point]) => {
-    const d = Math.hypot(point.x - x, point.y - y);
-    if (d < bestD) { best = id; bestD = d; }
-  });
-  return best;
+  return sketchEntityHit(ui.sketch && ui.sketch.geometry, x, y, sketchPickTolerance());
 }
 
 function freshId(prefix, spec) {
@@ -840,7 +858,7 @@ async function onSketchClick(event) {
   const spec = structuredClone(ui.sketch.spec || { plane: "xy", entities: [], constraints: [] });
   if (ui.tool === "select") {
     const hit = nearestSketchEntity(x, y);
-    ui.sketchSelection = hit ? [hit] : [];
+    ui.sketchSelection = sketchSelectionAfter(ui.sketchSelection, hit, event.shiftKey);
     drawSketch();
     return;
   }
@@ -851,7 +869,7 @@ async function onSketchClick(event) {
     return;
   }
   if (ui.tool === "line") {
-    const hit = nearestSketchEntity(x, y);
+    const hit = nearestSketchPoint(x, y);
     const id = hit || freshId("p", spec);
     if (!hit) spec.entities.push({ id, type: "point", at: [round(x), round(y)] });
     if (!ui.lineStart) {
@@ -867,14 +885,13 @@ async function onSketchClick(event) {
   }
   if (ui.tool === "circle") {
     if (!ui.circleCenter) {
-      const id = nearestSketchEntity(x, y) || freshId("p", spec);
+      const id = nearestSketchPoint(x, y) || freshId("p", spec);
       if (!spec.entities.some((entity) => entity.id === id)) spec.entities.push({ id, type: "point", at: [round(x), round(y)] });
       ui.circleCenter = id;
       ui.sketch.spec = spec;
       return;
     }
-    const center = spec.entities.find((entity) => entity.id === ui.circleCenter);
-    const at = center.at || [0, 0];
+    const at = sketchSolvedPoint(spec, ui.sketch && ui.sketch.geometry, ui.circleCenter);
     const radius = Math.max(0.5, Math.hypot(x - at[0], y - at[1]));
     const id = freshId("c", spec);
     spec.entities.push({ id, type: "circle", center: ui.circleCenter, radius });
@@ -1000,31 +1017,7 @@ async function buildSolid() {
 }
 
 function loopPoints(spec) {
-  const edges = (spec.entities || []).filter((entity) =>
-    (entity.type === "line" || entity.type === "arc") && !entity.construction
-  );
-  let best = [];
-  edges.forEach((edge, index) => {
-    const chain = walkChain(edges, index);
-    if (chain.length > best.length) best = chain;
-  });
-  return best;
-}
-
-function walkChain(edges, startIndex) {
-  const first = edges[startIndex];
-  const chain = [first.start, first.end];
-  const used = new Set([first.id]);
-  let cursor = first.end;
-  while (used.size < edges.length) {
-    const next = edges.find((edge) => !used.has(edge.id) && (edge.start === cursor || edge.end === cursor));
-    if (!next) break;
-    used.add(next.id);
-    cursor = next.start === cursor ? next.end : next.start;
-    if (cursor === chain[0]) break;
-    chain.push(cursor);
-  }
-  return chain;
+  return sketchProfile(spec);
 }
 
 const view = {

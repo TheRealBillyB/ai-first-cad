@@ -12,8 +12,6 @@ stays inside its attribute and both files stay one XML document.
 from __future__ import annotations
 
 import math
-import shutil
-import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -418,9 +416,11 @@ def _mjcf_body(joint: dict, by_parent: dict, links: dict, indent: int) -> list[s
 
 def _try_mujoco(path: Path) -> dict:
     try:
-        staged = _stage_model(path, mjcf=True)
+        directory, model_name = _stage_model(path, mjcf=True)
     except GeometryError as exc:
         return {"status": "failed", "note": str(exc)}
+    from aicad.paths import close_held_directory, guest_path, use_held_thread
+
     try:
         try:
             import mujoco
@@ -430,7 +430,8 @@ def _try_mujoco(path: Path) -> dict:
                 "note": "mujoco is not installed. pip install 'aicad[robot]' loads this MJCF and steps it.",
             }
         try:
-            model = mujoco.MjModel.from_xml_path(str(staged))
+            with use_held_thread(directory):
+                model = mujoco.MjModel.from_xml_path(str(guest_path(directory, model_name)))
             data = mujoco.MjData(model)
             for _ in range(5):
                 mujoco.mj_step(model, data)
@@ -438,14 +439,16 @@ def _try_mujoco(path: Path) -> dict:
             return {"status": "failed", "note": _simulator_note(exc)}
         return {"status": "loaded", "nq": int(model.nq), "nbody": int(model.nbody), "steps": 5}
     finally:
-        shutil.rmtree(staged.parent, ignore_errors=True)
+        close_held_directory(directory)
 
 
 def _try_pybullet(path: Path) -> dict:
     try:
-        staged = _stage_model(path, mjcf=False)
+        directory, model_name = _stage_model(path, mjcf=False)
     except GeometryError as exc:
         return {"status": "failed", "note": str(exc)}
+    from aicad.paths import close_held_directory, guest_path, use_held_thread
+
     try:
         try:
             import pybullet as bullet
@@ -456,7 +459,8 @@ def _try_pybullet(path: Path) -> dict:
             }
         client = bullet.connect(bullet.DIRECT)
         try:
-            bullet.loadURDF(str(staged), useFixedBase=True, physicsClientId=client)
+            with use_held_thread(directory):
+                bullet.loadURDF(str(guest_path(directory, model_name)), useFixedBase=True, physicsClientId=client)
             for _ in range(5):
                 bullet.stepSimulation(physicsClientId=client)
         except Exception as exc:
@@ -465,7 +469,7 @@ def _try_pybullet(path: Path) -> dict:
             bullet.disconnect(client)
         return {"status": "loaded", "steps": 5}
     finally:
-        shutil.rmtree(staged.parent, ignore_errors=True)
+        close_held_directory(directory)
 
 
 _MAX_MODEL_BYTES = 64 * 1024 * 1024
@@ -549,32 +553,34 @@ def _mesh_components(data: bytes, *, mjcf: bool) -> list[str]:
     return names
 
 
-def _stage_model(path: Path, *, mjcf: bool) -> Path:
+def _stage_model(path: Path, *, mjcf: bool) -> tuple[Path, str]:
     """Copy the model and its meshes into a private directory.
 
     The simulator then opens that copy. A link in the export folder is not
-    followed, and a mesh name has to be one file under ``meshes``.
+    followed, and a mesh name has to be one file under ``meshes``. The copy
+    is opened from the directory handle.
     """
+    from aicad.paths import close_held_directory, ensure_held_directory, open_held_directory, write_held_bytes
+
     path = Path(path)
     root = path.parent
     data = _model_bytes(root, Path(path.name))
     names = _mesh_components(data, mjcf=mjcf)
-    temporary = Path(tempfile.mkdtemp(prefix="aicad-robot-"))
+    directory = open_held_directory("aicad-robot-")
     try:
-        (temporary / "meshes").mkdir()
-        destination = temporary / path.name
-        destination.write_bytes(data)
+        ensure_held_directory(directory, "meshes")
+        write_held_bytes(directory, path.name, data)
         seen: set[str] = set()
         for name in names:
             if name in seen:
                 continue
             seen.add(name)
             mesh = _model_bytes(root, Path("meshes") / name)
-            (temporary / "meshes" / name).write_bytes(mesh)
+            write_held_bytes(directory, f"meshes/{name}", mesh)
     except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+        close_held_directory(directory)
         raise
-    return destination
+    return directory, path.name
 
 
 def _with_payload(mass, center, inertia, payload, at_mm):
