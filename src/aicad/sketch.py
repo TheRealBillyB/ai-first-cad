@@ -249,6 +249,7 @@ class _Solver:
         self.constraint_names: list[str] = []
         self.fixed: set[str] = set()
         self.dimensions: list[dict[str, Any]] = []
+        self.dimension_values: dict[str, tuple[str, float]] = {}
 
     def build(self, entities: list, constraints: list) -> None:
         for raw in entities:
@@ -588,9 +589,20 @@ class _Solver:
     ) -> None:
         if "name" not in raw and "tolerance" not in raw:
             return
+        given = raw.get("name")
+        if isinstance(given, str) and given != "":
+            # One name drives every constraint that uses it, so those
+            # constraints have to be the same kind and the same value.
+            previous = self.dimension_values.get(given)
+            if previous is not None and previous != (kind, float(value)):
+                raise GeometryError(
+                    f"Dimension {given!r} is already {previous[0]} {previous[1]:g}. "
+                    "Use that same value to drive another constraint, or give this one its own name."
+                )
+            self.dimension_values[given] = (kind, float(value))
         tolerance = _tolerance(raw.get("tolerance"))
         text = _dimension_text(kind, value, tolerance)
-        name = raw.get("name") or label
+        name = given or label
         for existing in self.dimensions:
             if existing["name"] == name and existing["kind"] == kind and existing["value"] == value:
                 return

@@ -30,6 +30,9 @@ _MAX_TEXT_FILE = 8 * 1024 * 1024
 # ui, cli, and api read a note as the file. Other sources, including agent
 # and chat, get the same project-text marker.
 _PERSON_SOURCES = frozenset({"ui", "cli", "api"})
+# Opening another folder, or saving a copy and switching to it, is the person
+# at the workspace. The assistant and a design file do not get that command.
+_FOLDER_COMMANDS = frozenset({"open_project", "save_project_as"})
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,10 @@ class Workspace:
         ]
         if missing:
             raise GeometryError(f"{name} needs {', '.join(missing)}.")
+        if name in _FOLDER_COMMANDS and not _person_may_change_folder(source):
+            raise GeometryError(
+                "Only the person at this workspace can open a project folder or save a copy."
+            )
         with self._lock:
             if command.undo:
                 self._undo.append(self._snapshot())
@@ -592,6 +599,13 @@ def _cmd_delete_part(workspace: Workspace, arguments: dict) -> dict:
     if workspace.selection.get("part") == arguments["name"]:
         workspace.selection = {"part": None, "faces": [], "edges": []}
     return {"deleted": arguments["name"]}
+
+
+def _person_may_change_folder(source: str) -> bool:
+    """The person at the app or the command line. Not the assistant, and not a script."""
+    from aicad.sandbox_state import in_sandbox
+
+    return source in _PERSON_SOURCES and not in_sandbox()
 
 
 def _cmd_source(workspace: Workspace, arguments: dict) -> dict:
