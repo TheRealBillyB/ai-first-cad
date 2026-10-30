@@ -663,6 +663,9 @@ def main(argv: list[str] | None = None) -> int:
             _write(job, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
             return _leave(0)
         _import_package(preloaded)
+        from aicad.sandbox import lock_library_environment
+
+        lock_library_environment()
         if sys.platform.startswith("linux"):
             from aicad.sandbox import _set_limits
 

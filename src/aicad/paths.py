@@ -233,13 +233,78 @@ def prepare_geometry_import() -> None:
         sys.meta_path.insert(0, _EzdxfOptionsFinder())
         _FINDER_INSTALLED = True
     module = sys.modules.get("ezdxf._options")
-    if module is None or getattr(module, "options", None) is None:
+    if module is not None and getattr(module, "options", None) is not None:
+        _install_config_filter(module)
+        loaded = list(module.options.loaded_config_files)
+        packaged = packaged_font_config()
+        if any(_outside_packaged_ini(Path(item), packaged) for item in loaded):
+            _rebuild_options(module)
+    _install_matplotlib_guard()
+
+
+def _install_matplotlib_guard() -> None:
+    """A project ``matplotlibrc`` is not the config the model process reads.
+
+    Matplotlib checks the working directory before its config directory. The
+    working directory is often the project. After Matplotlib loads, a config
+    taken from that file is dropped and the private directory is used.
+    """
+
+    loaded = sys.modules.get("matplotlib")
+    if loaded is not None:
+        _drop_project_matplotlib(loaded)
+    if getattr(_install_matplotlib_guard, "hooked", False):
         return
-    _install_config_filter(module)
-    loaded = list(module.options.loaded_config_files)
-    packaged = packaged_font_config()
-    if any(_outside_packaged_ini(Path(item), packaged) for item in loaded):
-        _rebuild_options(module)
+    _install_matplotlib_guard.hooked = True
+
+    class _Finder:
+        def find_spec(self, fullname, path, target=None):
+            if fullname != "matplotlib" or fullname in sys.modules:
+                return None
+            try:
+                sys.meta_path.remove(self)
+            except ValueError:
+                return None
+            try:
+                spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+            finally:
+                sys.meta_path.insert(0, self)
+            if spec is None or spec.loader is None:
+                return None
+            inner = spec.loader
+
+            class _Loader:
+                def create_module(self, module_spec):
+                    create = getattr(inner, "create_module", None)
+                    if create is None:
+                        return None
+                    return create(module_spec)
+
+                def exec_module(self, module):
+                    inner.exec_module(module)
+                    _drop_project_matplotlib(module)
+
+            spec.loader = _Loader()
+            return spec
+
+    sys.meta_path.insert(0, _Finder())
+
+
+def _drop_project_matplotlib(module) -> None:
+    from aicad.sandbox import _private_matplotlib_dir
+
+    private = _private_matplotlib_dir()
+    os.environ["MPLCONFIGDIR"] = str(private)
+    try:
+        loaded = Path(module.matplotlib_fname())
+        project_file = Path.cwd() / "matplotlibrc"
+        if loaded.resolve() == project_file.resolve():
+            module.rcdefaults()
+    except Exception:
+        try:
+            module.rcdefaults()
+        except Exception:
+            return
 
 
 def _outside_packaged_ini(path: Path, packaged: Path) -> bool:
