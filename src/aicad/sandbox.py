@@ -2382,7 +2382,13 @@ def _helper_read_paths(command: list[str]) -> list[Path]:
     program = Path(command[0])
     try:
         if program.is_file():
-            roots.append(program.resolve().parent)
+            parent = program.resolve().parent
+            roots.append(parent)
+            # A packaged solver keeps its libraries beside the program directory.
+            for name in ("lib", "lib64"):
+                library = parent.parent / name
+                if library.is_dir():
+                    roots.append(library)
     except OSError:
         pass
     names = {os.path.normcase(os.path.normpath(sys.executable))}
@@ -2495,6 +2501,11 @@ def _run_confined_helper_macos(command, *, env, timeout, cwd: Path, reads: list[
     from aicad.sandbox_macos import build_profile, command_prefix
 
     cwd = _helper_write_root(cwd, pass_fds)
+    # Scratch files stay in the folder the helper may write. The process
+    # temporary directory is not that folder.
+    env = dict(env)
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        env[name] = str(cwd)
     profile = build_profile([str(path) for path in reads], [str(cwd)], network=False)
     directory = _control_directory()
     try:
