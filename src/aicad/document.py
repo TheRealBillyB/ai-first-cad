@@ -299,9 +299,9 @@ class Document:
                 "problem": part.rebuild_error,
             }
 
-    def measure(self, name: str) -> Measurement:
+    def measure(self, name: str, material: str | None = None) -> Measurement:
         with self._lock:
-            return kernel.measure(self._get(name).shape)
+            return kernel.measure(self._get(name).shape, material)
 
     def check_wall_thickness(
         self,
@@ -607,11 +607,15 @@ class Document:
         name: str,
         min_wall_mm: float | None = None,
         samples: int = 4,
+        material: str | None = None,
     ) -> InspectReport:
-        """Measure, estimate wall thickness, and render. This is the step to call after every edit."""
+        """Measure, estimate wall thickness, and render. This is the step to call after every edit.
+
+        ``material`` is a handbook name. Mass is the volume times that density.
+        """
         with self._lock:
             part = self._get(name)
-            measurement = kernel.measure(part.shape)
+            measurement = kernel.measure(part.shape, material)
             wall = self.check_wall_thickness(name, min_wall_mm, samples)
             mesh = kernel.tessellate(part.shape)
             views = render_views(

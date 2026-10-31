@@ -277,9 +277,13 @@ function renderPanel() {
   if (ui.tab === "inspect") {
     const report = state.panels.inspect;
     const stale = state.panel_revision.inspect !== state.revision;
+    const materials = ((state.materials && state.materials.materials) || [])
+      .map((item) => `<option value="${escapeAttr(item.id)}" ${item.id === "steel" ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
+      .join("");
     root.innerHTML = `
       <h3>Inspect ${escapeHtml(part || "")}</h3>
       <div class="row"><label>Min wall <input id="min-wall" type="number" value="1.2" step="0.1" /></label>
+      <label>Material <select id="inspect-material">${materials || `<option value="steel" selected>mild steel</option>`}</select></label>
       <button type="button" id="run-inspect" class="primary">Inspect</button></div>
       ${report ? inspectHtml(report, stale) : `<p class="muted">Measure the part, estimate wall thickness, and show the pictures.</p>`}`;
     $("run-inspect").onclick = () => runInspect();
@@ -455,9 +459,14 @@ function inspectHtml(report, stale) {
   const m = report.measurement || {};
   const wall = report.wall || {};
   const box = m.bounding_box && m.bounding_box.size;
+  const com = m.center_of_mass_mm;
   const contact = (report.views || []).find((view) => view.name === "contact");
+  const mass = m.mass_g == null ? "n/a" : `${m.mass_g} g${m.material ? ` (${m.material})` : ""}`;
   return `${claimBlock(report)}<div class="kv">
       <span>Volume</span><b>${m.volume_mm3} mm³</b>
+      <span>Surface area</span><b>${m.area_mm2 == null ? "" : `${m.area_mm2} mm²`}</b>
+      <span>Center of mass</span><b>${com ? `${com.x}, ${com.y}, ${com.z}` : ""}</b>
+      <span>Mass</span><b>${mass}</b>
       <span>Size</span><b>${box ? `${box.x} × ${box.y} × ${box.z}` : ""}</b>
       <span>Watertight</span><b>${m.watertight ? "yes" : "no"}</b>
       <span>Wall</span><b>${wall.estimated_min_mm ?? "n/a"} mm ${wall.passed === false ? "(under the rule)" : ""}</b>
@@ -653,7 +662,12 @@ function renderFeaSetup() {
 
 async function runInspect() {
   if (!ui.part) return;
-  await command("inspect_part", { name: ui.part, min_wall_mm: Number($("min-wall").value) });
+  const material = $("inspect-material");
+  await command("inspect_part", {
+    name: ui.part,
+    min_wall_mm: Number($("min-wall").value),
+    material: material ? material.value : "steel",
+  });
   await command("feature_report", { name: ui.part });
   await refresh();
 }

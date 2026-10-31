@@ -395,13 +395,25 @@ def make_from_ops(ops: list[dict]) -> Shape:
     return Shape(_require_solid(log.current), features=log.report())
 
 
-def measure(shape: Shape) -> Measurement:
+def measure(shape: Shape, material: str | None = None) -> Measurement:
+    """Measure a solid. ``material`` adds mass as volume times that handbook density."""
     impl = shape.impl
     bbox = impl.bounding_box()
     low = bbox.min
     high = bbox.max
     size = bbox.size
     center = impl.center()
+    mass_g = None
+    material_id = None
+    density = None
+    if material is not None:
+        from aicad.fea import lookup_material
+
+        found = lookup_material(material)
+        density = float(found["density_g_cm3"])
+        material_id = str(found["id"])
+        # mm^3 times g/cm^3 is grams after dividing by 1000.
+        mass_g = round_mm(float(impl.volume) * density / 1000.0)
     return Measurement(
         units=UNITS,
         valid=bool(impl.is_valid),
@@ -418,6 +430,9 @@ def measure(shape: Shape) -> Measurement:
             max=_vec(high),
             size=_vec(size),
         ),
+        mass_g=mass_g,
+        material=material_id,
+        density_g_cm3=density,
     )
 
 
