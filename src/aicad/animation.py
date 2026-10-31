@@ -732,16 +732,13 @@ def _parse_color(value, label: str) -> tuple[float, float, float]:
     if isinstance(value, str):
         return _parse_color_text(value, label)
     if isinstance(value, (list, tuple)) and len(value) == 3:
-        channels = []
-        for item in value:
-            if isinstance(item, bool) or not isinstance(item, (int, float)):
-                raise GeometryError(f"{label} must be #rrggbb or three numbers from 0 to 255.")
-            number = float(item)
-            if not math.isfinite(number) or number < 0 or number > 255:
-                raise GeometryError(f"{label} channels must be from 0 to 255.")
-            channels.append(number)
-        return _byte_channels(channels)
-    raise GeometryError(f"{label} must be #rrggbb or three numbers from 0 to 255.")
+        try:
+            return _byte_channels(value)
+        except GeometryError as exc:
+            raise GeometryError(
+                f"{label} must be #rrggbb, three ints from 0 to 255, or three floats from 0 to 1."
+            ) from exc
+    raise GeometryError(f"{label} must be #rrggbb, three ints from 0 to 255, or three floats from 0 to 1.")
 
 
 def _background(value: str | None) -> tuple[int, int, int]:
@@ -927,15 +924,13 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
         produced,
     ]
     try:
-        from aicad.sandbox import program_environment
+        from aicad.sandbox import program_environment, run_confined_helper
         from aicad.tool_directory import held_read_bytes, held_run_kwargs
 
-        completed = subprocess.run(
+        completed = run_confined_helper(
             command,
-            capture_output=True,
-            timeout=90,
-            check=False,
             env=program_environment(),
+            timeout=90,
             **held_run_kwargs(frame_dir),
         )
     except subprocess.TimeoutExpired as exc:
@@ -948,12 +943,14 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
     publish_bytes(destination, payload)
 
 
-def _encoder_reason(stderr: bytes, code: int) -> str:
+def _encoder_reason(stderr: bytes | str, code: int) -> str:
     """One line from an encoder. A terminal sequence in that text is not shown."""
 
     from aicad.labels import plain_line
 
-    reason = plain_line(stderr.decode("utf-8", "replace"))
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    reason = plain_line(stderr)
     if len(reason) > 300:
         reason = reason[-300:]
     return reason or f"exit {code}"

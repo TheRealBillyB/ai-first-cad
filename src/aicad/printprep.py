@@ -13,7 +13,6 @@ import math
 import re
 import stat
 import struct
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -290,7 +289,7 @@ def slice_mesh(
         for executable in executables:
             last_name = Path(executable).name
             for export in (True, False):
-                from aicad.sandbox import program_environment
+                from aicad.sandbox import program_environment, run_confined_helper
 
                 def run_once(supports: bool) -> tuple[str, bytes]:
                     command = _slice_command(
@@ -302,16 +301,10 @@ def slice_mesh(
                         layer_height_mm,
                         supports,
                     )
-                    completed = subprocess.run(
+                    completed = run_confined_helper(
                         command,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        stdin=subprocess.DEVNULL,
-                        timeout=180,
-                        check=False,
                         env=program_environment(),
+                        timeout=180,
                         **held_run_kwargs(work),
                     )
                     text = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
@@ -709,17 +702,13 @@ def _render(mesh, name: str, threshold: float, bridge_mm: float, out_dir: Path, 
     _areas, on_bed, _overhang, bridge = _classify(vertices, triangles, normals, threshold, bridge_mm)
     angle = angle.copy()
     angle[on_bed | bridge] = 0.0
-    # Vertex color is the mean overhang of the triangles that meet there.
-    scalars = np.zeros(len(vertices))
-    counts = np.zeros(len(vertices))
-    for triangle, value in zip(triangles, angle):
-        for node in triangle:
-            scalars[int(node)] += float(value)
-            counts[int(node)] += 1
-    scalars = scalars / np.clip(counts, 1.0, None)
+    # Full red is the support angle. Straight down is steeper than that, and it
+    # stays red. The documented default is 45 degrees from vertical.
+    shown = np.minimum(angle, float(threshold))
+    colored_vertices, colored_triangles, scalars = _per_face_scalars(vertices, triangles, shown)
     views = render_scalar_views(
-        vertices,
-        triangles,
+        colored_vertices,
+        colored_triangles,
         scalars,
         out_dir,
         part_name,
@@ -727,8 +716,24 @@ def _render(mesh, name: str, threshold: float, bridge_mm: float, out_dir: Path, 
         f"Overhang  ·  {name}  ·  support past {threshold:g}°",
         "deg",
         "degrees from vertical",
+        maximum=float(threshold),
+        minimum=0.0,
     )
     return [view.to_dict() for view in views]
+
+
+def _per_face_scalars(vertices: np.ndarray, triangles: np.ndarray, values: np.ndarray):
+    """Give each triangle its own vertices painted with that triangle's value.
+
+    A shared vertex used to average the faces that meet there, so a wall and
+    the overhang beside it both lost their angle. The picture interpolates
+    vertex colors, and these copies stay on one face.
+    """
+    corners = vertices[np.asarray(triangles, dtype=np.int32)]
+    flat_vertices = np.asarray(corners, dtype=np.float64).reshape(-1, 3)
+    flat_values = np.repeat(np.asarray(values, dtype=np.float64), 3)
+    flat_triangles = np.arange(len(triangles) * 3, dtype=np.int32).reshape(-1, 3)
+    return flat_vertices, flat_triangles, flat_values
 
 
 def _drop_link(path: Path) -> None:

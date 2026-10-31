@@ -766,6 +766,8 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
         pending = [str(root)]
         visited: set[str] = set()
         while pending:
+            if stop.is_set():
+                return
             directory = pending.pop()
             if directory in visited:
                 continue

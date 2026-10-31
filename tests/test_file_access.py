@@ -408,3 +408,42 @@ def test_a_parent_segment_is_not_treated_as_a_directory_link(tmp_path):
 
     path = nested / ".." / "outside" / "note.txt"
     assert read_nofollow_bytes(path, maximum=100, label="note", error=OSError) == b"keep\n"
+
+
+def test_a_script_remove_asks_only_to_delete_the_name():
+    from aicad import file_access
+
+    # Read, write, append, attributes, and list. DELETE and SYNCHRONIZE stay.
+    extra = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80 | 0x100
+    assert file_access._FILE_DELETE_ACCESS & extra == 0
+    assert file_access._FILE_DELETE_ACCESS & 0x10000
+
+
+def test_a_script_remove_drops_a_link_and_leaves_its_target(tmp_path):
+    from aicad.file_access import install_name_removal, unlink_name
+
+    original = (os.unlink, os.remove, os.rmdir)
+    install_name_removal()
+    try:
+        target = tmp_path / "outside" / "kept.bin"
+        target.parent.mkdir()
+        target.write_bytes(b"kept")
+        link = tmp_path / "link.bin"
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            pytest.skip("this system did not create a file link (%s)" % exc)
+        unlink_name(link)
+        assert not link.exists() and not link.is_symlink()
+        assert target.read_bytes() == b"kept"
+        folder = tmp_path / "area"
+        folder.mkdir()
+        (folder / "kept.bin").write_bytes(b"x")
+        with pytest.raises(OSError):
+            os.unlink(folder)
+        assert folder.is_dir()
+        assert (folder / "kept.bin").read_bytes() == b"x"
+    finally:
+        os.unlink, os.remove, os.rmdir = original
+        if hasattr(os, "_aicad_name_removal"):
+            del os._aicad_name_removal

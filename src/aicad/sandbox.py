@@ -820,6 +820,8 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
             if not path.is_absolute():
                 path = Path.cwd() / path
             _refuse_project_link(path, root, read_roots, writing)
+            if writing:
+                _refuse_library_config_write(path)
         return real_open(file, mode, *args, **kwargs)
 
     def os_open(path, flags, mode=0o777, *, dir_fd=None):
@@ -829,6 +831,8 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
             if not file_path.is_absolute():
                 file_path = Path.cwd() / file_path
             _refuse_project_link(file_path, root, read_roots, writing)
+            if writing:
+                _refuse_library_config_write(file_path)
         return real_os_open(path, flags, mode, dir_fd=dir_fd)
 
     builtins.open = py_open
@@ -2022,6 +2026,161 @@ def library_env_steers(name: str) -> bool:
     return upper.startswith(_LIBRARY_PREFIXES)
 
 
+def _refuse_library_config_write(path: Path) -> None:
+    """A design script cannot write the library configuration directory.
+
+    Libraries may still write a cache there. A call that comes from the
+    script, rather than from one of those libraries, is refused.
+    """
+
+    home = _LIBRARY_HOME
+    if not home:
+        return
+    try:
+        resolved = path.resolve()
+        root = Path(home).resolve()
+    except OSError:
+        return
+    if resolved != root and root not in resolved.parents:
+        return
+    if _script_writes_directly():
+        raise ScriptError("A design script cannot write the library configuration directory.")
+
+
+def _script_writes_directly() -> bool:
+    """True when the script called ``open`` itself, not a geometry library."""
+
+    library_roots = {"matplotlib", "ezdxf", "gmsh", "fontTools", "build123d", "OCP", "PIL"}
+    saw_script = False
+    frame = sys._getframe()
+    while frame is not None:
+        filename = frame.f_code.co_filename
+        module = str(frame.f_globals.get("__name__", ""))
+        if filename in {"<aicad-design>", "<aicad-script>"}:
+            saw_script = True
+        root = module.split(".", 1)[0]
+        if root in library_roots:
+            return False
+        frame = frame.f_back
+    return saw_script
+
+
+_LOCKED_ENV = frozenset(
+    {
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "MPLCONFIGDIR",
+        "FONTCONFIG_FILE",
+        "FONTCONFIG_PATH",
+        "EZDXF_CONFIG_FILE",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+    }
+)
+
+
+def lock_library_environment() -> None:
+    """Keep library config paths from being pointed somewhere else.
+
+    Setting a locked name to the value it already has is left alone, so a
+    later refresh of the packaged path still works. A different value is refused.
+    """
+
+    if getattr(os.environ, "_aicad_locked", False):
+        return
+    inner = os.environ
+
+    class _Locked(dict):
+        _aicad_locked = True
+
+        def __getitem__(self, key):
+            return inner[key]
+
+        def __setitem__(self, key, value):
+            if _env_name_locked(key):
+                if inner.get(key) == value:
+                    return
+                raise PermissionError(1, "Operation not permitted")
+            inner[key] = value
+
+        def __delitem__(self, key):
+            if _env_name_locked(key):
+                raise PermissionError(1, "Operation not permitted")
+            del inner[key]
+
+        def __iter__(self):
+            return iter(inner)
+
+        def __len__(self):
+            return len(inner)
+
+        def __contains__(self, key):
+            return key in inner
+
+        def copy(self):
+            return inner.copy()
+
+        def get(self, key, default=None):
+            return inner.get(key, default)
+
+        def items(self):
+            return inner.items()
+
+        def keys(self):
+            return inner.keys()
+
+        def values(self):
+            return inner.values()
+
+        def setdefault(self, key, default=None):
+            if key in inner:
+                return inner[key]
+            self[key] = default
+            return inner[key]
+
+        def pop(self, key, *default):
+            if _env_name_locked(key):
+                raise PermissionError(1, "Operation not permitted")
+            if default:
+                return inner.pop(key, default[0])
+            return inner.pop(key)
+
+        def update(self, other=(), **kwargs):
+            if isinstance(other, dict):
+                pairs = other.items()
+            else:
+                pairs = other
+            for key, value in pairs:
+                self[key] = value
+            for key, value in kwargs.items():
+                self[key] = value
+
+    os.environ = _Locked()  # type: ignore[assignment]
+    real_putenv = os.putenv
+
+    def putenv(name, value):
+        if _env_name_locked(name) and os.environ.get(name) != value:
+            raise PermissionError(1, "Operation not permitted")
+        if _env_name_locked(name):
+            return None
+        return real_putenv(name, value)
+
+    os.putenv = putenv  # type: ignore[assignment]
+
+
+def _env_name_locked(name: str) -> bool:
+    upper = str(name).upper()
+    if upper in _LOCKED_ENV or library_env_steers(str(name)):
+        return True
+    return False
+
+
 def scrub_library_environment() -> None:
     """Drop geometry and font configuration variables from this process.
 
@@ -2344,6 +2503,257 @@ def program_environment() -> dict[str, str]:
             env[name] = value
     _restore_os_environment(env)
     return env
+
+
+class _HelperResult:
+    """The return code and text from one confined helper."""
+
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+_HELPER_BOOT = """
+import json, os, sys
+from pathlib import Path
+reads = [Path(item) for item in json.loads(sys.argv[1])]
+work = Path.cwd()
+from aicad.sandbox import _landlock
+try:
+    _landlock(work, False, reads)
+except Exception:
+    os._exit(127)
+os.execv(sys.argv[2], sys.argv[2:])
+"""
+
+
+def _helper_read_paths(command: list[str]) -> list[Path]:
+    """System locations a helper may read, plus the directory that holds the program.
+
+    When the command is the interpreter and a script, the script's folder is
+    included. Later arguments are not: a path named there is not made readable.
+    """
+
+    roots = _read_roots()
+    if not command:
+        return roots
+    program = Path(command[0])
+    try:
+        if program.is_file():
+            parent = program.resolve().parent
+            roots.append(parent)
+            # A packaged solver keeps its libraries beside the program directory.
+            for name in ("lib", "lib64"):
+                library = parent.parent / name
+                if library.is_dir():
+                    roots.append(library)
+    except OSError:
+        pass
+    names = {os.path.normcase(os.path.normpath(sys.executable))}
+    base = getattr(sys, "_base_executable", "") or ""
+    if base:
+        names.add(os.path.normcase(os.path.normpath(base)))
+    try:
+        own = os.path.normcase(os.path.normpath(str(program)))
+    except (OSError, ValueError):
+        return roots
+    if own not in names:
+        return roots
+    for arg in command[1:]:
+        if not arg or arg.startswith("-"):
+            continue
+        candidate = Path(arg)
+        try:
+            if candidate.is_file():
+                roots.append(candidate.resolve().parent)
+        except OSError:
+            pass
+        break
+    return roots
+
+
+def run_confined_helper(command: list[str], *, env: dict[str, str], timeout: float, cwd=None, preexec_fn=None, pass_fds=(), close_fds=True):
+    """Run one helper under the same file limits as a design script.
+
+    The helper may read the locations needed to start the program. It may
+    read and write ``cwd``. It is not started when those limits cannot be
+    applied.
+    """
+
+    import subprocess
+
+    if not command:
+        raise ScriptError("The helper was not given a program, so it was not run.")
+    work = Path(cwd) if cwd is not None else Path.cwd()
+    reads = _helper_read_paths(command)
+    if sys.platform == "win32":
+        return _run_confined_helper_windows(command, env=env, timeout=timeout, cwd=work, reads=reads)
+    if sys.platform == "darwin":
+        return _run_confined_helper_macos(
+            command,
+            env=env,
+            timeout=timeout,
+            cwd=work,
+            reads=reads,
+            preexec_fn=preexec_fn,
+            pass_fds=pass_fds,
+            close_fds=close_fds,
+        )
+    boot = [sys.executable, "-c", _HELPER_BOOT, json.dumps([str(path) for path in reads]), *command]
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "stdin": subprocess.DEVNULL,
+        "timeout": timeout,
+        "check": False,
+        "env": env,
+        "cwd": str(work),
+        "close_fds": close_fds,
+    }
+    if pass_fds:
+        kwargs["pass_fds"] = pass_fds
+        kwargs["close_fds"] = True
+    if preexec_fn is not None:
+        kwargs["preexec_fn"] = preexec_fn
+    completed = subprocess.run(boot, **kwargs)
+    return _HelperResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+
+
+def _helper_write_root(cwd: Path, pass_fds) -> Path:
+    """The folder the helper writes in, under the name it has now.
+
+    The path recorded for that folder can have been replaced. The open
+    directory is the one the helper uses.
+    """
+
+    if not pass_fds:
+        return cwd
+    import stat
+
+    from aicad.tool_directory import _directory_from_handle
+
+    for raw in pass_fds:
+        try:
+            fd = int(raw)
+            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                continue
+        except (OSError, TypeError, ValueError):
+            continue
+        found = _directory_from_handle(fd)
+        if found is None:
+            continue
+        try:
+            if found.is_dir() and not found.is_symlink():
+                return found
+        except OSError:
+            continue
+    return cwd
+
+
+def _run_confined_helper_macos(command, *, env, timeout, cwd: Path, reads: list[Path], preexec_fn, pass_fds, close_fds):
+    import subprocess
+    import tempfile
+
+    from aicad.sandbox_macos import build_profile, command_prefix
+
+    cwd = _helper_write_root(cwd, pass_fds)
+    # Scratch files stay in the folder the helper may write. The process
+    # temporary directory is not that folder.
+    env = dict(env)
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        env[name] = str(cwd)
+    profile = build_profile([str(path) for path in reads], [str(cwd)], network=False)
+    directory = _control_directory()
+    try:
+        handle = tempfile.NamedTemporaryFile(prefix="aicad-helper-", suffix=".sb", dir=directory, delete=False)
+        handle.write(profile.encode("utf-8"))
+        handle.close()
+        wrapped = [*command_prefix(handle.name, cwd), *command]
+        kwargs = {
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "stdin": subprocess.DEVNULL,
+            "timeout": timeout,
+            "check": False,
+            "env": env,
+            "cwd": str(cwd),
+            "close_fds": close_fds,
+        }
+        if pass_fds:
+            kwargs["pass_fds"] = pass_fds
+            kwargs["close_fds"] = True
+        if preexec_fn is not None:
+            kwargs["preexec_fn"] = preexec_fn
+        completed = subprocess.run(wrapped, **kwargs)
+    finally:
+        from aicad.paths import remove_tree
+
+        remove_tree(directory, ignore_errors=True)
+    return _HelperResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+
+
+def _windows_helper_command(command: list[str]) -> list[str]:
+    """Start a script with the interpreter. A batch file goes through the shell."""
+
+    program = command[0]
+    folded = program.lower()
+    if folded.endswith(".py"):
+        return [sys.executable, *command]
+    if folded.endswith(".cmd") or folded.endswith(".bat"):
+        shell = os.environ.get("COMSPEC", "cmd.exe")
+        return [shell, "/c", program, *command[1:]]
+    return list(command)
+
+
+def _windows_helper_environment(env: dict[str, str], cwd: Path) -> dict[str, str]:
+    """Environment Windows needs to start a confined helper.
+
+    Temporary files and the profile stay in the helper folder. The account
+    profile is not copied. ``SystemRoot`` and the other session names are
+    required for the process to start.
+    """
+
+    merged = dict(env)
+    for name in _WINDOWS_SESSION:
+        value = os.environ.get(name)
+        if value and name not in merged:
+            merged[name] = value
+    location = str(cwd)
+    for name in ("TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"):
+        merged[name] = location
+    return merged
+
+
+def _run_confined_helper_windows(command, *, env, timeout, cwd: Path, reads: list[Path]):
+    import subprocess
+
+    from aicad.sandbox_windows import spawn
+
+    command = _windows_helper_command(list(command))
+    env = _windows_helper_environment(env, cwd)
+    stdout_path = cwd / "helper-stdout.txt"
+    stderr_path = cwd / "helper-stderr.txt"
+    code, stdout, stderr, timed_out, _memory, _mechanism = spawn(
+        list(command),
+        cwd=str(cwd),
+        env=env,
+        read_paths=reads,
+        workspace=cwd,
+        cpu_seconds=max(1, int(timeout)),
+        memory_bytes=memory_bytes(),
+        network=False,
+        timeout_seconds=float(timeout),
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+    )
+    if timed_out:
+        raise subprocess.TimeoutExpired(command, timeout)
+    return _HelperResult(code, stdout or "", stderr or "")
 
 
 # Locale and clock names a script needs in order to format text and time.
@@ -3582,6 +3992,10 @@ class _DiskWatch:
     cap is stopped, and the extra bytes are removed afterwards.
     """
 
+    # How long to wait for the watch to leave the tree. A longer read is
+    # treated as a failed quota check instead of holding the run.
+    _stop_timeout = 2.0
+
     def __init__(self, root: Path, before: dict[str, int], file_cap: int, disk_cap: int):
         self.root = root
         self.before = before
@@ -3598,6 +4012,8 @@ class _DiskWatch:
         self._ready = threading.Event()
         self._event_thread: threading.Thread | None = None
         self._watch_ok = False
+        self._wake_write: int | None = None
+        self._windows_directory = None
         self._folded: set[int] = set()
         self._child_extra = 0
         self.child_report: Path | None = None
@@ -3630,11 +4046,47 @@ class _DiskWatch:
                 return
             self._io_fds[pid] = descriptor
 
-    def close_counters(self) -> None:
-        self._stop.set()
+    def close_counters(self) -> bool:
+        """Stop the watch. True when it has left the tree.
+
+        The watch is woken, then given ``_stop_timeout`` seconds. If it is
+        still inside a read, the quota is exceeded and the held files stay
+        with that thread. The caller must not remove the tree until the
+        thread returns.
+        """
+
+        self._wake_watch()
         thread = self._event_thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=2)
+            thread.join(timeout=self._stop_timeout)
+            if thread.is_alive():
+                self.hit.set()
+                return False
+        self._release_held_files()
+        return True
+
+    def _wake_watch(self) -> None:
+        """Ask the watch to leave, and wake a read that is waiting."""
+
+        self._stop.set()
+        with self._lock:
+            wake = self._wake_write
+            if wake is not None:
+                try:
+                    os.write(wake, b"\0")
+                except OSError:
+                    pass
+            handle = self._windows_directory
+            if handle is not None and sys.platform == "win32":
+                from aicad.sandbox_windows import cancel_directory_watch
+
+                cancel_directory_watch(handle)
+
+    def _remember_windows_directory(self, handle) -> None:
+        with self._lock:
+            self._windows_directory = handle
+
+    def _release_held_files(self) -> None:
         with self._lock:
             held = list(self._held.items())
             self._held.clear()
@@ -3799,6 +4251,8 @@ class _DiskWatch:
         pending = [str(self.root)]
         visited: set[str] = set()
         while pending:
+            if self._stop.is_set():
+                return
             directory = pending.pop()
             if directory in visited:
                 continue
@@ -3877,6 +4331,7 @@ class _DiskWatch:
                     self.note_files,
                     self._stop,
                     self._mark_watch,
+                    self._remember_windows_directory,
                 )
             else:
                 self._mark_watch(False)
@@ -3917,6 +4372,8 @@ class _DiskWatch:
             from aicad.paths import is_reparse
 
             for dirpath, dirnames, _names in os.walk(self.root, followlinks=False):
+                if self._stop.is_set():
+                    break
                 current = Path(dirpath)
                 if current.is_symlink() or is_reparse(current):
                     dirnames.clear()
@@ -3935,16 +4392,30 @@ class _DiskWatch:
             os.close(descriptor)
             self._mark_watch(False)
             return
+        wake_flags = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+        if hasattr(os, "pipe2") and wake_flags:
+            wake_read, wake_write = os.pipe2(wake_flags)
+        else:
+            wake_read, wake_write = os.pipe()
+        with self._lock:
+            self._wake_write = wake_write
         self._mark_watch(True)
         try:
             while not self._stop.is_set():
-                readable, _, _ = select.select([descriptor], [], [], 0.02)
-                if self._stop.is_set():
-                    break
-                if readable:
+                try:
+                    readable, _, _ = select.select([descriptor, wake_read], [], [], 0.02)
+                except InterruptedError:
+                    continue
+                if descriptor in readable:
                     self._read_inotify(descriptor, watches, add_watch)
                 self._reread_held()
+                if self._stop.is_set() or wake_read in readable:
+                    break
         finally:
+            with self._lock:
+                self._wake_write = None
+                os.close(wake_write)
+            os.close(wake_read)
             os.close(descriptor)
 
     def _read_inotify(self, descriptor: int, watches: dict[int, Path], add_watch) -> None:
@@ -4274,16 +4745,22 @@ def _file_growth(root: Path, before: dict[str, int]):
 
 
 def _restore_file(key: str, before: dict[str, int]) -> None:
+    from aicad.file_access import unlink_name
+
     path = Path(key)
     old = before.get(key)
     try:
         if old is None:
-            path.unlink(missing_ok=True)
+            try:
+                unlink_name(path)
+            except OSError as exc:
+                if exc.errno != errno.ENOENT:
+                    raise
             return
         os.truncate(path, old)
     except OSError:
         try:
-            path.unlink(missing_ok=True)
+            unlink_name(path)
         except OSError:
             return
 
@@ -4738,7 +5215,37 @@ def _control_directory() -> Path:
     return _make_private_tool_directory()
 
 
-def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
+def _finish_script_disk(disk: _DiskWatch, job: Path, *, keep_job: bool) -> bool:
+    """Stop the quota watch, then remove ``job`` only after the watch has left.
+
+    False means the watch was still in the tree when the wait ended. The
+    quota is exceeded, and ``job`` is removed only once that thread returns.
+    """
+
+    released = disk.close_counters()
+    if released:
+        if not keep_job:
+            shutil.rmtree(job, ignore_errors=True)
+        return True
+    disk.hit.set()
+    threading.Thread(
+        target=_remove_job_when_watch_leaves,
+        args=(disk, job),
+        name="aicad-job-cleanup",
+        daemon=True,
+    ).start()
+    return False
+
+
+def _remove_job_when_watch_leaves(disk: _DiskWatch, job: Path) -> None:
+    thread = disk._event_thread
+    if thread is not None and thread is not threading.current_thread():
+        thread.join()
+    disk._release_held_files()
+    shutil.rmtree(job, ignore_errors=True)
+
+
+def _spawn(workspace: Path, kind: str, script: str | None, network: bool, helper: bool = False) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
         raise ScriptError(reason)
@@ -4765,6 +5272,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     probe_root = None
     if kind == "probe":
         probe_root, spec["probe_read"], spec["probe_write"] = _make_probe(workspace)
+        if helper:
+            spec["helper_read"] = spec["probe_read"]
     publish_text(job / "job.json", json.dumps(spec) + "\n", root=job)
     if script is not None:
         publish_text(job / "script.py", script, root=job)
@@ -4845,7 +5354,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 )
             if timed_out:
                 detail = design_record.failure_detail() if design_record is not None else ""
-                shutil.rmtree(job, ignore_errors=True)
+                # The job folder is removed after the watch releases the tree.
                 message = f"The script ran longer than {wall} seconds, so it was stopped."
                 if detail:
                     message = f"{message}\n{detail}"
@@ -4854,7 +5363,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
                 design_record._refuse()
             disk_message = disk.settle()
             if disk_message:
-                shutil.rmtree(job, ignore_errors=True)
+                # The job folder is removed after the watch releases the tree.
                 raise ScriptError(disk_message)
             payload = _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
             if design_record is not None:
@@ -5014,7 +5523,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             stop_watch.set()
         if watcher is not None:
             watcher.join(timeout=1)
-        disk.close_counters()
+        released = _finish_script_disk(disk, job, keep_job=keep_job)
         _release_pids_cgroup(pids_cgroup)
         if profile_dir is not None:
             from aicad.paths import remove_tree
@@ -5028,8 +5537,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
             shutil.rmtree(probe_root, ignore_errors=True)
         if design_record is not None:
             design_record.close()
-        if not keep_job:
-            shutil.rmtree(job, ignore_errors=True)
+        if not released and sys.exc_info()[0] is None:
+            raise ScriptError("The script was stopped because the disk quota watch did not finish.")
 
 
 def _died_from_limit_signal(code: int) -> bool:
@@ -5238,12 +5747,12 @@ def run_design_script(workspace: str | Path, code: str, network: bool = False) -
     return payload
 
 
-def os_probe(workspace: str | Path) -> dict:
+def os_probe(workspace: str | Path, *, helper: bool = False) -> dict:
     """Ask a confined process to touch the network and a file outside the project.
 
     Used by the tests. It does not run assistant code.
     """
-    payload = _spawn(Path(workspace), "probe", None, network=False)
+    payload = _spawn(Path(workspace), "probe", None, network=False, helper=helper)
     _drop_job(payload)
     probe = payload.get("probe")
     if not isinstance(probe, dict):

@@ -470,15 +470,49 @@ def _overall_dimensions(lines, texts, fills, views, cells, ratio: float, size) -
     fx1, fy1 = front_map((front["box"][2], front["box"][3]))
     tx0, ty0 = top_map((top["box"][0], top["box"][1]))
     _tx1, ty1 = top_map((top["box"][2], top["box"][3]))
-    _horizontal(lines, texts, fills, fx0, fx1, fy0 - 8.0, _format_mm(size[0]))
-    _vertical(lines, texts, fills, fy0, fy1, fx0 - 9.0, _format_mm(size[2]))
-    _vertical(lines, texts, fills, ty0, ty1, tx0 - 9.0, _format_mm(size[1]))
-    _extension(lines, fx0, fy0, fx0, fy0 - 11.0)
-    _extension(lines, fx1, fy0, fx1, fy0 - 11.0)
-    _extension(lines, fx0, fy0, fx0 - 12.0, fy0)
-    _extension(lines, fx0, fy1, fx0 - 12.0, fy1)
-    _extension(lines, tx0, ty0, tx0 - 12.0, ty0)
-    _extension(lines, tx0, ty1, tx0 - 12.0, ty1)
+    # The view box is the axis-aligned extent. A rotated outline reaches each
+    # side at one point, not at the corner of that box, so the extension
+    # starts on the outline.
+    front_left = front_map(_span_point(front, 0, "min"))
+    front_right = front_map(_span_point(front, 0, "max"))
+    front_low = front_map(_span_point(front, 1, "min"))
+    front_high = front_map(_span_point(front, 1, "max"))
+    top_low = top_map(_span_point(top, 1, "min"))
+    top_high = top_map(_span_point(top, 1, "max"))
+    width_y = fy0 - 8.0
+    height_x = fx0 - 9.0
+    depth_x = tx0 - 9.0
+    _horizontal(lines, texts, fills, fx0, fx1, width_y, _format_mm(size[0]))
+    _vertical(lines, texts, fills, fy0, fy1, height_x, _format_mm(size[2]))
+    _vertical(lines, texts, fills, ty0, ty1, depth_x, _format_mm(size[1]))
+    _extension(lines, front_left[0], front_left[1], front_left[0], width_y - 3.0)
+    _extension(lines, front_right[0], front_right[1], front_right[0], width_y - 3.0)
+    _extension(lines, front_low[0], front_low[1], height_x - 3.0, front_low[1])
+    _extension(lines, front_high[0], front_high[1], height_x - 3.0, front_high[1])
+    _extension(lines, top_low[0], top_low[1], depth_x - 3.0, top_low[1])
+    _extension(lines, top_high[0], top_high[1], depth_x - 3.0, top_high[1])
+
+
+def _span_point(view: dict, axis: int, end: str) -> tuple[float, float]:
+    """Outline point that reaches one side of the view.
+
+    ``axis`` 0 is the horizontal screen axis and 1 is the vertical one.
+    ``end`` is ``min`` or ``max``. With no curves, the view-box corner is
+    the only place a dimension can start.
+    """
+    points = [point for curve in view.get("curves") or [] for point in curve.points]
+    box = view["box"]
+    if not points:
+        if axis == 0:
+            return (box[0], box[1]) if end == "min" else (box[2], box[1])
+        return (box[0], box[1]) if end == "min" else (box[0], box[3])
+    if axis == 0 and end == "min":
+        return min(points, key=lambda point: (point[0], point[1]))
+    if axis == 0:
+        return max(points, key=lambda point: (point[0], -point[1]))
+    if end == "min":
+        return min(points, key=lambda point: (point[1], point[0]))
+    return max(points, key=lambda point: (point[1], -point[0]))
 
 
 def _horizontal(lines, texts, fills, x1, x2, y, text) -> None:
