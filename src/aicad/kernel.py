@@ -87,7 +87,6 @@ from build123d import (
     Rot,
     Sphere,
     Vector,
-    make_face,
     export_step,
     export_stl,
     extrude,
@@ -3180,7 +3179,10 @@ def _profile_face(step: dict, geometry: dict, name: str, coords: list[tuple[floa
     closed = _closed_spline(ids, geometry) if isinstance(ids, list) else None
     if closed is not None:
         try:
-            return make_face(Spline(*(_point_xy(geometry.get("points") or {}, point_id) for point_id in closed), periodic=True))
+            return _sketch_face(
+                Spline(*(_point_xy(geometry.get("points") or {}, point_id) for point_id in closed), periodic=True),
+                name,
+            )
         except GeometryError:
             raise
         except Exception as exc:
@@ -3214,11 +3216,50 @@ def _profile_face(step: dict, geometry: dict, name: str, coords: list[tuple[floa
             index += 1
         wire = segment if wire is None else wire + segment
     try:
-        return make_face(wire)
+        return _sketch_face(wire, name)
     except GeometryError:
         raise
     except Exception as exc:
         raise GeometryError(f"{name}: could not build a face from that profile. {exc}") from exc
+
+
+def _sketch_face(perimeter, name: str):
+    """A face from a closed profile.
+
+    Shape repair is applied when it finishes. A closed spline can already be a
+    valid face when that repair raises, and that face is kept.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.ShapeFix import ShapeFix_Face
+    from OCP.TopoDS import TopoDS
+    from build123d import Face, Wire
+
+    if isinstance(perimeter, Wire):
+        wire = perimeter
+    else:
+        combined = Wire.combine(perimeter.edges())
+        if not combined:
+            raise GeometryError(f"{name}: could not build a closed wire from that profile.")
+        wire = combined[0]
+    builder = BRepBuilderAPI_MakeFace(wire.wrapped, True)
+    builder.Build()
+    if not builder.IsDone():
+        raise GeometryError(f"{name}: could not build a face from that profile.")
+    face = builder.Face()
+    try:
+        fixer = ShapeFix_Face(face)
+        fixer.FixOrientation()
+        fixer.Perform()
+        face = TopoDS.Face(fixer.Result())
+    except Exception:
+        pass
+    built = Face(face)
+    try:
+        if built.normal_at().Z < 0:
+            built = -built
+    except Exception:
+        pass
+    return built
 
 
 def _closed_spline(ids: list, geometry: dict) -> list | None:
