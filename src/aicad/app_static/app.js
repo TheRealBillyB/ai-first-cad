@@ -18,6 +18,8 @@ const ui = {
   lineStart: null,
   rectStart: null,
   circleCenter: null,
+  splineId: null,
+  splinePoint: null,
   arcPoints: [],
   doc: "requirements.md",
   assembly: null,
@@ -109,12 +111,15 @@ async function applyRefresh(options = {}) {
   if (!ui.part && ui.state.parts.length) ui.part = ui.state.parts[0].name;
   const pendingLine = sketchPendingPoint(ui.sketch, ui.lineStart);
   const pendingCenter = sketchPendingPoint(ui.sketch, ui.circleCenter);
+  const pendingSpline = sketchPendingPoint(ui.sketch, ui.splinePoint);
   const pendingArc = (ui.arcPoints || []).map((id) => sketchPendingPoint(ui.sketch, id));
   if (ui.sketchName) {
     const found = (ui.state.sketches || []).find((item) => item.name === ui.sketchName);
     if (found) {
       let sketch = sketchWithPendingPoint(sketchWithPendingPoint(found, pendingLine), pendingCenter);
+      sketch = sketchWithPendingPoint(sketch, pendingSpline);
       pendingArc.forEach((pending) => { sketch = sketchWithPendingPoint(sketch, pending); });
+      ui.splineId = sketchOpenSpline(sketch, ui.splineId);
       ui.sketch = sketch;
     }
   }
@@ -787,6 +792,9 @@ function drawSketch() {
   Object.values(geometry.arcs || {}).forEach((arc) => {
     sketchArcSamples(arc, 16).forEach((point) => visit(point[0], point[1]));
   });
+  Object.values(geometry.splines || {}).forEach((spline) => {
+    (spline.samples || []).forEach((point) => visit(point.x, point.y));
+  });
   if (!Number.isFinite(minX)) { minX = 0; maxX = 0; minY = 0; maxY = 0; }
   let span = Math.max(maxX - minX, maxY - minY);
   if (span < 40) {
@@ -841,6 +849,20 @@ function drawSketch() {
     ctx.beginPath();
     samples.forEach((point, index) => {
       const [sx, sy] = toScreen(point[0], point[1]);
+      if (index === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    });
+    ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  Object.entries(geometry.splines || {}).forEach(([id, spline]) => {
+    const samples = spline.samples || [];
+    if (samples.length < 2) return;
+    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : spline.construction ? "#6d655b" : "#1d1a16";
+    ctx.setLineDash(spline.construction ? [6, 4] : []);
+    ctx.beginPath();
+    samples.forEach((point, index) => {
+      const [sx, sy] = toScreen(point.x, point.y);
       if (index === 0) ctx.moveTo(sx, sy);
       else ctx.lineTo(sx, sy);
     });
@@ -958,6 +980,16 @@ async function onSketchClick(event) {
     ui.circleCenter = result.circleCenter;
     ui.sketch.spec = applyConstructionMode(spec, result.spec);
     if (result.commit) await commitSketch(ui.sketch.spec);
+    return;
+  }
+  if (ui.tool === "spline") {
+    const result = sketchSplineClick(spec, ui.sketch.geometry, ui.splineId, ui.splinePoint, x, y, sketchPickTolerance());
+    ui.splineId = result.splineId;
+    ui.splinePoint = result.pending;
+    if (result.error) throw new Error(result.error);
+    ui.sketch.spec = applyConstructionMode(spec, result.spec);
+    if (result.commit) await commitSketch(ui.sketch.spec);
+    else drawSketch();
     return;
   }
   if (ui.tool === "arc") {
@@ -2456,7 +2488,7 @@ async function boot() {
     const button = event.target.closest("button");
     if (!button) return;
     ui.tool = button.dataset.tool;
-    ui.lineStart = null; ui.rectStart = null; ui.circleCenter = null; ui.arcPoints = [];
+    ui.lineStart = null; ui.rectStart = null; ui.circleCenter = null; ui.splineId = null; ui.splinePoint = null; ui.arcPoints = [];
     $("draw-tools").querySelectorAll("button").forEach((item) => item.classList.toggle("on", item === button));
   };
   document.querySelectorAll("[data-constraint]").forEach((button) => {

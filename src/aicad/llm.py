@@ -48,7 +48,10 @@ line, circle, or arc for construction geometry. A point-to-line distance is
 signed: positive is to the right of the directed line.
 
 place_part moves a part. list_parameters and set_parameter change a size on a
-solid built from shapes, a sketch, or a catalog length. measure_points reports
+solid built from shapes, a sketch, or a catalog length. add_fillet and
+add_chamfer round or break edges of a shape or sketch part; set_parameter
+changes that radius or distance. A radius that does not fit leaves the part
+as it was. measure_points reports
 the distance between two coordinates, and the angle at the second point when
 you pass a third. The person opens a project folder and saves a copy.
 You cannot change the open folder.

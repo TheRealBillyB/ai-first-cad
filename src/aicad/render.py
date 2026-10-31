@@ -533,6 +533,7 @@ def render_sketch(report: SketchReport, out_path: Path) -> RenderedView:
     lines = geometry.get("lines") or {}
     circles = geometry.get("circles") or {}
     arcs = geometry.get("arcs") or {}
+    splines = geometry.get("splines") or {}
     free_ids = {item.get("entity") for item in report.free}
     conflict = report.status in ("over_constrained", "didnt_converge")
     labels = _sketch_labels(report, points, circles)
@@ -572,6 +573,15 @@ def render_sketch(report: SketchReport, out_path: Path) -> RenderedView:
                 color,
                 dashed=bool(circle.get("construction")),
             )
+        for spline_id, spline in splines.items():
+            color = _sketch_color(spline_id, spline.get("construction"), free_ids, conflict)
+            samples = spline.get("samples") or []
+            pixels = []
+            for sample in samples:
+                if isinstance(sample, dict):
+                    pixels.append(to_px(float(sample["x"]), float(sample["y"])))
+            if len(pixels) >= 2:
+                _draw_chain(draw, pixels, color, dashed=bool(spline.get("construction")))
         for arc_id, arc in arcs.items():
             color = _sketch_color(arc_id, arc.get("construction"), free_ids, conflict)
             polyline = _arc_polyline(arc)
