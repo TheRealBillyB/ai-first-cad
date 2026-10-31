@@ -350,6 +350,49 @@ function sketchLineClick(spec, geometry, lineStart, x, y, tolerance) {
   return { spec: next, lineStart: null, commit: true, finished: true };
 }
 
+function sketchPlaneSpec(answer, selection) {
+  const which = String((answer && answer.plane) || "xy").trim().toLowerCase();
+  if (which === "face") {
+    const part = selection && selection.part;
+    const ref = selection && selection.ref;
+    if (!part || !ref) return { error: "Select a planar face, then start the sketch on it." };
+    return { plane: { kind: "face", part: part, ref: ref } };
+  }
+  if (which !== "xy" && which !== "yz" && which !== "xz") {
+    return { error: "A sketch plane is xy, yz, xz, or face." };
+  }
+  const offsetText = String((answer && answer.offset) || "").trim();
+  const angleText = String((answer && answer.angle) || "").trim();
+  if (!offsetText && !angleText) return { plane: which };
+  const plane = { kind: "datum", base: which };
+  if (offsetText) {
+    const offset = Number(offsetText);
+    if (!Number.isFinite(offset)) return { error: "Offset is a distance in millimeters." };
+    plane.offset = offset;
+  }
+  if (angleText) {
+    const angle = Number(angleText);
+    const axis = String((answer && answer.axis) || "x").trim().toLowerCase();
+    if (!Number.isFinite(angle)) return { error: "Angle is degrees." };
+    if (axis !== "x" && axis !== "y" && axis !== "z") return { error: "A datum angle is about x, y, or z." };
+    plane.angle = angle;
+    plane.axis = axis;
+  }
+  return { plane: plane };
+}
+
+function sketchPlaneLabel(plane) {
+  if (!plane || plane === "xy") return "XY";
+  if (plane === "yz") return "YZ";
+  if (plane === "xz") return "XZ";
+  if (typeof plane !== "object") return "XY";
+  if (plane.kind === "face") return "face of " + plane.part;
+  const bits = [String(plane.base || "xy").toUpperCase()];
+  if (plane.offset) bits.push("offset " + plane.offset);
+  if (plane.angle) bits.push(plane.angle + " deg about " + (plane.axis || "x"));
+  return bits.join(", ");
+}
+
 function sketchCircleThrough(a, b, c) {
   const determinant = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
   if (Math.abs(determinant) < 1e-8) return null;

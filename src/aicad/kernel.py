@@ -583,13 +583,25 @@ def _copy_solid(impl):
     return Part(copied.Shape())
 
 
-def measure(shape: Shape) -> Measurement:
+def measure(shape: Shape, material: str | None = None) -> Measurement:
+    """Measure a solid. ``material`` adds mass as volume times that handbook density."""
     impl = shape.impl
     bbox = impl.bounding_box()
     low = bbox.min
     high = bbox.max
     size = bbox.size
     center = impl.center()
+    mass_g = None
+    material_id = None
+    density = None
+    if material is not None:
+        from aicad.fea import lookup_material
+
+        found = lookup_material(material)
+        density = float(found["density_g_cm3"])
+        material_id = str(found["id"])
+        # mm^3 times g/cm^3 is grams after dividing by 1000.
+        mass_g = round_mm(float(impl.volume) * density / 1000.0)
     return Measurement(
         units=UNITS,
         valid=bool(impl.is_valid),
@@ -606,6 +618,9 @@ def measure(shape: Shape) -> Measurement:
             max=_vec(high),
             size=_vec(size),
         ),
+        mass_g=mass_g,
+        material=material_id,
+        density_g_cm3=density,
     )
 
 
@@ -2045,12 +2060,12 @@ def import_step_file(path: Path) -> Shape:
     not followed, so a shared part cannot read or write outside the project
     by naming some other path. A file past the size cap is not read.
 
-    A glTF, OBJ, or COLLADA file is read the same way. An external buffer, image,
+    A glTF, OBJ, COLLADA, or STL file is read the same way. An external buffer, image,
     or material library is opened only when it stays inside that file's folder,
     including a subfolder, and only through the shared file reader. The project
     path is not given to a geometry reader.
     """
-    if path.suffix.lower() in {".gltf", ".glb", ".obj", ".dae"}:
+    if path.suffix.lower() in {".gltf", ".glb", ".obj", ".dae", ".stl"}:
         from aicad.mesh_import import import_mesh_file
 
         return import_mesh_file(path)
@@ -3217,7 +3232,12 @@ def distance_to_point(shape: Shape, point: tuple[float, float, float] | list[flo
     return {"distance_mm": round_mm(gap), "inside": inside}
 
 
-def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | None = None) -> Shape:
+def solid_from_sketch(
+    geometry: dict,
+    steps: list[dict],
+    feature: FeatureLog | None = None,
+    frame: dict | None = None,
+) -> Shape:
     """Extrude, revolve, or cut a solved sketch into a solid.
 
     ``geometry`` is the ``geometry`` dict from a sketch report. ``steps`` is a
@@ -3238,10 +3258,12 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
     - ``{"op": "cut_box", "center": [0, 26, 2], "size": [10, 8, 6], "name": "slot"}``
     - ``{"op": "gusset", "angle": 0, "outer": 30, "plate_thickness": 4, "boss_height": 8, "name": "gusset_0"}``
 
-    ``z`` is the bottom of an extrusion or a cutter. A revolve spins the XY
-    profile about the sketch X or Y axis. The profile must stay on one side of
-    that axis. Consecutive points that are the ends of a sketch arc follow
-    that arc. A profile with only straight edges stays a polygon.
+    ``z`` is the bottom of an extrusion or a cutter, along the sketch normal.
+    A revolve spins the profile about the sketch X or Y axis. The profile must
+    stay on one side of that axis. Consecutive points that are the ends of a
+    sketch arc follow that arc. A profile with only straight edges stays a
+    polygon. ``frame`` places that solid on the sketch plane. ``cut_box`` and
+    ``gusset`` stay in world coordinates.
     """
     if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
         raise GeometryError(
@@ -3255,11 +3277,13 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
         raise GeometryError("A part may have at most 500 sketch steps.")
     log = feature if isinstance(feature, FeatureLog) else FeatureLog()
     for index, step in enumerate(steps):
-        _apply_sketch_step(log, step, geometry, index)
+        _apply_sketch_step(log, step, geometry, index, frame)
     return Shape(_require_solid(log.current), features=log.report())
 
 
-def prefix_from_sketch(geometry: dict, steps: list[dict]) -> tuple[Shape | None, dict[str, str]]:
+def prefix_from_sketch(
+    geometry: dict, steps: list[dict], frame: dict | None = None
+) -> tuple[Shape | None, dict[str, str]]:
     """Build sketch steps until one fails. The solid is the last step that fitted."""
     if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
         raise GeometryError(
@@ -3273,7 +3297,7 @@ def prefix_from_sketch(geometry: dict, steps: list[dict]) -> tuple[Shape | None,
     errors: dict[str, str] = {}
     for index, step in enumerate(steps):
         try:
-            _apply_sketch_step(log, step, geometry, index)
+            _apply_sketch_step(log, step, geometry, index, frame)
         except GeometryError as exc:
             errors[f"step/{index}"] = str(exc)
             break
@@ -3282,7 +3306,9 @@ def prefix_from_sketch(geometry: dict, steps: list[dict]) -> tuple[Shape | None,
     return Shape(_require_solid(log.current), features=log.report()), errors
 
 
-def _apply_sketch_step(log: FeatureLog, step: dict, geometry: dict, index: int) -> None:
+def _apply_sketch_step(
+    log: FeatureLog, step: dict, geometry: dict, index: int, frame: dict | None = None
+) -> None:
     if not isinstance(step, dict):
         raise GeometryError(f"Sketch step {index} must be an object.")
     op = step.get("op")
@@ -3290,21 +3316,21 @@ def _apply_sketch_step(log: FeatureLog, step: dict, geometry: dict, index: int) 
     if not isinstance(name, str) or not name.strip():
         raise GeometryError(f"Sketch step {index} name must be a non-empty string.")
     if op in ("extrude", "revolve", "gusset"):
-        log.add(name, _sketch_tool(step, geometry, index, name))
+        log.add(name, _sketch_tool(step, geometry, index, name, frame))
         return
     if op in ("cut", "cut_box"):
         if log.current is None:
             raise GeometryError(
                 f"Sketch step {index} ({name}) is a cut, but nothing has been added yet."
             )
-        log.cut(name, _sketch_tool(step, geometry, index, name))
+        log.cut(name, _sketch_tool(step, geometry, index, name, frame))
         return
     raise GeometryError(
         f"Sketch step {index} has op {op!r}. Use extrude, cut, revolve, cut_box, or gusset."
     )
 
 
-def _sketch_tool(step: dict, geometry: dict, index: int, name: str):
+def _sketch_tool(step: dict, geometry: dict, index: int, name: str, frame: dict | None = None):
     op = step["op"]
     if op == "cut_box":
         center = _vec3_field(step.get("center", [0, 0, 0]), f"{name} center")
@@ -3315,14 +3341,37 @@ def _sketch_tool(step: dict, geometry: dict, index: int, name: str):
     if op == "gusset":
         return _radial_gusset(step, name)
     if op == "revolve":
-        return _revolve_profile(step, geometry, name)
+        return _on_sketch_plane(_revolve_profile(step, geometry, name), frame)
     if "circle" in step:
-        return _circle_prism(step, geometry, name)
+        return _on_sketch_plane(_circle_prism(step, geometry, name), frame)
     if "points" in step:
-        return _polygon_prism(step, geometry, name)
+        return _on_sketch_plane(_polygon_prism(step, geometry, name), frame)
     raise GeometryError(
         f"{name}: an {op} needs `circle` or `points` from the solved sketch."
     )
+
+
+def _on_sketch_plane(solid, frame: dict | None):
+    """Map a solid built on world XY onto the sketch plane. XY at the origin stays put."""
+    if not isinstance(frame, dict):
+        return solid
+    try:
+        origin = tuple(float(component) for component in frame["origin"])
+        x_dir = tuple(float(component) for component in frame["x"])
+        normal = tuple(float(component) for component in frame["normal"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GeometryError("A sketch frame needs origin, x, and normal.") from exc
+    if (
+        _near(origin, (0.0, 0.0, 0.0))
+        and _near(x_dir, (1.0, 0.0, 0.0))
+        and _near(normal, (0.0, 0.0, 1.0))
+    ):
+        return solid
+    return Plane(origin=origin, x_dir=x_dir, z_dir=normal).location * solid
+
+
+def _near(left: tuple[float, float, float], right: tuple[float, float, float]) -> bool:
+    return all(abs(left[index] - right[index]) < 1e-9 for index in range(3))
 
 
 def _circle_prism(step: dict, geometry: dict, name: str):

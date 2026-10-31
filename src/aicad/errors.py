@@ -26,6 +26,10 @@ class EdgeOpError(GeometryError):
         self.code = code
 
 
+class SketchPlaneError(GeometryError):
+    """The sketch is attached to a face that is no longer in the model."""
+
+
 class PartNotFound(AICADError):
     """No part with that name is in the current document."""
 

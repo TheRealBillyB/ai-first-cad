@@ -143,6 +143,8 @@ def mounting_from_frames(pinion_matrix: list, gear_matrix: list) -> dict:
 
 
 def _check_parallel(pinion_spec, gear_spec, left, right, mounting, ranges, steps) -> dict:
+    if left.get("internal") or right.get("internal"):
+        return _check_internal(pinion_spec, gear_spec, left, right, mounting, ranges, steps)
     centre = mounting.get("centre_distance_mm")
     mount = cylindrical_mount(left, right, centre)
     shaft = mounting.get("shaft_angle_deg")
@@ -234,6 +236,116 @@ def _check_intersecting(pinion_spec, gear_spec, left, right, mounting, ranges, s
     report["virtual_centre_distance_mm"] = mount["centre_distance_mm"]
     report["ideal_virtual_centre_distance_mm"] = ideal["centre_distance_mm"]
     return report
+
+
+_INTERNAL_ASSUMPTIONS = [
+    "An internal pair uses the ISO 21771 centre, with both members turning the same way.",
+    "Circumferential backlash is 2 a (inv α' − inv α) on the operating pitch circle.",
+    "Normal backlash is that arc times cos α'. The ring is a spur, so there is no helix factor.",
+    "The sweep turns the smaller gear through one full turn and turns the mate by the tooth ratio, in the same direction.",
+    "Tip clearance is the ring root radius, minus the centre, minus the external tip radius.",
+    "Tooth thickness is the nominal zero-backlash size. Internal cutter undercut is not evaluated.",
+]
+
+_INTERNAL_LIMITS = [
+    "Tooth thickness is the nominal size, not a tolerance grade or a measured gap.",
+    "The sweep tests the transverse tooth outline the solid is drawn from, through one turn of the smaller gear.",
+    "Both members turn the same way. The generated phase puts an external tooth in an internal space.",
+    "The root fillet is a circular blend, not a pinion-cutter trochoid.",
+]
+
+
+def _check_internal(pinion_spec, gear_spec, left, right, mounting, ranges, steps) -> dict:
+    from aicad.gears.internal import internal_mount, split_members
+
+    external, ring = split_members(left, right)
+    centre = mounting.get("centre_distance_mm")
+    mount = internal_mount(external, ring, centre)
+    shaft = mounting.get("shaft_angle_deg")
+    extra = []
+    if shaft is not None and abs(math.sin(math.radians(float(shaft)))) > 1e-3:
+        if min(abs(float(shaft)) % 360.0, abs(abs(float(shaft)) % 360.0 - 180.0)) > 0.05:
+            extra.append("The shafts are not parallel.")
+    if mount["tip_clearance_mm"] < -_PENETRATION_MM:
+        extra.append(
+            f"The external tip crosses the ring root by {-mount['tip_clearance_mm']:.3f} mm."
+        )
+    if mount["ring_tip_clearance_mm"] < -_PENETRATION_MM:
+        extra.append(
+            f"The ring tip crosses the external root by {-mount['ring_tip_clearance_mm']:.3f} mm."
+        )
+    sweep = _sweep_internal(pinion_spec, gear_spec, left, right, mount["centre_distance_mm"], mounting, steps)
+    report = _report(
+        left,
+        right,
+        mount,
+        ideal_centre=mount["ideal_centre_distance_mm"],
+        actual_centre=mount["centre_distance_mm"],
+        shaft_actual=0.0 if shaft is None else float(shaft),
+        shaft_ideal=0.0,
+        ranges=ranges,
+        sweep=sweep,
+        extra_findings=extra,
+        tips_interfere=False,
+        assumptions=_INTERNAL_ASSUMPTIONS,
+        standards=["ISO 21771:2007", "ISO 53:1998"],
+    )
+    report["mesh"] = "internal"
+    report["tip_clearance_mm"] = mount["tip_clearance_mm"]
+    report["ring_tip_clearance_mm"] = mount["ring_tip_clearance_mm"]
+    report["what"] = (
+        "Nominal mesh of an internal ring and an external gear: centre distance against the "
+        "zero-backlash centre, tip clearance, backlash, contact ratio, and tooth interference "
+        "through one turn of the smaller gear. Both members turn the same way."
+    )
+    report["limits"] = list(_INTERNAL_LIMITS)
+    return report
+
+
+def _sweep_internal(pinion_spec, gear_spec, left, right, centre, mounting, steps) -> dict:
+    z_p = float(left["teeth"])
+    z_g = float(right["teeth"])
+    # The tooth points at the pitch point, which is not the direction toward the
+    # other centre. Sweep phase stays within a tooth so the window sees that mesh.
+    if left.get("internal"):
+        mesh_p = 0.0
+        mesh_g = 0.0
+        default_spin_p = math.pi / z_p
+        default_spin_g = 0.0
+    else:
+        mesh_p = math.pi
+        mesh_g = math.pi
+        default_spin_p = math.pi
+        default_spin_g = math.pi * (1.0 + 1.0 / z_g)
+    if "pinion_phase_deg" in mounting or "gear_phase_deg" in mounting:
+        # Frame phase is the angle from the direction toward the mate to +X.
+        # The first member's mate lies on +X. The second member's mate lies on -X.
+        spin_p = math.radians(float(mounting.get("pinion_phase_deg", 0.0)))
+        spin_g = math.radians(float(mounting.get("gear_phase_deg", 0.0))) + math.pi
+    else:
+        spin_p = default_spin_p
+        spin_g = default_spin_g
+    phase_p = _wrap_pi(spin_p - mesh_p)
+    phase_g = _wrap_pi(spin_g - mesh_g)
+    smaller = z_g < z_p - 1e-9
+    step, count = _sweep_plan(z_g if smaller else z_p, steps)
+    return _turn(
+        tooth_profile(pinion_spec, 28, 12),
+        tooth_profile(gear_spec, 28, 12),
+        z_p,
+        z_g,
+        centre,
+        phase_p,
+        phase_g,
+        [(0.0, 0.0)],
+        step,
+        count,
+        smaller_is_gear=smaller,
+        model="internal transverse outline",
+        same_direction=True,
+        mesh_p=mesh_p,
+        mesh_g=mesh_g,
+    )
 
 
 _CYLINDRICAL_ASSUMPTIONS = [
@@ -539,20 +651,24 @@ def _turn(
     *,
     smaller_is_gear,
     model,
+    same_direction=False,
+    mesh_p=0.0,
+    mesh_g=math.pi,
 ) -> dict:
     worst = 0.0
     worst_at = 0.0
     step_rad = math.radians(step)
     ratio = z_p / z_g
+    sense = 1.0 if same_direction else -1.0
     for index in range(count):
         theta = index * step_rad
         if smaller_is_gear:
             phase_g = gear_phase + theta
-            phase_p = pinion_phase - theta / ratio
+            phase_p = pinion_phase + sense * theta / ratio
             at = index * step
         else:
             phase_p = pinion_phase + theta
-            phase_g = gear_phase - theta * ratio
+            phase_g = gear_phase + sense * theta * ratio
             at = index * step
         for twist_p, twist_g in sections:
             depth = _mesh_depth(
@@ -560,12 +676,12 @@ def _turn(
                 z_p,
                 phase_p + twist_p,
                 (0.0, 0.0),
-                0.0,
+                mesh_p,
                 gear_tooth,
                 z_g,
                 phase_g + twist_g,
                 (centre, 0.0),
-                math.pi,
+                mesh_g,
             )
             if depth > worst:
                 worst = depth
@@ -580,6 +696,11 @@ def _turn(
         "worst_penetration_mm": worst,
         "worst_at_deg": worst_at,
     }
+
+
+def _wrap_pi(angle: float) -> float:
+    """Angle in (-π, π]."""
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
 def _helix_sections(left, right) -> list[tuple[float, float]]:
