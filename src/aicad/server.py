@@ -1385,7 +1385,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """Start a plan before any solid. The plan is data and does not run code.
 
         Optional bundle may include research (note and source), assumptions,
-        questions, dimensions ({name, value_mm, note}), and sheets of blocks.
+        questions, dimensions ({name, value_mm, note}), sheets of blocks, and
+        build steps ({part, script}). A build script assigns part. Storing it
+        does not run it.
         A sheet block is {x, y, w, h, label, fill}. fill is yellow, blue, green,
         red, white, door, shelter, or leg. Dimensions on a sheet are
         {x0, y0, x1, y1, text, offset}. Then submit_plan for the person to review.
@@ -1432,6 +1434,16 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("set_plan_dimensions", name=name, dimensions=dimensions))
 
     @mcp.tool()
+    def set_plan_build(name: str, steps: list[dict[str, Any]]) -> dict:
+        """Store the scripts that build the parts after the person approves.
+
+        Each step needs part and script. The script assigns the solid to part.
+        Storing the steps does not run them. The person approves the plan, and
+        that approval runs them. You cannot approve.
+        """
+        return guard(lambda: run("set_plan_build", name=name, steps=steps))
+
+    @mcp.tool()
     def comment_on_plan(name: str, text: str, item: str = "plan") -> dict:
         """Comment on the plan or an item id. This does not answer, mark, or approve."""
         return guard(lambda: run("comment_on_plan", name=name, item=item, text=text))
@@ -1462,16 +1474,21 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def approve_plan(name: str) -> dict:
-        """Approve a plan. Always refuses the agent. The person approves in the Plan panel or with approve-plan."""
+        """Approve a plan. Always refuses the agent. The person approves in the Plan panel or with approve-plan.
+
+        That approval runs any build steps in the script sandbox. The network
+        stays off. A failed step leaves the previous model in place.
+        """
         return guard(lambda: run("approve_plan", name=name))
 
     @mcp.tool()
     def start_model_from_plan(name: str) -> list[str | Image]:
-        """Start heavy modeling from a plan. Refuses until the person has approved it.
+        """Start modeling from a plan. Refuses until the person has approved it.
 
         The refusal says the plan status and that the agent cannot approve it.
-        After approval, the result is the dimensions and assumptions to model.
-        This does not build a solid.
+        With no build steps, the result is the dimensions and assumptions, and
+        no solid is built. With build steps, the approved scripts run if those
+        parts are not saved yet. The network stays off.
         """
         return guard(lambda: _images(run("start_model_from_plan", name=name)))
 
