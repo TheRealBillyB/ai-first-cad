@@ -17,6 +17,7 @@ const ui = {
   lineStart: null,
   rectStart: null,
   circleCenter: null,
+  arcPoints: [],
   doc: "requirements.md",
   assembly: null,
   viewAssembly: null,
@@ -107,9 +108,14 @@ async function applyRefresh(options = {}) {
   if (!ui.part && ui.state.parts.length) ui.part = ui.state.parts[0].name;
   const pendingLine = sketchPendingPoint(ui.sketch, ui.lineStart);
   const pendingCenter = sketchPendingPoint(ui.sketch, ui.circleCenter);
+  const pendingArc = (ui.arcPoints || []).map((id) => sketchPendingPoint(ui.sketch, id));
   if (ui.sketchName) {
     const found = (ui.state.sketches || []).find((item) => item.name === ui.sketchName);
-    if (found) ui.sketch = sketchWithPendingPoint(sketchWithPendingPoint(found, pendingLine), pendingCenter);
+    if (found) {
+      let sketch = sketchWithPendingPoint(sketchWithPendingPoint(found, pendingLine), pendingCenter);
+      pendingArc.forEach((pending) => { sketch = sketchWithPendingPoint(sketch, pending); });
+      ui.sketch = sketch;
+    }
   }
   if (ui.state.project) {
     $("project-name").textContent = ui.state.project.name;
@@ -875,7 +881,16 @@ function freshId(prefix, spec) {
 
 async function onSketchClick(event) {
   if (!ui.sketch) return;
-  const [x, y] = screenToSketch(event);
+  const picked = screenToSketch(event);
+  const snapped = sketchSnap(
+    ui.sketch.geometry,
+    picked[0],
+    picked[1],
+    sketchPickTolerance(),
+    sketchGridSpacing(ui.sketch),
+  );
+  const x = snapped.x;
+  const y = snapped.y;
   const spec = structuredClone(ui.sketch.spec || { plane: "xy", entities: [], constraints: [] });
   if (ui.tool === "select") {
     const hit = nearestSketchEntity(x, y);
@@ -901,6 +916,16 @@ async function onSketchClick(event) {
     ui.circleCenter = result.circleCenter;
     ui.sketch.spec = result.spec;
     if (result.commit) await commitSketch(result.spec);
+    return;
+  }
+  if (ui.tool === "arc") {
+    const mode = $("arc-mode") ? $("arc-mode").value : "three";
+    const result = sketchArcClick(spec, ui.sketch.geometry, mode, ui.arcPoints, x, y, sketchPickTolerance());
+    ui.arcPoints = result.pending || [];
+    if (result.error) throw new Error(result.error);
+    ui.sketch.spec = result.spec;
+    if (result.commit) await commitSketch(result.spec);
+    else drawSketch();
     return;
   }
   if (ui.tool === "rectangle") {
@@ -972,6 +997,13 @@ async function applyConstraint(kind) {
     const value = await ask("Diameter", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: uniqueConstraintName(spec, "diameter") }]);
     if (!value || !selected.length) return;
     spec.constraints.push({ type: "diameter", entity: selected[0], value: Number(value.value), name: value.name });
+  } else if (kind === "radius") {
+    const value = await ask("Radius", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: uniqueConstraintName(spec, "radius") }]);
+    if (!value || !selected.length) return;
+    spec.constraints.push({ type: "radius", entity: selected[0], value: Number(value.value), name: value.name });
+  } else if (kind === "tangent") {
+    if (selected.length < 2) return;
+    spec.constraints.push({ type: "tangent", a: selected[0], b: selected[1] });
   } else if (kind === "coincident") {
     if (selected.length < 2) return;
     spec.constraints.push({ type: "coincident", a: selected[0], b: selected[1] });
@@ -2182,7 +2214,7 @@ async function boot() {
     const button = event.target.closest("button");
     if (!button) return;
     ui.tool = button.dataset.tool;
-    ui.lineStart = null; ui.rectStart = null; ui.circleCenter = null;
+    ui.lineStart = null; ui.rectStart = null; ui.circleCenter = null; ui.arcPoints = [];
     $("draw-tools").querySelectorAll("button").forEach((item) => item.classList.toggle("on", item === button));
   };
   document.querySelectorAll("[data-constraint]").forEach((button) => {
