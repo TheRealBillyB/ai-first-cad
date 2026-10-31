@@ -249,6 +249,20 @@
     const dims = (revision.dimensions || []).map((item) =>
       `<tr><td>${esc(item.name)}</td><td>${esc(item.value_mm)} mm</td><td>${esc(item.note || "")}</td></tr>`
     ).join("");
+    const progressById = {};
+    if (current) {
+      (plan.build_progress || []).forEach((item) => { progressById[item.id] = item; });
+    }
+    const build = (revision.build || []).map((step) => {
+      const row = progressById[step.id];
+      const status = row ? row.status : "stored";
+      const where = row && row.index ? ` (${row.index} of ${row.count})` : "";
+      return `<article class="plan-card">
+        <header><strong>${esc(step.part)}</strong><span class="plan-pill">${esc(status)}${esc(where)}</span></header>
+        <pre class="plan-script">${esc(step.script)}</pre>
+        ${row && row.error ? `<p class="plan-error">${esc(row.error)}</p>` : ""}
+      </article>`;
+    }).join("");
     const actions = !current ? "" : `
       <div class="plan-actions">
         ${plan.status === "draft" ? `<button type="button" id="plan-submit" class="primary">Submit for review</button>` : ""}
@@ -268,6 +282,7 @@
       ${questions || "<p class='plan-source'>No questions yet.</p>"}
       <h3>Dimensions for the model</h3>
       ${dims ? `<table class="plan-dims">${dims}</table>` : "<p class='plan-source'>No named dimensions yet.</p>"}
+      ${build ? `<h3>Build steps</h3>${build}<p class="plan-source">Approval runs these scripts in the sandbox. The network stays off.</p>` : ""}
       <p class="plan-source">Only you can answer, mark, and approve. The assistant cannot.</p>`;
   }
 
@@ -377,8 +392,15 @@
       return;
     }
     if (event.target.id === "plan-approve") {
-      if (!window.confirm("Approve this revision? Modeling and simulation can start from it. A later revision clears that approval.")) return;
-      run(() => planCommand("approve_plan", { name: ui.id }));
+      const steps = ((selectedRevision() || {}).build) || [];
+      const extra = steps.length
+        ? " Build steps on this revision will run and build the parts. The network stays off."
+        : "";
+      if (!window.confirm("Approve this revision? Modeling and simulation can start from it." + extra + " A later revision clears that approval.")) return;
+      const pending = steps.length
+        ? "Building " + steps.length + (steps.length === 1 ? " step" : " steps") + "…"
+        : "";
+      run(() => planCommand("approve_plan", { name: ui.id }), false, pending);
       return;
     }
     if (event.target.id === "plan-try-model") {
@@ -396,15 +418,22 @@
     }
   }
 
-  function run(action, asNotice) {
+  function run(action, asNotice, pending) {
     ui.editing = false;
     ui.error = "";
+    if (pending) {
+      ui.notice = pending;
+      render();
+    }
     action().then((result) => {
       const dims = (result.dimensions || [])
         .map((item) => item.name + " " + item.value_mm + " mm")
         .join(", ");
+      const progress = (result.progress || [])
+        .map((item) => item.part + " " + item.status)
+        .join(", ");
       const note = result.note || (asNotice ? "Released." : "");
-      ui.notice = dims ? note + " " + dims + "." : note;
+      ui.notice = [note, dims, progress].filter(Boolean).join(" ");
       return loadPlan(ui.id);
     }).catch(showError);
   }

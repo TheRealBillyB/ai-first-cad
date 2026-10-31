@@ -35,7 +35,9 @@ Two commands release the later work:
 - `start_model_from_plan` releases heavy modeling.
 - `start_simulation_from_plan` releases simulation.
 
-Until you approve the current revision, both refuse. They do not build a solid and they do not run a solver. After approval they return the plan's dimensions and assumptions, which is what the modeling step should use. A new revision clears that approval.
+Until you approve the current revision, both refuse. They do not run a solver. A plan with no build steps still does not build a solid: after approval they return the dimensions and assumptions. A new revision clears that approval.
+
+A plan can also store build steps. Each step names a part and a script that assigns `part`. The script is data in the plan file. Opening the project does not run it, and storing the step does not run it. When you approve that revision, the app runs each script in the part-script sandbox, with the network off, and builds those parts. The Plan panel shows the steps and, while approval is running them, how many are building. The result lists each step. If a step fails, the error names that step, and the parts already in the project stay as they were. Nothing from that failed build is saved. `start_model_from_plan` runs the same approved scripts when the parts are not saved yet. The assistant cannot approve, so the assistant cannot start the build. A later revision keeps the scripts only as a copy, and they do not run until you approve the new revision.
 
 Other modeling commands are unchanged. A bracket you were already building is not blocked by a draft plan. The gate is starting that heavy work *from the plan*.
 
@@ -88,7 +90,7 @@ The app, the command line, and the assistant's connection all call the same oper
 
 | Command | Who |
 | --- | --- |
-| `start-plan`, `add-plan-research`, `add-plan-assumption`, `add-plan-question`, `put-plan-sheet`, `set-plan-dimensions` | Assistant or you, while the revision is a draft |
+| `start-plan`, `add-plan-research`, `add-plan-assumption`, `add-plan-question`, `put-plan-sheet`, `set-plan-dimensions`, `set-plan-build` | Assistant or you, while the revision is a draft |
 | `comment-on-plan`, `submit-plan`, `revise-plan` | Either. Revise records what changed and opens the next draft |
 | `answer-plan-question`, `mark-plan-item`, `approve-plan` | You only |
 | `start-model-from-plan`, `start-simulation-from-plan` | Either, and only after you have approved the current revision |
@@ -97,6 +99,8 @@ The app, the command line, and the assistant's connection all call the same oper
 A sheet is a JSON object. Blocks are rectangles in millimeters: `x`, `y`, `w`, `h`, `label`, and a `fill` (`yellow`, `blue`, `green`, `red`, `white`, `door`, `shelter`, or `leg`). A dimension is the two points it measures, the text, and an `offset` so the line sits off the block. `panels` puts more than one view on the sheet. Units are millimeters.
 
 `mark-plan-item` takes `accepted`, `rejected`, or `open` for an assumption, and `waived` or `open` for a question.
+
+`set-plan-build` takes a JSON list of `{part, script}`, or an object with a `steps` list. The same list can sit on a `start-plan` or `revise-plan` bundle under `build`. The script is Python that assigns the solid to `part`. It is not executed when the file is read.
 
 ## Hands-on test
 

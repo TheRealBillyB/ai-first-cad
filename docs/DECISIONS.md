@@ -6,6 +6,19 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-31
+
+| Decision | Rationale |
+| --- | --- |
+| A motion study follows the gear train, including a planetary set | Driving one member turns the others at the tooth ratio and in the matching direction, from the angles they already have. A member held fixed stays fixed. A shaft whose speed is not determined stays where it is. |
+
+## 2026-10-30
+
+| Decision | Rationale |
+| --- | --- |
+| A folder can be removed while the quota watch still has it | On Windows a script removes a file name immediately while the disk-quota watch still holds that file or is scanning its folder, so the folder can be removed, and the watch still counts the bytes with the same coverage and per-change scan. |
+| A quota watch that does not finish stops the script | The watch is asked to stop and woken. The run waits a short time. If the watch is still in the tree, the script is stopped and the job folder stays until that watch leaves, so cleanup does not race it and the run does not wait forever. |
+
 ## 2026-10-29
 
 | Decision | Rationale |

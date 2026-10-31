@@ -37,6 +37,8 @@ _MAX_TEXT = 4000
 _MAX_SHEETS = 8
 _MAX_BLOCKS = 80
 _MAX_DIMS = 40
+_MAX_BUILD_STEPS = 8
+_PART_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 
 _ASSUMPTION_MARKS = {"open", "accepted", "rejected"}
 _QUESTION_MARKS = {"open", "waived"}
@@ -278,6 +280,27 @@ class PlanStore:
         self._touch(plan)
         return self._public(plan)
 
+    def set_build(self, name: str, steps: list) -> dict:
+        """Store the scripts that approval will run. Storing them does not run them."""
+        plan = self._load(name)
+        self._require_draft(plan)
+        revision = _current(plan)
+        revision["build"] = _normalize_build(steps)
+        plan.pop("built", None)
+        plan.pop("build_progress", None)
+        count = len(revision["build"])
+        if count == 0:
+            note = "Cleared the build steps. Nothing will run on approval."
+        elif count == 1:
+            note = "Stored 1 build step. It does not run until you approve."
+        else:
+            note = f"Stored {count} build steps. They do not run until you approve."
+        _activity(revision, self.actor, "steps", "plan", note)
+        self._touch(plan)
+        public = self._public(plan)
+        public["note"] = note
+        return public
+
     def comment(self, name: str, item: str, text: str) -> dict:
         plan = self._load(name)
         if plan["status"] == "approved":
@@ -380,6 +403,8 @@ class PlanStore:
         plan["revisions"].append(revision)
         plan["current_revision"] = revision["version"]
         plan["status"] = "draft"
+        plan.pop("built", None)
+        plan.pop("build_progress", None)
         self._touch(plan)
         public = self._public(plan)
         if previous == "approved":
@@ -567,6 +592,7 @@ class PlanStore:
                     ],
                     "dimensions": copy.deepcopy(revision["dimensions"]),
                     "sheets": [_sheet_public(self.root, sheet) for sheet in revision["sheets"]],
+                    "build": copy.deepcopy(revision.get("build") or []),
                     "activity": copy.deepcopy(revision["activity"]),
                 }
             )
@@ -595,6 +621,8 @@ class PlanStore:
             "revision": revisions[-1],
             "revisions": revisions,
             "views": _views(self.root, current),
+            "build_progress": copy.deepcopy(plan.get("build_progress") or []),
+            "built_parts": _built_parts(plan),
         }
 
     def _approval_view(self, plan: dict) -> dict:
@@ -605,30 +633,66 @@ class PlanStore:
                 "pill": "approved",
                 "status_text": "approved",
                 "modeling": "open",
-                "modeling_note": (
-                    "This revision is approved. start_model_from_plan and start_simulation_from_plan can use it."
-                ),
+                "modeling_note": _open_modeling_note(plan),
             }
         if plan["status"] == "approved":
+            closed = (
+                "This file says approved, but this computer has no record of you approving this revision. "
+                "Editing the plan file does not approve it. Modeling and simulation stay off until you approve it here."
+            )
+            if _current(plan).get("build"):
+                closed += " Build steps do not run until you approve it here."
             return {
                 "approval": "missing",
                 "pill": "untrusted",
                 "status_text": "not approved by you",
                 "modeling": "closed",
-                "modeling_note": (
-                    "This file says approved, but this computer has no record of you approving this revision. "
-                    "Editing the plan file does not approve it. Modeling and simulation stay off until you approve it here."
-                ),
+                "modeling_note": closed,
             }
+        closed = "Modeling and simulation from this plan stay off until you approve the current revision."
+        if _current(plan).get("build"):
+            closed += " Build steps are stored and do not run before that."
         return {
             "approval": "none",
             "pill": plan["status"],
             "status_text": status_phrase(plan["status"]),
             "modeling": "closed",
-            "modeling_note": (
-                "Modeling and simulation from this plan stay off until you approve the current revision."
-            ),
+            "modeling_note": closed,
         }
+
+    def for_build(self, name: str) -> dict:
+        """The stored plan, so a build can write progress back onto this object."""
+        return self._load(name)
+
+    def build_is_saved(self, plan: dict) -> bool:
+        built = plan.get("built")
+        if not isinstance(built, dict):
+            return False
+        revision = _current(plan)
+        parts = built.get("parts")
+        return (
+            built.get("revision") == revision.get("version")
+            and built.get("content") == _content_hash(revision)
+            and isinstance(parts, list)
+            and parts == [step["part"] for step in (revision.get("build") or [])]
+        )
+
+    def write_build_progress(self, plan: dict, progress: list) -> None:
+        plan["build_progress"] = copy.deepcopy(progress)
+        plan["updated_at"] = _now()
+        self._write(plan)
+
+    def write_build_result(self, plan: dict, progress: list, parts: list[str]) -> None:
+        revision = _current(plan)
+        plan["build_progress"] = copy.deepcopy(progress)
+        plan["built"] = {
+            "revision": revision["version"],
+            "content": _content_hash(revision),
+            "parts": list(parts),
+        }
+        names = ", ".join(parts)
+        _activity(revision, "user", "build", "plan", f"Built {names}.")
+        self._touch(plan)
 
 
 def plan_files(root: str | Path) -> dict[str, str]:
@@ -848,7 +912,7 @@ def _revision_fingerprint(revision: dict) -> dict:
                 "footer": sheet.get("footer") or "",
             }
         )
-    return {
+    payload = {
         "version": revision.get("version"),
         "changed": revision.get("changed") or "",
         "research": revision.get("research") or [],
@@ -857,6 +921,13 @@ def _revision_fingerprint(revision: dict) -> dict:
         "dimensions": revision.get("dimensions") or [],
         "sheets": sheets,
     }
+    steps = revision.get("build") or []
+    if steps:
+        payload["build"] = [
+            {"id": step.get("id"), "part": step.get("part"), "script": step.get("script")}
+            for step in steps
+        ]
+    return payload
 
 
 def _content_hash(revision: dict) -> str:
@@ -1055,6 +1126,10 @@ def _coerce_revision(revision: dict, filename: str) -> None:
             revision[key] = []
         elif not isinstance(revision[key], list):
             raise PlanError(f"{filename} revision v{version} has a {key} value that is not a list.")
+    if revision.get("build") is None:
+        revision["build"] = []
+    else:
+        revision["build"] = _normalize_build(revision.get("build"))
     if not isinstance(revision.get("changed"), str):
         revision["changed"] = "" if revision.get("changed") is None else str(revision.get("changed"))
 
@@ -1085,6 +1160,7 @@ def _empty_revision(version: int, now: str, changed: str) -> dict:
         "questions": [],
         "dimensions": [],
         "sheets": [],
+        "build": [],
         "activity": [
             {"at": now, "actor": "user", "action": "start", "item": "plan", "text": changed},
         ],
@@ -1128,6 +1204,8 @@ def _apply_bundle(revision: dict, bundle: dict) -> None:
         )
     if "dimensions" in bundle:
         revision["dimensions"] = _normalize_dimensions(bundle.get("dimensions") or [])
+    if "build" in bundle:
+        revision["build"] = _normalize_build(bundle.get("build") or [])
     incoming = bundle.get("sheets") or []
     if not isinstance(incoming, list):
         raise PlanError("sheets is a list of sheet objects.")
@@ -1164,6 +1242,82 @@ def _normalize_dimensions(dimensions: list) -> list[dict]:
             }
         )
     return cleaned
+
+
+def _normalize_build(steps: list) -> list[dict]:
+    """Store part scripts. This does not run them."""
+    if not isinstance(steps, list):
+        raise PlanError("Build steps are a list. Each step has a part name and a script.")
+    if len(steps) > _MAX_BUILD_STEPS:
+        raise PlanError(f"A plan builds at most {_MAX_BUILD_STEPS} parts.")
+    from aicad.paths import is_reserved_device_name
+
+    cleaned = []
+    seen_parts: set[str] = set()
+    seen_ids: set[str] = set()
+    for index, item in enumerate(steps, start=1):
+        if not isinstance(item, dict):
+            raise PlanError(f"Build step {index} has to be an object with part and script.")
+        part = item.get("part") or ""
+        if not isinstance(part, str) or not _PART_NAME.match(part):
+            raise PlanError(
+                f"Build step {index} needs a part name that starts with a letter. {part!r} does not."
+            )
+        if is_reserved_device_name(part):
+            raise PlanError(f"{part} is reserved on Windows. Pick another part name.")
+        if part in seen_parts:
+            raise PlanError(f"Build step {part!r} is listed twice. Each step builds one part.")
+        seen_parts.add(part)
+        script = item.get("script")
+        if isinstance(script, str):
+            script = script.replace("\r\n", "\n").replace("\r", "\n")
+        script = _text(script, "script", required=True)
+        if not script.strip():
+            raise PlanError("A build step needs a script. The script assigns the solid to part.")
+        requested = item.get("id")
+        if requested in (None, ""):
+            step_id = f"b{index}"
+            while step_id in seen_ids:
+                step_id += "b"
+        elif not isinstance(requested, str) or not _ITEM_ID.match(requested):
+            raise PlanError(
+                f"Build step id {requested!r} should be short lowercase letters, numbers, and underscores."
+            )
+        else:
+            step_id = requested
+        if step_id in seen_ids:
+            raise PlanError(f"Build step id {step_id!r} is listed twice.")
+        seen_ids.add(step_id)
+        cleaned.append({"id": step_id, "part": part, "script": script})
+    return cleaned
+
+
+def _built_parts(plan: dict) -> list:
+    built = plan.get("built")
+    if not isinstance(built, dict):
+        return []
+    parts = built.get("parts")
+    if not isinstance(parts, list):
+        return []
+    return list(parts)
+
+
+def _open_modeling_note(plan: dict) -> str:
+    revision = _current(plan)
+    steps = revision.get("build") or []
+    if not steps:
+        return "This revision is approved. start_model_from_plan and start_simulation_from_plan can use it."
+    built = plan.get("built") if isinstance(plan.get("built"), dict) else {}
+    if built.get("revision") == revision.get("version") and built.get("content") == _content_hash(revision):
+        names = ", ".join(built.get("parts") or [])
+        return (
+            f"This revision is approved. Built {names} from its scripts. "
+            "The network stayed off. A later revision does not run until you approve it."
+        )
+    return (
+        "This revision is approved. Its build steps are not saved as parts yet. "
+        "start_model_from_plan runs those scripts. The network stays off."
+    )
 
 
 def _normalize_sheet(spec: dict, revision: dict) -> dict:
