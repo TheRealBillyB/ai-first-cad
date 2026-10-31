@@ -1,4 +1,4 @@
-"""Solids for spur, helical, straight bevel, spiral bevel, and hypoid gears.
+"""Solids for spur, helical, internal ring, straight bevel, spiral bevel, and hypoid gears.
 
 A spur tooth is the transverse involute extruded along the axis. A helical
 tooth carries that profile on a constant-lead helicoid: positive helix is
@@ -38,6 +38,23 @@ def build_gear(spec: dict):
     clean, builder = geom.require_builder(spec)
     blank = builder(clean)
     return _with_hub_and_hole(blank, clean)
+
+
+def build_internal(spec: dict):
+    """Internal spur ring: outer rim with the tooth space cut through the face."""
+    from aicad.gears.internal import internal_hole_outline, internal_scalars
+
+    scalars = internal_scalars(spec)
+    # A full ISO flank sample makes the ring slow to exchange as STEP. Twelve
+    # flank stations keep the chord well under the mesh tolerance.
+    outline = internal_hole_outline(spec, 12, 4)
+    void = _face(outline)
+    width = float(spec["face_width_mm"])
+    outer = Cylinder(float(scalars["ro"]), width)
+    hole = Solid.extrude(void, (0.0, 0.0, width + 2.0))
+    hole = Pos(0.0, 0.0, -width / 2.0 - 1.0) * hole
+    solid = _cut(outer, hole)
+    return _one(solid)
 
 
 def build_cylindrical(spec: dict):
@@ -456,6 +473,10 @@ def _root_radius(spec: dict) -> float:
         from aicad.gears.hypoid import root_radius
 
         return root_radius(spec)
+    if spec["type"] == "internal":
+        from aicad.gears.internal import internal_scalars
+
+        return internal_scalars(spec)["rf"]
     if spec["type"] in geom.CYLINDRICAL:
         return geom.cylindrical_scalars(spec)["rf"]
     cone = geom.bevel_cones(spec)

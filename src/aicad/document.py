@@ -215,6 +215,43 @@ class Document:
             self._save()
             return self._info(self._parts[name])
 
+    def import_stl(self, name: str, path: str | Path) -> PartInfo:
+        """Copy an STL file in as a mesh-backed part.
+
+        The triangles become one solid. The part has no editable features.
+        A mesh that does not close is refused. The bytes are read with the
+        shared file reader and stored under ``imports``.
+        """
+        with self._lock:
+            self._require_new_name(name)
+            from aicad.file_access import TooLarge, read_file
+            from aicad.mesh_import import import_mesh_bytes
+            from aicad.paths import publish_bytes, refuse_reserved_device
+            from aicad.sandbox import require_in_project
+
+            require_in_project(path, self.workspace, writing=False)
+            source = _step_import_source(self.workspace, path, label="STL file")
+            if source.suffix.lower() != ".stl":
+                raise GeometryError(f"STL file {source.name} is not an .stl file.")
+            try:
+                data = read_file(source, maximum=kernel.MAX_STEP_BYTES)
+            except TooLarge as exc:
+                raise GeometryError(f"Mesh file {source.name} is too large.") from exc
+            except OSError as exc:
+                raise GeometryError(f"Could not read mesh file {source.name}.") from exc
+            shape = import_mesh_bytes(source, data)
+            relative = f"imports/{name}.stl"
+            refuse_reserved_device(relative, None, "Import copy", GeometryError)
+            destination = _project_file(self.workspace, self.workspace / relative, "Imported STL")
+            publish_bytes(destination, data)
+            note = (
+                f"# Imported STL, copied to {relative}\n"
+                "# A triangle mesh has no editable features. Move it, or replace the part.\n"
+            )
+            self._parts[name] = _Part(name, "mesh", shape, script=note, step_file=relative, base=shape)
+            self._save()
+            return self._info(self._parts[name])
+
     def update_part_script(self, name: str, script: str) -> PartInfo:
         """Replace a part's source. A failed script leaves the previous solid in place."""
         with self._lock:
@@ -886,6 +923,17 @@ class Document:
                 "The cutter is one face-mill blade cone. Face-hobbing is not generated.",
                 "The edge radius is recorded and is not cut as a fillet.",
                 "The flanks are shifted slightly apart so a flat facet cannot cross the mate.",
+            ]
+        elif clean["type"] == "internal":
+            what = (
+                "Internal spur ring from ISO 21771. The teeth point inward and a rim "
+                "closes the solid outside the root."
+            )
+            limits = [
+                "Tooth thickness is the nominal zero-backlash size, not a tolerance grade.",
+                "The root fillet is a circular blend of the ISO 53 tip radius, tangent to the root circle. It is not a pinion-cutter trochoid.",
+                "This ring is a spur. A helical internal tooth is not generated.",
+                "Omitting rim_thickness_mm uses four normal modules of metal outside the root.",
             ]
         else:
             what = (
@@ -2110,8 +2158,8 @@ class Document:
     def _with_gear_teeth(self, spec: dict) -> dict:
         """Copy ``spec`` with tooth counts filled in from generated gears.
 
-        A motion study reads those counts from the train. An internal ring
-        keeps the count stated on the shaft.
+        A motion study reads those counts from the train. A generated internal
+        ring supplies its tooth count when the shaft does not state one.
         """
         spec = copy.deepcopy(spec)
         train = spec.get("gear_train")
@@ -2532,6 +2580,11 @@ class Document:
                         self.workspace, record.get("step_file"), f"Part {name!r} step file"
                     )
                     base = kernel.import_step_file(step_path)
+                elif source == "mesh":
+                    mesh_path = _session_project_file(
+                        self.workspace, record.get("step_file"), f"Part {name!r} mesh file"
+                    )
+                    base = kernel.import_step_file(mesh_path)
                 elif source == "library":
                     spec = record["library"]
                     base = kernel.adopt(
@@ -2858,8 +2911,8 @@ def _vec3(value, label: str) -> tuple[float, float, float]:
     return kernel.finite_vec3(value, label, unit=unit)
 
 
-def _step_import_source(root: Path, raw: str | Path) -> Path:
-    """The file ``import_step`` reads.
+def _step_import_source(root: Path, raw: str | Path, label: str = "STEP file") -> Path:
+    """The file ``import_step`` or ``import_stl`` reads.
 
     An absolute path is a file the person chose. A design script does not get
     that choice: its path stays inside the project. A relative path stays
@@ -2882,13 +2935,13 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
     # An absolute path is a file the person chose, unless a design script asked.
     if in_design_call() or not original.is_absolute() or lexical_inside:
         if not stays_inside(root_resolved, source):
-            raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
+            raise DocumentError(f"{label} {raw} is outside the project. It was not read.")
         lexical = given if given.is_absolute() else root_resolved / given
         # A directory link whose target stays inside the project is still a link.
         if _reparse_between(root_resolved, lexical):
-            raise DocumentError(f"STEP file {raw} is a link and was not followed.")
+            raise DocumentError(f"{label} {raw} is a link and was not followed.")
         if shared_file(source):
-            raise DocumentError(f"STEP file {raw} has another name and was not opened.")
+            raise DocumentError(f"{label} {raw} has another name and was not opened.")
     return source
 
 

@@ -32,7 +32,7 @@ _MAX_TEXT_FILE = 8 * 1024 * 1024
 _PERSON_SOURCES = frozenset({"ui", "cli", "api"})
 # Opening another folder, or saving a copy and switching to it, is the person
 # at the workspace. The assistant and a design file do not get that command.
-_FOLDER_COMMANDS = frozenset({"open_project", "save_project_as"})
+_FOLDER_COMMANDS = frozenset({"open_project", "save_project_as", "open_example"})
 
 
 @dataclass(frozen=True)
@@ -801,6 +801,22 @@ def _cmd_place(workspace: Workspace, arguments: dict) -> dict:
     return {"part": info.to_dict()}
 
 
+def _cmd_import_stl(workspace: Workspace, arguments: dict) -> dict:
+    path = arguments["path"]
+    if workspace.document.actor != "user":
+        from aicad.paths import require_export_path
+
+        path = require_export_path(workspace.root, path, "STL file", GeometryError)
+    info = workspace.document.import_stl(arguments["name"], path)
+    return {
+        "part": info.to_dict(),
+        "limits": [
+            "This part is a triangle mesh. It has no editable features.",
+            "A mesh that is not a closed solid is refused.",
+        ],
+    }
+
+
 def _cmd_import(workspace: Workspace, arguments: dict) -> dict:
     path = arguments["path"]
     # The page and the command line may name a file the person chose.
@@ -1521,11 +1537,11 @@ _add(Command(
 ))
 _add(Command(
     "create_gear",
-    "Create or replace an involute spur, helical, bevel, or hypoid gear.",
+    "Create or replace an involute spur, helical, internal ring, bevel, or hypoid gear.",
     _obj(
         {
             "name": _string("Part name."),
-            "spec": {"type": "object", "description": "module_mm, teeth, pressure_angle_deg, face_width_mm, and the family fields."},
+            "spec": {"type": "object", "description": "module_mm, teeth, pressure_angle_deg, face_width_mm, and the family fields. An internal ring takes rim_thickness_mm."},
             "position": {"type": "array"},
             "rotation_deg": {"type": "array"},
         },
@@ -1564,6 +1580,13 @@ _add(Command(
     "Copy a STEP file in as a part.",
     _obj({"name": _string("New part name."), "path": _string("Path to a STEP file.")}, ["name", "path"]),
     _cmd_import,
+    undo=True,
+))
+_add(Command(
+    "import_stl",
+    "Copy an STL file in as a mesh part. The mesh has no editable features.",
+    _obj({"name": _string("New part name."), "path": _string("Path to an STL file.")}, ["name", "path"]),
+    _cmd_import_stl,
     undo=True,
 ))
 _add(Command("list_materials", "Handbook materials for a linear static solve, including density.", _obj({}, []), _cmd_materials))

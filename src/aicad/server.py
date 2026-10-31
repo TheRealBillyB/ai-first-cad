@@ -302,7 +302,8 @@ Boxes are axis-aligned. Cylinders take an optional `axis` (default `[0, 0, 1]`).
 ## Mechanics
 
 `list_materials` is a small handbook library: PLA, PETG, ABS, nylon, aluminum
-6061, and mild steel. The numbers are typical, not a certified allowable.
+6061, mild steel, quenched-and-tempered 42CrMo4, and case-hardening 16MnCr5.
+The numbers are typical, not a certified allowable.
 
 `describe_faces` lists every face. A boolean does not keep the name you used
 in the script, so you select a face by geometry:
@@ -749,17 +750,19 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         position: list[float] | None = None,
         rotation_deg: list[float] | None = None,
     ) -> dict:
-        """Create or replace a spur, helical, bevel, or hypoid gear.
+        """Create or replace a spur, helical, internal ring, bevel, or hypoid gear.
 
-        spec needs type, teeth, and face_width_mm. A spur, helical, or bevel
-        also needs module_mm. pressure_angle_deg defaults to 20. module_mm is
-        the normal module, or the outer transverse module for a bevel. A bevel
+        spec needs type, teeth, and face_width_mm. A spur, helical, internal
+        ring, or bevel also needs module_mm. pressure_angle_deg defaults to 20.
+        module_mm is the normal module, or the outer transverse module for a bevel.
+        An internal ring is a spur with teeth pointing inward. rim_thickness_mm
+        is the metal outside the root; omit it for four normal modules. A bevel
         needs mate_teeth or ratio. A hypoid needs offset_mm, ring_diameter_mm,
         spiral_angle_deg, and role (pinion or ring). ratio is ring teeth
         divided by pinion teeth. helix_angle_deg and spiral_angle_deg are
         positive for a right-hand tooth. bore_mm, hub, keyway (DIN 6885-1),
-        and spline (ISO 14 or DIN 5480) are optional. position and
-        rotation_deg are [x, y, z].
+        and spline (ISO 14 or DIN 5480) are optional on an external gear.
+        position and rotation_deg are [x, y, z].
         """
         return guard(
             lambda: run(
@@ -805,11 +808,12 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def list_materials() -> dict:
         """List the small material library used by solve_mechanics.
 
-        PLA, PETG, ABS, nylon, aluminum 6061, and mild steel, with modulus,
-        Poisson's ratio, and a strength. Plastics use a tensile strength.
-        Metals use a yield strength. These are handbook ballparks, not a
-        certified allowable. Printed materials are weaker across layers than
-        the in-plane number used here.
+        PLA, PETG, ABS, nylon, aluminum 6061, mild steel, quenched-and-tempered
+        42CrMo4, and case-hardening 16MnCr5, with modulus, Poisson's ratio,
+        and a strength. Plastics use a tensile strength. Metals use a yield
+        strength. These are handbook ballparks, not a certified allowable.
+        Printed materials are weaker across layers than the in-plane number
+        used here. The 16MnCr5 yield is the core, not the carburized case.
         """
         return guard(lambda: run("list_materials"))
 
@@ -852,6 +856,16 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         can be rebuilt later.
         """
         return guard(lambda: run("import_step", name=name, path=path))
+
+    @mcp.tool()
+    def import_stl(name: str, path: str) -> dict:
+        """Copy an STL file in as a mesh-backed part.
+
+        The triangles become one solid. The part has no editable features.
+        A mesh that is not a closed solid is refused. The file is copied into
+        the workspace so the part can be rebuilt later.
+        """
+        return guard(lambda: run("import_stl", name=name, path=path))
 
     @mcp.tool()
     def describe_edges(name: str) -> dict:
