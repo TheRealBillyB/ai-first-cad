@@ -40,7 +40,7 @@ from aicad.paths import (
     require_export_path,
 )
 from aicad.prereqs import find_program
-from aicad.render import _PAPER, _VIEWS, _camera_basis, frame_scale, render_frame
+from aicad.render import _PAPER, _VIEWS, _camera_basis, frame_scale, render_frame, sequence_centers
 
 _FILE_SUFFIXES = {".gif", ".mp4", ".webm"}
 _KINDS = {
@@ -159,6 +159,7 @@ def render_clip(
     )
     ssaa = 2 if max(picture_w, view_h) <= 400 else 1
     scale = frame_scale(meshes, bases, picture_w, view_h, ssaa)
+    centers = sequence_centers(meshes, bases)
     images = [
         render_frame(
             mesh,
@@ -169,8 +170,9 @@ def render_clip(
             background=paper,
             overlay=_drawn(text) if clock["overlay"] != "none" else "",
             ssaa=ssaa,
+            center=center,
         )
-        for mesh, basis, text in zip(meshes, bases, texts, strict=True)
+        for mesh, basis, text, center in zip(meshes, bases, texts, centers, strict=True)
     ]
     stem = _clip_stem(spec["name"], chosen_kind, clock.get("study_name"))
     targets = _targets(root, path, stem, formats)
