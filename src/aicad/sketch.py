@@ -8,11 +8,12 @@ contradictory, which is the feedback a person gets from a sketcher.
 This module does not import build123d. Turning a solved sketch into a solid
 happens in :mod:`aicad.kernel`.
 
-Sketches lie on the XY plane. Initial ``at`` coordinates are guesses, except
-``fix``, which locks that guess. A point-to-line distance is signed: positive
-is to the right as you walk from the line's start to its end. A rectangle
-drawn counterclockwise has its interior on the negative side, so an inset of
-6 mm is the distance −6.
+Initial ``at`` coordinates are guesses, except ``fix``, which locks that
+guess. A point-to-line distance is signed: positive is to the right as you
+walk from the line's start to its end. A rectangle drawn counterclockwise
+has its interior on the negative side, so an inset of 6 mm is the distance −6.
+The plane is XY, YZ, XZ, an offset or angled datum, or a planar face. The
+solver still works in that plane's own coordinates.
 """
 
 from __future__ import annotations
@@ -32,10 +33,10 @@ _ID = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 class Sketch:
     """Build a sketch spec. Initial coordinates are guesses, not the design."""
 
-    def __init__(self, plane: str = "xy"):
-        if plane != "xy":
-            raise GeometryError("Sketches are on the XY plane. Extrude them along +Z.")
-        self.plane = plane
+    def __init__(self, plane: str | dict = "xy"):
+        from aicad.sketch_plane import normalize_plane
+
+        self.plane = normalize_plane(plane)
         self.entities: list[dict[str, Any]] = []
         self.constraints: list[dict[str, Any]] = []
 
@@ -202,9 +203,10 @@ def solve_sketch(spec: Sketch | dict, name: str | None = None) -> SketchReport:
         raise GeometryError("A sketch needs a non-empty entities list.")
     if not isinstance(constraints, list):
         raise GeometryError("A sketch needs a constraints list. An empty list leaves every point free.")
-    plane = spec.get("plane", "xy")
-    if plane != "xy":
-        raise GeometryError("Sketches are on the XY plane. Extrude them along +Z.")
+    from aicad.sketch_plane import normalize_plane
+
+    plane = normalize_plane(spec.get("plane", "xy"))
+    spec = {**spec, "plane": plane}
     from aicad.models import require_millimeters
 
     require_millimeters(spec.get("units"), "A sketch")

@@ -106,7 +106,15 @@ del _same_directory
 del _module_invocation
 
 from aicad.document import Document
-from aicad.errors import AICADError, DocumentError, GeometryError, PartNotFound, PlanError, ScriptError
+from aicad.errors import (
+    AICADError,
+    DocumentError,
+    GeometryError,
+    PartNotFound,
+    PlanError,
+    ScriptError,
+    SketchPlaneError,
+)
 from aicad.kernel import FeatureLog, solid_from_sketch
 from aicad.fea import fea_available, list_materials, lookup_material, select_faces, solve_part
 from aicad.models import (
@@ -154,6 +162,7 @@ __all__ = [
     "ScriptError",
     "SectionReport",
     "Sketch",
+    "SketchPlaneError",
     "SketchReport",
     "Vec3",
     "WallReport",
