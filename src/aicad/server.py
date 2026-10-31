@@ -238,6 +238,16 @@ SolveSpace. The report's `status` is `fully_constrained`, `under_constrained`
 (with `free` naming the entities that can still move), or `over_constrained`
 (with `conflicts` naming the constraints that disagree).
 
+An arc is one of three forms. Center, start, and end:
+`{"id": "q", "type": "arc", "center": "o", "start": "a", "end": "b"}`.
+Three points on the arc:
+`{"id": "q", "type": "arc", "through": ["a", "b", "c"]}` (the middle point
+stays on the arc). A tangent continuation of a line:
+`{"id": "q", "type": "arc", "tangent_to": "edge", "end": "p"}` starts at the
+line's end and leaves in the line's direction. `"from": "start"` continues
+from the other end. A point on the line is refused. Name a `radius` constraint
+on the arc the same way a circle names its diameter.
+
 A point-to-line distance is signed. Positive is to the right as you walk from
 the line's start to its end. On a counterclockwise rectangle the interior is
 the negative side, so an inset of 6 mm is distance −6.
@@ -622,6 +632,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         a point. Name a distance, diameter, radius, angle, or pattern so
         set_dimension can change it later. A tolerance is a number or
         {plus, minus}; it is stored and does not move the geometry.
+
+        An arc is `center`/`start`/`end`, or `through` three point ids, or
+        `tangent_to` a line id plus `end` (and optional `from` of `end` or
+        `start`). The tangent form continues the line. A radius constraint
+        on the arc is the named dimension, as a diameter is on a circle.
 
         The result says fully_constrained, under_constrained (which entities
         are still free), or over_constrained (which constraints conflict).
