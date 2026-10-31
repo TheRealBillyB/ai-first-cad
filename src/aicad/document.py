@@ -302,8 +302,10 @@ class Document:
     ) -> WallReport:
         with self._lock:
             samples = _validate_samples(samples)
-            if min_wall_mm is not None and min_wall_mm < 0:
-                raise GeometryError("min_wall_mm cannot be negative.")
+            if min_wall_mm is not None:
+                min_wall_mm = kernel.finite_number(min_wall_mm, "min_wall_mm", bound=None)
+                if min_wall_mm < 0:
+                    raise GeometryError("min_wall_mm cannot be negative.")
             estimate = kernel.estimate_wall_thickness(self._get(name).shape, samples)
             passed = None
             if min_wall_mm is not None:
@@ -336,8 +338,10 @@ class Document:
         with self._lock:
             if part_a == part_b:
                 raise GeometryError("Clearance needs two different parts.")
-            if min_clearance_mm is not None and min_clearance_mm < 0:
-                raise GeometryError("min_clearance_mm cannot be negative.")
+            if min_clearance_mm is not None:
+                min_clearance_mm = kernel.finite_number(min_clearance_mm, "min_clearance_mm", bound=None)
+                if min_clearance_mm < 0:
+                    raise GeometryError("min_clearance_mm cannot be negative.")
             first = self._get(part_a)
             second = self._get(part_b)
             overlap, distance, point_a, point_b = kernel.clearance_between(
@@ -574,9 +578,13 @@ class Document:
                 "Export path",
                 allow_absolute_outside=not in_design_call(),
             )
-            kind = kind.lower()
+            if not isinstance(kind, str):
+                raise GeometryError(
+                    f"Unknown export format {kind!r}. Use 'step', 'stl', or '3mf'."
+                )
+            kind = kind.strip().lower()
             if kind == "step":
-                kernel.export_step_file(model[0], destination)
+                kernel.export_step_file(_named_step_shape(name, model[1]), destination)
             elif kind == "stl":
                 kernel.export_stl_file(model[0], destination)
             elif kind == "3mf":
@@ -2415,6 +2423,32 @@ def _script_hash(script: str) -> str:
     return hashlib.sha256(script.encode("utf-8")).hexdigest()
 
 
+def _named_step_shape(name: str, bodies: list[tuple[str, kernel.Shape]]) -> kernel.Shape:
+    """A copy of the solids labeled with the names a STEP file should keep.
+
+    One part uses that part's name. An assembly is a compound named for the
+    assembly, and each solid keeps its instance name. The solids in the
+    document are not renamed.
+    """
+    if not bodies:
+        raise GeometryError("There is no solid to export.")
+    labeled: list[kernel.Shape] = []
+    for body_name, shape in bodies:
+        impl = copy.deepcopy(shape.impl)
+        try:
+            impl.label = str(body_name)
+        except Exception:
+            pass
+        labeled.append(kernel.Shape(impl))
+    grouped = kernel.compound(labeled)
+    if len(labeled) > 1:
+        try:
+            grouped.impl.label = str(name)
+        except Exception:
+            pass
+    return grouped
+
+
 def _assembly_name(spec: dict) -> str:
     if not isinstance(spec, dict) or not isinstance(spec.get("name"), str):
         raise GeometryError("An assembly spec needs a name.")
@@ -2616,10 +2650,10 @@ def _parse_plane(plane: dict) -> tuple[tuple[float, float, float], tuple[float, 
         axis = str(plane["axis"]).lower()
         if axis not in ("x", "y", "z"):
             raise GeometryError("plane axis must be 'x', 'y', or 'z'.")
-        try:
-            offset = float(plane.get("offset", 0.0))
-        except (TypeError, ValueError) as exc:
-            raise GeometryError("plane offset must be a number.") from exc
+        offset = plane.get("offset", 0.0)
+        if offset is None:
+            offset = 0.0
+        offset = kernel.finite_number(offset, "plane offset", bound=None)
         index = {"x": 0, "y": 1, "z": 2}[axis]
         origin = [0.0, 0.0, 0.0]
         normal = [0.0, 0.0, 0.0]
@@ -2650,6 +2684,8 @@ def _axis_label(vector: Vec3) -> str:
 
 
 def _validate_samples(samples: int) -> int:
+    if isinstance(samples, bool) or isinstance(samples, float) and not samples.is_integer():
+        raise GeometryError("samples must be an integer from 1 to 8.")
     try:
         count = int(samples)
     except (TypeError, ValueError) as exc:

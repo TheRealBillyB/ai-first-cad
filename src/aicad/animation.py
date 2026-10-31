@@ -480,11 +480,9 @@ def _overlay_text(clock, samples, row, index, count, joint_name, camera_spec) ->
     if mode == "step":
         return f"{index + 1}/{count}"
     if mode == "time":
-        if samples["kind"] == "motion":
-            shown = float(row["time_s"])
-        else:
-            shown = index / max(clock.get("fps_for_text", 1), 1)
-        return f"{shown:.3f} s"
+        # The same clock as the sample. Playback fps is a different number:
+        # four frames of a two-second orbit are not a quarter of a second apart.
+        return f"{float(row['time_s']):.3f} s"
     if samples["kind"] == "exploded":
         opening = float(samples["gap_mm"]) * (0.0 if count == 1 else index / (count - 1))
         return f"{opening:.3f} mm"

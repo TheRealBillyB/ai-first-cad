@@ -279,6 +279,49 @@ def test_a_fixed_part_stays_put_while_another_slides(tmp_path):
     assert block_move > 40
 
 
+def test_a_time_overlay_follows_the_sampled_clock(tmp_path):
+    document = Document(tmp_path)
+    _stand(document)
+    orbit = document.render_animation(
+        "stand",
+        kind="orbit",
+        frames=4,
+        fps=8,
+        duration_s=2,
+        width=64,
+        height=48,
+        overlay="time",
+        video="gif",
+    )
+    # The last frame is not a repeat of the first, so it stops one step short of the duration.
+    assert orbit["motion_s"] == pytest.approx(2)
+    assert orbit["overlays"] == ["0.000 s", "0.500 s", "1.000 s", "1.500 s"]
+    _box(document, "cap", [10, 10, 4], [0, 0, 12])
+    document.create_assembly(
+        {
+            "name": "stack",
+            "instances": [
+                {"name": "base", "part": "base"},
+                {"name": "cap", "part": "cap"},
+            ],
+            "joints": [{"name": "seat", "type": "fixed", "parent": "base", "child": "cap"}],
+        }
+    )
+    exploded = document.render_animation(
+        "stack",
+        kind="exploded",
+        frames=3,
+        fps=4,
+        duration_s=2,
+        gap_mm=20,
+        width=64,
+        height=48,
+        overlay="time",
+        video="gif",
+    )
+    assert exploded["overlays"] == ["0.000 s", "1.000 s", "2.000 s"]
+
+
 def test_a_missing_ffmpeg_still_writes_the_gif(tmp_path, monkeypatch):
     monkeypatch.setattr("aicad.animation.find_program", lambda *_args, **_kwargs: None)
     document = Document(tmp_path)
