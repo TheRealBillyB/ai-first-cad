@@ -229,9 +229,13 @@ class Workspace:
                 self._sketch_cache_revision = self.geometry_revision
             sketches = self._sketch_cache
             parts = []
+            from aicad.history import history_for
+
             for part in self.document.list_parts():
+                stored = self.document._get(part.name)  # noqa: SLF001
                 payload = part.to_dict()
-                payload["placement"] = copy.deepcopy(self.document._get(part.name).placement)  # noqa: SLF001
+                payload["placement"] = copy.deepcopy(stored.placement)
+                payload["history"] = history_for(stored)
                 parts.append(payload)
             return {
                 "units": "mm",
