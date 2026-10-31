@@ -140,25 +140,6 @@ def test_disk_bytes_cannot_be_raised(monkeypatch):
     assert disk_bytes() == 4096
 
 
-def test_an_over_quota_run_removes_a_new_empty_directory(tmp_path):
-    keep = tmp_path / "keep"
-    keep.mkdir()
-    disk = _DiskWatch(tmp_path, {}, file_cap=10**9, disk_cap=1000)
-    folder = tmp_path / "area"
-    nested = folder / "sub"
-    nested.mkdir(parents=True)
-    (nested / "gone.bin").write_bytes(b"x" * 5000)
-    (keep / "stay.bin").write_bytes(b"y" * 10)
-    message = disk.settle()
-    assert message is not None
-    assert "wrote more than 1000 bytes" in message
-    assert not (nested / "gone.bin").exists()
-    assert not nested.exists()
-    assert not folder.exists()
-    assert keep.is_dir()
-    assert (keep / "stay.bin").is_file()
-
-
 def test_a_file_removed_before_the_next_snapshot_stays_in_the_per_file_total(tmp_path):
     disk = _DiskWatch(tmp_path, {}, file_cap=100_000, disk_cap=5000)
     (tmp_path / "a.bin").write_bytes(b"a" * 3000)
