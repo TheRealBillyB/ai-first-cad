@@ -18,6 +18,10 @@ class GeometryError(AICADError):
     """Geometry could not be built, measured, or checked."""
 
 
+class MountError(GeometryError):
+    """A catalog part could not be mounted. The part was not moved."""
+
+
 class PartNotFound(AICADError):
     """No part with that name is in the current document."""
 

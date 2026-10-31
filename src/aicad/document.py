@@ -27,7 +27,7 @@ from aicad.modal import fatigue_check, solve_modal, solve_modal_assembly
 from aicad.printprep import analyze_print
 from aicad.printprep import list_printers as printer_catalog
 from aicad.robot import export_robot
-from aicad.errors import DocumentError, GeometryError, PartNotFound
+from aicad.errors import DocumentError, GeometryError, MountError, PartNotFound
 from aicad.chain import solve_kinematics as solve_chain
 from aicad.error_budget import check_position_error as budget_position_error
 from aicad.kinematics import normalize as normalize_assembly
@@ -213,6 +213,8 @@ class Document:
         with self._lock:
             part = self._get(name)
             shape = kernel.make_from_script(script, workspace=self.workspace)
+            placement = _identity_placement()
+            followers = self._mounts_after({name: {"base": shape, "placement": placement}})
             part.shape = shape
             part.base = shape
             part.source = "script"
@@ -223,7 +225,8 @@ class Document:
             part.gear_spec = None
             part.sketch_name = None
             part.sketch_steps = None
-            part.placement = _identity_placement()
+            part.placement = placement
+            self._apply_mount_poses(followers)
             part.geometry_file = self._store_script_geometry(name, script, shape)
             part.script_sha256 = _script_hash(script)
             part.script_pending = False
@@ -234,6 +237,8 @@ class Document:
         with self._lock:
             part = self._get(name)
             shape = kernel.make_from_ops(ops)
+            placement = _identity_placement()
+            followers = self._mounts_after({name: {"base": shape, "placement": placement}})
             part.shape = shape
             part.base = shape
             part.source = "ops"
@@ -244,7 +249,8 @@ class Document:
             part.gear_spec = None
             part.sketch_name = None
             part.sketch_steps = None
-            part.placement = _identity_placement()
+            part.placement = placement
+            self._apply_mount_poses(followers)
             part.geometry_file = None
             part.script_sha256 = None
             part.script_pending = False
@@ -254,6 +260,11 @@ class Document:
     def delete_part(self, name: str) -> None:
         with self._lock:
             self._get(name)
+            holders = self._mounted_on(name)
+            if holders:
+                raise MountError(
+                    f"{name!r} is the mount for {', '.join(holders)}. Move those parts before deleting it."
+                )
             renders = self.workspace / "renders" / name
             if renders.exists() or renders.is_symlink():
                 _project_resolved(self.workspace, renders, "Render")
@@ -726,6 +737,8 @@ class Document:
                 raise GeometryError("steps must be a non-empty list of extrude, cut, revolve, cut_box, or gusset.")
             stored_steps = copy.deepcopy(steps)
             shape = kernel.solid_from_sketch(report.geometry, stored_steps)
+            placement = _identity_placement()
+            followers = self._mounts_after({name: {"base": shape, "placement": placement}})
             part.shape = shape
             part.base = shape
             part.source = "sketch"
@@ -736,7 +749,8 @@ class Document:
             part.gear_spec = None
             part.sketch_name = sketch_name
             part.sketch_steps = stored_steps
-            part.placement = _identity_placement()
+            part.placement = placement
+            self._apply_mount_poses(followers)
             self._save()
             return self._info(part)
 
@@ -788,26 +802,43 @@ class Document:
         position: list | tuple | None = None,
         rotation_deg: list | tuple | None = None,
         fastener_type: str | None = None,
+        mount: dict | None = None,
     ) -> PartInfo:
-        """Insert a catalog part by designation, then place it."""
+        """Insert a catalog part by designation, then place it.
+
+        ``mount`` snaps a mate frame onto another part's face or axis. A
+        position and a mount together are refused, and a missing face is
+        refused before the part is added.
+        """
         with self._lock:
             self._require_new_name(name)
-            placed_at = _vec3(position or [0, 0, 0], "position")
-            rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
-            base = kernel.adopt(library.build(kind, size, length, fastener_type))
-            shape = kernel.place(base, placed_at, rotation)
             spec = {
                 "kind": kind,
                 "size": size,
                 "length": length,
                 "fastener_type": fastener_type,
             }
+            if mount is not None and (position is not None or rotation_deg is not None):
+                raise MountError("Pass a position or a mount, not both.")
+            if mount is not None:
+                from aicad.mount import prepare_mount
+
+                pose = prepare_mount(self._parts, spec, mount, name)
+                placed_at = pose.position
+                rotation = pose.rotation
+                placement = pose.placement()
+            else:
+                placed_at = _vec3(position or [0, 0, 0], "position")
+                rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
+                placement = {"position": list(placed_at), "rotation_deg": list(rotation)}
+            base = kernel.adopt(library.build(kind, size, length, fastener_type))
+            shape = kernel.place(base, placed_at, rotation)
             self._parts[name] = _Part(
                 name,
                 "library",
                 shape,
                 base=base,
-                placement={"position": list(placed_at), "rotation_deg": list(rotation)},
+                placement=placement,
                 library_spec=spec,
             )
             self._save()
@@ -850,14 +881,17 @@ class Document:
         placed_at = _vec3(position or [0, 0, 0], "position")
         rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
         shape = kernel.place(base, placed_at, rotation)
+        placement = {"position": list(placed_at), "rotation_deg": list(rotation)}
+        followers = self._mounts_after({name: {"base": base, "placement": placement}})
         self._parts[name] = _Part(
             name,
             "gear",
             shape,
             base=base,
-            placement={"position": list(placed_at), "rotation_deg": list(rotation)},
+            placement=placement,
             gear_spec=clean,
         )
+        self._apply_mount_poses(followers)
         self._save()
         payload = self._info(self._parts[name]).to_dict()
         payload["gear"] = gears_mod.gear_data(clean)
@@ -894,23 +928,167 @@ class Document:
     def place_part(
         self,
         name: str,
-        position: list | tuple,
+        position: list | tuple | None = None,
         rotation_deg: list | tuple | None = None,
+        mount: dict | None = None,
     ) -> PartInfo:
         """Move a part. The move replaces any previous placement; it does not stack.
 
-        A bad position is rejected before the part changes, so a later save
-        cannot write the failed placement into the session.
+        A catalog ``mount`` snaps a mate frame onto a face or an axis. A bad
+        position or an unknown face is rejected before the part changes, so a
+        later save cannot write the failed placement into the session. Parts
+        mounted on this one follow a move that does succeed.
         """
         with self._lock:
             part = self._get(name)
-            placed_at = _vec3(position, "position")
-            rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
-            shape = kernel.place(part.base, placed_at, rotation)
-            part.placement = {"position": list(placed_at), "rotation_deg": list(rotation)}
-            part.shape = shape
+            if mount is not None and (position is not None or rotation_deg is not None):
+                raise MountError("Pass a position or a mount, not both.")
+            if mount is not None:
+                from aicad.mount import prepare_mount
+
+                pose = prepare_mount(self._parts, part.library_spec, mount, name)
+                placed_at = pose.position
+                rotation = pose.rotation
+                placement = pose.placement()
+            else:
+                if position is None:
+                    raise GeometryError("A placement needs a position, or a mount.")
+                placed_at = _vec3(position, "position")
+                rotation = _vec3(rotation_deg or [0, 0, 0], "rotation_deg")
+                placement = {
+                    "position": [placed_at[0], placed_at[1], placed_at[2]],
+                    "rotation_deg": [rotation[0], rotation[1], rotation[2]],
+                }
+            followers = self._mounts_after({name: {"base": part.base, "placement": placement}})
+            part.shape = kernel.place(part.base, placed_at, rotation)
+            part.placement = placement
+            self._apply_mount_poses(followers)
             self._save()
             return self._info(part)
+
+    def set_catalog_length(self, name: str, length: float) -> PartInfo:
+        """Change a catalog length and keep a mount on the rebuilt solid."""
+        with self._lock:
+            part = self._get(name)
+            if not part.library_spec:
+                raise GeometryError(f"{name!r} is not a catalog part.")
+            spec = dict(part.library_spec)
+            spec["length"] = float(length)
+            base = kernel.adopt(
+                library.build(spec["kind"], spec["size"], spec["length"], spec.get("fastener_type"))
+            )
+            placement = copy.deepcopy(part.placement)
+            mount = placement.get("mount") if isinstance(placement, dict) else None
+            if isinstance(mount, dict):
+                from aicad.mount import reapply_mount
+
+                pose = reapply_mount(self._parts, spec, mount, name)
+                placement = pose.placement()
+            followers = self._mounts_after({name: {"base": base, "placement": placement}})
+            part.library_spec = spec
+            part.base = base
+            part.shape = kernel.place(
+                base,
+                tuple(placement["position"]),
+                tuple(placement["rotation_deg"]),
+            )
+            part.placement = placement
+            self._apply_mount_poses(followers)
+            self._save()
+            return self._info(part)
+
+    def _mounted_on(self, name: str) -> list[str]:
+        holders = []
+        for part in self._parts.values():
+            mount = part.placement.get("mount") if isinstance(part.placement, dict) else None
+            if isinstance(mount, dict) and mount.get("part") == name:
+                holders.append(part.name)
+        return holders
+
+    def _mounts_after(self, seeds: dict[str, dict]) -> list[tuple]:
+        """Poses for catalog parts mounted on ``seeds``, before those seeds change.
+
+        ``seeds`` maps a part name to the base and placement it is about to
+        have. A missing face raises :class:`MountError` and nothing is written.
+        """
+        from aicad.mount import reapply_mount
+
+        overrides = {
+            name: {"base": item.get("base"), "placement": item.get("placement")}
+            for name, item in seeds.items()
+        }
+        planned: dict[str, tuple] = {}
+        pending = set(seeds)
+        seen: set[str] = set()
+        while pending:
+            target_name = pending.pop()
+            for part in self._parts.values():
+                if part.name in seeds or part.name in seen:
+                    continue
+                mount = part.placement.get("mount") if isinstance(part.placement, dict) else None
+                if not isinstance(mount, dict) or str(mount.get("part") or "") != target_name:
+                    continue
+                if not part.library_spec:
+                    continue
+                pose = reapply_mount(
+                    self._parts,
+                    part.library_spec,
+                    mount,
+                    part.name,
+                    overrides=overrides,
+                )
+                planned[part.name] = (part, pose)
+                seen.add(part.name)
+                overrides[part.name] = {"base": part.base, "placement": pose.placement()}
+                pending.add(part.name)
+        return list(planned.values())
+
+    def _apply_mount_poses(self, poses: list[tuple]) -> None:
+        for part, pose in poses:
+            part.shape = kernel.place(part.base, pose.position, pose.rotation)
+            part.placement = pose.placement()
+
+    def _reapply_loaded_mounts(self) -> None:
+        """Snap stored mounts after the solids exist. A missing face is recorded."""
+        from aicad.mount import reapply_mount
+
+        pending = {
+            part.name: part
+            for part in self._parts.values()
+            if isinstance(part.placement, dict) and isinstance(part.placement.get("mount"), dict)
+        }
+        for _ in range(len(pending) + 1):
+            if not pending:
+                return
+            ready = [
+                name
+                for name, part in pending.items()
+                if str(part.placement["mount"].get("part") or "") not in pending
+            ]
+            if not ready:
+                break
+            for name in ready:
+                part = pending.pop(name)
+                if not part.library_spec or part._base is None:
+                    self.problems.append(
+                        f"The mount of {part.name!r} was kept, but the part is not a catalog solid."
+                    )
+                    continue
+                try:
+                    pose = reapply_mount(
+                        self._parts,
+                        part.library_spec,
+                        part.placement["mount"],
+                        part.name,
+                    )
+                except MountError as exc:
+                    self.problems.append(str(exc))
+                    continue
+                part.shape = kernel.place(part.base, pose.position, pose.rotation)
+                part.placement = pose.placement()
+        for part in pending.values():
+            target = part.placement["mount"].get("part")
+            self.problems.append(f"The mount of {part.name!r} on {target!r} could not be placed.")
 
     def _info(self, part: _Part) -> PartInfo:
         if part._shape is None:
@@ -962,6 +1140,7 @@ class Document:
             self._save()
             return
         rebuilt: list[tuple[_Part, kernel.Shape, kernel.Shape]] = []
+        seeds: dict[str, dict] = {}
         for part in dependents:
             base = kernel.solid_from_sketch(report.geometry, part.sketch_steps or [])
             placed = kernel.place(
@@ -970,10 +1149,13 @@ class Document:
                 tuple(part.placement["rotation_deg"]),
             )
             rebuilt.append((part, base, placed))
+            seeds[part.name] = {"base": base, "placement": part.placement}
+        followers = self._mounts_after(seeds)
         sketch.spec = stored
         for part, base, placed in rebuilt:
             part.base = base
             part.shape = placed
+        self._apply_mount_poses(followers)
         self._save()
 
     def _solve_and_render(self, name: str, spec: dict) -> SketchReport:
@@ -2344,6 +2526,9 @@ class Document:
                     "position": [position[0], position[1], position[2]],
                     "rotation_deg": [rotation[0], rotation[1], rotation[2]],
                 }
+                raw_mount = placement.get("mount") if isinstance(placement, dict) else None
+                if isinstance(raw_mount, dict):
+                    stored_placement["mount"] = copy.deepcopy(raw_mount)
                 rebuild_error = None
             except Exception as exc:
                 message = f"Part {name!r} was not rebuilt: {exc}"
@@ -2371,6 +2556,7 @@ class Document:
                 script_pending=script_pending,
                 rebuild_error=rebuild_error,
             )
+        self._reapply_loaded_mounts()
         stored_assemblies = []
         for record in payload.get("assemblies", []):
             try:

@@ -549,6 +549,27 @@ class Workspace:
         }
 
 
+def _mount_argument() -> dict:
+    return {
+        "type": "object",
+        "description": (
+            "Snap a catalog mate onto a face or an axis. part is the target part. "
+            "ref is a face reference from describe_faces. mate names the frame on the "
+            "catalog part. rotation_deg spins about the mount axis in steps of 15 degrees. "
+            "flip turns the mate around."
+        ),
+        "properties": {
+            "part": _string("Part that owns the face or axis."),
+            "ref": _string("Face reference, such as cylinder/r4/z+/0,0,0 or plane/z+/0,0,10."),
+            "mate": _string("Mate frame on the catalog part, such as bore or mount."),
+            "rotation_deg": _number("Degrees about the mount axis. Snapped to 15 degree steps."),
+            "flip": {"type": "boolean", "description": "Turn the mate around."},
+        },
+        "required": ["part", "ref"],
+        "additionalProperties": False,
+    }
+
+
 def _obj(properties: dict, required: list[str]) -> dict:
     return {
         "type": "object",
@@ -786,6 +807,7 @@ def _cmd_insert(workspace: Workspace, arguments: dict) -> dict:
         position=arguments.get("position"),
         rotation_deg=arguments.get("rotation_deg"),
         fastener_type=arguments.get("fastener_type"),
+        mount=arguments.get("mount"),
     )
     return {"part": info.to_dict(), "next": "Call check_clearance if this part should fit another part."}
 
@@ -793,8 +815,15 @@ def _cmd_insert(workspace: Workspace, arguments: dict) -> dict:
 def _cmd_place(workspace: Workspace, arguments: dict) -> dict:
     from aicad.studio import reject_placement
 
-    reject_placement(arguments.get("position"), arguments.get("rotation_deg"))
-    info = workspace.document.place_part(arguments["name"], arguments["position"], arguments.get("rotation_deg"))
+    mount = arguments.get("mount")
+    if mount is None:
+        reject_placement(arguments.get("position"), arguments.get("rotation_deg"))
+    info = workspace.document.place_part(
+        arguments["name"],
+        arguments.get("position"),
+        arguments.get("rotation_deg"),
+        mount=mount,
+    )
     return {"part": info.to_dict()}
 
 
@@ -1522,6 +1551,7 @@ _add(Command(
             "position": {"type": "array"},
             "rotation_deg": {"type": "array"},
             "fastener_type": _string("Optional fastener type."),
+            "mount": _mount_argument(),
         },
         ["name", "kind", "size"],
     ),
@@ -1530,8 +1560,16 @@ _add(Command(
 ))
 _add(Command(
     "place_part",
-    "Move a part. Replaces the previous placement.",
-    _obj({"name": _string("Part name."), "position": {"type": "array"}, "rotation_deg": {"type": "array"}}, ["name", "position"]),
+    "Move a part. Replaces the previous placement. A mount snaps a catalog mate onto a face or an axis.",
+    _obj(
+        {
+            "name": _string("Part name."),
+            "position": {"type": "array"},
+            "rotation_deg": {"type": "array"},
+            "mount": _mount_argument(),
+        },
+        ["name"],
+    ),
     _cmd_place,
     undo=True,
 ))
