@@ -822,7 +822,8 @@ function drawSketch() {
   const status = $("sketch-status");
   status.hidden = false;
   status.className = "sketch-status " + (ui.sketch.status || "");
-  status.textContent = `${ui.sketch.status || "unsolved"} · dof ${ui.sketch.dof ?? "?"} · ${(ui.sketch.conflicts || []).join(", ") || ui.sketch.note || ""}`;
+  const planeLabel = sketchPlaneLabel(ui.sketch.spec && ui.sketch.spec.plane);
+  status.textContent = `${planeLabel} · ${ui.sketch.status || "unsolved"} · dof ${ui.sketch.dof ?? "?"} · ${(ui.sketch.conflicts || []).join(", ") || ui.sketch.note || ""}`;
   renderDimensions();
 }
 
@@ -2182,11 +2183,19 @@ async function boot() {
   };
   $("measure-clear").onclick = () => clearMeasure();
   $("new-sketch").onclick = async () => {
-    const answer = await ask("New sketch", [{ name: "name", label: "Name", value: "sketch" }]);
+    const answer = await ask("New sketch", [
+      { name: "name", label: "Name", value: "sketch" },
+      { name: "plane", label: "Plane (xy, yz, xz, or face)", value: "xy" },
+      { name: "offset", label: "Offset mm", value: "" },
+      { name: "angle", label: "Angle degrees", value: "" },
+      { name: "axis", label: "Angle axis (x, y, or z)", value: "x" },
+    ]);
     if (!answer) return;
+    const chosen = sketchPlaneSpec(answer, { part: ui.part, ref: (ui.selectedFaces || [])[0] });
+    if (chosen.error) throw new Error(chosen.error);
     await command("create_sketch", {
       name: answer.name,
-      spec: { plane: "xy", entities: [{ id: "origin", type: "point", at: [0, 0] }], constraints: [{ type: "fix", entity: "origin" }] },
+      spec: { plane: chosen.plane, entities: [{ id: "origin", type: "point", at: [0, 0] }], constraints: [{ type: "fix", entity: "origin" }] },
     });
     await refresh();
     await openSketch(answer.name);

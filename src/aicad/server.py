@@ -232,8 +232,13 @@ placement of a mounted pair. That sweep is not a full turn and not a spiral beve
 
 ## Sketches
 
-A sketch is points, lines, arcs, and circles, plus constraints. Initial `at`
-coordinates are guesses. `fix` locks a point at its guess. The solver is
+A sketch is points, lines, arcs, and circles, plus constraints. `plane` is
+`xy`, `yz`, or `xz`, a datum `{"kind": "datum", "base": "xy", "offset": 10}`
+or with `angle` and `axis`, or a planar face
+`{"kind": "face", "part": "block", "ref": "plane/z+/0,0,10"}`. The sketch
+stays on that face when the solid rebuilds. A missing face is an error. The
+solver still uses the plane's own coordinates. Initial `at` coordinates are
+guesses. `fix` locks a point at its guess. The solver is
 SolveSpace. The report's `status` is `fully_constrained`, `under_constrained`
 (with `free` naming the entities that can still move), or `over_constrained`
 (with `conflicts` naming the constraints that disagree).
@@ -625,7 +630,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def create_sketch(name: str, spec: dict[str, Any]) -> list[str | Image]:
         """Solve and store a 2D sketch of entities and constraints.
 
-        spec has `entities` (point, line, circle, arc) and `constraints`
+        spec has `plane` (`xy`, `yz`, `xz`, a datum with `offset`, `angle`,
+        or both, or `{"kind": "face", "part", "ref"}`), `entities`
+        (point, line, circle, arc) and `constraints`
         (fix, coincident, parallel, perpendicular, tangent, equal, horizontal,
         vertical, symmetric, midpoint, distance, angle, radius, diameter,
         pattern_on_circle). Initial `at` coordinates are guesses. `fix` locks
