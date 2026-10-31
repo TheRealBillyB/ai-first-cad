@@ -4148,6 +4148,30 @@ def _exited_unreaped(pid: int) -> bool | None:
     return status is not None
 
 
+def _open_real_directory(path: Path) -> int | None:
+    """Open one real directory. A symlink or junction is not opened.
+
+    The quota watch uses this so a link cannot move the directory it counts.
+    """
+
+    from aicad.paths import is_reparse
+
+    try:
+        if path.is_symlink() or is_reparse(path) or not path.is_dir():
+            return None
+    except OSError:
+        return None
+    flags = os.O_RDONLY
+    for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC"):
+        flag = getattr(os, name, 0)
+        if flag:
+            flags |= flag
+    try:
+        return os.open(os.fspath(path), flags)
+    except OSError:
+        return None
+
+
 class _DiskWatch:
     """Cumulative and per-file write caps for one script.
 
@@ -4426,9 +4450,12 @@ class _DiskWatch:
                 entries = list(os.scandir(directory))
             except OSError:
                 continue
+            from aicad.paths import is_reparse
+
             for entry in entries:
                 try:
-                    if entry.is_symlink():
+                    child = Path(entry.path)
+                    if entry.is_symlink() or is_reparse(child):
                         continue
                     if entry.is_dir(follow_symlinks=False):
                         pending.append(entry.path)
@@ -4527,7 +4554,16 @@ class _DiskWatch:
         watches: dict[int, Path] = {}
 
         def add_watch(directory: Path) -> None:
-            watch = int(libc.inotify_add_watch(descriptor, os.fsencode(directory), mask | 0x01000000))
+            opened = _open_real_directory(directory)
+            if opened is None:
+                return
+            try:
+                # The descriptor is the directory that was opened. Watching
+                # that descriptor does not follow a link put at the path later.
+                watched = f"/proc/self/fd/{opened}"
+                watch = int(libc.inotify_add_watch(descriptor, os.fsencode(watched), mask | 0x01000000))
+            finally:
+                os.close(opened)
             if watch >= 0:
                 watches[watch] = directory
 
@@ -4684,8 +4720,17 @@ class _DiskWatch:
             self.hit.set()
 
     def account_io(self, pids: set[int]) -> None:
-        """Read a child report, then the live counters, as one sample."""
-        self.absorb_child_report()
+        """Read a child report, then the live counters, as one sample.
+
+        A process in ``pids`` is counted from its own counter. The report
+        cannot replace that total.
+        """
+        protected: set[int] = set()
+        for pid in pids:
+            if isinstance(pid, int) and pid > 0:
+                protected.add(pid)
+                protected.add(_thread_group_leader(pid))
+        self.absorb_child_report(protected)
         self.note_io(pids)
 
     def note_reported_children(self, amounts: dict[int, int]) -> None:
@@ -4721,8 +4766,13 @@ class _DiskWatch:
         if self.io_peak > self.disk_cap:
             self.hit.set()
 
-    def absorb_child_report(self) -> None:
-        """Read the script's record of children it collected, when that file exists."""
+    def absorb_child_report(self, protected: set[int] | None = None) -> None:
+        """Read collected-child writes. A live process is left on its own counter.
+
+        The report lives in the project. It can add a child that was collected
+        before a counter was opened. It cannot change the total for a process
+        the watch is already counting, and it cannot move the watched directory.
+        """
         path = self.child_report
         if path is None:
             return
@@ -4738,12 +4788,19 @@ class _DiskWatch:
             return
         if not isinstance(payload, dict):
             return
+        skip = protected or set()
         amounts: dict[int, int] = {}
         for key, value in payload.items():
             try:
-                amounts[int(key)] = int(value)
+                pid = int(key)
+                amount = int(value)
             except (TypeError, ValueError):
                 continue
+            if pid <= 0 or amount < 0:
+                continue
+            if pid in skip or _thread_group_leader(pid) in skip:
+                continue
+            amounts[pid] = amount
         self.note_reported_children(amounts)
 
     def note_job_io(self, written: int, baseline: int | None) -> None:
