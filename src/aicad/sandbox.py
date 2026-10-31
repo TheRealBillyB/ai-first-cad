@@ -2172,6 +2172,169 @@ def lock_library_environment() -> None:
         return real_putenv(name, value)
 
     os.putenv = putenv  # type: ignore[assignment]
+    snapshot = _snapshot_locked_environment()
+    read_env, write_env = _environment_access()
+    _seal_imported_environment()
+    _watch_library_environment(snapshot, read_env, write_env)
+
+
+_ENV_CALLS = frozenset(
+    {
+        "setenv",
+        "unsetenv",
+        "putenv",
+        "_putenv",
+        "_putenv_s",
+        "_wputenv",
+        "_wputenv_s",
+        "SetEnvironmentVariableA",
+        "SetEnvironmentVariableW",
+    }
+)
+
+
+def _seal_imported_environment() -> None:
+    """Refuse a library-config change made through ``ctypes`` on an imported module.
+
+    Geometry code keeps using libraries it already loaded. A new library load
+    from a design script cannot change the locked names.
+    """
+
+    import ctypes
+
+    if getattr(ctypes, "_aicad_env_sealed", False):
+        return
+
+    def guard(library):
+        if library is None or getattr(library, "_aicad_env_guard", False):
+            return library
+
+        class _Guard:
+            _aicad_env_guard = True
+
+            def __init__(self, inner):
+                object.__setattr__(self, "_inner", inner)
+
+            def __getattr__(self, name):
+                value = getattr(self._inner, name)
+                if name in _ENV_CALLS and callable(value):
+                    return _refuse_locked_env(value)
+                return value
+
+        return _Guard(library)
+
+    def factory(real):
+        def load(*args, **kwargs):
+            return guard(real(*args, **kwargs))
+
+        load._aicad_sealed_factory = True
+        return load
+
+    for class_name in ("CDLL", "PyDLL", "WinDLL", "OleDLL"):
+        real = getattr(ctypes, class_name, None)
+        if real is None or getattr(real, "_aicad_sealed_factory", False):
+            continue
+        setattr(ctypes, class_name, factory(real))
+    for loader_name in ("cdll", "windll", "oledll", "pydll"):
+        loader = getattr(ctypes, loader_name, None)
+        if loader is None:
+            continue
+        dlltype = getattr(loader, "_dlltype", None)
+        if dlltype is not None and hasattr(ctypes, getattr(dlltype, "__name__", "")):
+            loader._dlltype = getattr(ctypes, dlltype.__name__)
+        libraries = getattr(loader, "_libraries", None)
+        if isinstance(libraries, dict):
+            for key, library in list(libraries.items()):
+                libraries[key] = guard(library)
+    ctypes._aicad_env_sealed = True
+
+
+def _refuse_locked_env(func):
+    def call(*args, **kwargs):
+        key = args[0] if args else kwargs.get("name", kwargs.get("lpName"))
+        if isinstance(key, bytes):
+            key = key.decode("utf-8", "replace")
+        if isinstance(key, str) and _env_name_locked(key):
+            raise PermissionError(1, "Operation not permitted")
+        return func(*args, **kwargs)
+
+    return call
+
+
+def _environment_access():
+    """Read and write the process environment below Python's ``os.environ``."""
+
+    import ctypes
+
+    if os.name == "nt":
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        read = kernel.GetEnvironmentVariableW
+        write = kernel.SetEnvironmentVariableW
+        read.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        read.restype = ctypes.c_uint32
+        write.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        write.restype = ctypes.c_int
+
+        def get(key: str) -> str | None:
+            size = read(key, None, 0)
+            if size == 0:
+                return None
+            buffer = ctypes.create_unicode_buffer(size)
+            read(key, buffer, size)
+            return buffer.value
+
+        def set(key: str, value: str) -> None:
+            write(key, value)
+
+        return get, set
+    libc = ctypes.CDLL(None, use_errno=True)
+    getenv = libc.getenv
+    setenv = libc.setenv
+    getenv.argtypes = [ctypes.c_char_p]
+    getenv.restype = ctypes.c_char_p
+    setenv.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+    setenv.restype = ctypes.c_int
+
+    def get(key: str) -> str | None:
+        raw = getenv(key.encode())
+        if raw is None:
+            return None
+        return raw.decode("utf-8", "replace")
+
+    def set(key: str, value: str) -> None:
+        setenv(key.encode(), value.encode(), 1)
+
+    return get, set
+
+
+def _snapshot_locked_environment() -> dict[str, str]:
+    found = {}
+    for key, value in list(os.environ.items()):
+        if _env_name_locked(key) and isinstance(value, str):
+            found[key] = value
+    return found
+
+
+def _watch_library_environment(snapshot: dict[str, str], read, write) -> None:
+    """Put the locked names back if something changes them after the snapshot."""
+
+    if not snapshot or getattr(_watch_library_environment, "started", False):
+        return
+    _watch_library_environment.started = True
+
+    def restore() -> None:
+        for key, value in snapshot.items():
+            if read(key) != value:
+                write(key, value)
+            if os.environ.get(key) != value:
+                os.environ[key] = value
+
+    def loop() -> None:
+        while True:
+            restore()
+            time.sleep(0.05)
+
+    threading.Thread(target=loop, name="aicad-library-env", daemon=True).start()
 
 
 def _env_name_locked(name: str) -> bool:
