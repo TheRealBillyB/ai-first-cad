@@ -93,8 +93,14 @@
           <button type="button" data-tool="point">Point</button>
           <button type="button" data-tool="line">Line</button>
           <button type="button" data-tool="circle">Circle</button>
+          <button type="button" data-tool="arc">Arc</button>
           <button type="button" data-tool="rectangle">Rectangle</button>
         </div>
+        <label>Arc <select id="arc-mode">
+          <option value="three">Three points</option>
+          <option value="center">Center, start, end</option>
+          <option value="tangent">Tangent to a line</option>
+        </select></label>
         <div class="seg" id="constraint-tools">
           <button type="button" data-constraint="horizontal">Horizontal</button>
           <button type="button" data-constraint="vertical">Vertical</button>

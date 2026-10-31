@@ -180,3 +180,30 @@ That stops another website, including one that tries to reach this computer by a
 - **BW.** When confinement stops, the script result is opened from its parent directory. A link at that name is not followed, and another name for the file is not changed.
 
 - **BX.** A Windows script profile that is already registered is deleted and created again with no capabilities, unless a script is already using it. A profile a script is using is opened only when it has no capabilities. The network block is read back before the script starts.
+
+- A script remove opens that name only to delete it. It does not read or write the file, and a link is removed without opening the file it names. The quota still counts a removed file the watch is holding.
+- **BY.** Only the person at the workspace can open a project folder or save a copy and switch to it. The assistant cannot. A session file cannot.
+
+- **BZ.** An assembly name, a part name, an instance name, a joint name, or a material name stays on one line. A line separator, a paragraph separator, or another control character in that name is refused. A drawing, a bill of materials, a report, and a log do not gain a line from that character.
+
+- **CA.** A CalculiX input line is one card. A part name, a note, or a material name is not written into that file. A line break in a card is refused, so it cannot add another card.
+
+- **CB.** The model process does not read a Matplotlib config from the project directory. A design script cannot write the library configuration directory and cannot point that directory somewhere else.
+
+- **CC.** A helper process started by a confined script cannot read a file outside the project. A file in the project can still be read.
+
+- **CD.** The assistant lists folders only inside the open project. A person can list a folder they chose. A folder outside the project is not listed for the assistant.
+
+- **CE.** A cable or tendon name stays on one line before it is stored. A line separator, a paragraph separator, or another control character in that name is refused.
+
+- **CF.** A design script cannot point the library configuration directory somewhere else through a module this program already imported. A script that does not change that directory still runs.
+
+- **CG.** CalculiX, ffmpeg, and a slicer run under the same file limits as a design script. Each one may read the locations needed to start and may use its own folder. It cannot read a file outside that folder. The program is not started when those limits cannot be applied.
+
+- **CH.** The recent-project list names a folder the person opened. A link is not named and is not opened from that list. The name is the folder's own name, on one line. The assistant is not given a folder outside the open project.
+
+- **CI.** A free-text note that reaches a report, a log, a drawing, or a generated file does not gain a line from a line separator, a paragraph separator, or another control character. A newline the drawing already shows stays that newline. A dimension name stays on one line, the same way a stored name does.
+
+- **CJ.** The disk-quota watch counts the project directory it opened. A link is not a directory it watches or counts. A record of collected children cannot replace the bytes already counted for a live process, and it cannot move the watched directory.
+
+- **CK.** A geometry library may write a cache under the private library-config folder. A design script cannot write that folder itself. It cannot point the cache somewhere else by changing a locked name, by clearing one, or by replacing the environment mapping.

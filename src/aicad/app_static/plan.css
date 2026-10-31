@@ -90,3 +90,12 @@
 .plan-empty { max-width: 46em; line-height: 1.45; }
 .plan-activity { font-size: 13px; color: var(--muted, #6d655b); }
 .plan-activity li { margin: 4px 0; }
+.plan-script {
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  background: var(--paper-2, #e7e1d4);
+  padding: 8px;
+  overflow: auto;
+  max-height: 160px;
+}
