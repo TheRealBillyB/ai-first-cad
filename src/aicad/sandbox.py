@@ -4198,6 +4198,7 @@ class _DiskWatch:
         self.file_cap = file_cap
         self.disk_cap = disk_cap
         self.hit = threading.Event()
+        self._directories = _snapshot_directories(root)
         self._io_base: dict[int, int] = {}
         self._io_fds: dict[int, int] = {}
         self._pids: set[int] = set()
@@ -4865,10 +4866,60 @@ class _DiskWatch:
                     break
                 _restore_file(key, self.before)
                 total -= growth
+            _remove_new_empty_directories(self.root, self._directories)
             return f"The script was stopped because it wrote more than {self.disk_cap} bytes."
         if file_over:
+            _remove_new_empty_directories(self.root, self._directories)
             return f"The script was stopped because it wrote more than {self.file_cap} bytes."
         return None
+
+
+def _snapshot_directories(root: Path) -> set[str]:
+    """Directories under ``root``. A link is not entered."""
+    from aicad.paths import is_reparse
+
+    found: set[str] = set()
+    for dirpath, dirnames, _names in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        kept: list[str] = []
+        for name in dirnames:
+            child = current / name
+            if child.is_symlink() or is_reparse(child):
+                continue
+            kept.append(name)
+            found.add(_file_key(child))
+        dirnames[:] = kept
+    return found
+
+
+def _remove_new_empty_directories(root: Path, before: set[str]) -> None:
+    """Remove empty directories created during a run that passed its quota.
+
+    A stopped script may have created a folder and not removed it. A folder
+    that still has a file, or that was already there, stays.
+    """
+    from aicad.file_access import remove_empty_directory
+    from aicad.paths import is_reparse
+
+    found: list[Path] = []
+    for dirpath, dirnames, _names in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        kept: list[str] = []
+        for name in dirnames:
+            child = current / name
+            if child.is_symlink() or is_reparse(child):
+                continue
+            kept.append(name)
+            if _file_key(child) not in before:
+                found.append(child)
+        dirnames[:] = kept
+    for child in sorted(found, key=lambda path: len(path.parts), reverse=True):
+        try:
+            if child.is_symlink() or is_reparse(child) or any(child.iterdir()):
+                continue
+            remove_empty_directory(child)
+        except OSError:
+            continue
 
 
 def _open_retained(path: Path) -> int | None:
