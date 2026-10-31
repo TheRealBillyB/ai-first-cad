@@ -1098,8 +1098,20 @@ async function applyConstraint(kind) {
   const spec = structuredClone(ui.sketch.spec);
   const selected = ui.sketchSelection;
   let fields = null;
-  if (kind === "distance" || kind === "diameter" || kind === "radius" || kind === "angle") {
-    const title = kind.charAt(0).toUpperCase() + kind.slice(1);
+  if (kind === "distance") {
+    fields = await ask("Distance", [
+      { name: "value", label: "Millimeters", value: "10" },
+      { name: "name", label: "Name", value: uniqueConstraintName(spec, "distance") },
+    ]);
+    if (!fields) return;
+  } else if (kind === "diameter") {
+    fields = await ask("Diameter", [
+      { name: "value", label: "Millimeters", value: "10" },
+      { name: "name", label: "Name", value: uniqueConstraintName(spec, "diameter") },
+    ]);
+    if (!fields) return;
+  } else if (kind === "radius" || kind === "angle") {
+    const title = kind === "angle" ? "Angle" : "Radius";
     fields = await ask(title, [
       { name: "value", label: kind === "angle" ? "Degrees" : "Millimeters", value: kind === "angle" ? "90" : "10" },
       { name: "name", label: "Name", value: uniqueConstraintName(spec, kind) },
