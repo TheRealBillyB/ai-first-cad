@@ -182,6 +182,14 @@ def build_parser() -> argparse.ArgumentParser:
     imported.add_argument("name")
     imported.add_argument("file", type=Path)
 
+    imported_stl = commands.add_parser(
+        "import-stl",
+        parents=[common],
+        help="Copy an STL file in as a mesh part. The mesh has no editable features.",
+    )
+    imported_stl.add_argument("name")
+    imported_stl.add_argument("file", type=Path)
+
     features = commands.add_parser(
         "features", parents=[common], help="Report how much each boolean step contributed."
     )
@@ -776,6 +784,9 @@ def _dispatch(args: argparse.Namespace) -> int:
         return emit(report.to_dict())
     if args.command == "import-step":
         info = document.import_step(args.name, args.file)
+        return emit(info.to_dict())
+    if args.command == "import-stl":
+        info = document.import_stl(args.name, args.file)
         return emit(info.to_dict())
     if args.command == "features":
         return emit(document.feature_report(args.name).to_dict())

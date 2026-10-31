@@ -215,6 +215,43 @@ class Document:
             self._save()
             return self._info(self._parts[name])
 
+    def import_stl(self, name: str, path: str | Path) -> PartInfo:
+        """Copy an STL file in as a mesh-backed part.
+
+        The triangles become one solid. The part has no editable features.
+        A mesh that does not close is refused. The bytes are read with the
+        shared file reader and stored under ``imports``.
+        """
+        with self._lock:
+            self._require_new_name(name)
+            from aicad.file_access import TooLarge, read_file
+            from aicad.mesh_import import import_mesh_bytes
+            from aicad.paths import publish_bytes, refuse_reserved_device
+            from aicad.sandbox import require_in_project
+
+            require_in_project(path, self.workspace, writing=False)
+            source = _step_import_source(self.workspace, path, label="STL file")
+            if source.suffix.lower() != ".stl":
+                raise GeometryError(f"STL file {source.name} is not an .stl file.")
+            try:
+                data = read_file(source, maximum=kernel.MAX_STEP_BYTES)
+            except TooLarge as exc:
+                raise GeometryError(f"Mesh file {source.name} is too large.") from exc
+            except OSError as exc:
+                raise GeometryError(f"Could not read mesh file {source.name}.") from exc
+            shape = import_mesh_bytes(source, data)
+            relative = f"imports/{name}.stl"
+            refuse_reserved_device(relative, None, "Import copy", GeometryError)
+            destination = _project_file(self.workspace, self.workspace / relative, "Imported STL")
+            publish_bytes(destination, data)
+            note = (
+                f"# Imported STL, copied to {relative}\n"
+                "# A triangle mesh has no editable features. Move it, or replace the part.\n"
+            )
+            self._parts[name] = _Part(name, "mesh", shape, script=note, step_file=relative, base=shape)
+            self._save()
+            return self._info(self._parts[name])
+
     def update_part_script(self, name: str, script: str) -> PartInfo:
         """Replace a part's source. A failed script leaves the previous solid in place."""
         with self._lock:
@@ -2532,6 +2569,11 @@ class Document:
                         self.workspace, record.get("step_file"), f"Part {name!r} step file"
                     )
                     base = kernel.import_step_file(step_path)
+                elif source == "mesh":
+                    mesh_path = _session_project_file(
+                        self.workspace, record.get("step_file"), f"Part {name!r} mesh file"
+                    )
+                    base = kernel.import_step_file(mesh_path)
                 elif source == "library":
                     spec = record["library"]
                     base = kernel.adopt(
@@ -2858,8 +2900,8 @@ def _vec3(value, label: str) -> tuple[float, float, float]:
     return kernel.finite_vec3(value, label, unit=unit)
 
 
-def _step_import_source(root: Path, raw: str | Path) -> Path:
-    """The file ``import_step`` reads.
+def _step_import_source(root: Path, raw: str | Path, label: str = "STEP file") -> Path:
+    """The file ``import_step`` or ``import_stl`` reads.
 
     An absolute path is a file the person chose. A design script does not get
     that choice: its path stays inside the project. A relative path stays
@@ -2882,13 +2924,13 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
     # An absolute path is a file the person chose, unless a design script asked.
     if in_design_call() or not original.is_absolute() or lexical_inside:
         if not stays_inside(root_resolved, source):
-            raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
+            raise DocumentError(f"{label} {raw} is outside the project. It was not read.")
         lexical = given if given.is_absolute() else root_resolved / given
         # A directory link whose target stays inside the project is still a link.
         if _reparse_between(root_resolved, lexical):
-            raise DocumentError(f"STEP file {raw} is a link and was not followed.")
+            raise DocumentError(f"{label} {raw} is a link and was not followed.")
         if shared_file(source):
-            raise DocumentError(f"STEP file {raw} has another name and was not opened.")
+            raise DocumentError(f"{label} {raw} has another name and was not opened.")
     return source
 
 
