@@ -1,4 +1,4 @@
-"""glTF, OBJ, and COLLADA imports that stay in the file's folder.
+"""glTF, OBJ, COLLADA, and STL imports that stay in the file's folder.
 
 The bytes are read with the shared file reader. A buffer, image, or material
 library is used only when it is embedded or is a relative path inside that
@@ -39,13 +39,22 @@ class _Sibling:
 
 
 def import_mesh_file(path: Path) -> object:
-    """Read one glTF, OBJ, or COLLADA file into a solid."""
+    """Read one glTF, OBJ, COLLADA, or STL file into a solid."""
     file = Path(path)
     try:
         data = _read_mesh(file)
     except OSError as exc:
         raise GeometryError(f"Could not read mesh file {file.name}.") from exc
     return _import_mesh_bytes(file, data)
+
+
+def import_mesh_bytes(path: Path, data: bytes) -> object:
+    """Build a solid from mesh bytes already read from ``path``.
+
+    ``path`` is not opened again. An STL file becomes a mesh-backed solid
+    with no editable features.
+    """
+    return _import_mesh_bytes(Path(path), data)
 
 
 def _import_mesh_bytes(path: Path, data: bytes):
@@ -60,6 +69,8 @@ def _import_mesh_bytes(path: Path, data: bytes):
         vertices, triangles = _obj_mesh(path.name, data, folder)
     elif suffix == ".dae":
         vertices, triangles = _collada_mesh(path.name, data, folder)
+    elif suffix == ".stl":
+        vertices, triangles = _stl_mesh(path.name, data)
     else:
         raise GeometryError(f"Could not read mesh file {path.name}.")
     return _solid(path.name, vertices, triangles)
@@ -602,6 +613,72 @@ def _limit_triangles(main: str, triangles) -> None:
         raise _fail(main, f"the mesh has too many triangles. The limit is {_MAX_TRIANGLES}.")
 
 
+def _stl_mesh(main: str, data: bytes):
+    count = _binary_stl_count(data)
+    if count is not None:
+        return _binary_stl(main, data, count)
+    text = _text(data).lstrip("\ufeff")
+    if text.lstrip().lower().startswith("solid"):
+        return _ascii_stl(main, text)
+    raise _fail(main, "the mesh text could not be read.")
+
+
+def _binary_stl_count(data: bytes) -> int | None:
+    """Triangle count when ``data`` is one binary STL, else None."""
+    if len(data) < 84:
+        return None
+    count = struct.unpack_from("<I", data, 80)[0]
+    if count <= 0 or count > _MAX_TRIANGLES:
+        return None
+    if 84 + count * 50 != len(data):
+        return None
+    return int(count)
+
+
+def _binary_stl(main: str, data: bytes, count: int):
+    vertices = []
+    triangles = []
+    offset = 84
+    for _index in range(count):
+        try:
+            numbers = struct.unpack_from("<12fH", data, offset)
+        except struct.error as exc:
+            raise _fail(main, "the mesh text could not be read.") from exc
+        offset += 50
+        base = len(vertices)
+        vertices.extend((numbers[3:6], numbers[6:9], numbers[9:12]))
+        triangles.append((base, base + 1, base + 2))
+    _limit_triangles(main, triangles)
+    return np.asarray(vertices, dtype=np.float64), np.asarray(triangles, dtype=np.int64)
+
+
+def _ascii_stl(main: str, text: str):
+    vertices = []
+    triangles = []
+    corners: list[list[float]] = []
+    for line in text.splitlines():
+        tokens = line.split()
+        if not tokens:
+            continue
+        key = tokens[0].lower()
+        if key == "vertex" and len(tokens) >= 4:
+            try:
+                corners.append([float(tokens[1]), float(tokens[2]), float(tokens[3])])
+            except ValueError as exc:
+                raise _fail(main, "the mesh text could not be read.") from exc
+        elif key == "endfacet":
+            if len(corners) != 3:
+                raise _fail(main, "the mesh is not made of triangles.")
+            base = len(vertices)
+            vertices.extend(corners)
+            triangles.append((base, base + 1, base + 2))
+            corners = []
+    if corners or not triangles:
+        raise _fail(main, "the mesh has no triangles." if not triangles else "the mesh text could not be read.")
+    _limit_triangles(main, triangles)
+    return np.asarray(vertices, dtype=np.float64), np.asarray(triangles, dtype=np.int64)
+
+
 def _solid(main: str, vertices: np.ndarray, triangles: np.ndarray):
     from OCP.BRepBuilderAPI import (
         BRepBuilderAPI_MakeFace,
@@ -643,4 +720,9 @@ def _solid(main: str, vertices: np.ndarray, triangles: np.ndarray):
         made = kernel._require_solid(BuildShape.cast(solid.Solid()))
     except GeometryError as exc:
         raise _fail(main, "the mesh did not make a closed solid.") from exc
-    return kernel.Shape(made)
+    shape = kernel.Shape(made)
+    if Path(main).suffix.lower() == ".stl":
+        from aicad.models import mesh_part_features
+
+        shape.features = mesh_part_features()
+    return shape
