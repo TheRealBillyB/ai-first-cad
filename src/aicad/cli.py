@@ -533,6 +533,19 @@ def build_parser() -> argparse.ArgumentParser:
     dimensions.add_argument("name")
     dimensions.add_argument("--file", type=Path, required=True, help="JSON list, or an object with a dimensions list.")
 
+    build = commands.add_parser(
+        "set-plan-build",
+        parents=[common],
+        help="Store the scripts that build the parts. They do not run until you approve the plan.",
+    )
+    build.add_argument("name")
+    build.add_argument(
+        "--file",
+        type=Path,
+        required=True,
+        help="JSON list of {part, script}, or an object with a steps list. Data only. It is not executed.",
+    )
+
     comment = commands.add_parser("comment-on-plan", parents=[common], help="Comment on the plan or on one item.")
     comment.add_argument("name")
     comment.add_argument("--item", default="plan")
@@ -565,14 +578,16 @@ def build_parser() -> argparse.ArgumentParser:
     revise.add_argument("--file", type=Path, default=None, help="Optional JSON bundle applied to the new revision.")
 
     approve = commands.add_parser(
-        "approve-plan", parents=[common], help="Approve the current revision. Only you can do this."
+        "approve-plan",
+        parents=[common],
+        help="Approve the current revision. Only you can do this. Build steps then run and build the parts.",
     )
     approve.add_argument("name")
 
     model_from = commands.add_parser(
         "start-model-from-plan",
         parents=[common],
-        help="Release modeling from an approved plan. Refuses until you have approved it.",
+        help="Release modeling from an approved plan. Refuses until you have approved it. Build steps then run if they are not saved yet.",
     )
     model_from.add_argument("name")
 
@@ -1068,6 +1083,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         if not isinstance(rows, list):
             raise AICADError("The dimensions file must be a list, or an object with a dimensions list.")
         return emit(document.set_plan_dimensions(args.name, rows))
+    if args.command == "set-plan-build":
+        payload = json.loads(_read_named_file(args.file))
+        rows = payload.get("steps") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            raise AICADError("The build file must be a list, or an object with a steps list.")
+        return emit(document.set_plan_build(args.name, rows))
     if args.command == "comment-on-plan":
         return emit(document.comment_on_plan(args.name, args.item, args.text))
     if args.command == "answer-plan-question":
