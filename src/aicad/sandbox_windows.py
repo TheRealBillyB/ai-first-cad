@@ -3459,11 +3459,21 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark, remembe
             mark(False)
             return
         def note_tree() -> None:
-            for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+            from aicad.paths import is_reparse
+
+            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
                 if stop.is_set():
                     return
+                dirnames[:] = [
+                    name
+                    for name in dirnames
+                    if not (Path(dirpath) / name).is_symlink() and not is_reparse(Path(dirpath) / name)
+                ]
                 for name in filenames:
-                    retain(Path(dirpath) / name)
+                    child = Path(dirpath) / name
+                    if child.is_symlink() or is_reparse(child):
+                        continue
+                    retain(child)
 
         mark(True)
         while not stop.is_set():
