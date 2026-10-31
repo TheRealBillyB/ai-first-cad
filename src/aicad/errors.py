@@ -18,6 +18,10 @@ class GeometryError(AICADError):
     """Geometry could not be built, measured, or checked."""
 
 
+class MountError(GeometryError):
+    """A catalog part could not be mounted. The part was not moved."""
+
+
 class SketchPlaneError(GeometryError):
     """The sketch is attached to a face that is no longer in the model."""
 
