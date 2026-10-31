@@ -4994,7 +4994,7 @@ def _remove_job_when_watch_leaves(disk: _DiskWatch, job: Path) -> None:
     shutil.rmtree(job, ignore_errors=True)
 
 
-def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dict:
+def _spawn(workspace: Path, kind: str, script: str | None, network: bool, helper: bool = False) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
         raise ScriptError(reason)
@@ -5021,6 +5021,8 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool) -> dic
     probe_root = None
     if kind == "probe":
         probe_root, spec["probe_read"], spec["probe_write"] = _make_probe(workspace)
+        if helper:
+            spec["helper_read"] = spec["probe_read"]
     publish_text(job / "job.json", json.dumps(spec) + "\n", root=job)
     if script is not None:
         publish_text(job / "script.py", script, root=job)
@@ -5494,12 +5496,12 @@ def run_design_script(workspace: str | Path, code: str, network: bool = False) -
     return payload
 
 
-def os_probe(workspace: str | Path) -> dict:
+def os_probe(workspace: str | Path, *, helper: bool = False) -> dict:
     """Ask a confined process to touch the network and a file outside the project.
 
     Used by the tests. It does not run assistant code.
     """
-    payload = _spawn(Path(workspace), "probe", None, network=False)
+    payload = _spawn(Path(workspace), "probe", None, network=False, helper=helper)
     _drop_job(payload)
     probe = payload.get("probe")
     if not isinstance(probe, dict):
