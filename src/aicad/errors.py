@@ -18,6 +18,14 @@ class GeometryError(AICADError):
     """Geometry could not be built, measured, or checked."""
 
 
+class EdgeOpError(GeometryError):
+    """A fillet or chamfer could not be applied. The previous solid stays."""
+
+    def __init__(self, message: str, code: str = "edge_failed") -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class PartNotFound(AICADError):
     """No part with that name is in the current document."""
 

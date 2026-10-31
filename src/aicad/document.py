@@ -99,6 +99,7 @@ class _Part:
         script_pending: bool = False,
         rebuild_error: str | None = None,
         gear_spec: dict | None = None,
+        edge_ops: list[dict] | None = None,
     ):
         self.name = name
         self.source = source
@@ -116,6 +117,7 @@ class _Part:
         self.script_pending = script_pending
         self.rebuild_error = rebuild_error
         self.gear_spec = gear_spec
+        self.edge_ops = edge_ops
 
     @property
     def shape(self) -> kernel.Shape:
@@ -227,13 +229,17 @@ class Document:
             part.geometry_file = self._store_script_geometry(name, script, shape)
             part.script_sha256 = _script_hash(script)
             part.script_pending = False
+            part.edge_ops = None
             self._save()
             return self._info(part)
 
     def update_part_ops(self, name: str, ops: list[dict]) -> PartInfo:
         with self._lock:
             part = self._get(name)
+            edge_ops = list(part.edge_ops) if part.source == "ops" and part.edge_ops else None
             shape = kernel.make_from_ops(ops)
+            if edge_ops:
+                shape = kernel.apply_edge_ops(shape, edge_ops)
             part.shape = shape
             part.base = shape
             part.source = "ops"
@@ -248,6 +254,7 @@ class Document:
             part.geometry_file = None
             part.script_sha256 = None
             part.script_pending = False
+            part.edge_ops = edge_ops
             self._save()
             return self._info(part)
 
@@ -284,6 +291,7 @@ class Document:
                 "placement": part.placement,
                 "sketch": part.sketch_name,
                 "steps": part.sketch_steps,
+                "edge_ops": copy.deepcopy(part.edge_ops) if part.edge_ops else [],
                 "built": part._shape is not None,
                 "script_pending": part.script_pending,
                 "geometry_file": part.geometry_file,
@@ -725,7 +733,10 @@ class Document:
             if not isinstance(steps, list) or not steps:
                 raise GeometryError("steps must be a non-empty list of extrude, cut, revolve, cut_box, or gusset.")
             stored_steps = copy.deepcopy(steps)
+            edge_ops = list(part.edge_ops) if part.source == "sketch" and part.edge_ops else None
             shape = kernel.solid_from_sketch(report.geometry, stored_steps)
+            if edge_ops:
+                shape = kernel.apply_edge_ops(shape, edge_ops)
             part.shape = shape
             part.base = shape
             part.source = "sketch"
@@ -737,8 +748,89 @@ class Document:
             part.sketch_name = sketch_name
             part.sketch_steps = stored_steps
             part.placement = _identity_placement()
+            part.edge_ops = edge_ops
             self._save()
             return self._info(part)
+
+    def add_fillet(self, name: str, radius: float, edges: list, step_name: str | None = None) -> PartInfo:
+        """Round edges. A radius that does not fit leaves the previous solid."""
+        return self._add_edge_op(name, "fillet", radius, edges, step_name)
+
+    def add_chamfer(self, name: str, distance: float, edges: list, step_name: str | None = None) -> PartInfo:
+        """Break edges. A distance that does not fit leaves the previous solid."""
+        return self._add_edge_op(name, "chamfer", distance, edges, step_name)
+
+    def _set_edge_size(self, name: str, index: int, field: str, value: float) -> PartInfo:
+        """Change one fillet radius or chamfer distance and rebuild.
+
+        A value that does not fit leaves the previous radius and the previous solid.
+        """
+        with self._lock:
+            part = self._editable_edge_part(name)
+            if field not in ("radius", "distance"):
+                raise GeometryError(f"Edge size {field!r} is not a radius or a distance.")
+            ops = copy.deepcopy(part.edge_ops or [])
+            if index < 0 or index >= len(ops) or not isinstance(ops[index], dict):
+                raise GeometryError(f"Edge step {index} is outside this part.")
+            if ops[index].get("op") == "fillet" and field != "radius":
+                raise GeometryError("A fillet has a radius.")
+            if ops[index].get("op") == "chamfer" and field != "distance":
+                raise GeometryError("A chamfer has a distance.")
+            ops[index][field] = float(value)
+            shape = kernel.apply_edge_ops(self._source_solid(part), ops)
+            self._store_unplaced(part, shape)
+            part.edge_ops = ops
+            self._save()
+            return self._info(part)
+
+    def _add_edge_op(
+        self,
+        name: str,
+        kind: str,
+        amount: float,
+        edges: list,
+        step_name: str | None,
+    ) -> PartInfo:
+        with self._lock:
+            part = self._editable_edge_part(name)
+            amount = kernel.finite_number(amount, "radius" if kind == "fillet" else "distance", positive=True)
+            label = _edge_step_name(step_name, kind, len(part.edge_ops or []))
+            indexes = kernel.edge_indexes(part.shape, edges, label)
+            step = {"op": kind, "name": label, "edges": indexes}
+            if kind == "fillet":
+                step["radius"] = amount
+            else:
+                step["distance"] = amount
+            ops = [*(part.edge_ops or []), step]
+            shape = kernel.apply_edge_ops(self._source_solid(part), ops)
+            self._store_unplaced(part, shape)
+            part.edge_ops = ops
+            self._save()
+            return self._info(part)
+
+    def _editable_edge_part(self, name: str) -> _Part:
+        part = self._get(name)
+        if part.source not in ("ops", "sketch"):
+            raise GeometryError("A fillet or chamfer applies to a part built from shapes or a sketch.")
+        if part._shape is None:
+            raise GeometryError(f"Part {name!r} has no solid to round yet.")
+        return part
+
+    def _source_solid(self, part: _Part) -> kernel.Shape:
+        """The solid before fillet and chamfer steps, in part coordinates."""
+        if part.source == "ops":
+            return kernel.make_from_ops(part.ops or [])
+        sketch = self._get_sketch(part.sketch_name or "")
+        report = solve_sketch(sketch.spec, sketch.name)
+        if report.status in _UNBUILDABLE:
+            raise GeometryError(report.note)
+        return kernel.solid_from_sketch(report.geometry, part.sketch_steps or [])
+
+    def _store_unplaced(self, part: _Part, base: kernel.Shape) -> None:
+        position = tuple(part.placement["position"])
+        rotation = tuple(part.placement["rotation_deg"])
+        part.base = base
+        part.shape = kernel.place(base, position, rotation)
 
     def list_sketches(self) -> list[str]:
         with self._lock:
@@ -964,6 +1056,8 @@ class Document:
         rebuilt: list[tuple[_Part, kernel.Shape, kernel.Shape]] = []
         for part in dependents:
             base = kernel.solid_from_sketch(report.geometry, part.sketch_steps or [])
+            if part.edge_ops:
+                base = kernel.apply_edge_ops(base, part.edge_ops)
             placed = kernel.place(
                 base,
                 tuple(part.placement["position"]),
@@ -2298,24 +2392,7 @@ class Document:
             "sketches": [
                 {"name": sketch.name, "spec": copy.deepcopy(sketch.spec)} for sketch in self._sketches.values()
             ],
-            "parts": [
-                {
-                    "name": part.name,
-                    "source": part.source,
-                    "script": part.script,
-                    "ops": copy.deepcopy(part.ops) if part.ops is not None else None,
-                    "step_file": part.step_file,
-                    "library": copy.deepcopy(part.library_spec) if part.library_spec is not None else None,
-                    "gear": copy.deepcopy(part.gear_spec) if part.gear_spec is not None else None,
-                    "placement": copy.deepcopy(part.placement),
-                    "sketch": part.sketch_name,
-                    "steps": copy.deepcopy(part.sketch_steps) if part.sketch_steps is not None else None,
-                    "geometry_file": part.geometry_file,
-                    "script_sha256": part.script_sha256,
-                    "features": part._shape.feature_report().to_dict() if part.source == "script" and part._shape is not None else None,
-                }
-                for part in self._parts.values()
-            ],
+            "parts": [_part_record(part) for part in self._parts.values()],
             "assemblies": [copy.deepcopy(spec) for spec in self._assemblies.values()],
         }
 
@@ -2390,6 +2467,7 @@ class Document:
             placement = record.get("placement") or _identity_placement()
             script_text = record.get("script") or ""
             script_pending = False
+            stored_edges = None
             try:
                 position = kernel.finite_vec3(placement.get("position", [0.0, 0.0, 0.0]), "position")
                 rotation = kernel.finite_vec3(
@@ -2454,6 +2532,9 @@ class Document:
                         # A downloaded script is shown, not run.
                         base = None
                         script_pending = True
+                stored_edges = _stored_edge_ops(record, source)
+                if base is not None and stored_edges:
+                    base = kernel.apply_edge_ops(base, stored_edges)
                 if base is None:
                     shape = None
                 else:
@@ -2473,6 +2554,7 @@ class Document:
                 stored_placement = _identity_placement()
                 script_pending = True
                 rebuild_error = message
+                stored_edges = None
             self._parts[name] = _Part(
                 name,
                 source,
@@ -2490,6 +2572,7 @@ class Document:
                 script_sha256=record.get("script_sha256") if source == "script" else None,
                 script_pending=script_pending,
                 rebuild_error=rebuild_error,
+                edge_ops=stored_edges,
             )
         stored_assemblies = []
         for record in payload.get("assemblies", []):
@@ -2675,6 +2758,46 @@ def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> d
             f"Unknown joint {unknown[0]!r} on {spec['name']!r}. Joints: {listed}."
         )
     return overrides
+
+
+def _part_record(part: _Part) -> dict:
+    record = {
+        "name": part.name,
+        "source": part.source,
+        "script": part.script,
+        "ops": copy.deepcopy(part.ops) if part.ops is not None else None,
+        "step_file": part.step_file,
+        "library": copy.deepcopy(part.library_spec) if part.library_spec is not None else None,
+        "gear": copy.deepcopy(part.gear_spec) if part.gear_spec is not None else None,
+        "placement": copy.deepcopy(part.placement),
+        "sketch": part.sketch_name,
+        "steps": copy.deepcopy(part.sketch_steps) if part.sketch_steps is not None else None,
+        "geometry_file": part.geometry_file,
+        "script_sha256": part.script_sha256,
+        "features": part._shape.feature_report().to_dict() if part.source == "script" and part._shape is not None else None,
+    }
+    if part.edge_ops:
+        record["edge_ops"] = copy.deepcopy(part.edge_ops)
+    return record
+
+
+def _stored_edge_ops(record: dict, source: str) -> list[dict] | None:
+    if source not in ("ops", "sketch"):
+        return None
+    raw = record.get("edge_ops")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise DocumentError(f"Part {record.get('name')!r} edge steps are not a list.")
+    return raw
+
+
+def _edge_step_name(step_name: str | None, kind: str, count: int) -> str:
+    if step_name is None:
+        return kind if count == 0 else f"{kind} {count + 1}"
+    if not isinstance(step_name, str) or not step_name.strip() or _name_has_control_line(step_name):
+        raise GeometryError("A step name must be a single non-empty line.")
+    return step_name.strip()
 
 
 def _name_has_control_line(name: str) -> bool:

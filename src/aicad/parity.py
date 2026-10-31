@@ -97,6 +97,8 @@ SCRIPT_METHODS = frozenset(
         "check_print",
         "check_print_clearance",
         "check_wall_thickness",
+        "add_chamfer",
+        "add_fillet",
         "create_assembly",
         "create_gear",
         "create_part_from_ops",
