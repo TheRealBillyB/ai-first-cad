@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-10-31
+
+| Decision | Rationale |
+| --- | --- |
+| A motion study follows the gear train, including a planetary set | Driving one member turns the others at the tooth ratio and in the matching direction, from the angles they already have. A member held fixed stays fixed. A shaft whose speed is not determined stays where it is. |
+
 ## 2026-10-30
 
 | Decision | Rationale |

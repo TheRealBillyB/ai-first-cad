@@ -199,3 +199,7 @@ That stops another website, including one that tries to reach this computer by a
 - **CF.** A design script cannot point the library configuration directory somewhere else through a module this program already imported. A script that does not change that directory still runs.
 
 - **CG.** CalculiX, ffmpeg, and a slicer run under the same file limits as a design script. Each one may read the locations needed to start and may use its own folder. It cannot read a file outside that folder. The program is not started when those limits cannot be applied.
+
+- **CH.** The recent-project list names a folder the person opened. A link is not named and is not opened from that list. The name is the folder's own name, on one line. The assistant is not given a folder outside the open project.
+
+- **CJ.** The disk-quota watch counts the project directory it opened. A link is not a directory it watches or counts. A record of collected children cannot replace the bytes already counted for a live process, and it cannot move the watched directory.
