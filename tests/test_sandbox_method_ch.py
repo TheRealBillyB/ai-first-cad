@@ -7,6 +7,8 @@ folder outside the open project, and that marker stays where it was written.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -19,6 +21,24 @@ _LINE = "\u2028"
 
 def _write_recent(path, projects: list[dict]) -> None:
     path.write_text(json.dumps({"projects": projects}) + "\n", encoding="utf-8")
+
+
+def _link_directory(link, target) -> None:
+    """A directory link. Windows uses a junction, which does not need extra rights."""
+
+    if sys.platform == "win32":
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode == 0:
+            return
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot create a directory link")
 
 
 def test_the_assistant_is_not_given_a_folder_outside_the_project(tmp_path, monkeypatch):
@@ -64,10 +84,7 @@ def test_a_linked_folder_is_not_named_or_opened_from_the_recent_list(tmp_path, m
     marker = outside / "SANDBOX_CANARY.txt"
     marker.write_text(_MARKER + "\n", encoding="utf-8")
     link = tmp_path / "linked-project"
-    try:
-        link.symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pytest.skip("this machine cannot create a directory symlink")
+    _link_directory(link, outside)
     workspace = Workspace(project)
     _write_recent(recent, [{"path": str(link), "name": "chosen"}])
     listed = workspace.execute("list_recent_projects", {}, source="ui")
