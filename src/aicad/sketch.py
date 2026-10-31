@@ -205,6 +205,9 @@ def solve_sketch(spec: Sketch | dict, name: str | None = None) -> SketchReport:
     plane = spec.get("plane", "xy")
     if plane != "xy":
         raise GeometryError("Sketches are on the XY plane. Extrude them along +Z.")
+    from aicad.models import require_millimeters
+
+    require_millimeters(spec.get("units"), "A sketch")
 
     solver = _Solver()
     solver.build(entities, constraints)
@@ -432,6 +435,7 @@ class _Solver:
             record = self._record(raw.get("entity"), label)
             if record["kind"] not in ("circle", "arc"):
                 raise GeometryError(f"{label}: {kind} applies to a circle or an arc.")
+            _length_unit(raw, label)
             value = _number(raw.get("value"), label)
             driven = value * 2 if kind == "radius" else value
             self._bind(label, lambda: self.sys.diameter(record["entity"], driven))
@@ -506,6 +510,7 @@ class _Solver:
         self._bind(label, lambda: self.sys.symmetric(a["entity"], b["entity"], line["entity"], self.wp))
 
     def _distance(self, raw: dict, label: str) -> None:
+        _length_unit(raw, label)
         value = _number(raw.get("value"), label)
         a = self._record(raw.get("a"), label)
         b = self._record(raw.get("b"), label)
@@ -526,6 +531,7 @@ class _Solver:
         center = self._record(raw.get("center"), label)
         if center["kind"] != "point":
             raise GeometryError(f"{label}: the pattern center must be a point.")
+        _length_unit(raw, label)
         diameter = _number(raw.get("diameter"), label)
         if diameter <= 0:
             raise GeometryError(f"{label}: pattern diameter must be positive.")
@@ -794,6 +800,14 @@ def _pair(value, label: str) -> tuple[float, float]:
         return float(value[0]), float(value[1])
     except (TypeError, ValueError) as exc:
         raise GeometryError(f"{label} must be [x, y].") from exc
+
+
+def _length_unit(raw: dict, label: str) -> None:
+    from aicad.models import require_millimeters
+
+    for key in ("unit", "units"):
+        if key in raw:
+            require_millimeters(raw.get(key), label)
 
 
 def _number(value, label: str) -> float:

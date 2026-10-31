@@ -1579,6 +1579,8 @@ def _as_list(value, label: str) -> list:
 
 
 def _integer(value, label: str) -> int:
+    if isinstance(value, bool) or isinstance(value, float) and not value.is_integer():
+        raise GeometryError(f"{label} must be an integer.")
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
@@ -1588,6 +1590,8 @@ def _integer(value, label: str) -> int:
 def _optional_float(value, default):
     if value is None:
         return default
+    if isinstance(value, bool):
+        raise GeometryError(f"Expected a number, got {value!r}.")
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
@@ -1596,6 +1600,8 @@ def _optional_float(value, default):
 
 def _vec(value, label: str) -> tuple[float, float, float]:
     if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise GeometryError(f"{label} must be a list of three numbers.")
+    if any(isinstance(component, bool) for component in value):
         raise GeometryError(f"{label} must be a list of three numbers.")
     try:
         result = (float(value[0]), float(value[1]), float(value[2]))

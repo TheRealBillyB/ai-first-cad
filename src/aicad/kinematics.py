@@ -58,6 +58,9 @@ def normalize(spec: dict) -> dict:
     """Return a cleaned assembly spec. Joint values are the stored commands."""
     if not isinstance(spec, dict):
         raise GeometryError("An assembly spec is an object.")
+    from aicad.models import require_millimeters
+
+    require_millimeters(spec.get("units"), "An assembly")
     raw_name = spec.get("name")
     if not isinstance(raw_name, str):
         raise GeometryError("An assembly needs a name.")
