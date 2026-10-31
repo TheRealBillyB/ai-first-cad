@@ -14,6 +14,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A sketch can sit on a planar face or on an offset or angled datum | The sketch stores that plane and is placed there again when the model rebuilds, and a face that is no longer in the model raises SketchPlaneError. |
 | An arc is three points, a center and two ends, or a tangent continuation of a line | The sketch solver stores all three as one arc with a named radius, and the canvas keeps each unfinished point across a refresh the same way it keeps a line start or a circle center. |
 | Approving a plan builds its solids | A plan may store build steps, each a part name and a script that assigns `part`. The script is data. Opening the project does not run it. When the person approves that revision, the app runs each script in the part-script sandbox, with the network off, and builds those parts. The approval receipt covers the scripts. A later edit does not match that receipt, so the edited script does not run. A failed step names the step and leaves the previous model in place. A plan with no build steps still only hands over its dimensions and assumptions. The assistant cannot approve. |
+| Inspect reports mass from the material density | Inspect and measure show surface area and the center of mass with the volume. When a handbook material is chosen, mass is the model volume times that material's density. The density is a handbook number, so the mass is an estimate beside the measured geometry. |
 
 ## 2026-10-30
 
