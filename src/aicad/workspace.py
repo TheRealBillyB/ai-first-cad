@@ -32,7 +32,7 @@ _MAX_TEXT_FILE = 8 * 1024 * 1024
 _PERSON_SOURCES = frozenset({"ui", "cli", "api"})
 # Opening another folder, or saving a copy and switching to it, is the person
 # at the workspace. The assistant and a design file do not get that command.
-_FOLDER_COMMANDS = frozenset({"open_project", "save_project_as"})
+_FOLDER_COMMANDS = frozenset({"open_project", "save_project_as", "open_example"})
 
 
 @dataclass(frozen=True)
