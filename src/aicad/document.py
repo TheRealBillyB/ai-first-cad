@@ -27,7 +27,14 @@ from aicad.modal import fatigue_check, solve_modal, solve_modal_assembly
 from aicad.printprep import analyze_print
 from aicad.printprep import list_printers as printer_catalog
 from aicad.robot import export_robot
-from aicad.errors import DocumentError, GeometryError, PartNotFound, PlanBuildError, PlanError
+from aicad.errors import (
+    DocumentError,
+    GeometryError,
+    PartNotFound,
+    PlanBuildError,
+    PlanError,
+    SketchPlaneError,
+)
 from aicad.chain import solve_kinematics as solve_chain
 from aicad.error_budget import check_position_error as budget_position_error
 from aicad.kinematics import normalize as normalize_assembly
@@ -228,6 +235,7 @@ class Document:
             part.script_sha256 = _script_hash(script)
             part.script_pending = False
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def update_part_ops(self, name: str, ops: list[dict]) -> PartInfo:
@@ -249,6 +257,7 @@ class Document:
             part.script_sha256 = None
             part.script_pending = False
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def delete_part(self, name: str) -> None:
@@ -703,7 +712,7 @@ class Document:
             if not isinstance(steps, list) or not steps:
                 raise GeometryError("steps must be a non-empty list of extrude, cut, revolve, cut_box, or gusset.")
             stored_steps = copy.deepcopy(steps)
-            shape = kernel.solid_from_sketch(report.geometry, stored_steps)
+            shape = self._sketch_solid_from(sketch.name, sketch.spec, stored_steps, building=name)
             self._parts[name] = _Part(
                 name,
                 "sketch",
@@ -712,6 +721,7 @@ class Document:
                 sketch_steps=stored_steps,
             )
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(self._parts[name])
 
     def update_part_from_sketch(self, name: str, sketch_name: str, steps: list[dict]) -> PartInfo:
@@ -725,7 +735,7 @@ class Document:
             if not isinstance(steps, list) or not steps:
                 raise GeometryError("steps must be a non-empty list of extrude, cut, revolve, cut_box, or gusset.")
             stored_steps = copy.deepcopy(steps)
-            shape = kernel.solid_from_sketch(report.geometry, stored_steps)
+            shape = self._sketch_solid_from(sketch.name, sketch.spec, stored_steps, building=name)
             part.shape = shape
             part.base = shape
             part.source = "sketch"
@@ -738,6 +748,7 @@ class Document:
             part.sketch_steps = stored_steps
             part.placement = _identity_placement()
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def list_sketches(self) -> list[str]:
@@ -910,6 +921,7 @@ class Document:
             part.placement = {"position": list(placed_at), "rotation_deg": list(rotation)}
             part.shape = shape
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def _info(self, part: _Part) -> PartInfo:
@@ -961,9 +973,17 @@ class Document:
             sketch.spec = stored
             self._save()
             return
+        from aicad.sketch_plane import sketch_frame
+
+        frame = sketch_frame(
+            stored.get("plane", "xy"),
+            sketch.name,
+            self._shape_named,
+            self._sketch_named,
+        )
         rebuilt: list[tuple[_Part, kernel.Shape, kernel.Shape]] = []
         for part in dependents:
-            base = kernel.solid_from_sketch(report.geometry, part.sketch_steps or [])
+            base = kernel.solid_from_sketch(report.geometry, part.sketch_steps or [], frame=frame)
             placed = kernel.place(
                 base,
                 tuple(part.placement["position"]),
@@ -975,6 +995,112 @@ class Document:
             part.base = base
             part.shape = placed
         self._save()
+        for part, _base, _placed in rebuilt:
+            self._refresh_face_sketches(part.name, raise_error=True)
+
+    def _sketch_solid_from(self, sketch_name: str, spec: dict, steps: list, *, building: str | None = None):
+        from aicad.sketch_plane import sketch_frame
+
+        report = solve_sketch(spec, sketch_name)
+        if report.status in _UNBUILDABLE:
+            raise GeometryError(report.note)
+        frame = sketch_frame(
+            spec.get("plane", "xy"),
+            sketch_name,
+            self._shape_named,
+            lambda name: sketch_name if building is not None and name == building else self._sketch_named(name),
+        )
+        return kernel.solid_from_sketch(report.geometry, steps, frame=frame)
+
+    def _shape_named(self, name: str):
+        part = self._parts.get(name)
+        if part is None or part._shape is None:
+            return None
+        return part._shape
+
+    def _sketch_named(self, name: str) -> str | None:
+        part = self._parts.get(name)
+        if part is None:
+            return None
+        return part.sketch_name
+
+    def _refresh_face_sketches(self, host_name: str, *, raise_error: bool, seen: set | None = None) -> None:
+        from aicad.sketch_plane import plane_hosts
+
+        seen = set() if seen is None else seen
+        if host_name in seen:
+            return
+        seen.add(host_name)
+        rebuilt: list[str] = []
+        for part in list(self._parts.values()):
+            if part.source != "sketch" or not part.sketch_name or part.name == host_name:
+                continue
+            sketch = self._sketches.get(part.sketch_name)
+            if sketch is None or host_name not in plane_hosts(sketch.spec.get("plane")):
+                continue
+            try:
+                base = self._sketch_solid_from(sketch.name, sketch.spec, part.sketch_steps or [])
+                part.base = base
+                part.shape = kernel.place(
+                    base,
+                    tuple(part.placement["position"]),
+                    tuple(part.placement["rotation_deg"]),
+                )
+                part.rebuild_error = None
+                rebuilt.append(part.name)
+            except SketchPlaneError as exc:
+                part.base = None
+                part.shape = None
+                part.rebuild_error = str(exc)
+                self._save()
+                if raise_error:
+                    raise
+        if rebuilt:
+            self._save()
+        for name in rebuilt:
+            self._refresh_face_sketches(name, raise_error=raise_error, seen=seen)
+
+    def _finish_face_sketches(self) -> None:
+        from aicad.sketch_plane import plane_hosts
+
+        pending = []
+        for part in self._parts.values():
+            if part.source != "sketch" or not part.sketch_name:
+                continue
+            sketch = self._sketches.get(part.sketch_name)
+            if sketch is None or not plane_hosts(sketch.spec.get("plane")):
+                continue
+            pending.append(part)
+        for _round in range(len(pending) + 1):
+            progressed = False
+            for part in pending:
+                if part._shape is not None and not part.rebuild_error:
+                    continue
+                sketch = self._sketches.get(part.sketch_name)
+                if sketch is None:
+                    continue
+                try:
+                    base = self._sketch_solid_from(
+                        sketch.name, sketch.spec, part.sketch_steps or [], building=part.name
+                    )
+                except SketchPlaneError as exc:
+                    part.rebuild_error = str(exc)
+                    continue
+                part.base = base
+                part.shape = kernel.place(
+                    base,
+                    tuple(part.placement["position"]),
+                    tuple(part.placement["rotation_deg"]),
+                )
+                part.rebuild_error = None
+                progressed = True
+            if not progressed:
+                break
+        for part in pending:
+            if part.rebuild_error:
+                message = f"Part {part.name!r} was not rebuilt: {part.rebuild_error}"
+                if message not in self.problems:
+                    self.problems.append(message)
 
     def _solve_and_render(self, name: str, spec: dict) -> SketchReport:
         report = solve_sketch(spec, name)
@@ -2424,10 +2550,21 @@ class Document:
                         raise DocumentError(
                             f"Part {name!r} needs sketch {sketch_name!r}, which is not in the session."
                         )
-                    solved = solve_sketch(sketch.spec, sketch.name)
-                    if solved.status in _UNBUILDABLE:
-                        raise DocumentError(f"Could not rebuild part {name!r}: {solved.note}")
-                    base = kernel.solid_from_sketch(solved.geometry, record.get("steps") or [])
+                    from aicad.sketch_plane import plane_hosts
+
+                    if plane_hosts(sketch.spec.get("plane")):
+                        # The face may belong to a part later in this file.
+                        base = None
+                    else:
+                        solved = solve_sketch(sketch.spec, sketch.name)
+                        if solved.status in _UNBUILDABLE:
+                            raise DocumentError(f"Could not rebuild part {name!r}: {solved.note}")
+                        base = self._sketch_solid_from(
+                            sketch.name,
+                            sketch.spec,
+                            record.get("steps") or [],
+                            building=name,
+                        )
                 else:
                     source = "script"
                     script_hash = _script_hash(script_text)
@@ -2491,6 +2628,7 @@ class Document:
                 script_pending=script_pending,
                 rebuild_error=rebuild_error,
             )
+        self._finish_face_sketches()
         stored_assemblies = []
         for record in payload.get("assemblies", []):
             try:
@@ -2700,7 +2838,11 @@ def _copy_spec(spec: Sketch | dict) -> dict:
         spec = spec.to_spec()
     if not isinstance(spec, dict):
         raise GeometryError("A sketch spec is an object with entities and constraints.")
-    return copy.deepcopy(spec)
+    from aicad.sketch_plane import normalize_plane
+
+    copied = copy.deepcopy(spec)
+    copied["plane"] = normalize_plane(copied.get("plane", "xy"))
+    return copied
 
 
 def _identity_placement() -> dict[str, list[float]]:

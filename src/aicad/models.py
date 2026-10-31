@@ -602,7 +602,7 @@ class SketchReport:
             what="Fully constrained, under-constrained, or over-constrained is a verified check of this sketch.",
             limits=[
                 "A tolerance on a dimension is stored and printed. It does not move the geometry.",
-                "The sketch is on the XY plane. The initial guess has to be near a shape that satisfies the constraints.",
+                "The sketch lies on its plane: XY, YZ, XZ, an offset or angled datum, or a planar face. The initial guess has to be near a shape that satisfies the constraints.",
             ],
         )
 
