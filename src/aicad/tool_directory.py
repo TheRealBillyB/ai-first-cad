@@ -49,12 +49,19 @@ def held_run_kwargs(held: HeldWork) -> dict:
         proc = f"/proc/self/fd/{held.descriptor}"
         if os.path.isdir(proc):
             return {"cwd": proc, "close_fds": True}
+        # The confinement profile names this same folder. Without that path,
+        # the profile would allow the caller's current directory and refuse
+        # the folder the helper actually runs in.
+        path = _directory_from_handle(held.descriptor)
         descriptor = held.descriptor
 
         def enter() -> None:
             os.fchdir(descriptor)
 
-        return {"preexec_fn": enter, "pass_fds": (descriptor,), "close_fds": True}
+        kwargs: dict = {"preexec_fn": enter, "pass_fds": (descriptor,), "close_fds": True}
+        if path is not None:
+            kwargs["cwd"] = os.fspath(path)
+        return kwargs
     return {"cwd": os.fspath(held.original), "close_fds": True}
 
 

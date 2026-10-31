@@ -532,6 +532,8 @@ def test_non_finite_mechanics_inputs_are_rejected():
 
 
 def test_calculix_is_started_with_stdin_closed(monkeypatch):
+    import sys
+
     from aicad import fea, modal
 
     seen: list[dict] = []
@@ -546,8 +548,18 @@ def test_calculix_is_started_with_stdin_closed(monkeypatch):
 
         return Done()
 
-    monkeypatch.setattr(fea.subprocess, "run", run)
-    monkeypatch.setattr(modal.subprocess, "run", run)
+    if sys.platform == "win32":
+        def spawn(_command, **_kwargs):
+            seen.append({"stdin": subprocess.DEVNULL})
+            return (1, "", "", False, False, "appcontainer")
+
+        monkeypatch.setattr("aicad.sandbox_windows.spawn", spawn)
+        from aicad.sandbox_windows import _launch
+        import inspect
+
+        assert ' "NUL"' in inspect.getsource(_launch) or '"NUL"' in inspect.getsource(_launch)
+    else:
+        monkeypatch.setattr("subprocess.run", run)
     monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "ccx")
     mesh = {
         "points": np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
