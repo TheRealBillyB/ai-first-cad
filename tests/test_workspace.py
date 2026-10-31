@@ -325,6 +325,54 @@ def test_a_project_folder_is_created_when_chmod_is_refused(tmp_path, monkeypatch
     assert (documents / "requirements.md").stat().st_mode & 0o022 == 0
 
 
+def test_a_bad_tool_number_is_a_geometry_error(tmp_path):
+    workspace = Workspace(tmp_path)
+    _extrude(workspace)
+    workspace.execute(
+        "create_part_from_ops",
+        {"name": "rib", "ops": [{"op": "add", "shape": "box", "size": [8, 8, 8]}]},
+        source="agent",
+    )
+    cases = [
+        ("check_wall_thickness", {"name": "plate", "min_wall_mm": "thick"}, "finite number"),
+        ("check_wall_thickness", {"name": "plate", "min_wall_mm": True}, "finite number"),
+        ("check_wall_thickness", {"name": "plate", "min_wall_mm": 1, "samples": "many"}, "integer from 1 to 8"),
+        ("check_wall_thickness", {"name": "plate", "min_wall_mm": 1, "samples": 0}, "integer from 1 to 8"),
+        ("check_wall_thickness", {"name": "plate", "min_wall_mm": 1, "samples": True}, "integer from 1 to 8"),
+        ("check_clearance", {"part_a": "plate", "part_b": "rib", "min_clearance_mm": "wide"}, "finite number"),
+        ("check_clearance", {"part_a": "plate", "part_b": "rib", "min_clearance_mm": True}, "finite number"),
+        ("check_packaging", {"envelope": "plate", "parts": ["rib"], "min_clearance_mm": True}, "finite number"),
+        ("inspect_part", {"name": "plate", "min_wall_mm": "thick"}, "finite number"),
+        ("section_part", {"name": "plate", "axis": "z", "offset": "mid"}, "finite number"),
+        ("export_part", {"name": "plate", "format": 3}, "Unknown export format"),
+        ("set_dimension", {"sketch": "plate", "dimension": "width", "value": "80mm"}, "finite number"),
+        ("set_dimension", {"sketch": "plate", "dimension": "width", "value": True}, "finite number"),
+        (
+            "solve_mechanics",
+            {
+                "name": "plate",
+                "setup": {
+                    "material": "aluminum_6061",
+                    "mesh_size_mm": True,
+                    "fixes": [],
+                    "loads": [],
+                },
+            },
+            "Expected a number",
+        ),
+    ]
+    for name, arguments, match in cases:
+        with pytest.raises(GeometryError, match=match):
+            workspace.execute(name, arguments, source="agent")
+    wall = workspace.execute(
+        "check_wall_thickness",
+        {"name": "plate", "min_wall_mm": 1, "samples": 4.0},
+        source="agent",
+    )
+    assert wall["passed"] is True
+    assert workspace.document.measure("plate").volume_mm3 == 4000
+
+
 def test_a_refused_chmod_does_not_accept_a_world_writable_directory(tmp_path, monkeypatch):
     if not _posix_chmod():
         pytest.skip("POSIX chmod refusal; Windows has no os.fchmod")

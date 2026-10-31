@@ -616,15 +616,33 @@ def _cmd_measure(workspace: Workspace, arguments: dict) -> dict:
     return workspace.document.measure(arguments["name"]).to_dict()
 
 
+def _optional_length(arguments: dict, key: str, default: float = 0.0):
+    """A length from the command, or ``default`` when the key was left out.
+
+    The value is not converted here. ``finite_number`` rejects a boolean and a
+    word, instead of turning ``True`` into 1 or raising ``ValueError``.
+    """
+    if key not in arguments or arguments[key] is None:
+        return default
+    return arguments[key]
+
+
+def _optional_count(arguments: dict, key: str, default: int = 4):
+    """An integer count, or ``default`` when the key was left out."""
+    if key not in arguments or arguments[key] is None:
+        return default
+    return arguments[key]
+
+
 def _cmd_wall(workspace: Workspace, arguments: dict) -> dict:
     return workspace.document.check_wall_thickness(
-        arguments["name"], arguments["min_wall_mm"], int(arguments.get("samples") or 4)
+        arguments["name"], arguments["min_wall_mm"], _optional_count(arguments, "samples")
     ).to_dict()
 
 
 def _cmd_clearance(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.check_clearance(
-        arguments["part_a"], arguments["part_b"], float(arguments.get("min_clearance_mm") or 0.0)
+        arguments["part_a"], arguments["part_b"], _optional_length(arguments, "min_clearance_mm")
     ).to_dict()
     return workspace._remember_panel("clearance", report)  # noqa: SLF001
 
@@ -636,7 +654,7 @@ def _cmd_packaging(workspace: Workspace, arguments: dict) -> dict:
         assembly=arguments.get("assembly"),
         pose=arguments.get("pose"),
         joints=arguments.get("joints"),
-        min_clearance_mm=float(arguments.get("min_clearance_mm") or 0.0),
+        min_clearance_mm=_optional_length(arguments, "min_clearance_mm"),
     ).to_dict()
     return workspace._remember_panel("packaging", report)  # noqa: SLF001
 
@@ -648,7 +666,7 @@ def _cmd_render(workspace: Workspace, arguments: dict) -> dict:
 
 def _cmd_inspect(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.inspect(
-        arguments["name"], arguments.get("min_wall_mm"), int(arguments.get("samples") or 4)
+        arguments["name"], arguments.get("min_wall_mm"), _optional_count(arguments, "samples")
     )
     return workspace._remember_panel("inspect", report.to_dict())
 
@@ -673,7 +691,10 @@ def _cmd_section(workspace: Workspace, arguments: dict) -> dict:
             raise GeometryError("An arbitrary section needs both origin and normal.")
         plane = {"origin": arguments["origin"], "normal": arguments["normal"]}
     elif arguments.get("axis"):
-        plane = {"axis": arguments["axis"], "offset": float(arguments.get("offset") or 0.0)}
+        offset = arguments.get("offset", 0.0)
+        if offset is None:
+            offset = 0.0
+        plane = {"axis": arguments["axis"], "offset": offset}
     else:
         raise GeometryError("Pass axis and offset, or origin and normal.")
     report = workspace.document.section(arguments["name"], plane)
@@ -697,7 +718,7 @@ def _cmd_get_sketch(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_set_dimension(workspace: Workspace, arguments: dict) -> dict:
-    report = workspace.document.set_dimension(arguments["sketch"], arguments["dimension"], float(arguments["value"]))
+    report = workspace.document.set_dimension(arguments["sketch"], arguments["dimension"], arguments["value"])
     rebuilt = []
     for part in workspace.document.list_parts():
         source = workspace.document.get_source(part.name)
