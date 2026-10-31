@@ -1,5 +1,6 @@
 """A catalog part snaps onto a face or an axis and keeps that mount."""
 
+import inspect
 import json
 import math
 
@@ -236,6 +237,15 @@ def test_the_workspace_mounts_a_catalog_part(tmp_path):
             "place_part",
             {"name": "bearing", "position": [1, 0, 0], "mount": {"part": "shaft", "ref": ref}},
         )
+
+
+def test_catalog_length_stays_on_the_parameter_command():
+    public = {
+        name
+        for name, member in inspect.getmembers(Document, predicate=inspect.isfunction)
+        if not name.startswith("_")
+    }
+    assert "set_catalog_length" not in public
 
 
 def test_a_catalog_length_change_keeps_the_mount(tmp_path):
