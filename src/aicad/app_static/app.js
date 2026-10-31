@@ -14,6 +14,7 @@ const ui = {
   selectedFaces: [],
   selectedEdges: [],
   sketchSelection: [],
+  construction: false,
   lineStart: null,
   rectStart: null,
   circleCenter: null,
@@ -783,13 +784,16 @@ function drawSketch() {
   Object.entries(geometry.lines || {}).forEach(([id, line]) => {
     const [x0, y0] = toScreen(line.start.x, line.start.y);
     const [x1, y1] = toScreen(line.end.x, line.end.y);
-    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : "#1d1a16";
+    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : line.construction ? "#6d655b" : "#1d1a16";
+    ctx.setLineDash(line.construction ? [6, 4] : []);
     ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
   });
+  ctx.setLineDash([]);
   Object.entries(geometry.arcs || {}).forEach(([id, arc]) => {
     const samples = sketchArcSamples(arc, 32);
     if (samples.length < 2) return;
-    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : "#1d1a16";
+    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : arc.construction ? "#6d655b" : "#1d1a16";
+    ctx.setLineDash(arc.construction ? [6, 4] : []);
     ctx.beginPath();
     samples.forEach((point, index) => {
       const [sx, sy] = toScreen(point[0], point[1]);
@@ -798,11 +802,14 @@ function drawSketch() {
     });
     ctx.stroke();
   });
+  ctx.setLineDash([]);
   Object.entries(geometry.circles || {}).forEach(([id, circle]) => {
     const [sx, sy] = toScreen(circle.center.x, circle.center.y);
-    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : "#1d1a16";
+    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : circle.construction ? "#6d655b" : "#1d1a16";
+    ctx.setLineDash(circle.construction ? [6, 4] : []);
     ctx.beginPath(); ctx.arc(sx, sy, circle.radius * scale, 0, Math.PI * 2); ctx.stroke();
   });
+  ctx.setLineDash([]);
   Object.entries(geometry.points || {}).forEach(([id, point]) => {
     const [sx, sy] = toScreen(point.x, point.y);
     ctx.fillStyle = selected.has(id) ? "#8d4e22" : free.has(id) ? "#2a5f8a" : "#1d1a16";
@@ -813,10 +820,7 @@ function drawSketch() {
   (ui.sketch.dimensions || []).forEach((dimension, index) => {
     ctx.fillText(`${dimension.name || dimension.kind} ${dimension.text || dimension.value}`, 12, 28 + index * 16);
   });
-  const status = $("sketch-status");
-  status.hidden = false;
-  status.className = "sketch-status " + (ui.sketch.status || "");
-  status.textContent = `${ui.sketch.status || "unsolved"} · dof ${ui.sketch.dof ?? "?"} · ${(ui.sketch.conflicts || []).join(", ") || ui.sketch.note || ""}`;
+  showConstraintStatus();
   renderDimensions();
 }
 
@@ -892,22 +896,24 @@ async function onSketchClick(event) {
   if (ui.tool === "line") {
     const result = sketchLineClick(spec, ui.sketch.geometry, ui.lineStart, x, y, sketchPickTolerance());
     ui.lineStart = result.lineStart;
-    ui.sketch.spec = result.spec;
-    if (result.commit) await commitSketch(result.spec);
+    ui.sketch.spec = applyConstructionMode(spec, result.spec);
+    if (result.commit) await commitSketch(ui.sketch.spec);
     return;
   }
   if (ui.tool === "circle") {
     const result = sketchCircleClick(spec, ui.sketch.geometry, ui.circleCenter, x, y, sketchPickTolerance());
     ui.circleCenter = result.circleCenter;
-    ui.sketch.spec = result.spec;
-    if (result.commit) await commitSketch(result.spec);
+    ui.sketch.spec = applyConstructionMode(spec, result.spec);
+    if (result.commit) await commitSketch(ui.sketch.spec);
     return;
   }
   if (ui.tool === "rectangle") {
     if (!ui.rectStart) { ui.rectStart = [x, y]; return; }
     const [x0, y0] = ui.rectStart;
     ui.rectStart = null;
+    const previous = { entities: (spec.entities || []).map((entity) => ({ id: entity.id })) };
     appendRectangle(spec, x0, y0, x, y);
+    applyConstructionMode(previous, spec);
     await commitSketch(spec);
   }
 }
@@ -960,25 +966,128 @@ function requiredNumber(text, message) {
   return value;
 }
 
+function entityType(spec, id) {
+  const entity = ((spec && spec.entities) || []).find((item) => item && item.id === id);
+  return entity ? entity.type : "";
+}
+
+function constraintStatusLabel(status) {
+  if (status === "fully_constrained") return "Fully constrained";
+  if (status === "under_constrained") return "Under-constrained";
+  if (status === "over_constrained") return "Over-constrained";
+  if (status === "didnt_converge") return "Did not converge";
+  if (status === "too_many_unknowns") return "Too many unknowns";
+  return status ? String(status).replaceAll("_", " ") : "Unsolved";
+}
+
+function constraintFromSelection(kind, spec, selected, fields) {
+  const chosen = selected || [];
+  const types = chosen.map((id) => entityType(spec, id));
+  if (kind === "distance") {
+    if (chosen.length < 2 || !fields) return null;
+    return { type: "distance", a: chosen[0], b: chosen[1], value: Number(fields.value), name: fields.name };
+  }
+  if (kind === "diameter" || kind === "radius") {
+    if (!chosen.length || !fields) return null;
+    return { type: kind, entity: chosen[0], value: Number(fields.value), name: fields.name };
+  }
+  if (kind === "coincident" || kind === "parallel" || kind === "perpendicular" || kind === "equal" || kind === "tangent") {
+    if (chosen.length < 2) return null;
+    return { type: kind, a: chosen[0], b: chosen[1] };
+  }
+  if (kind === "angle") {
+    if (chosen.length < 2 || !fields) return null;
+    return { type: "angle", a: chosen[0], b: chosen[1], value: Number(fields.value), name: fields.name };
+  }
+  if (kind === "midpoint") {
+    if (chosen.length < 2) return null;
+    let point = chosen[0];
+    let line = chosen[1];
+    if (types[0] === "line" && types[1] === "point") {
+      point = chosen[1];
+      line = chosen[0];
+    }
+    return { type: "midpoint", point, line };
+  }
+  if (kind === "symmetric") {
+    if (chosen.length < 2 || !fields || !String(fields.about || "").trim()) return null;
+    return { type: "symmetric", a: chosen[0], b: chosen[1], about: String(fields.about).trim() };
+  }
+  if (kind === "fix" || kind === "horizontal" || kind === "vertical") {
+    if (!chosen.length) return null;
+    return { type: kind, entity: chosen[0] };
+  }
+  return null;
+}
+
+function applyConstructionMode(before, spec) {
+  if (!ui.construction || !spec) return spec;
+  const previous = new Set(((before && before.entities) || []).map((entity) => entity && entity.id));
+  (spec.entities || []).forEach((entity) => {
+    if (!entity || previous.has(entity.id) || entity.type === "point") return;
+    entity.construction = true;
+  });
+  return spec;
+}
+
+function showConstraintStatus() {
+  if (!ui.sketch) return;
+  const label = constraintStatusLabel(ui.sketch.status);
+  const status = $("sketch-status");
+  if (status) {
+    status.hidden = false;
+    status.className = "sketch-status " + (ui.sketch.status || "");
+    const conflicts = (ui.sketch.conflicts || []).join(", ");
+    status.textContent = `${label} · dof ${ui.sketch.dof ?? "?"} · ${conflicts || ui.sketch.note || ""}`;
+  }
+  const toolbar = $("constraint-status");
+  if (toolbar) {
+    toolbar.textContent = label;
+    toolbar.className = "meta constraint-status " + (ui.sketch.status || "");
+  }
+}
+
+async function toggleConstruction() {
+  if (!ui.sketch) return;
+  const spec = structuredClone(ui.sketch.spec);
+  const selected = new Set(ui.sketchSelection || []);
+  let changed = false;
+  if (selected.size) {
+    (spec.entities || []).forEach((entity) => {
+      if (!entity || !selected.has(entity.id) || entity.type === "point") return;
+      entity.construction = !entity.construction;
+      changed = true;
+    });
+  }
+  ui.construction = !ui.construction;
+  const button = $("construction-toggle");
+  if (button) {
+    button.classList.toggle("on", ui.construction);
+    button.setAttribute("aria-pressed", ui.construction ? "true" : "false");
+  }
+  if (changed) await commitSketch(spec);
+}
+
 async function applyConstraint(kind) {
   if (!ui.sketch) return;
   const spec = structuredClone(ui.sketch.spec);
   const selected = ui.sketchSelection;
-  if (kind === "distance") {
-    const value = await ask("Distance", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: uniqueConstraintName(spec, "distance") }]);
-    if (!value || selected.length < 2) return;
-    spec.constraints.push({ type: "distance", a: selected[0], b: selected[1], value: Number(value.value), name: value.name });
-  } else if (kind === "diameter") {
-    const value = await ask("Diameter", [{ name: "value", label: "Millimeters", value: "10" }, { name: "name", label: "Name", value: uniqueConstraintName(spec, "diameter") }]);
-    if (!value || !selected.length) return;
-    spec.constraints.push({ type: "diameter", entity: selected[0], value: Number(value.value), name: value.name });
-  } else if (kind === "coincident") {
-    if (selected.length < 2) return;
-    spec.constraints.push({ type: "coincident", a: selected[0], b: selected[1] });
-  } else if (kind === "fix" || kind === "horizontal" || kind === "vertical") {
-    if (!selected.length) return;
-    spec.constraints.push({ type: kind, entity: selected[0] });
+  let fields = null;
+  if (kind === "distance" || kind === "diameter" || kind === "radius" || kind === "angle") {
+    const title = kind.charAt(0).toUpperCase() + kind.slice(1);
+    fields = await ask(title, [
+      { name: "value", label: kind === "angle" ? "Degrees" : "Millimeters", value: kind === "angle" ? "90" : "10" },
+      { name: "name", label: "Name", value: uniqueConstraintName(spec, kind) },
+    ]);
+    if (!fields) return;
+  } else if (kind === "symmetric") {
+    fields = await ask("Symmetric", [{ name: "about", label: "About a line, or horizontal, or vertical", value: "vertical" }]);
+    if (!fields) return;
   }
+  const record = constraintFromSelection(kind, spec, selected, fields);
+  if (!record) return;
+  spec.constraints = spec.constraints || [];
+  spec.constraints.push(record);
   await commitSketch(spec);
 }
 
@@ -2188,6 +2297,7 @@ async function boot() {
   document.querySelectorAll("[data-constraint]").forEach((button) => {
     button.onclick = () => applyConstraint(button.dataset.constraint).catch(showError);
   });
+  $("construction-toggle").onclick = () => toggleConstruction().catch(showError);
   $("extrude").onclick = () => buildSolid().catch(showError);
   $("sketch-canvas").addEventListener("pointerdown", (event) => onSketchClick(event).catch(showError));
   $("view").addEventListener("contextmenu", (event) => event.preventDefault());

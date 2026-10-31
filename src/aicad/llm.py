@@ -42,8 +42,10 @@ export_robot writes URDF and MJCF for an assembly.
 
 After you change geometry, call inspect_part. If the project has requirements,
 call check_requirements. A sketch reports fully_constrained, under_constrained,
-or over_constrained. A point-to-line distance is signed: positive is to the
-right of the directed line.
+or over_constrained. Constraints include parallel, perpendicular, tangent,
+equal, angle, radius, symmetric, and midpoint. Set construction true on a
+line, circle, or arc for construction geometry. A point-to-line distance is
+signed: positive is to the right of the directed line.
 
 place_part moves a part. list_parameters and set_parameter change a size on a
 solid built from shapes, a sketch, or a catalog length. measure_points reports
