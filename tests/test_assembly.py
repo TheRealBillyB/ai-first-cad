@@ -1558,6 +1558,20 @@ def test_a_rack_maps_degrees_to_millimetres():
     assert values["rack"] == pytest.approx(-20)
 
 
+def test_an_assembly_that_says_inches_is_refused():
+    spec = {
+        "name": "slide",
+        "units": "inch",
+        "instances": [{"name": "block", "part": "block"}],
+        "joints": [],
+    }
+    with pytest.raises(GeometryError, match="millimeters"):
+        solve(spec)
+    spec["units"] = "mm"
+    solved = solve(spec)
+    assert solved["instances"][0]["name"] == "block"
+
+
 def test_a_repeated_part_is_meshed_once(tmp_path, monkeypatch):
     from aicad import kernel
 
