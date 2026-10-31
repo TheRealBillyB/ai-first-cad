@@ -833,6 +833,16 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("import_step", name=name, path=path))
 
     @mcp.tool()
+    def import_stl(name: str, path: str) -> dict:
+        """Copy an STL file in as a mesh-backed part.
+
+        The triangles become one solid. The part has no editable features.
+        A mesh that is not a closed solid is refused. The file is copied into
+        the workspace so the part can be rebuilt later.
+        """
+        return guard(lambda: run("import_stl", name=name, path=path))
+
+    @mcp.tool()
     def describe_edges(name: str) -> dict:
         """List edges with stable ref strings, the same strings a click in the workspace uses."""
         return guard(lambda: run("describe_edges", name=name))

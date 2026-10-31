@@ -340,6 +340,8 @@ def list_parameters(workspace, name: str) -> dict:
             note = "This catalog part takes its size from the standard. You can move it."
     elif kind == "step":
         note = "This part is an imported STEP file. There is no size to slide. You can move it."
+    elif kind == "mesh":
+        note = "This part is an imported triangle mesh. It has no editable features. You can move it."
     elif kind == "gear":
         note = "This part is a generated gear. Tooth data is fixed until the gear is replaced. You can move it."
     else:

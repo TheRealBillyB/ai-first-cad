@@ -472,6 +472,20 @@ def feature_report_from_dict(payload: dict | None) -> FeatureReport:
     )
 
 
+def mesh_part_features() -> FeatureReport:
+    """A triangle mesh has no feature history to edit."""
+    return FeatureReport(
+        tracked=False,
+        steps=[],
+        redundant_features=[],
+        warning=None,
+        note=(
+            "This part is an imported triangle mesh. It has no editable features. "
+            "Move it, or replace the part. The faces are the mesh."
+        ),
+    )
+
+
 def untracked_features() -> FeatureReport:
     return FeatureReport(
         tracked=False,
