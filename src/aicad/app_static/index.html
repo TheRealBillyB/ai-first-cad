@@ -69,7 +69,16 @@
           <button type="button" data-mode="move">Move</button>
           <button type="button" data-mode="measure">Measure</button>
         </div>
-        <button type="button" id="fit">Fit</button>
+        <div class="seg" id="standard-views" role="group" aria-label="Standard views">
+          <button type="button" data-view="front" title="Front (1)">Front</button>
+          <button type="button" data-view="back" title="Back (2)">Back</button>
+          <button type="button" data-view="top" title="Top (3)">Top</button>
+          <button type="button" data-view="bottom" title="Bottom (4)">Bottom</button>
+          <button type="button" data-view="left" title="Left (5)">Left</button>
+          <button type="button" data-view="right" title="Right (6)">Right</button>
+          <button type="button" data-view="iso" title="Isometric (7)">Iso</button>
+        </div>
+        <button type="button" id="fit" title="Fit (0)">Fit</button>
         <button type="button" id="measure-clear" hidden>Clear measure</button>
         <span id="selection-readout">Nothing selected</span>
         <div class="grow"></div>
