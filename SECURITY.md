@@ -186,4 +186,6 @@ That stops another website, including one that tries to reach this computer by a
 
 - **CA.** A CalculiX input line is one card. A part name, a note, or a material name is not written into that file. A line break in a card is refused, so it cannot add another card.
 
+- **CB.** The model process does not read a Matplotlib config from the project directory. A design script cannot write the library configuration directory and cannot point that directory somewhere else.
+
 - **CD.** The assistant lists folders only inside the open project. A person can list a folder they chose. A folder outside the project is not listed for the assistant.
