@@ -613,7 +613,7 @@ def _cmd_source(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_measure(workspace: Workspace, arguments: dict) -> dict:
-    return workspace.document.measure(arguments["name"]).to_dict()
+    return workspace.document.measure(arguments["name"], arguments.get("material")).to_dict()
 
 
 def _optional_length(arguments: dict, key: str, default: float = 0.0):
@@ -666,7 +666,10 @@ def _cmd_render(workspace: Workspace, arguments: dict) -> dict:
 
 def _cmd_inspect(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.inspect(
-        arguments["name"], arguments.get("min_wall_mm"), _optional_count(arguments, "samples")
+        arguments["name"],
+        arguments.get("min_wall_mm"),
+        _optional_count(arguments, "samples"),
+        arguments.get("material"),
     )
     return workspace._remember_panel("inspect", report.to_dict())
 
@@ -1381,7 +1384,19 @@ _add(Command(
 ))
 _add(Command("delete_part", "Delete a part from the document.", _PART, _cmd_delete_part, undo=True))
 _add(Command("get_part_source", "Return the script, operations, sketch, or STEP note that rebuilds a part.", _PART, _cmd_source))
-_add(Command("measure_part", "Bounding box, volume, area, center of mass, valid, watertight.", _PART, _cmd_measure))
+_add(Command(
+    "measure_part",
+    "Bounding box, volume, surface area, center of mass, valid, and watertight. "
+    "Pass material to add mass as volume times that handbook density.",
+    _obj(
+        {
+            "name": _string("Part name."),
+            "material": _string("Handbook material such as steel or pla. Mass is volume times its density."),
+        },
+        ["name"],
+    ),
+    _cmd_measure,
+))
 _add(Command(
     "check_wall_thickness",
     "Estimate minimum wall thickness and compare it with min_wall_mm.",
@@ -1422,8 +1437,17 @@ _add(Command(
 _add(Command("render_part", "Render the standard shaded views.", _PART, _cmd_render))
 _add(Command(
     "inspect_part",
-    "Measure, estimate wall thickness, report features, and render. Call this after a modeling change.",
-    _obj({"name": _string("Part name."), "min_wall_mm": _number("Optional threshold."), "samples": {"type": "integer"}}, ["name"]),
+    "Measure, estimate wall thickness, report features, and render. Call this after a modeling change. "
+    "Pass material to include mass as volume times that handbook density.",
+    _obj(
+        {
+            "name": _string("Part name."),
+            "min_wall_mm": _number("Optional threshold."),
+            "samples": {"type": "integer"},
+            "material": _string("Handbook material. Mass is volume times its density."),
+        },
+        ["name"],
+    ),
     _cmd_inspect,
 ))
 _add(Command(
