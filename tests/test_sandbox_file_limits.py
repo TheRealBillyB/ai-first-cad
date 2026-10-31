@@ -140,6 +140,19 @@ def test_disk_bytes_cannot_be_raised(monkeypatch):
     assert disk_bytes() == 4096
 
 
+def test_an_empty_directory_is_removed_when_the_quota_is_passed(tmp_path):
+    disk = _DiskWatch(tmp_path, {}, file_cap=10**9, disk_cap=100)
+    folder = tmp_path / "area"
+    folder.mkdir()
+    (folder / "gone.bin").write_bytes(b"x" * 500)
+    disk.note_files()
+    (folder / "gone.bin").unlink()
+    message = disk.settle()
+    assert message is not None
+    assert "wrote more than 100 bytes" in message
+    assert not folder.exists()
+
+
 def test_a_file_removed_before_the_next_snapshot_stays_in_the_per_file_total(tmp_path):
     disk = _DiskWatch(tmp_path, {}, file_cap=100_000, disk_cap=5000)
     (tmp_path / "a.bin").write_bytes(b"a" * 3000)
