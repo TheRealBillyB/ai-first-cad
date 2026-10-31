@@ -173,6 +173,9 @@ part -= Pos(0, 0, 6) * Cylinder(4, 20)
 `part = a + b` fuses solids. `part -= tool` cuts. A sketch or a curve is not a
 part. If an edit fails, the previous solid is kept.
 
+A top-level assignment of a number is a size. `width = 40` can be changed
+without rewriting the rest of the script. The name `part` is the solid, not a size.
+
 ## Feature steps
 
 `feature` is already defined. Use it when you want a contribution report.
