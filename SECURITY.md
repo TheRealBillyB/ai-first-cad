@@ -202,4 +202,8 @@ That stops another website, including one that tries to reach this computer by a
 
 - **CH.** The recent-project list names a folder the person opened. A link is not named and is not opened from that list. The name is the folder's own name, on one line. The assistant is not given a folder outside the open project.
 
+- **CI.** A free-text note that reaches a report, a log, a drawing, or a generated file does not gain a line from a line separator, a paragraph separator, or another control character. A newline the drawing already shows stays that newline. A dimension name stays on one line, the same way a stored name does.
+
 - **CJ.** The disk-quota watch counts the project directory it opened. A link is not a directory it watches or counts. A record of collected children cannot replace the bytes already counted for a live process, and it cannot move the watched directory.
+
+- **CK.** A geometry library may write a cache under the private library-config folder. A design script cannot write that folder itself. It cannot point the cache somewhere else by changing a locked name, by clearing one, or by replacing the environment mapping.
