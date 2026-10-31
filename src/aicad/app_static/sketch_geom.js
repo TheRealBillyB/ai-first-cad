@@ -105,6 +105,20 @@ function sketchEntityHit(geometry, x, y, tolerance) {
   Object.entries(geo.arcs || {}).forEach(([id, arc]) => {
     consider(id, sketchArcDistance(x, y, arc));
   });
+  Object.entries(geo.splines || {}).forEach(([id, spline]) => {
+    const samples = (spline && spline.samples) || [];
+    let bestOn = Infinity;
+    for (let index = 1; index < samples.length; index += 1) {
+      const previous = samples[index - 1];
+      const current = samples[index];
+      if (!previous || !current) continue;
+      bestOn = Math.min(
+        bestOn,
+        sketchSegmentDistance(x, y, previous.x, previous.y, current.x, current.y),
+      );
+    }
+    consider(id, bestOn);
+  });
   return best;
 }
 
@@ -135,7 +149,8 @@ function sketchSolvedPoint(spec, geometry, id) {
 }
 
 function sketchProfile(spec) {
-  const edges = ((spec && spec.entities) || []).filter((entity) =>
+  const entities = (spec && spec.entities) || [];
+  const edges = entities.filter((entity) =>
     entity && (entity.type === "line" || entity.type === "arc") && !entity.construction
   );
   let best = [];
@@ -153,6 +168,13 @@ function sketchProfile(spec) {
     }
     if (!bestClosed && chain.length > best.length) best = chain;
   });
+  if (!bestClosed) {
+    const spline = entities.find((entity) =>
+      entity && entity.type === "spline" && entity.closed && !entity.construction
+      && Array.isArray(entity.points) && entity.points.length >= 3
+    );
+    if (spline) return spline.points.slice();
+  }
   return best;
 }
 
@@ -348,6 +370,54 @@ function sketchLineClick(spec, geometry, lineStart, x, y, tolerance) {
   }
   next.entities.push({ id: sketchFreshId("l", next), type: "line", start, end: id });
   return { spec: next, lineStart: null, commit: true, finished: true };
+}
+
+function sketchOpenSpline(sketch, splineId) {
+  if (!sketch || typeof splineId !== "string" || !splineId) return null;
+  const entity = ((sketch.spec && sketch.spec.entities) || []).find((item) =>
+    item && item.id === splineId && item.type === "spline" && !item.closed
+  );
+  return entity ? splineId : null;
+}
+
+function sketchSplineClick(spec, geometry, splineId, pendingPoint, x, y, tolerance) {
+  const next = sketchCloneSpec(spec);
+  const current = (next.entities || []).find((entity) =>
+    entity && entity.id === splineId && entity.type === "spline" && !entity.closed
+  );
+  const hit = sketchPointHit(geometry, x, y, tolerance);
+  const known = hit && sketchKnownStart(next, hit) ? hit : null;
+  if (current && known === current.points[0] && current.points.length >= 3) {
+    current.closed = true;
+    return { spec: next, splineId: null, pending: null, commit: true, finished: true, error: null };
+  }
+  let id = known;
+  let created = false;
+  if (!id) {
+    id = sketchFreshId("p", next);
+    next.entities.push({ id, type: "point", at: [sketchRound(x), sketchRound(y)] });
+    created = true;
+  }
+  if (!current) {
+    if (pendingPoint && sketchKnownStart(next, pendingPoint) && id !== pendingPoint) {
+      const spline = sketchFreshId("s", next);
+      next.entities.push({ id: spline, type: "spline", points: [pendingPoint, id], closed: false });
+      return { spec: next, splineId: spline, pending: null, commit: true, finished: false, error: null };
+    }
+    return { spec: next, splineId: null, pending: id, commit: created, finished: false, error: null };
+  }
+  if (current.points.indexOf(id) !== -1) {
+    return {
+      spec,
+      splineId: current.id,
+      pending: null,
+      commit: false,
+      finished: false,
+      error: "That point is already on the spline.",
+    };
+  }
+  current.points = current.points.concat([id]);
+  return { spec: next, splineId: current.id, pending: null, commit: true, finished: false, error: null };
 }
 
 function sketchCircleClick(spec, geometry, centerId, x, y, tolerance) {

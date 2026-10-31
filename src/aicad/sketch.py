@@ -74,6 +74,22 @@ class Sketch:
         )
         return self
 
+    def spline(self, entity_id: str, points: list[str], closed: bool = False) -> Sketch:
+        """A smooth curve through existing points. ``closed`` makes it a profile."""
+        if not isinstance(points, list) or len(points) < (3 if closed else 2):
+            raise GeometryError(
+                f"Spline {entity_id!r} needs at least {3 if closed else 2} points."
+            )
+        self.entities.append(
+            {
+                "id": entity_id,
+                "type": "spline",
+                "points": list(points),
+                "closed": bool(closed),
+            }
+        )
+        return self
+
     def constrain(self, **constraint: Any) -> Sketch:
         self.constraints.append(dict(constraint))
         return self
@@ -374,9 +390,29 @@ class _Solver:
                 "construction": bool(raw.get("construction", False)),
             }
             return
+        if kind == "spline":
+            self._add_spline(raw, entity_id)
+            return
         raise GeometryError(
-            f"Unknown entity type {kind!r} on {entity_id!r}. Use point, line, circle, or arc."
+            f"Unknown entity type {kind!r} on {entity_id!r}. Use point, line, circle, arc, or spline."
         )
+
+    def _add_spline(self, raw: dict, entity_id: str) -> None:
+        points = raw.get("points")
+        closed = bool(raw.get("closed", False))
+        minimum = 3 if closed else 2
+        if not isinstance(points, list) or len(points) < minimum:
+            raise GeometryError(f"Spline {entity_id!r} needs at least {minimum} points.")
+        if len(set(points)) != len(points):
+            raise GeometryError(f"Spline {entity_id!r} repeats a point. Pick each point once.")
+        for point_id in points:
+            self._point(point_id, entity_id)
+        self.records[entity_id] = {
+            "kind": "spline",
+            "points": list(points),
+            "closed": closed,
+            "construction": bool(raw.get("construction", False)),
+        }
 
     def _add_constraint(self, raw: dict, index: int) -> None:
         if not isinstance(raw, dict) or "type" not in raw:
@@ -649,6 +685,7 @@ class _Solver:
         lines = {}
         circles = {}
         arcs = {}
+        spline_records = []
         for entity_id, record in self.records.items():
             if entity_id.startswith("__") and record["kind"] == "point":
                 continue
@@ -679,7 +716,27 @@ class _Solver:
                     "end_id": record["end"],
                     "construction": record.get("construction", False),
                 }
-        return {"points": points, "lines": lines, "circles": circles, "arcs": arcs}
+            elif record["kind"] == "spline":
+                spline_records.append((entity_id, record))
+        splines = {}
+        from aicad.sketch_spline import spline_samples
+
+        for entity_id, record in spline_records:
+            coords = []
+            for point_id in record["points"]:
+                point = points[point_id]
+                coords.append((point["x"], point["y"]))
+            samples = [
+                {"x": round(x, 6), "y": round(y, 6)}
+                for x, y in spline_samples(coords, record["closed"])
+            ]
+            splines[entity_id] = {
+                "points": list(record["points"]),
+                "closed": record["closed"],
+                "samples": samples,
+                "construction": record.get("construction", False),
+            }
+        return {"points": points, "lines": lines, "circles": circles, "arcs": arcs, "splines": splines}
 
     def _free_entities(self) -> list[dict[str, object]]:
         free = []

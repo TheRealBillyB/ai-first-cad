@@ -82,6 +82,7 @@ from build123d import (
     CenterArc,
     Line,
     Polygon,
+    Spline,
     Pos,
     Rot,
     Sphere,
@@ -3052,8 +3053,10 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
 
     ``z`` is the bottom of an extrusion or a cutter. A revolve spins the XY
     profile about the sketch X or Y axis. The profile must stay on one side of
-    that axis. Consecutive points that are the ends of a sketch arc follow
-    that arc. A profile with only straight edges stays a polygon.
+    that axis.     Consecutive points that are the ends of a sketch arc follow
+    that arc. A closed spline through the profile points is that smooth
+    curve, not the polygon of its points. A profile with only straight
+    edges stays a polygon.
     """
     if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
         raise GeometryError(
@@ -3172,25 +3175,43 @@ def _revolve_profile(step: dict, geometry: dict, name: str):
 
 
 def _profile_face(step: dict, geometry: dict, name: str, coords: list[tuple[float, float]]):
-    """A polygon when every edge is straight. An arc edge follows the circle."""
+    """A polygon when every edge is straight. An arc or a spline follows the curve."""
     ids = step.get("points")
+    closed = _closed_spline(ids, geometry) if isinstance(ids, list) else None
+    if closed is not None:
+        try:
+            return make_face(Spline(*(_point_xy(geometry.get("points") or {}, point_id) for point_id in closed), periodic=True))
+        except GeometryError:
+            raise
+        except Exception as exc:
+            raise GeometryError(f"{name}: could not build a face from that spline. {exc}") from exc
     edges = _boundary_arcs(geometry)
-    if not isinstance(ids, list) or not _profile_uses_arc(ids, edges):
+    if not isinstance(ids, list) or not (_profile_uses_arc(ids, edges) or _profile_uses_spline(ids, geometry)):
         return Plane.XY * Polygon(*coords)
     points = geometry.get("points") or {}
     wire = None
     count = len(ids)
-    for index in range(count):
-        left = ids[index]
-        right = ids[(index + 1) % count]
-        pair = frozenset((left, right))
-        matches = edges.get(pair) or []
-        if matches:
-            if len(matches) != 1:
-                raise GeometryError(f"{name}: more than one arc joins {left} and {right}.")
-            segment = _boundary_arc(matches[0], left, right, name)
+    index = 0
+    while index < count:
+        run = _spline_run(ids, index, geometry)
+        if run is not None and run[0] >= 1:
+            span, order = run
+            segment = Spline(*(_point_xy(points, point_id) for point_id in order))
+            index += span
+            if index >= count:
+                index = count
         else:
-            segment = Line(_point_xy(points, left), _point_xy(points, right))
+            left = ids[index]
+            right = ids[(index + 1) % count]
+            pair = frozenset((left, right))
+            matches = edges.get(pair) or []
+            if matches:
+                if len(matches) != 1:
+                    raise GeometryError(f"{name}: more than one arc joins {left} and {right}.")
+                segment = _boundary_arc(matches[0], left, right, name)
+            else:
+                segment = Line(_point_xy(points, left), _point_xy(points, right))
+            index += 1
         wire = segment if wire is None else wire + segment
     try:
         return make_face(wire)
@@ -3198,6 +3219,54 @@ def _profile_face(step: dict, geometry: dict, name: str, coords: list[tuple[floa
         raise
     except Exception as exc:
         raise GeometryError(f"{name}: could not build a face from that profile. {exc}") from exc
+
+
+def _closed_spline(ids: list, geometry: dict) -> list | None:
+    from aicad.sketch_spline import same_cycle
+
+    for spline in (geometry.get("splines") or {}).values():
+        if not isinstance(spline, dict) or spline.get("construction") or not spline.get("closed"):
+            continue
+        order = [point_id for point_id in spline.get("points") or [] if isinstance(point_id, str)]
+        if same_cycle(list(ids), order):
+            return order
+    return None
+
+
+def _profile_uses_spline(ids: list, geometry: dict) -> bool:
+    return _spline_run(ids, 0, geometry) is not None or any(
+        _spline_run(ids, index, geometry) is not None for index in range(1, len(ids))
+    )
+
+
+def _spline_run(ids: list, index: int, geometry: dict):
+    """Edges of one open spline starting at ``index``, as (edge count, point ids)."""
+    count = len(ids)
+    best_edges = 0
+    best_points = None
+    for spline in (geometry.get("splines") or {}).values():
+        if not isinstance(spline, dict) or spline.get("construction") or spline.get("closed"):
+            continue
+        order = spline.get("points") or []
+        edges = 0
+        while index + edges < count and _spline_adjacent(
+            order, ids[(index + edges) % count], ids[(index + edges + 1) % count]
+        ):
+            edges += 1
+        if edges > best_edges:
+            best_edges = edges
+            best_points = [ids[(index + step) % count] for step in range(edges + 1)]
+    if best_edges < 1 or best_points is None:
+        return None
+    return best_edges, best_points
+
+
+def _spline_adjacent(order: list, left: str, right: str) -> bool:
+    try:
+        found = order.index(left)
+    except ValueError:
+        return False
+    return found + 1 < len(order) and order[found + 1] == right
 
 
 def _profile_uses_arc(ids: list, edges: dict) -> bool:
@@ -3220,6 +3289,15 @@ def _profile_samples(step: dict, geometry: dict, coords: list[tuple[float, float
         matches = edges.get(frozenset((ids[index], ids[(index + 1) % count]))) or []
         if len(matches) == 1:
             samples.extend(_arc_extrema(matches[0]))
+    for spline in (geometry.get("splines") or {}).values():
+        if not isinstance(spline, dict) or spline.get("construction"):
+            continue
+        order = spline.get("points") or []
+        if not order or any(point_id not in ids for point_id in order):
+            continue
+        for sample in spline.get("samples") or []:
+            if isinstance(sample, dict) and "x" in sample and "y" in sample:
+                samples.append((float(sample["x"]), float(sample["y"])))
     return samples
 
 

@@ -232,7 +232,10 @@ placement of a mounted pair. That sweep is not a full turn and not a spiral beve
 
 ## Sketches
 
-A sketch is points, lines, arcs, and circles, plus constraints. Initial `at`
+A sketch is points, lines, arcs, circles, and splines, plus constraints. A
+spline is `{"id": "s", "type": "spline", "points": ["a", "b", "c"], "closed": true}`.
+`closed` makes a profile that extrudes or revolves as the smooth curve, not
+the polygon through the points. Initial `at`
 coordinates are guesses. `fix` locks a point at its guess. The solver is
 SolveSpace. The report's `status` is `fully_constrained`, `under_constrained`
 (with `free` naming the entities that can still move), or `over_constrained`
@@ -615,13 +618,15 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def create_sketch(name: str, spec: dict[str, Any]) -> list[str | Image]:
         """Solve and store a 2D sketch of entities and constraints.
 
-        spec has `entities` (point, line, circle, arc) and `constraints`
+        spec has `entities` (point, line, circle, arc, spline) and `constraints`
         (fix, coincident, parallel, perpendicular, tangent, equal, horizontal,
         vertical, symmetric, midpoint, distance, angle, radius, diameter,
         pattern_on_circle). Initial `at` coordinates are guesses. `fix` locks
         a point. Name a distance, diameter, radius, angle, or pattern so
         set_dimension can change it later. A tolerance is a number or
         {plus, minus}; it is stored and does not move the geometry.
+        A spline lists point ids and may be `closed`. A closed spline is a
+        profile: extrude and revolve follow the curve through those points.
 
         The result says fully_constrained, under_constrained (which entities
         are still free), or over_constrained (which constraints conflict).
