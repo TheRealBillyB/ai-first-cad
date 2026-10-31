@@ -762,10 +762,21 @@ function drawSketch() {
   canvas._toScreen = toScreen;
   ctx.strokeStyle = "#e4ddd0";
   ctx.lineWidth = 1;
-  for (let x = Math.floor(minX / 10) * 10; x <= maxX; x += 10) {
-    const [sx] = toScreen(x, 0);
-    ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, rect.height); ctx.stroke();
-  }
+  sketchGridLines({
+    width: rect.width,
+    height: rect.height,
+    centerX: cx,
+    centerY: cy,
+    scale,
+    rotation: 0,
+    spacing: sketchGridSpacing(ui.sketch),
+  }).forEach((line) => {
+    const [x0, y0, x1, y1] = line.screen;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  });
   const free = new Set((ui.sketch.free || []).map((item) => item.entity));
   const selected = new Set(ui.sketchSelection);
   ctx.lineWidth = 1.6;
