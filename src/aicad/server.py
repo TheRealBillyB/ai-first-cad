@@ -235,11 +235,21 @@ placement of a mounted pair. That sweep is not a full turn and not a spiral beve
 A sketch is points, lines, arcs, circles, and splines, plus constraints. A
 spline is `{"id": "s", "type": "spline", "points": ["a", "b", "c"], "closed": true}`.
 `closed` makes a profile that extrudes or revolves as the smooth curve, not
-the polygon through the points. Initial `at`
-coordinates are guesses. `fix` locks a point at its guess. The solver is
+the polygon through the points. Initial `at` coordinates are guesses. `fix`
+locks a point at its guess. The solver is
 SolveSpace. The report's `status` is `fully_constrained`, `under_constrained`
 (with `free` naming the entities that can still move), or `over_constrained`
 (with `conflicts` naming the constraints that disagree).
+
+An arc is one of three forms. Center, start, and end:
+`{"id": "q", "type": "arc", "center": "o", "start": "a", "end": "b"}`.
+Three points on the arc:
+`{"id": "q", "type": "arc", "through": ["a", "b", "c"]}` (the middle point
+stays on the arc). A tangent continuation of a line:
+`{"id": "q", "type": "arc", "tangent_to": "edge", "end": "p"}` starts at the
+line's end and leaves in the line's direction. `"from": "start"` continues
+from the other end. A point on the line is refused. Name a `radius` constraint
+on the arc the same way a circle names its diameter.
 
 A point-to-line distance is signed. Positive is to the right as you walk from
 the line's start to its end. On a counterclockwise rectangle the interior is
@@ -627,6 +637,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         {plus, minus}; it is stored and does not move the geometry.
         A spline lists point ids and may be `closed`. A closed spline is a
         profile: extrude and revolve follow the curve through those points.
+
+        An arc is `center`/`start`/`end`, or `through` three point ids, or
+        `tangent_to` a line id plus `end` (and optional `from` of `end` or
+        `start`). The tangent form continues the line. A radius constraint
+        on the arc is the named dimension, as a diameter is on a circle.
 
         The result says fully_constrained, under_constrained (which entities
         are still free), or over_constrained (which constraints conflict).
@@ -1390,7 +1405,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """Start a plan before any solid. The plan is data and does not run code.
 
         Optional bundle may include research (note and source), assumptions,
-        questions, dimensions ({name, value_mm, note}), and sheets of blocks.
+        questions, dimensions ({name, value_mm, note}), sheets of blocks, and
+        build steps ({part, script}). A build script assigns part. Storing it
+        does not run it.
         A sheet block is {x, y, w, h, label, fill}. fill is yellow, blue, green,
         red, white, door, shelter, or leg. Dimensions on a sheet are
         {x0, y0, x1, y1, text, offset}. Then submit_plan for the person to review.
@@ -1437,6 +1454,16 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("set_plan_dimensions", name=name, dimensions=dimensions))
 
     @mcp.tool()
+    def set_plan_build(name: str, steps: list[dict[str, Any]]) -> dict:
+        """Store the scripts that build the parts after the person approves.
+
+        Each step needs part and script. The script assigns the solid to part.
+        Storing the steps does not run them. The person approves the plan, and
+        that approval runs them. You cannot approve.
+        """
+        return guard(lambda: run("set_plan_build", name=name, steps=steps))
+
+    @mcp.tool()
     def comment_on_plan(name: str, text: str, item: str = "plan") -> dict:
         """Comment on the plan or an item id. This does not answer, mark, or approve."""
         return guard(lambda: run("comment_on_plan", name=name, item=item, text=text))
@@ -1467,16 +1494,21 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def approve_plan(name: str) -> dict:
-        """Approve a plan. Always refuses the agent. The person approves in the Plan panel or with approve-plan."""
+        """Approve a plan. Always refuses the agent. The person approves in the Plan panel or with approve-plan.
+
+        That approval runs any build steps in the script sandbox. The network
+        stays off. A failed step leaves the previous model in place.
+        """
         return guard(lambda: run("approve_plan", name=name))
 
     @mcp.tool()
     def start_model_from_plan(name: str) -> list[str | Image]:
-        """Start heavy modeling from a plan. Refuses until the person has approved it.
+        """Start modeling from a plan. Refuses until the person has approved it.
 
         The refusal says the plan status and that the agent cannot approve it.
-        After approval, the result is the dimensions and assumptions to model.
-        This does not build a solid.
+        With no build steps, the result is the dimensions and assumptions, and
+        no solid is built. With build steps, the approved scripts run if those
+        parts are not saved yet. The network stays off.
         """
         return guard(lambda: _images(run("start_model_from_plan", name=name)))
 

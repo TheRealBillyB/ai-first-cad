@@ -420,6 +420,194 @@ function sketchSplineClick(spec, geometry, splineId, pendingPoint, x, y, toleran
   return { spec: next, splineId: current.id, pending: null, commit: true, finished: false, error: null };
 }
 
+function sketchCircleThrough(a, b, c) {
+  const determinant = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+  if (Math.abs(determinant) < 1e-8) return null;
+  const ux = (
+    (a[0] * a[0] + a[1] * a[1]) * (b[1] - c[1])
+    + (b[0] * b[0] + b[1] * b[1]) * (c[1] - a[1])
+    + (c[0] * c[0] + c[1] * c[1]) * (a[1] - b[1])
+  ) / determinant;
+  const uy = (
+    (a[0] * a[0] + a[1] * a[1]) * (c[0] - b[0])
+    + (b[0] * b[0] + b[1] * b[1]) * (a[0] - c[0])
+    + (c[0] * c[0] + c[1] * c[1]) * (b[0] - a[0])
+  ) / determinant;
+  const radius = Math.hypot(a[0] - ux, a[1] - uy);
+  if (!Number.isFinite(radius) || radius < 1e-6) return null;
+  return { center: [ux, uy], radius };
+}
+
+function sketchTangentContinuation(lineStart, lineEnd, atEnd, target) {
+  const origin = atEnd ? lineEnd : lineStart;
+  let dx = atEnd ? lineEnd[0] - lineStart[0] : lineStart[0] - lineEnd[0];
+  let dy = atEnd ? lineEnd[1] - lineStart[1] : lineStart[1] - lineEnd[1];
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-9) return null;
+  dx /= length;
+  dy /= length;
+  const normalX = -dy;
+  const normalY = dx;
+  const offsetX = target[0] - origin[0];
+  const offsetY = target[1] - origin[1];
+  const along = normalX * offsetX + normalY * offsetY;
+  if (Math.abs(along) < 1e-9) return null;
+  const signed = (offsetX * offsetX + offsetY * offsetY) / (2 * along);
+  if (Math.abs(signed) < 1e-6) return null;
+  return {
+    center: [origin[0] + signed * normalX, origin[1] + signed * normalY],
+    radius: Math.abs(signed),
+    startAtLine: signed > 0,
+  };
+}
+
+function sketchSnap(geometry, x, y, tolerance, spacing) {
+  const hit = sketchPointHit(geometry, x, y, tolerance);
+  if (hit && geometry && geometry.points && geometry.points[hit]) {
+    const point = geometry.points[hit];
+    return { x: Number(point.x), y: Number(point.y), point: hit };
+  }
+  const step = Number(spacing);
+  if (Number.isFinite(step) && step > 0) {
+    const gx = Math.round(x / step) * step;
+    const gy = Math.round(y / step) * step;
+    if (Math.hypot(gx - x, gy - y) <= tolerance) return { x: gx, y: gy, point: null };
+  }
+  return { x, y, point: null };
+}
+
+function sketchUniqueName(spec, base) {
+  const used = new Set((spec.constraints || []).map((item) => item && item.name).filter(Boolean));
+  if (!used.has(base)) return base;
+  let index = 2;
+  while (used.has(base + index)) index += 1;
+  return base + index;
+}
+
+function sketchLineContinuation(spec, pointId) {
+  const lines = ((spec && spec.entities) || []).filter((entity) =>
+    entity && entity.type === "line" && !entity.construction
+  );
+  const ending = lines.find((line) => line.end === pointId);
+  if (ending) return { line: ending.id, from: "end" };
+  const starting = lines.find((line) => line.start === pointId);
+  if (starting) return { line: starting.id, from: "start" };
+  return null;
+}
+
+function sketchPlacePoint(spec, geometry, x, y, tolerance) {
+  const hit = sketchPointHit(geometry, x, y, tolerance);
+  if (hit && sketchKnownStart(spec, hit)) return { id: hit, created: false };
+  const id = sketchFreshId("p", spec);
+  spec.entities.push({ id, type: "point", at: [sketchRound(x), sketchRound(y)] });
+  return { id, created: true };
+}
+
+function sketchArcClick(spec, geometry, mode, pending, x, y, tolerance) {
+  const next = sketchCloneSpec(spec);
+  const placed = (Array.isArray(pending) ? pending : []).filter((id) => sketchKnownStart(next, id));
+  const tool = mode === "center" || mode === "tangent" ? mode : "three";
+  if (tool === "tangent" && placed.length === 0) {
+    const hit = sketchPointHit(geometry, x, y, tolerance);
+    const continuation = hit && sketchLineContinuation(next, hit);
+    if (!continuation) {
+      return {
+        spec,
+        pending: [],
+        commit: false,
+        finished: false,
+        error: "A tangent arc starts at the end of a line.",
+      };
+    }
+    return { spec: next, pending: [hit], commit: false, finished: false, error: null };
+  }
+  const point = sketchPlacePoint(next, geometry, x, y, tolerance);
+  if (placed.includes(point.id)) {
+    return { spec: next, pending: placed, commit: point.created, finished: false, error: null };
+  }
+  const sequence = placed.concat([point.id]);
+  if (tool === "three" && sequence.length < 3) {
+    return { spec: next, pending: sequence, commit: point.created, finished: false, error: null };
+  }
+  if (tool === "center" && sequence.length < 3) {
+    return { spec: next, pending: sequence, commit: point.created, finished: false, error: null };
+  }
+  const id = sketchFreshId("a", next);
+  if (tool === "three") {
+    const [start, middle, end] = sequence;
+    const circle = sketchCircleThrough(
+      sketchSolvedPoint(next, geometry, start),
+      sketchSolvedPoint(next, geometry, middle),
+      sketchSolvedPoint(next, geometry, end),
+    );
+    if (!circle) {
+      return {
+        spec,
+        pending: placed,
+        commit: false,
+        finished: false,
+        error: "Those three points are in a line, so they do not define an arc.",
+      };
+    }
+    next.entities.push({ id, type: "arc", through: [start, middle, end] });
+    return { spec: next, pending: [], commit: true, finished: true, error: null };
+  }
+  if (tool === "center") {
+    const [center, start, end] = sequence;
+    const centerAt = sketchSolvedPoint(next, geometry, center);
+    const startAt = sketchSolvedPoint(next, geometry, start);
+    const radius = Math.max(0.5, Math.hypot(startAt[0] - centerAt[0], startAt[1] - centerAt[1]));
+    const endEntity = next.entities.find((entity) => entity && entity.id === end);
+    if (endEntity && point.created) {
+      const angle = Math.atan2(y - centerAt[1], x - centerAt[0]);
+      endEntity.at = [
+        sketchRound(centerAt[0] + radius * Math.cos(angle)),
+        sketchRound(centerAt[1] + radius * Math.sin(angle)),
+      ];
+    }
+    next.entities.push({ id, type: "arc", center, start, end });
+    next.constraints.push({
+      type: "radius",
+      entity: id,
+      value: sketchRound(radius),
+      name: sketchUniqueName(next, id + "_radius"),
+    });
+    return { spec: next, pending: [], commit: true, finished: true, error: null };
+  }
+  const continuation = sketchLineContinuation(next, sequence[0]);
+  const lineEntity = continuation && next.entities.find((entity) => entity && entity.id === continuation.line);
+  if (!continuation || !lineEntity) {
+    return { spec, pending: [], commit: false, finished: false, error: "A tangent arc starts at the end of a line." };
+  }
+  const lineStart = sketchSolvedPoint(next, geometry, lineEntity.start);
+  const lineEnd = sketchSolvedPoint(next, geometry, lineEntity.end);
+  const target = sketchSolvedPoint(next, geometry, sequence[1]);
+  const frame = sketchTangentContinuation(lineStart, lineEnd, continuation.from === "end", target);
+  if (!frame) {
+    return {
+      spec,
+      pending: placed,
+      commit: false,
+      finished: false,
+      error: "That point is on the line, so a tangent arc does not continue it.",
+    };
+  }
+  next.entities.push({
+    id,
+    type: "arc",
+    tangent_to: continuation.line,
+    end: sequence[1],
+    from: continuation.from,
+  });
+  next.constraints.push({
+    type: "radius",
+    entity: id,
+    value: sketchRound(frame.radius),
+    name: sketchUniqueName(next, id + "_radius"),
+  });
+  return { spec: next, pending: [], commit: true, finished: true, error: null };
+}
+
 function sketchCircleClick(spec, geometry, centerId, x, y, tolerance) {
   const next = sketchCloneSpec(spec);
   const center = sketchKnownStart(next, centerId);

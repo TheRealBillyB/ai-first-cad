@@ -28,3 +28,24 @@ class DocumentError(AICADError):
 
 class PlanError(AICADError):
     """A plan could not be changed, or modeling from it is still closed."""
+
+
+class PlanBuildError(PlanError):
+    """One approved build step failed. The previous model was not changed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        step_id: str,
+        part: str,
+        index: int,
+        count: int,
+        progress: list,
+    ):
+        super().__init__(message)
+        self.step_id = step_id
+        self.part = part
+        self.index = index
+        self.count = count
+        self.progress = progress
