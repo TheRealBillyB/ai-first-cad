@@ -1554,11 +1554,11 @@ _add(Command(
 ))
 _add(Command(
     "create_gear",
-    "Create or replace an involute spur, helical, bevel, or hypoid gear.",
+    "Create or replace an involute spur, helical, internal ring, bevel, or hypoid gear.",
     _obj(
         {
             "name": _string("Part name."),
-            "spec": {"type": "object", "description": "module_mm, teeth, pressure_angle_deg, face_width_mm, and the family fields."},
+            "spec": {"type": "object", "description": "module_mm, teeth, pressure_angle_deg, face_width_mm, and the family fields. An internal ring takes rim_thickness_mm."},
             "position": {"type": "array"},
             "rotation_deg": {"type": "array"},
         },

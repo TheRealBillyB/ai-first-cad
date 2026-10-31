@@ -924,6 +924,17 @@ class Document:
                 "The edge radius is recorded and is not cut as a fillet.",
                 "The flanks are shifted slightly apart so a flat facet cannot cross the mate.",
             ]
+        elif clean["type"] == "internal":
+            what = (
+                "Internal spur ring from ISO 21771. The teeth point inward and a rim "
+                "closes the solid outside the root."
+            )
+            limits = [
+                "Tooth thickness is the nominal zero-backlash size, not a tolerance grade.",
+                "The root fillet is a circular blend of the ISO 53 tip radius, tangent to the root circle. It is not a pinion-cutter trochoid.",
+                "This ring is a spur. A helical internal tooth is not generated.",
+                "Omitting rim_thickness_mm uses four normal modules of metal outside the root.",
+            ]
         else:
             what = (
                 "Nominal involute gear from the cited tooth standard. "
@@ -2147,8 +2158,8 @@ class Document:
     def _with_gear_teeth(self, spec: dict) -> dict:
         """Copy ``spec`` with tooth counts filled in from generated gears.
 
-        A motion study reads those counts from the train. An internal ring
-        keeps the count stated on the shaft.
+        A motion study reads those counts from the train. A generated internal
+        ring supplies its tooth count when the shaft does not state one.
         """
         spec = copy.deepcopy(spec)
         train = spec.get("gear_train")
