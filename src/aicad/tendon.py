@@ -92,7 +92,9 @@ def normalize_tendon(cable: dict, index: int = 0) -> dict:
         raise GeometryError(
             f"Cable {index} has unknown fields: {', '.join(sorted(unknown))}."
         )
-    name = str(cable.get("name") or f"cable_{index + 1}")
+    from aicad.labels import require_one_line
+
+    name = require_one_line(str(cable.get("name") or f"cable_{index + 1}"), "A tendon name", GeometryError)
     if cable.get("waypoints"):
         raise GeometryError(f"{name} uses points for a tendon. Waypoints are the clip route.")
     kind = str(cable.get("kind") or "tendon")
@@ -225,7 +227,9 @@ def _point(item, cable: str, index: int) -> dict:
     if not isinstance(at, (list, tuple)) or len(at) != 3:
         raise GeometryError(f"{cable} point {index} at must be three numbers.")
     label = f"{cable} point {index}"
-    name = str(item.get("name") or f"{role}_{index + 1}")
+    from aicad.labels import require_one_line
+
+    name = require_one_line(str(item.get("name") or f"{role}_{index + 1}"), "A tendon name", GeometryError)
     radius = item.get("radius_mm")
     sheave = role in ("pulley", "wrap") or (role == "guide" and radius is not None)
     if role == "anchor" and any(key in item for key in ("axis", "radius_mm", "wrap", "friction", "turns")):
