@@ -1150,7 +1150,7 @@ class Document:
     ) -> dict:
         """Drive the assembly through a motion study and report collisions and limit hits."""
         with self._lock:
-            spec = self._get_assembly(name)
+            spec = self._with_gear_teeth(self._get_assembly(name))
             chosen = study_by_name(spec, sequence, study)
             if chosen is None:
                 known = ", ".join(spec.get("studies") or {}) or "(none)"
@@ -1192,7 +1192,7 @@ class Document:
             if value is not None:
                 request[key] = value
         with self._lock:
-            spec = self._get_assembly(name)
+            spec = self._with_gear_teeth(self._get_assembly(name))
             return solve_chain(spec, self._assembly_shapes(spec), request)
 
     def check_position_error(self, name: str, request: dict) -> dict:
@@ -1270,7 +1270,7 @@ class Document:
         anchor. Its length includes the wrap arcs.
         """
         with self._lock:
-            spec = self._get_assembly(name)
+            spec = self._with_gear_teeth(self._get_assembly(name))
             chosen_motion, chosen_study = _cable_timeline(spec, sequence, motion, study)
             return assembly.check_cables(
                 spec,
@@ -1312,7 +1312,7 @@ class Document:
         ``study`` is a study name or an inline study.
         """
         with self._lock:
-            spec = self._get_assembly(name)
+            spec = self._with_gear_teeth(self._get_assembly(name))
             chosen_motion, chosen_study = _cable_timeline(spec, sequence, motion, study)
             return assembly.estimate_power(
                 spec,
@@ -1922,7 +1922,7 @@ class Document:
                 from aicad.animation import refuse_output
 
                 refuse_output(self.workspace, path)
-            spec = self._get_assembly(name)
+            spec = self._with_gear_teeth(self._get_assembly(name))
             from aicad.animation import render_clip
 
             try:
@@ -1976,6 +1976,53 @@ class Document:
         self._assemblies[cleaned["name"]] = cleaned
         self._save()
         return {"assembly": copy.deepcopy(cleaned), "solved": solved}
+
+    def _with_gear_teeth(self, spec: dict) -> dict:
+        """Copy ``spec`` with tooth counts filled in from generated gears.
+
+        A motion study reads those counts from the train. An internal ring
+        keeps the count stated on the shaft.
+        """
+        spec = copy.deepcopy(spec)
+        train = spec.get("gear_train")
+        if not isinstance(train, dict):
+            return spec
+        counted: dict[str, int] = {}
+        for instance in spec.get("instances") or []:
+            if not isinstance(instance, dict):
+                continue
+            part = self._parts.get(instance.get("part"))
+            gear = getattr(part, "gear_spec", None) if part is not None else None
+            teeth = None if not isinstance(gear, dict) else gear.get("teeth")
+            if isinstance(teeth, bool) or not isinstance(teeth, (int, float)):
+                continue
+            counted[str(instance.get("name"))] = int(teeth)
+        shafts = []
+        for shaft in train.get("shafts") or []:
+            if not isinstance(shaft, dict):
+                shafts.append(shaft)
+                continue
+            record = dict(shaft)
+            gears = []
+            for gear in shaft.get("gears") or []:
+                if isinstance(gear, str):
+                    gear = {"name": gear, "instance": gear}
+                elif isinstance(gear, dict):
+                    gear = dict(gear)
+                else:
+                    gears.append(gear)
+                    continue
+                if gear.get("teeth") is None:
+                    instance_name = gear.get("instance") or gear.get("name")
+                    if instance_name in counted:
+                        gear["teeth"] = counted[instance_name]
+                gears.append(gear)
+            record["gears"] = gears
+            shafts.append(record)
+        train = dict(train)
+        train["shafts"] = shafts
+        spec["gear_train"] = train
+        return spec
 
     def _get_assembly(self, name: str) -> dict:
         _validate_name(name)

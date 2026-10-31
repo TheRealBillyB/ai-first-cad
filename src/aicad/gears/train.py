@@ -367,6 +367,97 @@ def _speed_rows(train, drive, teeth, gear_shaft, index, width):
     return rows
 
 
+def motion_joint_targets(spec: dict, commands: dict, gear_specs: dict | None = None) -> dict[str, float]:
+    """Joint angles that follow a gear train from the driven joints in ``commands``.
+
+    Speeds use the same mesh equations as :func:`solve_gear_train`. A fixed
+    member stays at zero absolute speed. Each other joint keeps the angle it
+    already had and adds that member's motion, so the phase does not jump.
+    A planet joint parented to the carrier is the spin relative to the carrier.
+    Positive rotation is the sense of the driven joint's axis. An external mesh
+    reverses that sense. An internal mesh keeps it.
+
+    The map omits joints ``commands`` already sets. A shaft whose speed is
+    not determined is left unchanged, so the study does not invent a ratio.
+    Speeds that disagree raise :class:`~aicad.errors.GeometryError`.
+    """
+    train = spec.get("gear_train") if isinstance(spec, dict) else None
+    if not train or not commands:
+        return {}
+    joint_index = {joint["name"]: joint for joint in spec.get("joints") or []}
+    shaft_by_instance: dict[str, str] = {}
+    joint_of_shaft: dict[str, dict] = {}
+    for shaft in train["shafts"]:
+        joint_name = shaft.get("joint")
+        joint = joint_index.get(joint_name)
+        if joint is None or joint["type"] not in ("revolute", "cylindrical"):
+            continue
+        joint_of_shaft[shaft["name"]] = joint
+        shaft_by_instance[joint["child"]] = shaft["name"]
+    driven = [name for name, joint in joint_of_shaft.items() if joint["name"] in commands]
+    if not driven:
+        return {}
+    reference = joint_of_shaft[driven[0]]["axis"]
+
+    def sign_of(joint) -> float:
+        return 1.0 if _axis_dot(joint["axis"], reference) >= 0.0 else -1.0
+
+    parent_of: dict[str, str | None] = {}
+    deltas: dict[str, float] = {}
+    for shaft_name in driven:
+        joint = joint_of_shaft[shaft_name]
+        stored = float(joint["value"])
+        parent_of[shaft_name] = shaft_by_instance.get(joint["parent"])
+        deltas[shaft_name] = sign_of(joint) * (_command_angle(commands, joint["name"], stored) - stored)
+    teeth = _teeth(train, gear_specs or {})
+    names = [shaft["name"] for shaft in train["shafts"]]
+    index = {name: position for position, name in enumerate(names)}
+    gear_shaft = {gear["name"]: shaft["name"] for shaft in train["shafts"] for gear in shaft["gears"]}
+    rows = _speed_rows(train, {"inputs": [], "speeds": []}, teeth, gear_shaft, index, len(names))
+    for shaft_name, delta in deltas.items():
+        coeffs = _zeros(len(names))
+        coeffs[index[shaft_name]] = Fraction(1)
+        parent = parent_of.get(shaft_name)
+        if parent is not None:
+            coeffs[index[parent]] -= Fraction(1)
+        rows.append(
+            _row(
+                f"shaft {shaft_name} driven",
+                coeffs,
+                Fraction(delta).limit_denominator(10**9),
+            )
+        )
+    reduced, pivots, conflicts = _rref(rows, len(names))
+    if conflicts:
+        raise GeometryError(
+            "The gear train cannot follow this motion. The driven members and the fixed members disagree."
+        )
+    speeds, determined, _basis = _speeds_from(reduced, pivots, len(names))
+    omega = {name: speeds[index[name]] for name in names}
+    targets: dict[str, float] = {}
+    for shaft_name, joint in joint_of_shaft.items():
+        if joint["name"] in commands or not determined[index[shaft_name]]:
+            continue
+        parent = shaft_by_instance.get(joint["parent"])
+        if parent is not None and not determined[index[parent]]:
+            continue
+        parent_omega = omega[parent] if parent is not None else Fraction(0)
+        updated = float(joint["value"]) + sign_of(joint) * float(omega[shaft_name] - parent_omega)
+        targets[joint["name"]] = updated
+    return targets
+
+
+def _command_angle(commands: dict, name: str, stored: float) -> float:
+    raw = commands[name]
+    if isinstance(raw, dict):
+        raw = raw.get("value", stored)
+    return float(raw)
+
+
+def _axis_dot(left, right) -> float:
+    return float(left[0]) * float(right[0]) + float(left[1]) * float(right[1]) + float(left[2]) * float(right[2])
+
+
 def _speed_status(names, determined, basis, conflicts, drive):
     if conflicts:
         detail = " ".join(conflicts)
