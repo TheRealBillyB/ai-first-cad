@@ -158,6 +158,9 @@ nav { display: flex; gap: 4px; }
 .shape-editor input[type="range"] { width: 100%; min-width: 0; }
 .place-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
 .place-grid label { display: grid; grid-template-columns: 16px 1fr; }
+.mount-line { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin-bottom: 6px; }
+.mount-line label { display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 4px; }
+.mount-line input[type="checkbox"] { justify-self: start; width: 16px; height: 16px; }
 .plan-mount { margin-top: 16px; padding-top: 4px; border-top: 1px solid var(--line); }
 .folder-list { display: grid; gap: 2px; max-height: 220px; overflow: auto; margin: 8px 0; }
 .folder-list button { text-align: left; border: 0; background: transparent; }
