@@ -576,7 +576,7 @@ class Document:
             )
             kind = kind.lower()
             if kind == "step":
-                kernel.export_step_file(model[0], destination)
+                kernel.export_step_file(_named_step_shape(name, model[1]), destination)
             elif kind == "stl":
                 kernel.export_stl_file(model[0], destination)
             elif kind == "3mf":
@@ -2413,6 +2413,32 @@ def _unbuilt_message(name: str) -> str:
 
 def _script_hash(script: str) -> str:
     return hashlib.sha256(script.encode("utf-8")).hexdigest()
+
+
+def _named_step_shape(name: str, bodies: list[tuple[str, kernel.Shape]]) -> kernel.Shape:
+    """A copy of the solids labeled with the names a STEP file should keep.
+
+    One part uses that part's name. An assembly is a compound named for the
+    assembly, and each solid keeps its instance name. The solids in the
+    document are not renamed.
+    """
+    if not bodies:
+        raise GeometryError("There is no solid to export.")
+    labeled: list[kernel.Shape] = []
+    for body_name, shape in bodies:
+        impl = copy.deepcopy(shape.impl)
+        try:
+            impl.label = str(body_name)
+        except Exception:
+            pass
+        labeled.append(kernel.Shape(impl))
+    grouped = kernel.compound(labeled)
+    if len(labeled) > 1:
+        try:
+            grouped.impl.label = str(name)
+        except Exception:
+            pass
+    return grouped
 
 
 def _assembly_name(spec: dict) -> str:

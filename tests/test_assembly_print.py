@@ -62,6 +62,24 @@ def test_an_assembly_is_one_print_with_separate_bodies(tmp_path: Path):
     assert Path(written["path"]).suffix == ".3mf"
 
 
+def test_an_assembly_step_file_keeps_each_part_name(tmp_path: Path):
+    document = Document(tmp_path)
+    _pair(document)
+    path = document.export("stack", tmp_path / "stack.step", "step")
+    text = path.read_text(encoding="latin-1")
+    for product in ("stack", "base", "lid"):
+        assert f"PRODUCT('{product}'" in text
+    assert "PRODUCT('COMPOUND'" not in text
+    alone = document.export("base", tmp_path / "base.step", "step")
+    assert "PRODUCT('base'" in alone.read_text(encoding="latin-1")
+    imported = document.import_step("stack_back", path)
+    assert imported.volume_mm3 == pytest.approx(10 * 10 * 4 + 20 * 16 * 3)
+    measured = document.measure("stack_back")
+    assert measured.solid_count == 2
+    assert measured.bounding_box.size.x == pytest.approx(20)
+    assert measured.bounding_box.size.z == pytest.approx(7.5)
+
+
 def test_a_missing_name_names_parts_and_assemblies(tmp_path: Path):
     document = Document(tmp_path)
     _pair(document)
