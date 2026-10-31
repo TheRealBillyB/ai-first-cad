@@ -124,11 +124,19 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 - **Gear steel material.** A handbook gear steel in the material list used by the strength check.
 - **Joint-sized reducers.** A reducer sized from the joint it drives.
 - **Catalog mounting orientation.** A catalog part stores the orientation of its mount.
-- **Catalog mass and moment loads.** Catalog parts carry mass and the moment loads used by the checks.
+- **Fillet and chamfer.** Fillet and chamfer with sizes that can be edited, then rebuilt.
+- **Feature history.** An earlier step can be edited, and the solid rebuilds from that step.
+- **Sketch constraints.** The remaining geometric constraints, and construction geometry, on the sketch toolbar.
+- **Standard views.** Buttons for the standard views in the workspace.
+- **Open an example.** The empty canvas can open an example.
+- **Inspect.** Area, center of mass, and mass on Inspect.
+- **STL import.** An STL file can be imported as a part.
 
 ## After v1.0
 
 The tracks that follow v1.0, in order, are power and fluid estimates, hose routing with bend-radius and pinch checks, robot export (URDF and MJCF), and CNC machining and sheet-metal checks.
+
+Catalog parts carrying mass and the moment loads used by the checks are planned after v1.
 
 The power estimate, the hose checks, and the robot export are already in the tree and are described under Done. The first of these tracks that is not in the tree is:
 
