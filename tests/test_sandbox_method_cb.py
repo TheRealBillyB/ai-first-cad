@@ -38,8 +38,11 @@ def test_library_config_paths_cannot_be_redirected():
 
     from aicad.sandbox import lock_library_environment
 
+    import types
+
     original = os_module.environ
     putenv = os_module.putenv
+    unsetenv = getattr(os_module, "unsetenv", None)
     home = original.get("HOME")
     try:
         lock_library_environment()
@@ -47,11 +50,20 @@ def test_library_config_paths_cannot_be_redirected():
             os_module.environ["HOME"] = str(Path("/tmp") / "canary-home")
         with pytest.raises(PermissionError):
             os_module.environ["MPLCONFIGDIR"] = str(Path("/tmp") / "canary-mpl")
+        with pytest.raises(PermissionError):
+            os_module.environ = {}
+        if unsetenv is not None:
+            with pytest.raises(PermissionError):
+                os_module.unsetenv("HOME")
         assert os_module.environ.get("HOME") == home
         assert "canary-home" not in str(os_module.environ.get("HOME", ""))
     finally:
+        if getattr(type(os_module), "_aicad_environ_sealed", False):
+            os_module.__class__ = types.ModuleType
         os_module.environ = original
         os_module.putenv = putenv  # type: ignore[assignment]
+        if unsetenv is not None:
+            os_module.unsetenv = unsetenv  # type: ignore[assignment]
 
 
 def test_a_design_script_cannot_write_or_redirect_library_config(tmp_path, monkeypatch):

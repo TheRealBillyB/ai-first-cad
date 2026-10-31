@@ -2172,10 +2172,43 @@ def lock_library_environment() -> None:
         return real_putenv(name, value)
 
     os.putenv = putenv  # type: ignore[assignment]
+    _seal_environ_binding()
     snapshot = _snapshot_locked_environment()
     read_env, write_env = _environment_access()
     _seal_imported_environment()
     _watch_library_environment(snapshot, read_env, write_env)
+
+
+def _seal_environ_binding() -> None:
+    """Refuse replacing the environment mapping or clearing a locked name.
+
+    A geometry library may write its cache under the private library-config
+    folder. Pointing that cache somewhere else, including by replacing the
+    environment mapping or clearing a locked name, is refused.
+    """
+
+    if not getattr(type(os), "_aicad_environ_sealed", False):
+        module_type = type(os)
+
+        class _Sealed(module_type):
+            _aicad_environ_sealed = True
+
+            def __setattr__(self, name, value):
+                if name in {"environ", "environb"}:
+                    raise PermissionError(1, "Operation not permitted")
+                return module_type.__setattr__(self, name, value)
+
+        os.__class__ = _Sealed
+    real_unsetenv = getattr(os, "unsetenv", None)
+    if real_unsetenv is not None and not getattr(real_unsetenv, "_aicad_unsetenv", False):
+
+        def unsetenv(name):
+            if _env_name_locked(name):
+                raise PermissionError(1, "Operation not permitted")
+            return real_unsetenv(name)
+
+        unsetenv._aicad_unsetenv = True  # type: ignore[attr-defined]
+        os.unsetenv = unsetenv  # type: ignore[assignment]
 
 
 _ENV_CALLS = frozenset(
