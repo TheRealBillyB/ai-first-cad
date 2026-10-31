@@ -194,6 +194,8 @@ That stops another website, including one that tries to reach this computer by a
 
 - **CD.** The assistant lists folders only inside the open project. A person can list a folder they chose. A folder outside the project is not listed for the assistant.
 
+- **CE.** A cable or tendon name stays on one line before it is stored. A line separator, a paragraph separator, or another control character in that name is refused.
+
 - **CF.** A design script cannot point the library configuration directory somewhere else through a module this program already imported. A script that does not change that directory still runs.
 
 - **CG.** CalculiX, ffmpeg, and a slicer run under the same file limits as a design script. Each one may read the locations needed to start and may use its own folder. It cannot read a file outside that folder. The program is not started when those limits cannot be applied.
