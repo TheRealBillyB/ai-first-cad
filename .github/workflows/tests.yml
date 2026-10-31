@@ -25,7 +25,9 @@ jobs:
     with:
       os: ubuntu-latest
       python-version: "3.12"
-      job-timeout: 25
+      # The full suite now uses most of 25 minutes here too, so this job gets
+      # the same backstop as Windows and macOS. A single test still stops sooner.
+      job-timeout: 40
 
   pytest-cross:
     name: pytest (${{ matrix.os }})
