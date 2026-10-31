@@ -27,7 +27,9 @@ def normalize_cable(cable: dict, index: int = 0) -> dict:
         return normalize_tendon(cable, index)
     if not isinstance(cable, dict):
         raise GeometryError(f"Cable {index} must be an object.")
-    name = str(cable.get("name") or f"cable_{index + 1}")
+    from aicad.labels import require_one_line
+
+    name = require_one_line(str(cable.get("name") or f"cable_{index + 1}"), "A cable name", GeometryError)
     kind = str(cable.get("kind") or "cable")
     if kind not in ("cable", "hose"):
         raise GeometryError(f"{name}: kind must be cable or hose.")
