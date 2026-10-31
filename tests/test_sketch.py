@@ -487,6 +487,35 @@ def test_revolving_a_quarter_profile_builds_a_hemisphere():
     assert shape.impl.volume == pytest.approx(2 / 3 * math.pi * 1000, rel=1e-3)
 
 
+def _inch_line(unit: str | None = None, constraint_unit: str | None = None) -> dict:
+    constraint = {"type": "distance", "a": "a", "b": "b", "value": 1, "name": "width"}
+    if constraint_unit is not None:
+        constraint["unit"] = constraint_unit
+    spec = {
+        "plane": "xy",
+        "entities": [
+            {"id": "a", "type": "point", "at": [0, 0]},
+            {"id": "b", "type": "point", "at": [1, 0]},
+            {"id": "edge", "type": "line", "start": "a", "end": "b"},
+        ],
+        "constraints": [{"type": "fix", "entity": "a"}, constraint],
+    }
+    if unit is not None:
+        spec["units"] = unit
+    return spec
+
+
+def test_a_sketch_that_says_inches_is_refused_instead_of_shrinking():
+    with pytest.raises(GeometryError, match="millimeters"):
+        solve_sketch(_inch_line("inch"))
+    with pytest.raises(GeometryError, match="25.4"):
+        solve_sketch(_inch_line(constraint_unit="in"))
+    report = solve_sketch(_inch_line("mm"))
+    assert report.geometry["points"]["b"]["x"] == pytest.approx(1)
+    report = solve_sketch(_inch_line("millimetres"))
+    assert report.geometry["points"]["b"]["x"] == pytest.approx(1)
+
+
 def test_two_arcs_on_one_edge_are_refused():
     report = solve_sketch(_quarter())
     geometry = json.loads(json.dumps(report.geometry))
