@@ -749,17 +749,19 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         position: list[float] | None = None,
         rotation_deg: list[float] | None = None,
     ) -> dict:
-        """Create or replace a spur, helical, bevel, or hypoid gear.
+        """Create or replace a spur, helical, internal ring, bevel, or hypoid gear.
 
-        spec needs type, teeth, and face_width_mm. A spur, helical, or bevel
-        also needs module_mm. pressure_angle_deg defaults to 20. module_mm is
-        the normal module, or the outer transverse module for a bevel. A bevel
+        spec needs type, teeth, and face_width_mm. A spur, helical, internal
+        ring, or bevel also needs module_mm. pressure_angle_deg defaults to 20.
+        module_mm is the normal module, or the outer transverse module for a bevel.
+        An internal ring is a spur with teeth pointing inward. rim_thickness_mm
+        is the metal outside the root; omit it for four normal modules. A bevel
         needs mate_teeth or ratio. A hypoid needs offset_mm, ring_diameter_mm,
         spiral_angle_deg, and role (pinion or ring). ratio is ring teeth
         divided by pinion teeth. helix_angle_deg and spiral_angle_deg are
         positive for a right-hand tooth. bore_mm, hub, keyway (DIN 6885-1),
-        and spline (ISO 14 or DIN 5480) are optional. position and
-        rotation_deg are [x, y, z].
+        and spline (ISO 14 or DIN 5480) are optional on an external gear.
+        position and rotation_deg are [x, y, z].
         """
         return guard(
             lambda: run(

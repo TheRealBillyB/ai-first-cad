@@ -1,8 +1,8 @@
 """Speed and torque for a gear train.
 
 The assembly stores the train: shafts, meshes, which shafts are held, and any
-open differential. Tooth counts come from gears the generator built. An
-internal ring is a tooth count on the shaft, because that solid is not built.
+open differential. Tooth counts come from gears the generator built, including
+an internal ring. A member that generator does not build is still a tooth count.
 
 An external mesh reverses the two shafts relative to their carrier. An
 internal mesh turns them the same way. A carrier of zero is the housing, so
@@ -806,7 +806,7 @@ def _gear(gear, index: int, shaft: str, seen: set[str], gear_shaft: dict[str, st
         record["teeth"] = _tooth_count(gear.get("teeth"), name)
     elif instance is None:
         raise GeometryError(
-            f"Gear {name!r} needs teeth. An internal ring is a tooth count, because that solid is not generated."
+            f"Gear {name!r} needs teeth, or a generated gear on an instance."
         )
     return record
 
@@ -941,7 +941,7 @@ def _motion_phrase(names, vector) -> str:
 
 def _assumptions() -> list[str]:
     return [
-        "Tooth counts are the generated gear's count, or the count stated for a member the generator does not build.",
+        "Tooth counts are the generated gear's count, including an internal ring, or the count stated for a member the generator does not build.",
         "Shafts are rigid. Gears on one shaft share one speed.",
         "An external mesh turns the two gears in opposite directions relative to the carrier. An internal mesh turns them the same way. The ratio is the tooth counts. A fixed-axis mesh uses the housing as its carrier.",
         "An open differential sets the average of the two output speeds equal to the carrier speed. The outputs share the carrier torque. In a turn, one output speeds up as much as the other slows down.",
@@ -957,7 +957,7 @@ def _limits() -> list[str]:
         "This is the rigid-body ratio of the stated meshes. It does not check that the solids touch or that the centre distance matches.",
         "Backlash is not in the speed.",
         "An efficiency other than 1 is a factor you supply.",
-        "An internal gear is a tooth count. The gear generator builds external teeth only.",
+        "An internal ring can be a generated spur solid. A member this generator does not build is still a tooth count on the shaft.",
         "One planet stands for a set of equal planets. They share one speed, and the torque is the total. Naming every planet leaves the tooth-force split free. Shaft torques that do not depend on that split are still reported. A mesh efficiency is applied only when every tooth force is determined.",
         "A gear fixed on a planetary carrier is that shaft's load. The carrier is not a second external torque unless the drive lists it as an output.",
         "Two ordinary meshes do not make an open differential. Use the differential element so one output can speed up as the other slows down.",
