@@ -94,18 +94,72 @@ def remember_project(path: Path) -> None:
     _write_recent(kept[:_RECENT_LIMIT])
 
 
-def list_recent() -> dict:
+def list_recent(*, project: Path | None = None, person: bool = True) -> dict:
+    """Folders this person opened. A link is not named.
+
+    The assistant only hears about the open project. A stored name is not
+    used: the name is the folder's own name, on one line.
+    """
+
+    stored = _read_recent()
     projects = []
-    for item in _read_recent():
-        folder = Path(str(item.get("path") or ""))
-        if folder.is_dir():
-            projects.append({"path": str(folder), "name": item.get("name") or folder.name})
-    if len(projects) != len(_read_recent()):
+    for item in stored:
+        folder = _real_recent_folder(item.get("path"))
+        if folder is None:
+            continue
+        from aicad.labels import plain_line
+
+        name = plain_line(folder.name)
+        if not name:
+            continue
+        projects.append({"path": str(folder), "name": name})
+    if projects != [{"path": item.get("path"), "name": item.get("name")} for item in stored]:
         _write_recent(projects)
+    shown = projects
+    if not person:
+        shown = [item for item in projects if _recent_inside(item["path"], project)]
     return {
-        "projects": projects,
+        "projects": shown,
         "note": "Recent projects are remembered on this computer, outside the project folder.",
     }
+
+
+def _real_recent_folder(raw: object) -> Path | None:
+    """A real directory. A symlink or junction is not a folder the list may name."""
+
+    if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:
+        return None
+    folder = Path(raw)
+    if not folder.is_absolute():
+        return None
+    from aicad.paths import is_reparse
+
+    try:
+        if folder.is_symlink() or is_reparse(folder) or not folder.is_dir():
+            return None
+    except OSError:
+        return None
+    return folder
+
+
+def _recent_inside(path: str, project: Path | None) -> bool:
+    if project is None:
+        return False
+    try:
+        folder = Path(path).resolve()
+        root = Path(project).resolve()
+    except OSError:
+        return False
+    return folder == root or root in folder.parents
+
+
+def list_recent_for(workspace) -> dict:
+    """Recent projects for one command. The assistant stays inside the open project."""
+
+    from aicad.sandbox_state import in_sandbox
+
+    person = workspace.document.actor == "user" and not in_sandbox()
+    return list_recent(project=workspace.root, person=person)
 
 
 def list_folders(path: str | Path, *, project: Path | None = None, person: bool = True) -> dict:
@@ -539,7 +593,7 @@ def register(add) -> None:
         "list_recent_projects",
         "Folders opened most recently on this computer.",
         _obj({}, []),
-        lambda _workspace, _arguments: list_recent(),
+        lambda workspace, _arguments: list_recent_for(workspace),
     ))
     add(Command(
         "list_folders",
