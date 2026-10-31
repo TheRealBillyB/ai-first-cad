@@ -142,7 +142,7 @@ async function applyRefresh(options = {}) {
   else if (ui.page === "model" && ui.stage === "sketch") drawSketch();
   else if (ui.page === "model") {
     ui.mesh = null;
-    $("empty").hidden = false;
+    showEmpty();
     drawSolid();
   }
   await renderShape();
@@ -189,10 +189,34 @@ function renderScriptWarning() {
   document.documentElement.style.setProperty("--banner", box.offsetHeight + "px");
 }
 
+const EMPTY_NOTE = "The parts in this project show up here. Move one, or change a size on the left. With Live on, an assistant's edits show up here too.";
+
+function showEmpty(message) {
+  const box = $("empty");
+  if (!box) return;
+  box.hidden = false;
+  const text = $("empty-message");
+  if (text) text.textContent = message || EMPTY_NOTE;
+  const offer = $("open-example");
+  if (offer) offer.hidden = Boolean(ui.state && ui.state.parts && ui.state.parts.length);
+}
+
+async function openWorkedExample() {
+  await command("open_example", { name: "motor_mount" });
+  ui.part = null;
+  ui.sketchName = null;
+  ui.sketch = null;
+  ui.viewAssembly = null;
+  ui.stage = "solid";
+  ui.page = "model";
+  setStage();
+  await refresh({ fit: "scene", solid: true });
+}
+
 async function loadMesh(options = {}) {
   if (!ui.viewAssembly && !(ui.state && ui.state.parts && ui.state.parts.length)) {
     ui.mesh = null;
-    $("empty").hidden = false;
+    showEmpty();
     drawSolid();
     return;
   }
@@ -203,8 +227,7 @@ async function loadMesh(options = {}) {
   const body = await response.json();
   if (!body.ok) {
     ui.mesh = null;
-    $("empty").hidden = false;
-    $("empty").textContent = body.error;
+    showEmpty(body.error);
     return;
   }
   const partKey = (body.result.parts || [body.result.part || ""]).join(",");
@@ -212,7 +235,8 @@ async function loadMesh(options = {}) {
   ui.mesh = body.result;
   ui.mesh._key = partKey;
   const hasTriangles = ui.mesh.positions && ui.mesh.positions.length;
-  $("empty").hidden = Boolean(hasTriangles);
+  if (hasTriangles) $("empty").hidden = true;
+  else showEmpty();
   if (!hasTriangles) {
     drawSolid();
     return;
@@ -277,9 +301,13 @@ function renderPanel() {
   if (ui.tab === "inspect") {
     const report = state.panels.inspect;
     const stale = state.panel_revision.inspect !== state.revision;
+    const materials = ((state.materials && state.materials.materials) || [])
+      .map((item) => `<option value="${escapeAttr(item.id)}" ${item.id === "steel" ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
+      .join("");
     root.innerHTML = `
       <h3>Inspect ${escapeHtml(part || "")}</h3>
       <div class="row"><label>Min wall <input id="min-wall" type="number" value="1.2" step="0.1" /></label>
+      <label>Material <select id="inspect-material">${materials || `<option value="steel" selected>mild steel</option>`}</select></label>
       <button type="button" id="run-inspect" class="primary">Inspect</button></div>
       ${report ? inspectHtml(report, stale) : `<p class="muted">Measure the part, estimate wall thickness, and show the pictures.</p>`}`;
     $("run-inspect").onclick = () => runInspect();
@@ -455,9 +483,14 @@ function inspectHtml(report, stale) {
   const m = report.measurement || {};
   const wall = report.wall || {};
   const box = m.bounding_box && m.bounding_box.size;
+  const com = m.center_of_mass_mm;
   const contact = (report.views || []).find((view) => view.name === "contact");
+  const mass = m.mass_g == null ? "n/a" : `${m.mass_g} g${m.material ? ` (${m.material})` : ""}`;
   return `${claimBlock(report)}<div class="kv">
       <span>Volume</span><b>${m.volume_mm3} mm³</b>
+      <span>Surface area</span><b>${m.area_mm2 == null ? "" : `${m.area_mm2} mm²`}</b>
+      <span>Center of mass</span><b>${com ? `${com.x}, ${com.y}, ${com.z}` : ""}</b>
+      <span>Mass</span><b>${mass}</b>
       <span>Size</span><b>${box ? `${box.x} × ${box.y} × ${box.z}` : ""}</b>
       <span>Watertight</span><b>${m.watertight ? "yes" : "no"}</b>
       <span>Wall</span><b>${wall.estimated_min_mm ?? "n/a"} mm ${wall.passed === false ? "(under the rule)" : ""}</b>
@@ -653,7 +686,12 @@ function renderFeaSetup() {
 
 async function runInspect() {
   if (!ui.part) return;
-  await command("inspect_part", { name: ui.part, min_wall_mm: Number($("min-wall").value) });
+  const material = $("inspect-material");
+  await command("inspect_part", {
+    name: ui.part,
+    min_wall_mm: Number($("min-wall").value),
+    material: material ? material.value : "steel",
+  });
   await command("feature_report", { name: ui.part });
   await refresh();
 }
@@ -822,7 +860,8 @@ function drawSketch() {
   const status = $("sketch-status");
   status.hidden = false;
   status.className = "sketch-status " + (ui.sketch.status || "");
-  status.textContent = `${ui.sketch.status || "unsolved"} · dof ${ui.sketch.dof ?? "?"} · ${(ui.sketch.conflicts || []).join(", ") || ui.sketch.note || ""}`;
+  const planeLabel = sketchPlaneLabel(ui.sketch.spec && ui.sketch.spec.plane);
+  status.textContent = `${planeLabel} · ${ui.sketch.status || "unsolved"} · dof ${ui.sketch.dof ?? "?"} · ${(ui.sketch.conflicts || []).join(", ") || ui.sketch.note || ""}`;
   renderDimensions();
 }
 
@@ -1050,6 +1089,8 @@ const view = {
   pitch: 0.55,
   distance: 80,
   target: [0, 0, 0],
+  direction: null,
+  up: [0, 0, 1],
   dragging: null,
   gl: null,
   program: null,
@@ -1057,12 +1098,42 @@ const view = {
   buffers: new Map(),
 };
 
+// Same camera directions as the rendered pictures. The eye sits on this
+// offset from the target. Z is up, except on the top and bottom views.
+const STANDARD_VIEWS = {
+  front: { eye: [0, -1, 0], up: [0, 0, 1] },
+  back: { eye: [0, 1, 0], up: [0, 0, 1] },
+  left: { eye: [-1, 0, 0], up: [0, 0, 1] },
+  right: { eye: [1, 0, 0], up: [0, 0, 1] },
+  top: { eye: [0, 0, 1], up: [0, 1, 0] },
+  bottom: { eye: [0, 0, -1], up: [0, 1, 0] },
+  iso: { eye: [1, -1, 0.85], up: [0, 0, 1] },
+};
+
+const VIEW_SHORTCUTS = {
+  1: "front",
+  2: "back",
+  3: "top",
+  4: "bottom",
+  5: "left",
+  6: "right",
+  7: "iso",
+  0: "fit",
+  Numpad1: "front",
+  Numpad2: "back",
+  Numpad3: "top",
+  Numpad4: "bottom",
+  Numpad5: "left",
+  Numpad6: "right",
+  Numpad7: "iso",
+  Numpad0: "fit",
+};
+
 function initView() {
   const canvas = $("view");
   const gl = canvas.getContext("webgl", { antialias: true });
   if (!gl) {
-    $("empty").hidden = false;
-    $("empty").textContent = "This browser has no WebGL, so the solid cannot be drawn.";
+    showEmpty("This browser has no WebGL, so the solid cannot be drawn.");
     return;
   }
   view.gl = gl;
@@ -1175,18 +1246,60 @@ function bindAttr(gl, program, name, data, size) {
 
 function cameraMatrix(aspect) {
   const eye = eyePosition();
-  const viewM = lookAt(eye, view.target, [0, 0, 1]);
+  const viewM = lookAt(eye, view.target, cameraUp());
   const proj = perspective(0.7, aspect, 0.1, view.distance * 20);
   return multiply(proj, viewM);
 }
 
 function eyePosition() {
+  if (view.direction) {
+    const n = normalize(view.direction);
+    return [
+      view.target[0] + n[0] * view.distance,
+      view.target[1] + n[1] * view.distance,
+      view.target[2] + n[2] * view.distance,
+    ];
+  }
   const cp = Math.cos(view.pitch);
   return [
     view.target[0] + view.distance * cp * Math.sin(view.yaw),
     view.target[1] - view.distance * cp * Math.cos(view.yaw),
     view.target[2] + view.distance * Math.sin(view.pitch),
   ];
+}
+
+function cameraUp() {
+  const up = view.up && view.up.length === 3 ? view.up : [0, 0, 1];
+  const forward = normalize(sub(view.target, eyePosition()));
+  if (Math.abs(dot(normalize(up), forward)) > 0.99) return [0, 1, 0];
+  return up;
+}
+
+function setStandardView(name) {
+  const spec = STANDARD_VIEWS[name];
+  if (!spec) return;
+  view.direction = spec.eye.slice();
+  view.up = spec.up.slice();
+  if (ui.stage === "solid") drawSolid();
+}
+
+function leaveStandardView() {
+  if (!view.direction) return;
+  const n = normalize(view.direction);
+  const pitch = Math.asin(Math.max(-1, Math.min(1, n[2])));
+  view.pitch = Math.max(-1.2, Math.min(1.2, pitch));
+  const cp = Math.cos(view.pitch);
+  view.yaw = Math.abs(cp) < 1e-3 ? 0 : Math.atan2(n[0], -n[1]);
+  view.direction = null;
+  view.up = [0, 0, 1];
+}
+
+function viewShortcut(event) {
+  if (!event || event.metaKey || event.ctrlKey || event.altKey) return null;
+  const target = event.target;
+  const tag = target && target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (target && target.isContentEditable)) return null;
+  return VIEW_SHORTCUTS[event.key] || null;
 }
 
 view.fit = function fit() {
@@ -1217,7 +1330,7 @@ function framePart(name) {
 function viewScale() {
   const eye = eyePosition();
   const forward = normalize(sub(view.target, eye));
-  const right = normalize(cross(forward, [0, 0, 1]));
+  const right = normalize(cross(forward, cameraUp()));
   const up = cross(right, forward);
   const rect = $("view").getBoundingClientRect();
   const worldHeight = 2 * view.distance * Math.tan(0.35);
@@ -1300,6 +1413,7 @@ function onPointerDown(event) {
       return;
     }
   }
+  leaveStandardView();
   view.dragging = { x: event.clientX, y: event.clientY, yaw: view.yaw, pitch: view.pitch, target: view.target.slice(), moved: false, button: event.button, mode: "orbit" };
   event.target.setPointerCapture(event.pointerId);
 }
@@ -1322,7 +1436,7 @@ function onPointerMove(event) {
   if (view.dragging.button === 2 || event.shiftKey) {
     const eye = eyePosition();
     const forward = normalize(sub(view.target, eye));
-    const right = normalize(cross(forward, [0, 0, 1]));
+    const right = normalize(cross(forward, cameraUp()));
     const up = cross(right, forward);
     const scale = view.distance * 0.002;
     view.target = add(view.dragging.target, add(scaleV(right, -dx * scale), scaleV(up, dy * scale)));
@@ -2142,7 +2256,12 @@ async function boot() {
   $("undo").onclick = async () => { await command("undo"); ui.parameterKey = ""; await refresh({ fit: "scene" }); };
   $("redo").onclick = async () => { await command("redo"); ui.parameterKey = ""; await refresh({ fit: "scene" }); };
   $("fit").onclick = () => { view.fit(); drawSolid(); };
+  document.querySelectorAll("[data-view]").forEach((button) => {
+    button.onclick = () => setStandardView(button.dataset.view);
+  });
   $("open-project").onclick = () => browseProjects("open").catch(showError);
+  const exampleButton = $("open-example");
+  if (exampleButton) exampleButton.onclick = () => openWorkedExample().catch(showError);
   $("save-project").onclick = async () => {
     const result = await command("save_project");
     $("who").textContent = `Saved ${result.name}`;
@@ -2182,11 +2301,19 @@ async function boot() {
   };
   $("measure-clear").onclick = () => clearMeasure();
   $("new-sketch").onclick = async () => {
-    const answer = await ask("New sketch", [{ name: "name", label: "Name", value: "sketch" }]);
+    const answer = await ask("New sketch", [
+      { name: "name", label: "Name", value: "sketch" },
+      { name: "plane", label: "Plane (xy, yz, xz, or face)", value: "xy" },
+      { name: "offset", label: "Offset mm", value: "" },
+      { name: "angle", label: "Angle degrees", value: "" },
+      { name: "axis", label: "Angle axis (x, y, or z)", value: "x" },
+    ]);
     if (!answer) return;
+    const chosen = sketchPlaneSpec(answer, { part: ui.part, ref: (ui.selectedFaces || [])[0] });
+    if (chosen.error) throw new Error(chosen.error);
     await command("create_sketch", {
       name: answer.name,
-      spec: { plane: "xy", entities: [{ id: "origin", type: "point", at: [0, 0] }], constraints: [{ type: "fix", entity: "origin" }] },
+      spec: { plane: chosen.plane, entities: [{ id: "origin", type: "point", at: [0, 0] }], constraints: [{ type: "fix", entity: "origin" }] },
     });
     await refresh();
     await openSketch(answer.name);
@@ -2287,7 +2414,17 @@ async function boot() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
       command(event.shiftKey ? "redo" : "undo").then(refresh).catch(showError);
+      return;
     }
+    const named = viewShortcut(event);
+    if (!named || ui.page !== "model" || ui.stage !== "solid") return;
+    event.preventDefault();
+    if (named === "fit") {
+      view.fit();
+      drawSolid();
+      return;
+    }
+    setStandardView(named);
   });
   listenForEvents().catch(showError);
   const settings = await (await apiFetch("/api/settings")).json();

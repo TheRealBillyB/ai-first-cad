@@ -3,8 +3,11 @@
 import importlib
 import importlib.util
 import json
+import os
 import shutil
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -140,21 +143,52 @@ def test_docs_record_the_door_and_the_agpl_note():
 
 
 def test_consent_file_is_user_config_not_the_project(tmp_path, monkeypatch):
+    """Consent is account config. A confined-script mark lasts for the process, so this uses a fresh one."""
     monkeypatch.delenv("AICAD_PLUGIN_CONSENT", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     project = tmp_path / "project"
     project.mkdir()
-    monkeypatch.chdir(project)
-    monkeypatch.setattr(plugins.Path, "home", lambda: tmp_path / "home")
-    assert plugins.consent_file() == tmp_path / "home" / ".config" / "aicad" / "plugins.json"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    assert plugins.consent_file() == tmp_path / "xdg" / "aicad" / "plugins.json"
-    assert project not in plugins.consent_file().parents
-    monkeypatch.setenv("AICAD_PLUGIN_CONSENT", str(project / "plugins.json"))
-    monkeypatch.setattr("aicad.sandbox_state.in_sandbox", lambda: True)
-    sandboxed = plugins.consent_file()
-    assert sandboxed == tmp_path / "home" / ".config" / "aicad" / "plugins.json"
-    assert project not in sandboxed.parents
+    script = tmp_path / "consent_check.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import os
+            import sys
+            from pathlib import Path
+
+            import aicad.plugins as plugins
+            import aicad.sandbox_state as sandbox_state
+
+            root = Path(sys.argv[1])
+            project = root / "project"
+            os.chdir(project)
+            plugins.Path.home = lambda: root / "home"
+            home = root / "home" / ".config" / "aicad" / "plugins.json"
+            assert plugins.consent_file() == home
+            os.environ["XDG_CONFIG_HOME"] = str(root / "xdg")
+            assert plugins.consent_file() == root / "xdg" / "aicad" / "plugins.json"
+            assert project not in plugins.consent_file().parents
+            os.environ["AICAD_PLUGIN_CONSENT"] = str(project / "plugins.json")
+            sandbox_state.in_sandbox = lambda: True
+            sandboxed = plugins.consent_file()
+            assert sandboxed == home
+            assert project not in sandboxed.parents
+            """
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.pop("AICAD_PLUGIN_CONSENT", None)
+    env.pop("XDG_CONFIG_HOME", None)
+    completed = subprocess.run(
+        [sys.executable, str(script), str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=project,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_discover_and_warning_do_not_import(tmp_path, monkeypatch, isolated_consent):
