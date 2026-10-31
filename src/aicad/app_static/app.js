@@ -1380,18 +1380,7 @@ function pickEdge(x, y, rect) {
 }
 
 function snapVertex(x, y, rect, part) {
-  let best = null;
-  let bestD = 14;
-  (ui.mesh.edges || []).forEach((edge) => {
-    if (part && edge.part && edge.part !== part) return;
-    edge.points.forEach((point) => {
-      const screen = project(point, rect);
-      if (!screen) return;
-      const d = Math.hypot(screen[0] - x, screen[1] - y);
-      if (d < bestD) { bestD = d; best = point.slice(); }
-    });
-  });
-  return best;
+  return measureSnapPoint(x, y, ui.mesh && ui.mesh.edges, (point) => project(point, rect), { part, limit: 14 });
 }
 
 function rayDirection(x, y, rect) {
