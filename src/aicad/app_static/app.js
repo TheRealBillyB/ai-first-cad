@@ -29,6 +29,7 @@ const ui = {
   livePart: null,
   parameters: null,
   parameterKey: "",
+  historyStep: "",
   shapeTimer: 0,
   reports: {},
   reportFocus: null,
@@ -235,22 +236,36 @@ function renderTree() {
     .map((sketch) => `<li data-sketch="${escapeAttr(sketch.name)}" class="${sketch.name === ui.sketchName ? "on" : ""}">
       <span>${escapeHtml(sketch.name)}</span><span class="meta">${escapeHtml(String(sketch.status || "").replaceAll("_", " "))}</span></li>`)
     .join("") || `<li class="meta">No sketches yet</li>`;
-  const features = state.panels.features;
-  const stale = state.panel_revision.features !== state.revision;
-  if (!features || features.part && false) return;
-  const steps = features && features.steps ? features.steps : [];
-  $("feature-list").innerHTML = steps.length
-    ? steps.map((step) => `<li><span>${escapeHtml(step.name)}</span>${step.redundant ? `<span class="flag">buried</span>` : `<span class="meta">${escapeHtml(step.op)}</span>`}</li>`).join("")
-        + (stale ? `<li class="meta">Feature list is from an older revision.</li>` : "")
-    : `<li class="meta">${features && features.tracked === false ? "Not tracked" : "Run Inspect or Features"}</li>`;
+  const selected = (state.parts || []).find((part) => part.name === ui.part);
+  const steps = selected && selected.history ? selected.history : [];
+  if (ui.historyStep && !steps.some((step) => step.id === ui.historyStep)) ui.historyStep = "";
+  $("feature-list").innerHTML = !ui.part
+    ? `<li class="meta">Select a part</li>`
+    : steps.length
+      ? steps.map((step) => {
+          const classes = [step.id === ui.historyStep ? "on" : "", step.error ? "broken" : ""].filter(Boolean).join(" ");
+          return `<li data-step="${escapeAttr(step.id)}" class="${classes}">
+            <span>${escapeHtml(step.name)}</span><span class="meta">${escapeHtml(step.kind)}</span>
+            ${step.error ? `<span class="flag">${escapeHtml(step.error)}</span>` : ""}</li>`;
+        }).join("")
+      : `<li class="meta">No steps</li>`;
   $("part-list").querySelectorAll("[data-part]").forEach((node) => {
     armRow(node);
     node.onclick = async () => {
       ui.viewAssembly = null;
       ui.part = node.dataset.part;
+      ui.historyStep = "";
       ui.stage = "solid";
       setStage();
       await refresh();
+    };
+  });
+  $("feature-list").querySelectorAll("[data-step]").forEach((node) => {
+    armRow(node);
+    node.onclick = () => {
+      ui.historyStep = node.dataset.step;
+      renderTree();
+      renderShape().catch(showError);
     };
   });
   $("sketch-list").querySelectorAll("[data-sketch]").forEach((node) => {
@@ -1816,7 +1831,10 @@ async function renderShape() {
     <label><span>${axis}</span><input data-place="${index}" type="number" step="1" value="${Number(placement.position[index]).toFixed(2)}" /></label>`).join("");
   const spin = ["Rx", "Ry", "Rz"].map((axis, index) => `
     <label><span>${axis}</span><input data-spin="${index}" type="number" step="1" value="${Number(placement.rotation_deg[index] || 0).toFixed(1)}" /></label>`).join("");
-  const sizes = (report.parameters || []).map((item) => {
+  const history = ((ui.state.parts || []).find((part) => part.name === ui.part) || {}).history || [];
+  const chosen = history.find((step) => step.id === ui.historyStep);
+  const visible = (report.parameters || []).filter((item) => !ui.historyStep || item.step === ui.historyStep);
+  const sizes = visible.map((item) => {
     const range = rangeFor(item);
     return `<label><span>${escapeHtml(item.label)}</span>
       <input data-range="${escapeAttr(item.id)}" type="range" min="${range.min}" max="${range.max}" step="${range.step}" value="${item.value}" />
@@ -1827,7 +1845,8 @@ async function renderShape() {
     <p class="muted">Place</p>
     <div class="place-grid">${place}</div>
     <div class="place-grid">${spin}</div>
-    <p class="muted">Size</p>
+    <p class="muted">${chosen ? escapeHtml(chosen.name) : "Size"}</p>
+    ${chosen && chosen.error ? `<p class="flag">${escapeHtml(chosen.error)}</p>` : ""}
     ${sizes || `<p class="muted">${escapeHtml(report.note || "")}</p>`}
     ${sizes ? `<p class="muted">${escapeHtml(report.note || "")}</p>` : ""}`;
   slot.querySelectorAll("[data-place], [data-spin]").forEach((input) => {

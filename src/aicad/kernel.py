@@ -371,28 +371,54 @@ def make_from_ops(ops: list[dict]) -> Shape:
 
     log = FeatureLog()
     for index, op in enumerate(ops):
-        if not isinstance(op, dict):
-            raise GeometryError(f"Operation {index} must be an object.")
-        kind = op.get("op")
-        if kind not in ("add", "cut"):
-            raise GeometryError(
-                f"Operation {index} has op {kind!r}. Use 'add' or 'cut'."
-            )
-        tool = _primitive(op, index)
-        name = op.get("name") or f"{kind}_{index + 1}"
-        if not isinstance(name, str) or not name.strip():
-            raise GeometryError(f"Operation {index} name must be a non-empty string.")
-        if kind == "add":
-            log.add(name, tool)
-        else:
-            if log.current is None:
-                raise GeometryError(
-                    f"Operation {index} is a cut, but the part has no solid yet. Add one first."
-                )
-            log.cut(name, tool)
-            if _volume(log.current) <= 0 or len(log.current.solids()) == 0:
-                raise GeometryError(f"Operation {index} (cut) removed the entire part.")
+        _apply_model_op(log, op, index)
     return Shape(_require_solid(log.current), features=log.report())
+
+
+def prefix_from_ops(ops: list[dict]) -> tuple[Shape | None, dict[str, str]]:
+    """Build operations until one fails.
+
+    The solid is the last successful step. The failing step's id maps to its
+    error. Later steps are not built. An empty list or a failure of the first
+    step returns no solid.
+    """
+    if not isinstance(ops, list) or not ops:
+        return None, {"op/0": "ops must be a non-empty list of operations."}
+    if len(ops) > 500:
+        return None, {"op/0": "A part may have at most 500 operations."}
+    log = FeatureLog()
+    errors: dict[str, str] = {}
+    for index, op in enumerate(ops):
+        try:
+            _apply_model_op(log, op, index)
+        except GeometryError as exc:
+            errors[f"op/{index}"] = str(exc)
+            break
+    if log.current is None:
+        return None, errors
+    return Shape(_require_solid(log.current), features=log.report()), errors
+
+
+def _apply_model_op(log: FeatureLog, op: dict, index: int) -> None:
+    if not isinstance(op, dict):
+        raise GeometryError(f"Operation {index} must be an object.")
+    kind = op.get("op")
+    if kind not in ("add", "cut"):
+        raise GeometryError(f"Operation {index} has op {kind!r}. Use 'add' or 'cut'.")
+    tool = _primitive(op, index)
+    name = op.get("name") or f"{kind}_{index + 1}"
+    if not isinstance(name, str) or not name.strip():
+        raise GeometryError(f"Operation {index} name must be a non-empty string.")
+    if kind == "add":
+        log.add(name, tool)
+        return
+    if log.current is None:
+        raise GeometryError(
+            f"Operation {index} is a cut, but the part has no solid yet. Add one first."
+        )
+    log.cut(name, tool)
+    if _volume(log.current) <= 0 or len(log.current.solids()) == 0:
+        raise GeometryError(f"Operation {index} (cut) removed the entire part.")
 
 
 _EDGE_REF_TOLERANCE_MM = 1.0
@@ -436,6 +462,27 @@ def apply_edge_ops(shape: Shape, ops: list[dict]) -> Shape:
     for index, op in enumerate(ops):
         current = _apply_edge_op(current, op, index)
     return current
+
+
+def apply_edge_ops_partial(shape: Shape, ops: list[dict]) -> tuple[Shape, dict[str, Exception]]:
+    """Apply edge steps until one fails.
+
+    The solid stays at the last step that fitted. The failing step id maps to
+    the error. Later steps are not applied.
+    """
+    if not ops:
+        return shape, {}
+    if not isinstance(ops, list):
+        raise GeometryError("Edge steps must be a list.")
+    current = shape
+    failures: dict[str, Exception] = {}
+    for index, op in enumerate(ops):
+        try:
+            current = _apply_edge_op(current, op, index)
+        except (EdgeOpError, GeometryError) as exc:
+            failures[f"edge/{index}"] = exc
+            break
+    return current, failures
 
 
 def _apply_edge_op(shape: Shape, op: dict, index: int) -> Shape:
@@ -3208,28 +3255,53 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
         raise GeometryError("A part may have at most 500 sketch steps.")
     log = feature if isinstance(feature, FeatureLog) else FeatureLog()
     for index, step in enumerate(steps):
-        if not isinstance(step, dict):
-            raise GeometryError(f"Sketch step {index} must be an object.")
-        op = step.get("op")
-        name = step.get("name") or f"{op}_{index + 1}"
-        if not isinstance(name, str) or not name.strip():
-            raise GeometryError(f"Sketch step {index} name must be a non-empty string.")
-        if op in ("extrude", "revolve", "gusset"):
-            tool = _sketch_tool(step, geometry, index, name)
-            log.add(name, tool)
-        elif op in ("cut", "cut_box"):
-            if log.current is None:
-                raise GeometryError(
-                    f"Sketch step {index} ({name}) is a cut, but nothing has been added yet."
-                )
-            tool = _sketch_tool(step, geometry, index, name)
-            log.cut(name, tool)
-        else:
-            raise GeometryError(
-                f"Sketch step {index} has op {op!r}. "
-                "Use extrude, cut, revolve, cut_box, or gusset."
-            )
+        _apply_sketch_step(log, step, geometry, index)
     return Shape(_require_solid(log.current), features=log.report())
+
+
+def prefix_from_sketch(geometry: dict, steps: list[dict]) -> tuple[Shape | None, dict[str, str]]:
+    """Build sketch steps until one fails. The solid is the last step that fitted."""
+    if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
+        raise GeometryError(
+            "solid_from_sketch needs solved sketch geometry, with points, lines, circles, and arcs."
+        )
+    if not isinstance(steps, list) or not steps:
+        return None, {"step/0": "solid_from_sketch needs steps: extrude, cut, revolve, cut_box, or gusset."}
+    if len(steps) > 500:
+        return None, {"step/0": "A part may have at most 500 sketch steps."}
+    log = FeatureLog()
+    errors: dict[str, str] = {}
+    for index, step in enumerate(steps):
+        try:
+            _apply_sketch_step(log, step, geometry, index)
+        except GeometryError as exc:
+            errors[f"step/{index}"] = str(exc)
+            break
+    if log.current is None:
+        return None, errors
+    return Shape(_require_solid(log.current), features=log.report()), errors
+
+
+def _apply_sketch_step(log: FeatureLog, step: dict, geometry: dict, index: int) -> None:
+    if not isinstance(step, dict):
+        raise GeometryError(f"Sketch step {index} must be an object.")
+    op = step.get("op")
+    name = step.get("name") or f"{op}_{index + 1}"
+    if not isinstance(name, str) or not name.strip():
+        raise GeometryError(f"Sketch step {index} name must be a non-empty string.")
+    if op in ("extrude", "revolve", "gusset"):
+        log.add(name, _sketch_tool(step, geometry, index, name))
+        return
+    if op in ("cut", "cut_box"):
+        if log.current is None:
+            raise GeometryError(
+                f"Sketch step {index} ({name}) is a cut, but nothing has been added yet."
+            )
+        log.cut(name, _sketch_tool(step, geometry, index, name))
+        return
+    raise GeometryError(
+        f"Sketch step {index} has op {op!r}. Use extrude, cut, revolve, cut_box, or gusset."
+    )
 
 
 def _sketch_tool(step: dict, geometry: dict, index: int, name: str):
