@@ -278,18 +278,18 @@ def collisions(solved: dict, placed: dict[str, kernel.Shape], ignore: list[list[
         for right in names[index + 1 :]:
             if tuple(sorted((left, right))) in skip:
                 continue
-            overlap = kernel.overlap_volume(placed[left], placed[right])
+            # One boolean. The volume and its center come from that solid.
+            # A second boolean only to find the center repeated the same cut.
+            overlap, point = kernel.overlap_center(placed[left], placed[right])
             if overlap <= 1e-3:
                 continue
-            _overlap, distance, point_a, point_b = kernel.clearance_between(placed[left], placed[right])
-            at = point_a or point_b
             hits.append(
                 {
                     "a": left,
                     "b": right,
                     "interference_volume_mm3": overlap,
-                    "gap_mm": distance,
-                    "at_mm": None if at is None else [at.x, at.y, at.z],
+                    "gap_mm": 0.0,
+                    "at_mm": None if point is None else [point.x, point.y, point.z],
                 }
             )
     return hits
@@ -604,7 +604,7 @@ def preview_mesh(spec: dict, shapes: dict[str, kernel.Shape], overrides: dict | 
     faces = []
     edges = []
     for index, instance in enumerate(solved["instances"]):
-        piece = _transform_mesh(kernel.tessellate(shapes[instance["part"]]), instance["matrix"])
+        piece = _transform_mesh(_stored_mesh(shapes[instance["part"]]), instance["matrix"])
         color = _instance_color(instance, index)
         faces.append(
             {
@@ -771,10 +771,24 @@ def _instance_color(instance: dict, index: int) -> tuple[float, float, float]:
     return _PALETTE[index % len(_PALETTE)]
 
 
+def _stored_mesh(shape: kernel.Shape) -> kernel.TriangleMesh:
+    """Tessellation of one solid, kept for every instance and later pose.
+
+    The solid object does not change when the assembly moves. A second
+    instance, or the next pose, only needs the same vertices moved by a
+    new matrix. A replaced solid is a new object, so it is meshed again.
+    """
+    mesh = getattr(shape, "_tessellation", None)
+    if mesh is None:
+        mesh = kernel.tessellate(shape)
+        shape._tessellation = mesh
+    return mesh
+
+
 def _colored_mesh(shapes: dict[str, kernel.Shape], solved: dict) -> kernel.TriangleMesh:
     pieces = []
     for index, instance in enumerate(solved["instances"]):
-        piece = _transform_mesh(kernel.tessellate(shapes[instance["part"]]), instance["matrix"])
+        piece = _transform_mesh(_stored_mesh(shapes[instance["part"]]), instance["matrix"])
         color = np.array(_instance_color(instance, index), dtype=np.float64)
         piece.colors = np.tile(color, (len(piece.vertices), 1))
         pieces.append(piece)
