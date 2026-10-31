@@ -13,7 +13,6 @@ import math
 import re
 import stat
 import struct
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -290,7 +289,7 @@ def slice_mesh(
         for executable in executables:
             last_name = Path(executable).name
             for export in (True, False):
-                from aicad.sandbox import program_environment
+                from aicad.sandbox import program_environment, run_confined_helper
 
                 def run_once(supports: bool) -> tuple[str, bytes]:
                     command = _slice_command(
@@ -302,16 +301,10 @@ def slice_mesh(
                         layer_height_mm,
                         supports,
                     )
-                    completed = subprocess.run(
+                    completed = run_confined_helper(
                         command,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        stdin=subprocess.DEVNULL,
-                        timeout=180,
-                        check=False,
                         env=program_environment(),
+                        timeout=180,
                         **held_run_kwargs(work),
                     )
                     text = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]

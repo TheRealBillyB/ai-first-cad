@@ -13,7 +13,6 @@ from __future__ import annotations
 import math
 import re
 import signal
-import subprocess
 import threading
 from pathlib import Path
 
@@ -1032,18 +1031,12 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
         solver = find_program("ccx")
         if solver is None:
             return None, None, "CalculiX (ccx) is not on PATH."
-        from aicad.sandbox import program_environment
+        from aicad.sandbox import program_environment, run_confined_helper
 
-        completed = subprocess.run(
+        completed = run_confined_helper(
             [solver, "-i", "job"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdin=subprocess.DEVNULL,
-            timeout=180,
-            check=False,
             env=program_environment(),
+            timeout=180,
             **held_subprocess_kwargs(path),
         )
         if completed.returncode != 0 or not held_entry_is_file(path, "job.frd"):

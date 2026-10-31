@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from aicad.kernel import make_from_script
@@ -189,8 +190,13 @@ def test_calculix_and_ffmpeg_receive_the_scrubbed_environment(monkeypatch):
 
         return Done()
 
-    monkeypatch.setattr(fea.subprocess, "run", run)
-    monkeypatch.setattr(modal.subprocess, "run", run)
+    monkeypatch.setattr("subprocess.run", run)
+    if sys.platform == "win32":
+        def spawn(_command, **kwargs):
+            seen.append({"stdin": subprocess.DEVNULL, "env": kwargs.get("env")})
+            return (1, "", "", False, False, "appcontainer")
+
+        monkeypatch.setattr("aicad.sandbox_windows.spawn", spawn)
     monkeypatch.setenv("LD_PRELOAD", "libcanary.so")
     monkeypatch.setenv("PYTHONSTARTUP", "startup.py")
     monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "ccx")

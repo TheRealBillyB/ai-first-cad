@@ -49,16 +49,8 @@ def _script(tools: Path, name: str, body: str) -> Path:
 
 
 def _run_script(monkeypatch, module: str, script: Path) -> None:
-    if os.name != "nt":
-        return
-    real_run = subprocess.run
-
-    def run(command, **kwargs):
-        if command and command[0] == str(script):
-            command = [sys.executable, *command]
-        return real_run(command, **kwargs)
-
-    monkeypatch.setattr(f"{module}.subprocess.run", run)
+    # A confined helper starts a .py program with this interpreter.
+    del monkeypatch, module, script
 
 
 def _outside(cwd: Path, project: Path) -> None:
@@ -80,16 +72,37 @@ def _no_project_path(argv: str, project: Path) -> None:
         assert folder not in line
 
 
-def _slicer(tools: Path, witness: Path, seen: Path, argv: Path, stl: Path) -> Path:
+def _capture(monkeypatch) -> list[str]:
+    from aicad.sandbox import run_confined_helper
+
+    notes: list[str] = []
+
+    def wrapped(command, **kwargs):
+        result = run_confined_helper(command, **kwargs)
+        notes.append(result.stdout or "")
+        return result
+
+    monkeypatch.setattr("aicad.sandbox.run_confined_helper", wrapped)
+    return notes
+
+
+def _field(text: str, name: str) -> str:
+    for line in text.splitlines():
+        if line.startswith(name + " "):
+            return line.split(" ", 1)[1]
+    raise AssertionError(text)
+
+
+def _slicer(tools: Path) -> Path:
     return _script(
         tools,
         "orcaslicer",
         "import os, sys\n"
         "from pathlib import Path\n"
-        f"Path({str(witness)!r}).write_text(os.getcwd(), encoding='utf-8')\n"
-        f"Path({str(seen)!r}).write_text('yes' if Path('CANARY_HIT').exists() else 'no', encoding='utf-8')\n"
-        f"Path({str(argv)!r}).write_text('\\n'.join(sys.argv[1:]), encoding='utf-8')\n"
-        f"Path({str(stl)!r}).write_text('yes' if Path('oriented.stl').is_file() else 'no', encoding='utf-8')\n"
+        "print('CWD', os.getcwd())\n"
+        "print('SEEN', 'yes' if Path('CANARY_HIT').exists() else 'no')\n"
+        "print('STL', 'yes' if Path('oriented.stl').is_file() else 'no')\n"
+        "print('ARGV', '|'.join(sys.argv[1:]))\n"
         "for arg in sys.argv:\n"
         "    if str(arg).endswith('.gcode'):\n"
         "        Path(arg).write_text('; sliced\\n', encoding='utf-8')\n",
@@ -100,11 +113,8 @@ def test_a_slicer_does_not_run_in_the_project(tmp_path, monkeypatch):
     project = _project(tmp_path)
     _point_temp_at(monkeypatch, project)
     tools = tmp_path / "tools"
-    witness = tmp_path / "cwd.txt"
-    seen = tmp_path / "seen.txt"
-    argv = tmp_path / "argv.txt"
-    stl = tmp_path / "stl.txt"
-    script = _slicer(tools, witness, seen, argv, stl)
+    script = _slicer(tools)
+    notes = _capture(monkeypatch)
     monkeypatch.setattr("aicad.printprep.find_slicers", lambda: [str(script)])
     if os.name == "nt":
         # Windows will not start a shebang script. The interpreter runs the
@@ -121,15 +131,16 @@ def test_a_slicer_does_not_run_in_the_project(tmp_path, monkeypatch):
     out = project / "slice"
     vertices, triangles = _mesh()
     slice_mesh(vertices, triangles, out)
-    cwd = Path(witness.read_text(encoding="utf-8"))
+    text = notes[0]
+    cwd = Path(_field(text, "CWD"))
     _outside(cwd, project)
     assert cwd != tools.resolve()
-    assert stl.read_text(encoding="utf-8") == "yes"
-    assert seen.read_text(encoding="utf-8") == "no"
-    recorded = argv.read_text(encoding="utf-8")
+    assert _field(text, "STL") == "yes"
+    assert _field(text, "SEEN") == "no"
+    recorded = _field(text, "ARGV")
     _no_project_path(recorded, project)
-    assert "oriented.stl" in recorded.splitlines()
-    assert "print.gcode" in recorded.splitlines()
+    assert "oriented.stl" in recorded.split("|")
+    assert "print.gcode" in recorded.split("|")
     assert (project / "CANARY_HIT").read_text(encoding="utf-8") == "CANARY_HIT\n"
     assert not (out / "oriented.stl").exists()
     assert (out / "print.gcode").read_text(encoding="utf-8") == "; sliced\n"
@@ -159,21 +170,18 @@ def test_ffmpeg_encodes_from_a_private_copy(tmp_path, monkeypatch):
     project = _project(tmp_path)
     _point_temp_at(monkeypatch, project)
     tools = tmp_path / "tools"
-    witness = tmp_path / "cwd.txt"
-    seen = tmp_path / "seen.txt"
-    argv = tmp_path / "argv.txt"
-    frames = tmp_path / "frames.txt"
     script = _script(
         tools,
         "ffmpeg",
         "import os, sys\n"
         "from pathlib import Path\n"
-        f"Path({str(witness)!r}).write_text(os.getcwd(), encoding='utf-8')\n"
-        f"Path({str(seen)!r}).write_text('yes' if Path('CANARY_HIT').exists() else 'no', encoding='utf-8')\n"
-        f"Path({str(argv)!r}).write_text('\\n'.join(sys.argv[1:]), encoding='utf-8')\n"
-        f"Path({str(frames)!r}).write_text('yes' if Path('frame_0000.png').is_file() else 'no', encoding='utf-8')\n"
+        "print('CWD', os.getcwd())\n"
+        "print('SEEN', 'yes' if Path('CANARY_HIT').exists() else 'no')\n"
+        "print('FRAMES', 'yes' if Path('frame_0000.png').is_file() else 'no')\n"
+        "print('ARGV', '|'.join(sys.argv[1:]))\n"
         "Path(sys.argv[-1]).write_bytes(b'video')\n",
     )
+    notes = _capture(monkeypatch)
     monkeypatch.setattr("aicad.animation.find_program", lambda *_args, **_kwargs: str(script))
     _run_script(monkeypatch, "aicad.animation", script)
     destination = project / "renders" / "clip.mp4"
@@ -186,14 +194,15 @@ def test_ffmpeg_encodes_from_a_private_copy(tmp_path, monkeypatch):
         4,
         ["mp4"],
     )
-    cwd = Path(witness.read_text(encoding="utf-8"))
+    text = notes[0]
+    cwd = Path(_field(text, "CWD"))
     _outside(cwd, project)
-    assert seen.read_text(encoding="utf-8") == "no"
-    assert frames.read_text(encoding="utf-8") == "yes"
-    recorded = argv.read_text(encoding="utf-8")
+    assert _field(text, "SEEN") == "no"
+    assert _field(text, "FRAMES") == "yes"
+    recorded = _field(text, "ARGV")
     _no_project_path(recorded, project)
-    assert "frame_%04d.png" in recorded.splitlines()
-    assert "video.mp4" in recorded.splitlines()
+    assert "frame_%04d.png" in recorded.split("|")
+    assert "video.mp4" in recorded.split("|")
     assert message is None
     assert videos["mp4"] == str(destination.resolve())
     assert destination.read_bytes() == b"video"
@@ -205,23 +214,25 @@ def test_calculix_runs_in_a_private_folder(tmp_path, monkeypatch):
     project = _project(tmp_path)
     _point_temp_at(monkeypatch, project)
     tools = tmp_path / "tools"
-    witness = tmp_path / "cwd.txt"
-    seen = tmp_path / "seen.txt"
-    argv = tmp_path / "argv.txt"
-    deck = tmp_path / "deck.txt"
     script = _script(
         tools,
         "ccx",
         "import os, sys\n"
         "from pathlib import Path\n"
-        f"seen = Path({str(witness)!r})\n"
-        "seen.write_text((seen.read_text(encoding='utf-8') if seen.exists() else '') + os.getcwd() + '\\n', encoding='utf-8')\n"
-        f"Path({str(seen)!r}).write_text('yes' if Path('CANARY_HIT').exists() else 'no', encoding='utf-8')\n"
-        f"args = Path({str(argv)!r})\n"
-        "args.write_text((args.read_text(encoding='utf-8') if args.exists() else '') + '\\n'.join(sys.argv[1:]) + '\\n', encoding='utf-8')\n"
-        f"Path({str(deck)!r}).write_text('yes' if Path('job.inp').is_file() else 'no', encoding='utf-8')\n",
+        "print('CWD', os.getcwd())\n"
+        "print('SEEN', 'yes' if Path('CANARY_HIT').exists() else 'no')\n"
+        "print('DECK', 'yes' if Path('job.inp').is_file() else 'no')\n"
+        "print('ARGV', ' '.join(sys.argv[1:]))\n",
     )
-    monkeypatch.setattr("aicad.prereqs.find_program", lambda name, project=None: str(script))
+    notes = _capture(monkeypatch)
+    from aicad.prereqs import find_program as real_find
+
+    def find_ccx(name, project=None):
+        if name == "ccx":
+            return str(script)
+        return real_find(name, project=project)
+
+    monkeypatch.setattr("aicad.prereqs.find_program", find_ccx)
     _run_script(monkeypatch, "aicad.fea", script)
     _run_script(monkeypatch, "aicad.modal", script)
     from aicad import fea, modal
@@ -235,16 +246,16 @@ def test_calculix_runs_in_a_private_folder(tmp_path, monkeypatch):
     forces[1, 0] = 1.0
     fea._run_ccx(mesh, np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3})
     modal._frequency_once([], [], [], 1, 5)
-    folders = [Path(line) for line in witness.read_text(encoding="utf-8").splitlines() if line]
-    assert len(folders) == 2
+    assert len(notes) == 2
+    folders = [Path(_field(text, "CWD")) for text in notes]
     assert folders[0] != folders[1]
     for cwd in folders:
         _outside(cwd, project)
         assert not (project.resolve() in cwd.resolve().parents)
-    assert seen.read_text(encoding="utf-8") == "no"
-    assert deck.read_text(encoding="utf-8") == "yes"
-    recorded = argv.read_text(encoding="utf-8").strip().splitlines()
-    assert recorded == ["-i", "job", "-i", "job"]
+    assert [_field(text, "SEEN") for text in notes] == ["no", "no"]
+    assert [_field(text, "DECK") for text in notes] == ["yes", "yes"]
+    recorded = [_field(text, "ARGV") for text in notes]
+    assert recorded == ["-i job", "-i job"]
     _no_project_path("\n".join(recorded), project)
     assert not (project / "job.inp").exists()
     assert (project / "CANARY_HIT").read_text(encoding="utf-8") == "CANARY_HIT\n"
