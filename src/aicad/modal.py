@@ -406,6 +406,11 @@ def fatigue_check(spec: dict) -> dict:
     if spec.get("ultimate_mpa") is not None:
         ultimate = _positive(spec["ultimate_mpa"], None, "ultimate_mpa")
         ultimate_note = "Ultimate strength was supplied with the check."
+    elif material.get("ultimate_mpa") is not None:
+        ultimate = float(material["ultimate_mpa"])
+        ultimate_note = (
+            f"Ultimate strength is {ultimate:.0f} MPa from the {material['name']} entry."
+        )
     elif key in _ULTIMATE_MPA:
         ultimate = _ULTIMATE_MPA[key]
         ultimate_note = f"Ultimate strength is the handbook stand-in {_ULTIMATE_MPA[key]:.0f} MPa for {material['name']}."
@@ -424,7 +429,7 @@ def fatigue_check(spec: dict) -> dict:
     if section <= 0:
         raise GeometryError("section_mm is the thickness that sets the size factor, and it must be positive.")
     size = 0.85 if section > 10.0 else 0.9
-    if key == "steel":
+    if key == "steel" or material.get("endurance") == "steel":
         prime = 0.5 * ultimate if ultimate <= 1400.0 else 700.0
         endurance_note = "Steel uses Se' = 0.5·Sut up to 1400 MPa, then 700 MPa."
     elif key == "aluminum_6061":
