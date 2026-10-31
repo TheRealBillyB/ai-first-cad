@@ -573,18 +573,18 @@ def estimate_power(
 def _power_samples(spec: dict, motion: dict | None, study: dict | None) -> list[dict]:
     """Joint samples for a stored motion, a motion study, or the pose held for one second."""
     if study is not None:
-        from aicad.motion_study import _commands, _sample_times, _with_couplings, normalize_study
+        from aicad.motion_study import _sample_times, _study_pose, normalize_study
 
         chosen = normalize_study(study, spec["joints"], spec["relations"], name=study.get("name"))
-        posed = _with_couplings(spec, chosen)
         samples = []
         for index, time_s in enumerate(_sample_times(chosen["duration_s"], chosen["steps"])):
+            posed, commands = _study_pose(spec, chosen, time_s)
             samples.append(
                 {
                     "index": index,
                     "time_s": round(float(time_s), 6),
                     "duration_s": chosen["duration_s"],
-                    "joints": _commands(chosen, time_s),
+                    "joints": commands,
                     "duration_assumed": chosen["duration_assumed"],
                     "spec": posed,
                 }

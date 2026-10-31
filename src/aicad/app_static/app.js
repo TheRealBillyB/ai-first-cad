@@ -762,10 +762,21 @@ function drawSketch() {
   canvas._toScreen = toScreen;
   ctx.strokeStyle = "#e4ddd0";
   ctx.lineWidth = 1;
-  for (let x = Math.floor(minX / 10) * 10; x <= maxX; x += 10) {
-    const [sx] = toScreen(x, 0);
-    ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, rect.height); ctx.stroke();
-  }
+  sketchGridLines({
+    width: rect.width,
+    height: rect.height,
+    centerX: cx,
+    centerY: cy,
+    scale,
+    rotation: 0,
+    spacing: sketchGridSpacing(ui.sketch),
+  }).forEach((line) => {
+    const [x0, y0, x1, y1] = line.screen;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  });
   const free = new Set((ui.sketch.free || []).map((item) => item.entity));
   const selected = new Set(ui.sketchSelection);
   ctx.lineWidth = 1.6;
@@ -1380,18 +1391,7 @@ function pickEdge(x, y, rect) {
 }
 
 function snapVertex(x, y, rect, part) {
-  let best = null;
-  let bestD = 14;
-  (ui.mesh.edges || []).forEach((edge) => {
-    if (part && edge.part && edge.part !== part) return;
-    edge.points.forEach((point) => {
-      const screen = project(point, rect);
-      if (!screen) return;
-      const d = Math.hypot(screen[0] - x, screen[1] - y);
-      if (d < bestD) { bestD = d; best = point.slice(); }
-    });
-  });
-  return best;
+  return measureSnapPoint(x, y, ui.mesh && ui.mesh.edges, (point) => project(point, rect), { part, limit: 14 });
 }
 
 function rayDirection(x, y, rect) {

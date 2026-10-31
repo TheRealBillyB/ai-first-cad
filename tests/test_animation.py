@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -214,6 +216,67 @@ def test_an_exploded_opening_moves_between_the_ends(tmp_path):
         gif.seek(1)
         opened = gif.convert("RGB").tobytes()
     assert closed != opened
+
+
+def _color_center(image: Image.Image, channel: int) -> tuple[float, float]:
+    arr = np.asarray(image.convert("RGB")).astype(int)
+    others = [index for index in range(3) if index != channel]
+    mask = (arr[:, :, channel] > arr[:, :, others[0]] + 40) & (arr[:, :, channel] > arr[:, :, others[1]] + 40)
+    ys, xs = np.nonzero(mask)
+    assert len(xs) > 10
+    return float(xs.mean()), float(ys.mean())
+
+
+def test_a_fixed_part_stays_put_while_another_slides(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "anchor", [8, 8, 8], [0, 0, 4])
+    _box(document, "block", [16, 12, 10], [30, 0, 5])
+    document.create_assembly(
+        {
+            "name": "slide",
+            "instances": [
+                {"name": "anchor", "part": "anchor"},
+                {"name": "block", "part": "block"},
+            ],
+            "joints": [
+                {
+                    "name": "travel",
+                    "type": "prismatic",
+                    "parent": "anchor",
+                    "child": "block",
+                    "axis": [1, 0, 0],
+                    "min": 0,
+                    "max": 80,
+                }
+            ],
+            "motions": {
+                "go": {"sweep": {"joint": "travel", "start": 0, "end": 80, "frames": 2}, "duration_s": 1}
+            },
+        }
+    )
+    report = document.render_animation(
+        "slide",
+        kind="motion",
+        sequence="go",
+        frames=2,
+        fps=4,
+        width=200,
+        height=140,
+        overlay="none",
+        video="gif",
+        background="white",
+        colors={"anchor": "#ff0000", "block": "#0000ff"},
+    )
+    gif = Image.open(report["gif"])
+    centers = []
+    for index in range(gif.n_frames):
+        gif.seek(index)
+        frame = gif.convert("RGB")
+        centers.append((_color_center(frame, 0), _color_center(frame, 2)))
+    anchor_move = math.hypot(centers[1][0][0] - centers[0][0][0], centers[1][0][1] - centers[0][0][1])
+    block_move = math.hypot(centers[1][1][0] - centers[0][1][0], centers[1][1][1] - centers[0][1][1])
+    assert anchor_move < 8
+    assert block_move > 40
 
 
 def test_a_time_overlay_follows_the_sampled_clock(tmp_path):
