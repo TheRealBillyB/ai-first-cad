@@ -190,4 +190,6 @@ That stops another website, including one that tries to reach this computer by a
 
 - **CB.** The model process does not read a Matplotlib config from the project directory. A design script cannot write the library configuration directory and cannot point that directory somewhere else.
 
+- **CC.** A helper process started by a confined script cannot read a file outside the project. A file in the project can still be read.
+
 - **CD.** The assistant lists folders only inside the open project. A person can list a folder they chose. A folder outside the project is not listed for the assistant.
