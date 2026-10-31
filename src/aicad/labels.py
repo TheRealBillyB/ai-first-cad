@@ -116,6 +116,23 @@ def has_control_line(text: str) -> bool:
     return False
 
 
+def has_hidden_control(text: str) -> bool:
+    """True when ``text`` has a control character other than a newline or a tab.
+
+    A drawing may show a newline the author wrote. A line separator, a
+    paragraph separator, or another control character is not that newline.
+    """
+
+    if not isinstance(text, str):
+        return True
+    for char in text:
+        if char in _KEEP_CONTROL:
+            continue
+        if unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"}:
+            return True
+    return False
+
+
 def require_one_line(text: str, label: str, error: type[Exception]) -> str:
     """``text`` unchanged when it is one line. A control character is refused."""
 

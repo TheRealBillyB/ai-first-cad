@@ -99,27 +99,35 @@ def weakest(kinds: list[str]) -> str:
     return VERIFIED_CHECK
 
 
+def _shown(value: object) -> str:
+    """One visible line. A note cannot add a line or a control character."""
+
+    from aicad.labels import plain_line
+
+    return plain_line(str(value or ""))
+
+
 def sheet_lines(payload: dict) -> list[str]:
     """Plain lines drawn on the blueprint sheet. Tests read these."""
     lines: list[str] = []
     intro = payload.get("result_what")
     if intro and payload.get("results"):
-        lines.append(str(intro))
+        lines.append(_shown(intro))
     for block in _blocks(payload):
         title = block.get("result_name") or block.get("result_label") or "Result"
-        lines.append(str(title))
+        lines.append(_shown(title))
         if block.get("result_label"):
-            lines.append(str(block["result_label"]))
+            lines.append(_shown(block["result_label"]))
         if block.get("result_what"):
-            lines.append(str(block["result_what"]))
+            lines.append(_shown(block["result_what"]))
         for limit in block.get("limits") or []:
-            lines.append(f"Limit: {limit}")
+            lines.append(_shown(f"Limit: {limit}"))
         for assumption in block.get("assumptions") or []:
-            lines.append(f"Assumption: {assumption}")
+            lines.append(_shown(f"Assumption: {assumption}"))
     if not lines and payload.get("result_label"):
-        lines.append(str(payload["result_label"]))
+        lines.append(_shown(payload["result_label"]))
         if payload.get("result_what"):
-            lines.append(str(payload["result_what"]))
+            lines.append(_shown(payload["result_what"]))
     return lines
 
 
@@ -135,22 +143,22 @@ def write_result_sheet(path: Path | str, payload: dict, *, title: str) -> dict:
     margin = 36
     text_width = width - margin * 2
     wrapped: list[tuple[object, str]] = []
-    wrapped.append((font_title, title))
+    wrapped.append((font_title, _shown(title)))
     subtitle = payload.get("result_label")
     if subtitle and not payload.get("results") and not payload.get("checks"):
-        wrapped.append((font_bold, str(subtitle)))
+        wrapped.append((font_bold, _shown(subtitle)))
     if payload.get("result_what") and (payload.get("results") or payload.get("checks")):
-        wrapped.extend((font, line) for line in _wrap(str(payload["result_what"]), font, text_width))
+        wrapped.extend((font, line) for line in _wrap(_shown(payload["result_what"]), font, text_width))
     for block in blocks:
-        name = str(block.get("result_name") or "Result")
-        label = str(block.get("result_label") or "")
+        name = _shown(block.get("result_name") or "Result")
+        label = _shown(block.get("result_label") or "")
         wrapped.append((font_bold, f"{name}  ·  {label}" if label else name))
         if block.get("result_what"):
-            wrapped.extend((font, line) for line in _wrap(str(block["result_what"]), font, text_width))
+            wrapped.extend((font, line) for line in _wrap(_shown(block["result_what"]), font, text_width))
         for limit in block.get("limits") or []:
-            wrapped.extend((font_small, line) for line in _wrap(f"Limit: {limit}", font_small, text_width))
+            wrapped.extend((font_small, line) for line in _wrap(_shown(f"Limit: {limit}"), font_small, text_width))
         for assumption in block.get("assumptions") or []:
-            wrapped.extend((font_small, line) for line in _wrap(f"Assumption: {assumption}", font_small, text_width))
+            wrapped.extend((font_small, line) for line in _wrap(_shown(f"Assumption: {assumption}"), font_small, text_width))
         wrapped.append((font_small, ""))
     wrapped.append((font_small, "A verified check describes the CAD model. A rough estimate is not a certified test of a physical part."))
     line_height = 28

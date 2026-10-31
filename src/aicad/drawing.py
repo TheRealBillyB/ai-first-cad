@@ -745,7 +745,12 @@ def _pdf_color(color: tuple[int, int, int]) -> str:
 
 
 def _pdf_escape(text: str) -> str:
-    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    """One PDF text string. A line break does not start another line in the file."""
+
+    from aicad.labels import plain_line
+
+    flat = plain_line(text)
+    return flat.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
 def _write_dxf(path: Path, lines: list[_Line], texts: list[_Text]) -> None:
@@ -840,9 +845,11 @@ def _write_png(path: Path, lines: list[_Line], texts: list[_Text], fills: list[_
             _dashed(draw, start, end, line.color, width, line.dash[0] * ppm, line.dash[1] * ppm)
         else:
             draw.line((start, end), fill=line.color, width=width)
+    from aicad.labels import plain_line
+
     for text in texts:
         font = _font(max(8, int(round(text.size * ppm))))
-        draw.text(pixel(text.x, text.y), text.text, fill=text.color, font=font, anchor="ls")
+        draw.text(pixel(text.x, text.y), plain_line(text.text), fill=text.color, font=font, anchor="ls")
     _save_png(path, image)
 
 

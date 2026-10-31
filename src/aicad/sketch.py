@@ -591,6 +591,10 @@ class _Solver:
             return
         given = raw.get("name")
         if isinstance(given, str) and given != "":
+            from aicad.labels import has_control_line
+
+            if has_control_line(given):
+                raise GeometryError("A dimension name has to stay on one line.")
             # One name drives every constraint that uses it, so those
             # constraints have to be the same kind and the same value.
             previous = self.dimension_values.get(given)
