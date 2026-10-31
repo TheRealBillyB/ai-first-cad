@@ -193,3 +193,5 @@ That stops another website, including one that tries to reach this computer by a
 - **CC.** A helper process started by a confined script cannot read a file outside the project. A file in the project can still be read.
 
 - **CD.** The assistant lists folders only inside the open project. A person can list a folder they chose. A folder outside the project is not listed for the assistant.
+
+- **CG.** CalculiX, ffmpeg, and a slicer run under the same file limits as a design script. Each one may read the locations needed to start and may use its own folder. It cannot read a file outside that folder. The program is not started when those limits cannot be applied.
