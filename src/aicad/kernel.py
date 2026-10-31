@@ -110,7 +110,7 @@ from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS
 from OCP.gp import gp_Ax2, gp_Dir, gp_Lin, gp_Pnt, gp_Trsf
 
-from aicad.errors import GeometryError, ScriptError
+from aicad.errors import EdgeOpError, GeometryError, ScriptError
 from aicad.paths import session_path_escapes, windows_trim_escapes
 from aicad.refs import edge_ref, face_ref
 from aicad.models import (
@@ -393,6 +393,147 @@ def make_from_ops(ops: list[dict]) -> Shape:
             if _volume(log.current) <= 0 or len(log.current.solids()) == 0:
                 raise GeometryError(f"Operation {index} (cut) removed the entire part.")
     return Shape(_require_solid(log.current), features=log.report())
+
+
+_EDGE_REF_TOLERANCE_MM = 1.0
+
+
+def edge_indexes(shape: Shape, spec, label: str) -> list[int]:
+    """Edge indexes for a fillet or chamfer.
+
+    ``spec`` is a list of indexes, or edge refs such as ``edge/line/5,0,2``.
+    An index past the end of the solid, or a ref that matches no nearby edge,
+    is a lost reference.
+    """
+    catalog = describe_edges(shape)
+    if isinstance(spec, (str, int)) and not isinstance(spec, bool):
+        spec = [spec]
+    if not isinstance(spec, list) or not spec:
+        raise GeometryError(f"{label} needs at least one edge.")
+    if len(spec) > 500:
+        raise GeometryError(f"{label} names too many edges.")
+    found: list[int] = []
+    for item in spec:
+        index = _one_edge_index(catalog, item, label)
+        if index not in found:
+            found.append(index)
+    return found
+
+
+def apply_edge_ops(shape: Shape, ops: list[dict]) -> Shape:
+    """Round or break edges. The input solid is left as it was.
+
+    Each step is ``{"op": "fillet", "radius": mm, "edges": [...]}`` or
+    ``{"op": "chamfer", "distance": mm, "edges": [...]}``. A radius or
+    distance that does not fit, or an edge reference that does not match,
+    raises :class:`EdgeOpError`.
+    """
+    if not isinstance(ops, list):
+        raise GeometryError("Edge steps must be a list.")
+    if len(ops) > 500:
+        raise GeometryError("A part may have at most 500 edge steps.")
+    current = shape
+    for index, op in enumerate(ops):
+        current = _apply_edge_op(current, op, index)
+    return current
+
+
+def _apply_edge_op(shape: Shape, op: dict, index: int) -> Shape:
+    if not isinstance(op, dict):
+        raise EdgeOpError(f"Edge step {index} must be an object.", "edge_lost")
+    kind = op.get("op")
+    raw_name = op.get("name")
+    label = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else f"edge step {index + 1}"
+    if kind == "fillet":
+        amount = finite_number(op.get("radius"), f"{label} radius", positive=True)
+    elif kind == "chamfer":
+        amount = finite_number(op.get("distance"), f"{label} distance", positive=True)
+    else:
+        raise EdgeOpError(
+            f"Edge step {index} has op {kind!r}. Use fillet or chamfer.",
+            "edge_lost",
+        )
+    indexes = edge_indexes(shape, op.get("edges"), label)
+    working = _copy_solid(shape.impl)
+    edges = list(working.edges())
+    if any(item >= len(edges) for item in indexes):
+        raise EdgeOpError(
+            f"The edge reference on {label} was lost. This solid has {len(edges)} edges.",
+            "edge_lost",
+        )
+    chosen = [edges[item] for item in indexes]
+    try:
+        from build123d import chamfer, fillet
+
+        if kind == "fillet":
+            result = fillet(chosen, radius=amount)
+        else:
+            result = chamfer(chosen, length=amount)
+    except EdgeOpError:
+        raise
+    except Exception as exc:
+        if kind == "fillet":
+            message = f"The fillet radius {amount:g} mm is too big for the selected edges."
+            code = "radius_too_big"
+        else:
+            message = f"The chamfer distance {amount:g} mm is too big for the selected edges."
+            code = "distance_too_big"
+        raise EdgeOpError(message, code) from exc
+    return Shape(_require_solid(result), features=shape.feature_report())
+
+
+def _one_edge_index(catalog: list[dict], item, label: str) -> int:
+    if isinstance(item, bool) or isinstance(item, float):
+        raise GeometryError(f"{label} edge indexes must be whole numbers or edge refs.")
+    if isinstance(item, int):
+        if item < 0 or item >= len(catalog):
+            raise EdgeOpError(
+                f"The edge reference {item} on {label} was lost. This solid has {len(catalog)} edges.",
+                "edge_lost",
+            )
+        return item
+    if not isinstance(item, str) or not item.strip():
+        raise GeometryError(f"{label} edge indexes must be whole numbers or edge refs.")
+    from aicad.refs import ref_to_selector
+
+    try:
+        selector = ref_to_selector(item)
+    except GeometryError as exc:
+        raise EdgeOpError(f"The edge reference {item!r} on {label} was lost. {exc}", "edge_lost") from exc
+    if selector.get("kind") != "edge":
+        raise EdgeOpError(f"The edge reference {item!r} on {label} was lost. It is not an edge.", "edge_lost")
+    kind = selector.get("edge_kind")
+    pool = [edge for edge in catalog if edge.get("kind") == kind]
+    if not pool:
+        raise EdgeOpError(
+            f"The edge reference {item!r} on {label} was lost. This solid has no {kind} edge.",
+            "edge_lost",
+        )
+    at = selector["at"]
+    best = min(pool, key=lambda edge: _point_distance(edge["midpoint_mm"], at))
+    if _point_distance(best["midpoint_mm"], at) > _EDGE_REF_TOLERANCE_MM:
+        raise EdgeOpError(
+            f"The edge reference {item!r} on {label} was lost. No {kind} edge is near that point.",
+            "edge_lost",
+        )
+    return int(best["index"])
+
+
+def _point_distance(a, b) -> float:
+    return math.sqrt(sum((float(a[index]) - float(b[index])) ** 2 for index in range(3)))
+
+
+def _copy_solid(impl):
+    """A fillet changes the solid it is given, so the previous one is copied first."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+
+    copied = BRepBuilderAPI_Copy(impl.wrapped)
+    copied.Perform(impl.wrapped)
+    if not copied.IsDone():
+        raise GeometryError("Could not copy the solid before an edge step.")
+    from build123d import Part
+
+    return Part(copied.Shape())
 
 
 def measure(shape: Shape, material: str | None = None) -> Measurement:
