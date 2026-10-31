@@ -75,6 +75,89 @@ class Sketch:
         )
         return self
 
+    def three_point_arc(
+        self,
+        entity_id: str,
+        start: str,
+        middle: str,
+        end: str,
+        *,
+        name: str | None = None,
+    ) -> Sketch:
+        """An arc through three points.
+
+        The three points define the circle, the way a line's ends define the
+        line. Pass ``name`` to also drive it with a radius dimension.
+        """
+        from aicad.sketch_arc import circle_through
+
+        guessed = circle_through(self._guess_at(start), self._guess_at(middle), self._guess_at(end))
+        if guessed is None:
+            raise GeometryError(
+                f"Arc {entity_id!r} needs three points that are not in a line."
+            )
+        _center, radius = guessed
+        self.entities.append(
+            {"id": entity_id, "type": "arc", "through": [start, middle, end]}
+        )
+        if name:
+            self.radius(entity_id, radius, name=name)
+        return self
+
+    def tangent_arc(
+        self,
+        entity_id: str,
+        line: str,
+        end: str,
+        *,
+        at: str = "end",
+        name: str | None = None,
+    ) -> Sketch:
+        """An arc that continues ``line`` and ends at ``end``.
+
+        ``at`` is ``end`` (the line's drawn direction) or ``start``. The
+        target has to leave the line, so a point sitting on the line is refused.
+        """
+        from aicad.sketch_arc import tangent_continuation
+
+        line_entity = self._entity(line, "line")
+        if at not in ("start", "end"):
+            raise GeometryError(f"Arc {entity_id!r} continues a line from its start or its end.")
+        frame = tangent_continuation(
+            self._guess_at(line_entity["start"]),
+            self._guess_at(line_entity["end"]),
+            at == "end",
+            self._guess_at(end),
+        )
+        if frame is None:
+            raise GeometryError(
+                f"Arc {entity_id!r} cannot continue {line!r}: that end point is on the line."
+            )
+        self.entities.append(
+            {
+                "id": entity_id,
+                "type": "arc",
+                "tangent_to": line,
+                "end": end,
+                "from": at,
+            }
+        )
+        self.radius(entity_id, frame["radius"], name=name or f"{entity_id}_radius")
+        return self
+
+    def _entity(self, entity_id: str, kind: str) -> dict[str, Any]:
+        for entity in self.entities:
+            if entity.get("id") == entity_id and entity.get("type") == kind:
+                return entity
+        raise GeometryError(f"Sketch has no {kind} {entity_id!r}.")
+
+    def _guess_at(self, entity_id: str) -> tuple[float, float]:
+        entity = self._entity(entity_id, "point")
+        at = entity.get("at")
+        if not isinstance(at, (list, tuple)) or len(at) < 2:
+            raise GeometryError(f"Point {entity_id!r} needs an at coordinate.")
+        return (float(at[0]), float(at[1]))
+
     def constrain(self, **constraint: Any) -> Sketch:
         self.constraints.append(dict(constraint))
         return self
@@ -362,23 +445,165 @@ class _Solver:
             self.records[entity_id]["radius_index"] = self._index_of(distance)
             return
         if kind == "arc":
-            center = self._point(raw.get("center"), entity_id)
-            start = self._point(raw.get("start"), entity_id)
-            end = self._point(raw.get("end"), entity_id)
-            ent = self.sys.add_arc(self.normal, center["entity"], start["entity"], end["entity"], self.wp)
-            self.records[entity_id] = {
-                "kind": "arc",
-                "index": self._index(),
-                "entity": ent,
-                "center": raw["center"],
-                "start": raw["start"],
-                "end": raw["end"],
-                "construction": bool(raw.get("construction", False)),
-            }
+            self._add_arc(raw, entity_id)
             return
         raise GeometryError(
             f"Unknown entity type {kind!r} on {entity_id!r}. Use point, line, circle, or arc."
         )
+
+    def _add_arc(self, raw: dict, entity_id: str) -> None:
+        if "through" in raw:
+            self._arc_through(raw, entity_id)
+            return
+        if "tangent_to" in raw:
+            self._arc_tangent(raw, entity_id)
+            return
+        if "center" not in raw or "start" not in raw or "end" not in raw:
+            raise GeometryError(
+                f"Arc {entity_id!r} needs a center, a start, and an end, "
+                "or three points, or a line to continue."
+            )
+        center = self._point(raw.get("center"), entity_id)
+        start = self._point(raw.get("start"), entity_id)
+        end = self._point(raw.get("end"), entity_id)
+        ent = self.sys.add_arc(self.normal, center["entity"], start["entity"], end["entity"], self.wp)
+        self.records[entity_id] = {
+            "kind": "arc",
+            "index": self._index(),
+            "entity": ent,
+            "center": raw["center"],
+            "start": raw["start"],
+            "end": raw["end"],
+            "construction": bool(raw.get("construction", False)),
+        }
+
+    def _arc_through(self, raw: dict, entity_id: str) -> None:
+        from aicad.sketch_arc import circle_through, three_point_order
+
+        through = raw.get("through")
+        if not isinstance(through, list) or len(through) != 3 or len(set(through)) != 3:
+            raise GeometryError(f"Arc {entity_id!r} needs three different points.")
+        start_id, middle_id, end_id = through
+        start = self._point(start_id, entity_id)
+        middle = self._point(middle_id, entity_id)
+        end = self._point(end_id, entity_id)
+        guessed = circle_through(
+            self._guess_point(start_id),
+            self._guess_point(middle_id),
+            self._guess_point(end_id),
+        )
+        if guessed is None:
+            raise GeometryError(f"Arc {entity_id!r} needs three points that are not in a line.")
+        center_xy, _radius = guessed
+        keep = three_point_order(
+            center_xy,
+            self._guess_point(start_id),
+            self._guess_point(middle_id),
+            self._guess_point(end_id),
+        )
+        if not keep:
+            start_id, end_id = end_id, start_id
+            start, end = end, start
+        center_id = self._fresh_id(f"{entity_id}_center")
+        center_ent = self.sys.add_point_2d(center_xy[0], center_xy[1], self.wp)
+        self.records[center_id] = {"kind": "point", "index": self._index(), "entity": center_ent}
+        arc = self.sys.add_arc(self.normal, center_ent, start["entity"], end["entity"], self.wp)
+        self.records[entity_id] = {
+            "kind": "arc",
+            "index": self._index(),
+            "entity": arc,
+            "center": center_id,
+            "start": start_id,
+            "end": end_id,
+            "construction": bool(raw.get("construction", False)),
+        }
+        # A point cannot be constrained onto an arc entity. Two radii of the
+        # same circle are equal, and the arc already holds the start radius.
+        ray_start = self.sys.add_line_2d(center_ent, start["entity"], self.wp)
+        start_index = self._index()
+        ray_middle = self.sys.add_line_2d(center_ent, middle["entity"], self.wp)
+        middle_index = self._index()
+        self.records[self._fresh_id(f"__{entity_id}_rs")] = {
+            "kind": "line",
+            "index": start_index,
+            "entity": ray_start,
+            "start": center_id,
+            "end": start_id,
+            "construction": True,
+        }
+        self.records[self._fresh_id(f"__{entity_id}_rm")] = {
+            "kind": "line",
+            "index": middle_index,
+            "entity": ray_middle,
+            "start": center_id,
+            "end": middle_id,
+            "construction": True,
+        }
+        self._bind(
+            f"{entity_id}.through",
+            lambda left=ray_start, right=ray_middle: self.sys.equal(left, right, self.wp),
+        )
+
+    def _arc_tangent(self, raw: dict, entity_id: str) -> None:
+        from aicad.sketch_arc import tangent_continuation
+
+        line = self._line(raw.get("tangent_to"), entity_id)
+        end_id = raw.get("end")
+        end = self._point(end_id, entity_id)
+        which = raw.get("from", "end")
+        if which not in ("start", "end"):
+            raise GeometryError(f"Arc {entity_id!r} continues a line from its start or its end.")
+        origin_id = line["end"] if which == "end" else line["start"]
+        if origin_id == end_id:
+            raise GeometryError(f"Arc {entity_id!r} needs an end that is not the line's {which}.")
+        origin = self._point(origin_id, entity_id)
+        frame = tangent_continuation(
+            self._guess_point(line["start"]),
+            self._guess_point(line["end"]),
+            which == "end",
+            self._guess_point(end_id),
+        )
+        if frame is None:
+            raise GeometryError(
+                f"Arc {entity_id!r} cannot continue {raw.get('tangent_to')!r}: that end point is on the line."
+            )
+        center_xy = frame["center"]
+        center_id = self._fresh_id(f"{entity_id}_center")
+        center_ent = self.sys.add_point_2d(center_xy[0], center_xy[1], self.wp)
+        self.records[center_id] = {"kind": "point", "index": self._index(), "entity": center_ent}
+        if frame["start_at_line"]:
+            start_id, start = origin_id, origin
+            arc_end_id, arc_end = end_id, end
+        else:
+            start_id, start = end_id, end
+            arc_end_id, arc_end = origin_id, origin
+        arc = self.sys.add_arc(self.normal, center_ent, start["entity"], arc_end["entity"], self.wp)
+        self.records[entity_id] = {
+            "kind": "arc",
+            "index": self._index(),
+            "entity": arc,
+            "center": center_id,
+            "start": start_id,
+            "end": arc_end_id,
+            "construction": bool(raw.get("construction", False)),
+        }
+        # The continuation owns the tangency. A second tangent constraint in the
+        # spec would ask for the same condition again.
+        self._bind(
+            f"{entity_id}.tangent",
+            lambda arc_ent=arc, line_ent=line["entity"]: self.sys.tangent(arc_ent, line_ent, self.wp),
+        )
+
+    def _fresh_id(self, base: str) -> str:
+        candidate = base[:64]
+        index = 2
+        while candidate in self.records or not _ID.match(candidate):
+            suffix = f"_{index}"
+            candidate = base[: 64 - len(suffix)] + suffix
+            index += 1
+            if index > 1000:
+                raise GeometryError(f"No free id for {base!r}.")
+        return candidate
 
     def _add_constraint(self, raw: dict, index: int) -> None:
         if not isinstance(raw, dict) or "type" not in raw:

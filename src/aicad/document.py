@@ -27,7 +27,14 @@ from aicad.modal import fatigue_check, solve_modal, solve_modal_assembly
 from aicad.printprep import analyze_print
 from aicad.printprep import list_printers as printer_catalog
 from aicad.robot import export_robot
-from aicad.errors import DocumentError, GeometryError, PartNotFound, SketchPlaneError
+from aicad.errors import (
+    DocumentError,
+    GeometryError,
+    PartNotFound,
+    PlanBuildError,
+    PlanError,
+    SketchPlaneError,
+)
 from aicad.chain import solve_kinematics as solve_chain
 from aicad.error_budget import check_position_error as budget_position_error
 from aicad.kinematics import normalize as normalize_assembly
@@ -2229,6 +2236,11 @@ class Document:
         with self._lock:
             return self._plan_store().set_dimensions(name, dimensions)
 
+    def set_plan_build(self, name: str, steps: list) -> dict:
+        """Store the scripts approval will run. Storing them does not run them."""
+        with self._lock:
+            return self._plan_store().set_build(name, steps)
+
     def comment_on_plan(self, name: str, item: str, text: str) -> dict:
         """Comment on the plan or on one assumption, question, or sheet."""
         with self._lock:
@@ -2255,14 +2267,129 @@ class Document:
             return self._plan_store().revise(name, changed, bundle=bundle)
 
     def approve_plan(self, name: str) -> dict:
-        """Approve the current revision. Only the person can do this, never the agent."""
+        """Approve the current revision. Only the person can do this, never the agent.
+
+        Build steps stored on that revision then run. The network stays off.
+        A failed step leaves the previous model in place.
+        """
         with self._lock:
-            return self._plan_store().approve(name)
+            public = self._plan_store().approve(name)
+            report = self._build_approved_plan(name)
+            if report is None:
+                return public
+            return self._with_build_report(name, report, approved=True)
 
     def start_model_from_plan(self, name: str) -> dict:
-        """Hand the approved dimensions and assumptions to modeling. Refuses until the person approves."""
+        """Hand the approved plan to modeling. Refuses until the person approves.
+
+        With no build steps, this returns the dimensions and does not build a solid.
+        With build steps, it runs the approved scripts when those parts are not saved yet.
+        """
         with self._lock:
-            return self._plan_store().start_work(name, "model")
+            released = self._plan_store().start_work(name, "model")
+            report = self._build_approved_plan(name)
+            if report is None:
+                return released
+            return self._with_build_report(name, report, approved=False)
+
+    def _with_build_report(self, name: str, report: dict, *, approved: bool) -> dict:
+        public = self._plan_store().get(name) if approved else None
+        if public is None:
+            public = self._plan_store().start_work(name, "model")
+        names = ", ".join(report["parts"])
+        public["progress"] = report["progress"]
+        public["parts"] = report["parts"]
+        if approved and report["reused"]:
+            public["note"] = (
+                f"Approved revision v{public['approved_revision']}. "
+                f"Parts {names} were already built from this approval. "
+                "The scripts were not run again."
+            )
+        elif approved:
+            public["note"] = (
+                f"Approved revision v{public['approved_revision']}. "
+                f"Built {names}. "
+                "Each step ran in the script sandbox with the network off. "
+                "Nothing ran before this approval."
+            )
+        elif report["reused"]:
+            public["note"] = (
+                f"Modeling may use {public['title']!r} revision v{public['revision']}. "
+                f"Parts {names} were built from the approved scripts. "
+                "They were not run again."
+            )
+        else:
+            public["note"] = (
+                f"Modeling from {public['title']!r} revision v{public['revision']} "
+                f"built {names}. "
+                "The scripts are the ones this approval recorded. The network stayed off."
+            )
+        return public
+
+    def _build_approved_plan(self, name: str) -> dict | None:
+        from aicad.plan import _current, _receipt_matches, untrusted_refusal
+        from aicad.plan_build import run_build_steps
+
+        store = self._plan_store()
+        plan = store.for_build(name)
+        steps = list(_current(plan).get("build") or [])
+        if not steps:
+            return None
+        if not _receipt_matches(self.workspace, plan):
+            raise PlanError(untrusted_refusal(plan, "model"))
+        if store.build_is_saved(plan):
+            return {
+                "progress": copy.deepcopy(plan.get("build_progress") or []),
+                "parts": list(plan["built"]["parts"]),
+                "reused": True,
+            }
+
+        def on_progress(progress: list) -> None:
+            store.write_build_progress(plan, progress)
+
+        try:
+            built, progress = run_build_steps(self.workspace, steps, on_progress)
+        except PlanBuildError as exc:
+            self._save()
+            store.write_build_progress(plan, exc.progress)
+            raise
+        except Exception:
+            self._save()
+            raise
+        self._commit_built_parts(built)
+        for row in progress:
+            row["status"] = "built"
+        parts = [part_name for part_name, _script, _shape in built]
+        store.write_build_result(plan, progress, parts)
+        return {"progress": progress, "parts": parts, "reused": False}
+
+    def _commit_built_parts(self, built: list) -> None:
+        """Save every finished solid. A failure puts the previous parts back."""
+        previous = {part_name: self._parts.get(part_name) for part_name, _script, _shape in built}
+        staged = []
+        try:
+            for part_name, script, shape in built:
+                _validate_name(part_name)
+                relative = self._store_script_geometry(part_name, script, shape)
+                staged.append((part_name, script, shape, relative))
+            for part_name, script, shape, relative in staged:
+                self._parts[part_name] = _Part(
+                    part_name,
+                    "script",
+                    shape,
+                    script=script,
+                    geometry_file=relative,
+                    script_sha256=_script_hash(script),
+                )
+            self._save()
+        except Exception:
+            for part_name, old in previous.items():
+                if old is None:
+                    self._parts.pop(part_name, None)
+                else:
+                    self._parts[part_name] = old
+            self._save()
+            raise
 
     def start_simulation_from_plan(self, name: str) -> dict:
         """Hand the approved plan to simulation. Refuses until the person approves."""

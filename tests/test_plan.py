@@ -34,6 +34,7 @@ PLAN_TOOLS = [
     "add_plan_question",
     "put_plan_sheet",
     "set_plan_dimensions",
+    "set_plan_build",
     "comment_on_plan",
     "answer_plan_question",
     "mark_plan_item",
