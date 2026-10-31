@@ -609,17 +609,18 @@ def build_parser() -> argparse.ArgumentParser:
     gear = commands.add_parser(
         "gear",
         parents=[common],
-        help="Create or replace a spur, helical, bevel, or hypoid gear.",
+        help="Create or replace a spur, helical, internal ring, bevel, or hypoid gear.",
     )
     gear.add_argument("name")
     gear.add_argument("--file", type=Path, default=None, help="JSON gear spec. Flags override it.")
-    gear.add_argument("--type", default=None, help="spur, helical, straight_bevel, spiral_bevel, or hypoid.")
+    gear.add_argument("--type", default=None, help="spur, helical, internal, straight_bevel, spiral_bevel, or hypoid.")
     gear.add_argument("--module", type=float, default=None, help="Normal module, or outer transverse module for a bevel.")
     gear.add_argument("--teeth", type=int, default=None)
     gear.add_argument("--pressure-angle", type=float, default=None)
     gear.add_argument("--helix-angle", type=float, default=None, help="Degrees. Positive is right-hand.")
     gear.add_argument("--spiral-angle", type=float, default=None, help="Mean spiral angle, degrees. Positive is right-hand.")
     gear.add_argument("--face-width", type=float, default=None)
+    gear.add_argument("--rim", type=float, default=None, help="Internal ring rim thickness outside the root, in mm.")
     gear.add_argument("--profile-shift", type=float, default=None)
     gear.add_argument("--shaft-angle", type=float, default=None)
     gear.add_argument("--mate-teeth", type=int, default=None)
@@ -815,6 +816,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             "helix_angle_deg": args.helix_angle,
             "spiral_angle_deg": args.spiral_angle,
             "face_width_mm": args.face_width,
+            "rim_thickness_mm": args.rim,
             "profile_shift": args.profile_shift,
             "shaft_angle_deg": args.shaft_angle,
             "mate_teeth": args.mate_teeth,

@@ -1,4 +1,4 @@
-"""Involute gears: spur, helical, straight bevel, spiral bevel, and hypoid.
+"""Involute gears: spur, helical, internal ring, straight bevel, spiral bevel, and hypoid.
 
 A hypoid is an offset-axis ring and pinion. The ring tooth is a face-mill
 blade. The pinion is the blank left after that blade is rolled at the tooth ratio.
@@ -24,7 +24,8 @@ from aicad.gears.meshcheck import (
     registered_mesh_checks,
     unregister_mesh_check,
 )
-from aicad.gears.solid import build_bevel, build_cylindrical, build_gear, build_hypoid
+from aicad.gears.internal import compute_internal
+from aicad.gears.solid import build_bevel, build_cylindrical, build_gear, build_hypoid, build_internal
 
 __all__ = [
     "INTERSECTING",
@@ -61,6 +62,13 @@ def _register() -> None:
         compute_cylindrical,
         build_cylindrical,
         "External helical gear. The transverse involute rides a constant-lead helicoid.",
+    )
+    register_family(
+        "internal",
+        PARALLEL,
+        compute_internal,
+        build_internal,
+        "Internal spur ring. ISO 21771 teeth point inward, with a rim outside the root.",
     )
     register_family(
         "straight_bevel",
