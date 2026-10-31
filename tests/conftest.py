@@ -105,6 +105,7 @@ def _one_windows_sandbox_at_a_time() -> Iterator[None]:
     import aicad.sandbox as sandbox
 
     original = sandbox._spawn
+    original_helper = sandbox.run_confined_helper
     if getattr(original, "_aicad_pytest_locked", False):
         yield
         return
@@ -113,12 +114,18 @@ def _one_windows_sandbox_at_a_time() -> Iterator[None]:
         with _windows_sandbox_lock():
             return original(*args, **kwargs)
 
+    def locked_helper(*args, **kwargs):
+        with _windows_sandbox_lock():
+            return original_helper(*args, **kwargs)
+
     locked_spawn._aicad_pytest_locked = True  # type: ignore[attr-defined]
     sandbox._spawn = locked_spawn
+    sandbox.run_confined_helper = locked_helper
     try:
         yield
     finally:
         sandbox._spawn = original
+        sandbox.run_confined_helper = original_helper
 
 
 def pytest_runtest_logreport(report) -> None:

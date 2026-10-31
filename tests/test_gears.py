@@ -115,6 +115,58 @@ def test_hypoid_ratio_and_offset_are_not_a_slid_bevel():
     assert report["axis_layout"] == "offset"
 
 
+def _large_offset_member(role: str) -> dict:
+    teeth, mate = (11, 41) if role == "pinion" else (41, 11)
+    return {
+        "type": "hypoid",
+        "role": role,
+        "teeth": teeth,
+        "mate_teeth": mate,
+        "offset_mm": 20,
+        "shaft_angle_deg": 90,
+        "ring_diameter_mm": 220,
+        "face_width_mm": 30,
+        "spiral_angle_deg": 35,
+        "pressure_angle_deg": 20,
+    }
+
+
+def test_a_large_offset_pinion_is_a_closed_solid():
+    from aicad.gears.hypoid import ring_pitch_flank_points
+
+    pinion = kernel.adopt(build_gear(_large_offset_member("pinion")))
+    ring = kernel.adopt(build_gear(_large_offset_member("ring")))
+    assert kernel.measure(pinion).watertight and kernel.measure(pinion).valid
+    assert kernel.measure(ring).watertight and kernel.measure(ring).valid
+    for angle in (0.0, 4.0):
+        placement = mesh_placement(_large_offset_member("pinion"), _large_offset_member("ring"), angle)
+        placed_pinion = kernel.place(
+            pinion,
+            tuple(placement["pinion"]["position_mm"]),
+            tuple(placement["pinion"]["rotation_deg"]),
+        )
+        placed_ring = kernel.place(
+            ring,
+            tuple(placement["gear"]["position_mm"]),
+            tuple(placement["gear"]["rotation_deg"]),
+        )
+        assert kernel.overlap_volume(placed_pinion, placed_ring) < 15
+    from build123d import Location, Pos, Rot
+
+    placement = mesh_placement(_large_offset_member("pinion"), _large_offset_member("ring"), 0.0)
+    placed_pinion = kernel.place(
+        pinion,
+        tuple(placement["pinion"]["position_mm"]),
+        tuple(placement["pinion"]["rotation_deg"]),
+    )
+    location = Location(Rot(*placement["gear"]["rotation_deg"]))
+    for point in ring_pitch_flank_points(_large_offset_member("ring")):
+        world = location * Pos(*point)
+        probed = kernel.distance_to_point(placed_pinion, tuple(world.position))
+        assert probed["inside"] is False
+        assert probed["distance_mm"] > 0
+
+
 def test_hypoid_pair_is_a_closed_solid_and_meshes():
     pinion = kernel.adopt(build_gear(_hypoid_member("pinion")))
     ring = kernel.adopt(build_gear(_hypoid_member("ring")))

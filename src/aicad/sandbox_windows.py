@@ -1374,27 +1374,44 @@ def _marker_path() -> Path:
     return Path(sys.prefix) / ".aicad-appcontainer-acl"
 
 
+# Folders this process has already made readable. Another process's record
+# does not stand in for a folder this process has not granted.
+_granted_read: set[str] = set()
+
+
 def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = None) -> None:
+    """Let the container read these folders.
+
+    A folder already granted in this process is not walked again. A record
+    left by another process does not skip a folder this process has not granted.
+    """
+
     if not package_sid:
         package_sid = _ALL_APPLICATION_PACKAGES
+    for path in paths:
+        try:
+            key = str(Path(path).resolve())
+        except OSError:
+            key = os.path.normcase(str(path))
+        if key in _granted_read:
+            continue
+        _grant_tree(Path(path), sid, "(OI)(CI)RX")
+        _grant_traverse(Path(path), sid, package_sid)
+        _granted_read.add(key)
     marker = _marker_path()
-    already = False
     try:
         from aicad.file_access import read_text
 
-        already = read_text(marker, maximum=4096).strip() == sid
+        if read_text(marker, maximum=4096).strip() == sid:
+            return
     except OSError:
-        already = False
-    if not already:
-        for path in paths:
-            _grant_tree(path, sid, "(OI)(CI)RX")
-            _grant_traverse(path, sid, package_sid)
-        try:
-            from aicad.paths import publish_text
+        pass
+    try:
+        from aicad.paths import publish_text
 
-            publish_text(marker, sid, root=marker.parent)
-        except OSError:
-            pass
+        publish_text(marker, sid, root=marker.parent)
+    except OSError:
+        pass
 
 
 def _ace_allows_modify(ace_type: int, ace_flags: int, mask: int) -> bool:
@@ -2788,7 +2805,9 @@ def spawn(
         # a process only when that process grants the container, and this
         # process does not. Adding a deny entry here stopped later scripts
         # from finishing in CI. See SECURITY.md.
-        grant_workspace(workspace, sid_text, _package_sid(mode == "lpac"))
+        package = _package_sid(mode == "lpac")
+        grant_workspace(workspace, sid_text, package)
+        grant_read_paths(read_paths, sid_text, package)
         job = _create_job(cpu_seconds, memory_bytes)
         if network:
             _require_script_network_open()
@@ -3358,7 +3377,25 @@ def named_size(path: Path) -> int | None:
     return (int(data.nFileSizeHigh) << 32) | int(data.nFileSizeLow)
 
 
-def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None:
+def cancel_directory_watch(handle) -> None:
+    """Wake a directory read started on another thread.
+
+    ``CancelIo`` only cancels reads started by the calling thread. The watch
+    thread owns the read, so stopping it uses ``CancelIoEx``.
+    """
+
+    if sys.platform != "win32" or not handle:
+        return
+    kernel32 = _kernel32()
+    cancel = getattr(kernel32, "CancelIoEx", None)
+    if cancel is None:
+        return
+    cancel.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    cancel.restype = wintypes.BOOL
+    cancel(handle, None)
+
+
+def run_directory_watch(root, retain, release, reread, scan, stop, mark, remember=None) -> None:
     """Watch ``root`` until ``stop`` is set.
 
     ``ReadDirectoryChangesW`` reports a new file when its name appears, which
@@ -3383,8 +3420,12 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
     if not handle or handle == _INVALID_HANDLE:
         mark(False)
         return
+    if remember is not None:
+        remember(handle)
     event = kernel32.CreateEventW(None, True, False, None)
     if not event:
+        if remember is not None:
+            remember(None)
         kernel32.CloseHandle(handle)
         mark(False)
         return
@@ -3419,6 +3460,8 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
             return
         def note_tree() -> None:
             for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+                if stop.is_set():
+                    return
                 for name in filenames:
                     retain(Path(dirpath) / name)
 
@@ -3447,6 +3490,8 @@ def run_directory_watch(root, retain, release, reread, scan, stop, mark) -> None
             reread()
             scan()
     finally:
+        if remember is not None:
+            remember(None)
         try:
             kernel32.CancelIo(handle)
         except OSError:

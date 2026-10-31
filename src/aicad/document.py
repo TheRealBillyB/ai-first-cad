@@ -2201,9 +2201,16 @@ class Document:
     def _apply_payload(self, payload: dict) -> None:
         self.problems = []
         for record in payload.get("sketches", []):
-            self._sketches[record["name"]] = _Sketch(record["name"], record["spec"])
+            sketch_name = record.get("name") if isinstance(record, dict) else None
+            if not isinstance(sketch_name, str) or _name_has_control_line(sketch_name):
+                self.problems.append("A sketch name has to stay on one line.")
+                continue
+            self._sketches[sketch_name] = _Sketch(sketch_name, record["spec"])
         for record in payload.get("parts", []):
             name = str(record.get("name") or "")
+            if _name_has_control_line(name):
+                self.problems.append("A part name has to stay on one line.")
+                continue
             source = record.get("source", "script")
             placement = record.get("placement") or _identity_placement()
             script_text = record.get("script") or ""
@@ -2309,10 +2316,19 @@ class Document:
                 script_pending=script_pending,
                 rebuild_error=rebuild_error,
             )
-        self._assemblies.clear()
+        stored_assemblies = []
         for record in payload.get("assemblies", []):
-            cleaned = normalize_assembly(self._with_resolved_mates(record))
-            self._require_assembly_parts(cleaned)
+            try:
+                cleaned = normalize_assembly(self._with_resolved_mates(record))
+                self._require_assembly_parts(cleaned)
+            except GeometryError as exc:
+                if "one line" not in str(exc):
+                    raise
+                self.problems.append(str(exc))
+                continue
+            stored_assemblies.append(cleaned)
+        self._assemblies.clear()
+        for cleaned in stored_assemblies:
             self._assemblies[cleaned["name"]] = cleaned
 
     def _with_resolved_mates(self, spec: dict) -> dict:
@@ -2458,6 +2474,12 @@ def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> d
             f"Unknown joint {unknown[0]!r} on {spec['name']!r}. Joints: {listed}."
         )
     return overrides
+
+
+def _name_has_control_line(name: str) -> bool:
+    from aicad.labels import has_control_line
+
+    return has_control_line(name)
 
 
 def _validate_name(name: str) -> None:

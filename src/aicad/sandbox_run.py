@@ -87,6 +87,129 @@ def _write(job: Path, payload: dict) -> None:
             pass
 
 
+def _helper_environment() -> dict[str, str]:
+    """Environment for a process the confined script starts.
+
+    The script points ``USERPROFILE`` at the library folder after Windows has
+    already started this process. A new process cannot start with that path.
+    It receives the profile path this process was started with. The container
+    still decides which files open.
+    """
+
+    env = dict(os.environ)
+    if sys.platform != "win32":
+        return env
+    from aicad.sandbox_state import account_home
+
+    home = account_home()
+    if home is None:
+        return env
+    text = str(home)
+    replaced = False
+    for key in list(env):
+        if key.upper() == "USERPROFILE":
+            env[key] = text
+            replaced = True
+    if not replaced:
+        env["USERPROFILE"] = text
+    return env
+
+
+def _helper_interpreter(env: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """The interpreter this confined process is already running.
+
+    A virtual-environment launcher is another program. The container was
+    given the base interpreter, so the helper starts that interpreter.
+    """
+
+    current = sys.executable
+    base = getattr(sys, "_base_executable", "") or ""
+    if not base:
+        return current, env
+    try:
+        same = os.path.normcase(os.path.normpath(base)) == os.path.normcase(os.path.normpath(current))
+    except (OSError, ValueError):
+        return current, env
+    if same:
+        return current, env
+    copied = dict(env)
+    copied["__PYVENV_LAUNCHER__"] = current
+    return base, copied
+
+
+def _helper_read(workspace: Path, outside: str) -> str:
+    """What a child process could read. ``closed`` means the outside file stayed closed.
+
+    The result is a file in the project. The child does not inherit a pipe,
+    because a second Python started on Windows does not always inherit one.
+    ``-P`` is the same flag the sandbox child uses.
+    """
+
+    import subprocess
+
+    inside = workspace / "helper-inside.txt"
+    report = workspace / "helper-result.txt"
+    program = workspace / "helper-read.py"
+    inside.write_text("inside-ok\n", encoding="utf-8")
+    program.write_text(
+        "import pathlib, sys\n"
+        "inside, outside, dest = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+        "parts = []\n"
+        "try:\n"
+        "    parts.append('IN|' + pathlib.Path(inside).read_text(encoding='utf-8').strip())\n"
+        "except Exception as exc:\n"
+        "    parts.append('IN|' + type(exc).__name__)\n"
+        "try:\n"
+        "    parts.append('OUT|' + pathlib.Path(outside).read_text(encoding='utf-8').strip())\n"
+        "except Exception as exc:\n"
+        "    parts.append('OUT|' + type(exc).__name__)\n"
+        "pathlib.Path(dest).write_text(' '.join(parts), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    env = _helper_environment()
+    executable = sys.executable
+    if sys.platform == "win32":
+        executable, env = _helper_interpreter(env)
+    # The confined process cannot open the null device itself. The files are
+    # in the project, which it can already use, and the child inherits them.
+    stdin_path = workspace / "helper-stdin.txt"
+    output_path = workspace / "helper-output.txt"
+    stdin_path.write_text("", encoding="utf-8")
+    kwargs = {
+        "cwd": str(workspace),
+        "env": env,
+        "timeout": 30,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        with stdin_path.open("rb") as stdin, output_path.open("wb") as output:
+            completed = subprocess.run(
+                [executable, "-P", "-B", str(program), str(inside), outside, str(report)],
+                stdin=stdin,
+                stdout=output,
+                stderr=output,
+                **kwargs,
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        code = getattr(exc, "winerror", None)
+        if code is None:
+            code = getattr(exc, "errno", None)
+        if code is None:
+            return "not-started"
+        return f"not-started:{type(exc).__name__}:{code}"
+    try:
+        text = report.read_text(encoding="utf-8")
+    except OSError:
+        code = completed.returncode
+        return "not-started" if code in (0, None) else f"not-started:{code}"
+    if "OUT|aicad-confinement-probe" in text:
+        return "opened"
+    if "IN|inside-ok" in text:
+        return "closed"
+    return "not-started"
+
+
 def _format(code: str, exc: BaseException, filename: str) -> str:
     line_no = None
     for frame in traceback.extract_tb(exc.__traceback__):
@@ -191,6 +314,9 @@ def _probe(workspace: Path, job: Path) -> int:
     inside = workspace / "probe_inside.txt"
     inside.write_text("ok", encoding="utf-8")
     found["write_inside"] = inside.read_text(encoding="utf-8")
+    helper_target = spec.get("helper_read")
+    if isinstance(helper_target, str) and helper_target:
+        found["helper_read"] = _helper_read(workspace, helper_target)
     stream = None
     try:
         stream = socket.socket()
@@ -253,14 +379,21 @@ def _part(workspace: Path, job: Path) -> int:
         return 0
     from aicad.kernel import _execute_part_script, export_step_file
 
+    # A script can fork. Only the process that started the script publishes
+    # the result. The forked process must not replace that result.
+    owner = os.getpid()
     try:
         shape = _execute_part_script(code)
         step = job / "part.step"
         export_step_file(shape, step)
     except Exception as exc:
+        if os.getpid() != owner:
+            os._exit(1)
         message = str(exc) if str(exc) else _format(code, exc, "<aicad-script>")
         _write(job, {"ok": False, "error": message})
         return 0
+    if os.getpid() != owner:
+        os._exit(0)
     _write(job, {"ok": True, "step": str(step), "features": shape.feature_report().to_dict()})
     return 0
 
@@ -675,6 +808,14 @@ def main(argv: list[str] | None = None) -> int:
             if kind == "probe":
                 return _leave(_probe(workspace, job))
             install_python_guard(workspace, roots)
+            if sys.platform == "win32":
+                # The quota watch holds files it counts and lists the tree
+                # while this script removes them. Drop the name immediately
+                # so the folder can be removed, and leave the watch's read
+                # and its scan in place.
+                from aicad.file_access import install_name_removal
+
+                install_name_removal()
             if kind == "part":
                 return _leave(_part(workspace, job))
             if kind == "design":

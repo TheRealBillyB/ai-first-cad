@@ -29,16 +29,8 @@ def _solver(tools: Path) -> Path:
 
 
 def _run_python_on_windows(monkeypatch, module: str, script: Path) -> None:
-    if os.name != "nt":
-        return
-    real_run = subprocess.run
-
-    def run(command, **kwargs):
-        if command and command[0] == str(script):
-            command = [sys.executable, *command]
-        return real_run(command, **kwargs)
-
-    monkeypatch.setattr(f"{module}.subprocess.run", run)
+    # A confined helper starts a .py program with this interpreter.
+    del monkeypatch, module, script
 
 
 def _mesh():

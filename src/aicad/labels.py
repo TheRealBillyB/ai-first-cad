@@ -101,6 +101,29 @@ def plain_line(text: str) -> str:
     return " ".join(strip_hidden(text).split())
 
 
+def has_control_line(text: str) -> bool:
+    """True when ``text`` contains a line break or another control character.
+
+    A line separator and a paragraph separator are included. A letter from
+    another script is not.
+    """
+
+    if not isinstance(text, str):
+        return True
+    for char in text:
+        if unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"}:
+            return True
+    return False
+
+
+def require_one_line(text: str, label: str, error: type[Exception]) -> str:
+    """``text`` unchanged when it is one line. A control character is refused."""
+
+    if not isinstance(text, str) or has_control_line(text) or not text.strip():
+        raise error(f"{label} has to stay on one line.")
+    return text
+
+
 def spoofs_latin(text: str) -> bool:
     """True when ``text`` would be read as Latin but is not that text.
 

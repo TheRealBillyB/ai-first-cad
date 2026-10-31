@@ -13,7 +13,6 @@ from __future__ import annotations
 import math
 import re
 import signal
-import subprocess
 import threading
 from pathlib import Path
 
@@ -963,6 +962,25 @@ def _execute(mesh, fixed_nodes, forces, material, order: int):
     return True, disp, stress, None, order
 
 
+def solver_deck(lines: list[str]) -> str:
+    """One CalculiX deck. Each entry is one line, with no break inside it.
+
+    A part name, a note, or a material name is not a line in this deck. A
+    line that already contains a break is refused, so it cannot add a card.
+    """
+
+    import unicodedata
+
+    rendered: list[str] = []
+    for line in lines:
+        if not isinstance(line, str) or any(
+            unicodedata.category(char) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for char in line
+        ):
+            raise GeometryError("A solver input line has to stay on one line.")
+        rendered.append(line)
+    return "\n".join(rendered) + "\n"
+
+
 def _run_ccx(mesh, fixed_nodes, forces, material):
     points = mesh["points"]
     elements = mesh["elements"]
@@ -1006,25 +1024,19 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
         lines += ["*NODE FILE", "U", "*EL FILE", "S", "*END STEP"]
         from aicad.paths import publish_text
 
-        publish_text(path / "job.inp", "\n".join(lines) + "\n", root=path)
+        publish_text(path / "job.inp", solver_deck(lines), root=path)
         # ccx is GPL-2.0-only. It stays a separate process and is not linked.
         from aicad.prereqs import find_program
 
         solver = find_program("ccx")
         if solver is None:
             return None, None, "CalculiX (ccx) is not on PATH."
-        from aicad.sandbox import program_environment
+        from aicad.sandbox import program_environment, run_confined_helper
 
-        completed = subprocess.run(
+        completed = run_confined_helper(
             [solver, "-i", "job"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdin=subprocess.DEVNULL,
-            timeout=180,
-            check=False,
             env=program_environment(),
+            timeout=180,
             **held_subprocess_kwargs(path),
         )
         if completed.returncode != 0 or not held_entry_is_file(path, "job.frd"):

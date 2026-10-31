@@ -407,14 +407,6 @@ def test_a_slicer_does_not_write_through_a_link(tmp_path, monkeypatch):
     if os.name == "nt":
         fake = tmp_path / "fake-slicer.cmd"
         fake.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
-        real_run = subprocess.run
-
-        def run(command, **kwargs):
-            if command and command[0] == str(fake):
-                command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", command[0], *command[1:]]
-            return real_run(command, **kwargs)
-
-        monkeypatch.setattr("aicad.printprep.subprocess.run", run)
     else:
         fake = tmp_path / "fake-slicer"
         fake.write_text("#!/usr/bin/env python3\n" + script.read_text(encoding="utf-8"), encoding="utf-8")

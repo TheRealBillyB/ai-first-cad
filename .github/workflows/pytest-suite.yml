@@ -83,6 +83,16 @@ jobs:
           fi
           "$PY" -I -c "import gmsh; print('gmsh', gmsh.__version__)"
 
+      - name: Check that matplotlib imports
+        shell: bash
+        run: |
+          if [ -x .venv/bin/python ]; then
+            PY=.venv/bin/python
+          else
+            PY=.venv/Scripts/python.exe
+          fi
+          "$PY" -I -c "import matplotlib; print('matplotlib', matplotlib.__version__)"
+
       - name: Run the Windows sandbox tests
         if: inputs.os == 'windows-latest'
         timeout-minutes: 15

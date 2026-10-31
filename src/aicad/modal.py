@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import math
 import re
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -729,18 +728,12 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
         solver = find_program("ccx")
         if solver is None:
             return None, None, "CalculiX (ccx) is not on PATH."
-        from aicad.sandbox import program_environment
+        from aicad.sandbox import program_environment, run_confined_helper
 
-        completed = subprocess.run(
+        completed = run_confined_helper(
             [solver, "-i", "job"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdin=subprocess.DEVNULL,
-            timeout=timeout,
-            check=False,
             env=program_environment(),
+            timeout=timeout,
             **held_subprocess_kwargs(path),
         )
         stdout = completed.stdout or ""
@@ -806,7 +799,9 @@ def _frequency_deck(bodies, fixed_nodes, equations, nmodes: int) -> str:
                 f"{dependent + 1}, {dof}, 1., {independent + 1}, {dof}, -1.",
             ]
     lines += ["*STEP", "*FREQUENCY", str(int(nmodes)), "*NODE FILE", "U", "*END STEP"]
-    return "\n".join(lines) + "\n"
+    from aicad.fea import solver_deck
+
+    return solver_deck(lines)
 
 
 def _parse_dat(text: str, nmodes: int) -> list[dict]:
