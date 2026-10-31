@@ -212,7 +212,9 @@ def render_table(report: dict, path: Path) -> dict:
     width = 1100
     ink = (28, 32, 36)
     muted = (90, 86, 78)
-    caption = _wrap(str(report.get("result_what") or report.get("note") or ""), small, width - 32)
+    from aicad.labels import plain_line
+
+    caption = _wrap(plain_line(str(report.get("result_what") or report.get("note") or "")), small, width - 32)
     top = 36 + 18 * max(len(caption), 1) + 8
     height = top + 28 + line_h * (len(rows) + 1) + 24
     image = Image.new("RGB", (width, max(height, 160)), (248, 246, 240))
