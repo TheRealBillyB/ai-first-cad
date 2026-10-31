@@ -718,9 +718,15 @@ def _xml_chars(value: object) -> str:
 
 
 def _xml_attr(value: object) -> str:
-    """An attribute value. A quote stays inside the attribute."""
+    """An attribute value. A quote stays inside the attribute.
 
-    return escape(_xml_chars(value), _XML_QUOTES)
+    A line break or a line separator becomes a space, so the attribute stays
+    on one line.
+    """
+
+    from aicad.labels import plain_line
+
+    return escape(plain_line(_xml_chars(value)), _XML_QUOTES)
 
 
 def _xml_comment(value: object) -> str:

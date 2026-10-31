@@ -798,18 +798,20 @@ def _dxf_escape(text: str) -> str:
     """One DXF group value.
 
     PDF text escapes a backslash and a parenthesis because those end or
-    continue a PDF string. A DXF value ends at the next line, so a newline
-    or a carriage return is escaped the same way: it stays in this value
-    and does not start another entity.
+    continue a PDF string. A DXF value ends at the next line, so a newline,
+    a carriage return, a line separator, or a paragraph separator is escaped
+    the same way: it stays in this value and does not start another entity.
     """
+
+    import unicodedata
 
     parts: list[str] = []
     for char in text:
         if char == "\\":
             parts.append("\\\\")
-        elif char in "\n\r":
+        elif char in "\n\r" or unicodedata.category(char) in {"Zl", "Zp"}:
             parts.append("\\n")
-        elif ord(char) < 32:
+        elif ord(char) < 32 or unicodedata.category(char) in {"Cc", "Cf", "Cs"}:
             parts.append(" ")
         else:
             parts.append(char)
