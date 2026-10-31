@@ -1164,7 +1164,7 @@ class Document:
             part.shape = placed
             part.step_errors = errors or None
         self._save()
-        for part, _base, _placed in rebuilt:
+        for part, _base, _placed, _errors in rebuilt:
             self._refresh_face_sketches(part.name, raise_error=True)
 
     def _sketch_solid_from(
