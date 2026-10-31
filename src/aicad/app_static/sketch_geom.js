@@ -266,6 +266,71 @@ function sketchRound(value) {
   return Math.round(Number(value) * 1000) / 1000;
 }
 
+function sketchGridSpacing(sketch) {
+  const spec = sketch && sketch.spec;
+  const raw = spec && spec.grid_mm != null ? spec.grid_mm : sketch && sketch.grid_mm;
+  const value = Number(raw);
+  if (Number.isFinite(value) && value > 0) return value;
+  return 10;
+}
+
+function sketchGridLines(view) {
+  const width = Number(view && view.width);
+  const height = Number(view && view.height);
+  const scale = Number(view && view.scale);
+  const spacing = Number(view && view.spacing);
+  if (!(width > 0) || !(height > 0) || !(scale > 0) || !(spacing > 0)) return [];
+  const cx = Number.isFinite(Number(view.centerX)) ? Number(view.centerX) : 0;
+  const cy = Number.isFinite(Number(view.centerY)) ? Number(view.centerY) : 0;
+  const rotation = Number.isFinite(Number(view.rotation)) ? Number(view.rotation) : 0;
+  const turn = Math.cos(rotation);
+  const rise = Math.sin(rotation);
+  const project = (x, y) => {
+    const dx = x - cx;
+    const dy = y - cy;
+    const rx = dx * turn - dy * rise;
+    const ry = dx * rise + dy * turn;
+    return [width / 2 + rx * scale, height / 2 - ry * scale];
+  };
+  const unproject = (sx, sy) => {
+    const rx = (sx - width / 2) / scale;
+    const ry = (height / 2 - sy) / scale;
+    return [cx + rx * turn + ry * rise, cy - rx * rise + ry * turn];
+  };
+  const corners = [
+    unproject(0, 0),
+    unproject(width, 0),
+    unproject(width, height),
+    unproject(0, height),
+  ];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  corners.forEach((point) => {
+    minX = Math.min(minX, point[0]);
+    maxX = Math.max(maxX, point[0]);
+    minY = Math.min(minY, point[1]);
+    maxY = Math.max(maxY, point[1]);
+  });
+  const lines = [];
+  const limit = 800;
+  const startX = Math.floor(minX / spacing + 1e-9) * spacing;
+  const startY = Math.floor(minY / spacing + 1e-9) * spacing;
+  for (let x = startX; x <= maxX + spacing * 1e-9 && lines.length < limit; x += spacing) {
+    const from = project(x, minY);
+    const to = project(x, maxY);
+    lines.push({ axis: "x", at: x, world: [x, minY, x, maxY], screen: [from[0], from[1], to[0], to[1]] });
+  }
+  const verticals = lines.length;
+  for (let y = startY; y <= maxY + spacing * 1e-9 && lines.length - verticals < limit; y += spacing) {
+    const from = project(minX, y);
+    const to = project(maxX, y);
+    lines.push({ axis: "y", at: y, world: [minX, y, maxX, y], screen: [from[0], from[1], to[0], to[1]] });
+  }
+  return lines;
+}
+
 function sketchKnownStart(spec, startId) {
   if (typeof startId !== "string" || !startId) return null;
   const entities = (spec && spec.entities) || [];
