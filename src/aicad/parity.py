@@ -70,6 +70,7 @@ CLI_TOOLS = {
     "add-plan-question": "add_plan_question",
     "put-plan-sheet": "put_plan_sheet",
     "set-plan-dimensions": "set_plan_dimensions",
+    "set-plan-build": "set_plan_build",
     "comment-on-plan": "comment_on_plan",
     "answer-plan-question": "answer_plan_question",
     "mark-plan-item": "mark_plan_item",

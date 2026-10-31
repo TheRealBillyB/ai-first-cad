@@ -2093,6 +2093,13 @@ def _cmd_approve_plan(workspace: Workspace, arguments: dict) -> dict:
     return workspace.document.approve_plan(arguments["name"])
 
 
+def _cmd_set_plan_build(workspace: Workspace, arguments: dict) -> dict:
+    steps = arguments.get("steps")
+    if not isinstance(steps, list):
+        raise GeometryError("set_plan_build needs steps, a list of {part, script}.")
+    return workspace.document.set_plan_build(arguments["name"], steps)
+
+
 def _cmd_start_model_from_plan(workspace: Workspace, arguments: dict) -> dict:
     return workspace.document.start_model_from_plan(arguments["name"])
 
@@ -2104,13 +2111,16 @@ def _cmd_start_simulation_from_plan(workspace: Workspace, arguments: dict) -> di
 _PLAN = _obj({"name": _string("Plan name.")}, ["name"])
 _add(Command(
     "start_plan",
-    "Start a plan before any solid. Optional bundle holds research, assumptions, questions, dimensions, and blueprint sheets. The plan is data. It does not run code.",
+    "Start a plan before any solid. Optional bundle holds research, assumptions, questions, dimensions, blueprint sheets, and build steps. The plan is data. It does not run code.",
     _obj(
         {
             "name": _string("Plan name."),
             "title": _string("Short title."),
             "summary": _string("What this plan is deciding."),
-            "bundle": {"type": "object", "description": "Optional research, assumptions, questions, dimensions, and sheets."},
+            "bundle": {
+                "type": "object",
+                "description": "Optional research, assumptions, questions, dimensions, sheets, and build steps. A build step is {part, script}. The script assigns part. It is not run.",
+            },
         },
         ["name"],
     ),
@@ -2234,15 +2244,31 @@ _add(Command(
     undo=True,
 ))
 _add(Command(
+    "set_plan_build",
+    "Store the scripts that build the parts after approval. Each step has part and script. The script assigns the solid to part. Storing the steps does not run them.",
+    _obj(
+        {
+            "name": _string("Plan name."),
+            "steps": {
+                "type": "array",
+                "description": "Build steps. Each item has part and script. Optional id. The script assigns part and does not run until the person approves.",
+            },
+        },
+        ["name", "steps"],
+    ),
+    _cmd_set_plan_build,
+    undo=True,
+))
+_add(Command(
     "approve_plan",
-    "Approve the current revision. Only the person can do this. An agent, including the in-app assistant, is refused.",
+    "Approve the current revision. Only the person can do this. An agent, including the in-app assistant, is refused. Build steps on that revision then run in the script sandbox with the network off. A failed step leaves the previous model in place.",
     _PLAN,
     _cmd_approve_plan,
     undo=True,
 ))
 _add(Command(
     "start_model_from_plan",
-    "Start heavy modeling from a plan. Refuses, and says why, until the person has approved the current revision. Then returns the approved dimensions and assumptions. Does not build a solid.",
+    "Start modeling from a plan. Refuses until the person has approved the current revision. With no build steps, returns the approved dimensions and does not build a solid. With build steps, runs those approved scripts if the parts are not saved yet. The network stays off.",
     _PLAN,
     _cmd_start_model_from_plan,
 ))
