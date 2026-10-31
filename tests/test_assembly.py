@@ -1556,3 +1556,17 @@ def test_a_rack_maps_degrees_to_millimetres():
     solved = solve(spec, {"pinion": 10})
     values = {joint["name"]: joint["value"] for joint in solved["joints"]}
     assert values["rack"] == pytest.approx(-20)
+
+
+def test_an_assembly_that_says_inches_is_refused():
+    spec = {
+        "name": "slide",
+        "units": "inch",
+        "instances": [{"name": "block", "part": "block"}],
+        "joints": [],
+    }
+    with pytest.raises(GeometryError, match="millimeters"):
+        solve(spec)
+    spec["units"] = "mm"
+    solved = solve(spec)
+    assert solved["instances"][0]["name"] == "block"

@@ -17,6 +17,29 @@ def round_mm(value: float, digits: int = 6) -> float:
     return round(float(value), digits)
 
 
+_MILLIMETERS = frozenset(
+    {"mm", "millimeter", "millimeters", "millimetre", "millimetres"}
+)
+
+
+def require_millimeters(value, label: str) -> None:
+    """Refuse a length unit other than millimeters.
+
+    A sketch or an assembly that says inches is not converted. Leaving the
+    numbers as millimeters would build a part 25.4 times too small.
+    """
+    if value is None or value == "":
+        return
+    token = "".join(str(value).strip().lower().split()).rstrip(".")
+    if token in _MILLIMETERS:
+        return
+    from aicad.errors import GeometryError
+
+    raise GeometryError(
+        f"{label} uses millimeters. {value!r} is not a length it can use. One inch is 25.4."
+    )
+
+
 @dataclass(frozen=True)
 class Vec3:
     x: float
