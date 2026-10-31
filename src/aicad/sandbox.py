@@ -4024,6 +4024,23 @@ def _file_key(path: Path) -> str:
     return os.path.normcase(os.path.abspath(os.fspath(path)))
 
 
+def _snapshot_directories(root: Path) -> set[str]:
+    """Directories under ``root``, including ``root``. A link is not followed."""
+    from aicad.paths import is_reparse
+
+    found = {_file_key(root)}
+    for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+        kept: list[str] = []
+        for name in dirnames:
+            child = Path(dirpath) / name
+            if child.is_symlink() or is_reparse(child):
+                continue
+            kept.append(name)
+            found.add(_file_key(child))
+        dirnames[:] = kept
+    return found
+
+
 def _snapshot_files(root: Path) -> dict[str, int]:
     """Sizes of regular files under ``root``. A link is not followed."""
     from aicad.paths import is_reparse
@@ -4162,6 +4179,7 @@ class _DiskWatch:
     def __init__(self, root: Path, before: dict[str, int], file_cap: int, disk_cap: int):
         self.root = root
         self.before = before
+        self._directories_before = _snapshot_directories(root)
         self.file_cap = file_cap
         self.disk_cap = disk_cap
         self.hit = threading.Event()
@@ -4813,10 +4831,13 @@ class _DiskWatch:
         grown: list[tuple[int, str]] = []
         total = 0
         file_over = False
+        removed_new: list[str] = []
         for key, size, old in self._accounted_rows():
             growth = max(0, size - old)
             if size > self.file_cap and size > old:
                 file_over = True
+                if self.before.get(key) is None:
+                    removed_new.append(key)
                 _restore_file(key, self.before)
                 continue
             if growth:
@@ -4830,12 +4851,46 @@ class _DiskWatch:
             for growth, key in grown:
                 if total <= self.disk_cap and io_peak <= self.disk_cap:
                     break
+                if self.before.get(key) is None:
+                    removed_new.append(key)
                 _restore_file(key, self.before)
                 total -= growth
+            self._drop_new_empty_directories(removed_new)
             return f"The script was stopped because it wrote more than {self.disk_cap} bytes."
         if file_over:
+            self._drop_new_empty_directories(removed_new)
             return f"The script was stopped because it wrote more than {self.file_cap} bytes."
         return None
+
+    def _drop_new_empty_directories(self, removed_files: list[str]) -> None:
+        """Remove a directory this run created once its rolled-back files are gone.
+
+        The quota stop can arrive before the script removes that directory.
+        A directory that was already in the project stays, and so does one
+        that still holds a file.
+        """
+        from aicad.file_access import remove_empty_directory
+
+        root_key = _file_key(self.root)
+        pending: set[str] = set()
+        for key in removed_files:
+            parent = Path(key).parent
+            while True:
+                parent_key = _file_key(parent)
+                if parent_key == root_key or parent_key in self._directories_before:
+                    break
+                pending.add(parent_key)
+                if parent.parent == parent:
+                    break
+                parent = parent.parent
+        for key in sorted(pending, key=lambda item: item.count(os.sep), reverse=True):
+            path = Path(key)
+            try:
+                if any(path.iterdir()):
+                    continue
+                remove_empty_directory(path)
+            except OSError:
+                continue
 
 
 def _open_retained(path: Path) -> int | None:
