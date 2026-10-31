@@ -1,6 +1,6 @@
 # Gears
 
-`aicad.gears` builds external spur, helical, straight bevel, spiral bevel, and hypoid solids, and the same numbers the solid is drawn from. Units are millimetres. A hypoid uses the offset axis layout: a shaft angle plus a pinion offset. Bores, hubs, keyways, and splines are the same for every family.
+`aicad.gears` builds external spur, helical, internal spur ring, straight bevel, spiral bevel, and hypoid solids, and the same numbers the solid is drawn from. Units are millimetres. A hypoid uses the offset axis layout: a shaft angle plus a pinion offset. Bores, hubs, keyways, and splines are the same for every external family. An internal ring is the toothed rim and does not take a bore, hub, keyway, or spline.
 
 The Python calls are `gear_data`, `build_gear`, `pair_geometry`, and `mesh_placement`. The command line is `aicad gear`. The assistant tool is `create_gear`. A part stored this way has source `gear` and is rebuilt from the spec.
 
@@ -46,6 +46,31 @@ a = (d1 + d2) / 2 · cos αt / cos αwt
 If inv αwt is negative, backlash remains when the base circles touch. There is no zero-backlash centre distance, and the pair is refused.
 
 The transverse contact ratio is the length of the path of contact divided by the transverse base pitch. The overlap ratio is b sin|β| / (π mn), using the shorter face. External helical gears need opposite hands. A same-hand pair is refused instead of being placed on parallel shafts.
+
+## Internal ring
+
+`type` `internal` is the outer ring of a planetary set: a spur with internal involute teeth. `ring` is the same type. `module_mm` is the normal module. With tooth count z and profile shift x:
+
+- reference diameter d = z · m, base diameter db = d · cos α
+- addendum ha = m · (ha* − 0.1 − x) when `addendum_coefficient` is omitted, so the tip clears a mating root fillet. Set `addendum_coefficient` to ha* for the full ISO 53 addendum. Dedendum hf = m · (hf* + x)
+- tip diameter da = d − 2 ha, root diameter df = d + 2 hf
+- transverse tooth thickness st = m · (π/2 + 2 x tan α)
+
+The tip lies inside the reference cylinder and the root lies outside it. The half-angle of the tooth metal at radius r is
+
+φ(r) = st / (2 r_p) − inv α + inv αr
+
+Positive x thickens the tooth and shortens the inward addendum. The flank is that involute. The root corner is a circular blend of the ISO 53 tip radius, tangent to the root circle. It is not the trochoid of a pinion cutter. Undercut from a pinion cutter is not evaluated. The tip has to stay outside the base circle, and neighbouring teeth must not meet at the root.
+
+`rim_thickness_mm` is the radial metal outside the root. Omit it and the rim is four modules. The outside diameter is df + 2 · rim_thickness_mm. The axis is +Z, tooth 0 is centred on +X, and the face is centred on z = 0.
+
+An external gear and this ring, with the external as member 1, use
+
+inv αwt = inv α + 2 tan α · (x1 − x2) / (z2 − z1)
+
+a = (d2 − d1) / 2 · cos α / cos αwt
+
+Both members turn the same way. At that centre the clearance from the external tip to the ring root is rf2 − a − ra1, which is 0.25 m for rack A and zero profile shift. `mesh_placement` puts the first gear at the origin and the second on +X at that centre, clocked so an external tooth sits in an internal space.
 
 ## Straight and spiral bevel
 
@@ -132,7 +157,7 @@ The command line is `aicad check-gears`. The assistant tool is `check_gears`.
 
 ## Gear train
 
-`aicad.gears.train` solves shaft speed and torque for a train stored on the assembly. The command is `aicad gear-train`. The assistant tool is `solve_gear_train`. Tooth counts come from gears this module built. An internal ring is a stated tooth count, because that solid is not built.
+`aicad.gears.train` solves shaft speed and torque for a train stored on the assembly. The command is `aicad gear-train`. The assistant tool is `solve_gear_train`. Tooth counts come from gears this module built, including an internal ring. A member the generator does not build is still a stated tooth count.
 
 A shaft lists the gears fixed to it, and may name the revolute or cylindrical joint that turns it. A mesh names two gears. `kind` is `external` (opposite directions) or `internal` (the same direction). `carrier` is the shaft the mesh orbits with. Omit it and the carrier is the housing, which is a fixed-axis mesh. `efficiency` defaults to 1. `fixed` names shafts held at zero speed.
 
@@ -158,4 +183,4 @@ The drive is `{inputs: [{shaft, speed_rpm, torque_nm}], speeds: [{shaft, speed_r
 
 ## Not in this module
 
-Tolerance grades and face-hobbing are not generated here. The small hypoid flank shift is not a backlash you specify, and other backlash is reported by the mesh check rather than cut into the solid. The hypoid sweep is one pinion tooth, not a full turn. The train solver does not check that the solids touch.
+Tolerance grades, a helical internal tooth, and face-hobbing are not generated here. The internal root fillet is a circular blend, not a pinion-cutter trochoid. The small hypoid flank shift is not a backlash you specify, and other backlash is reported by the mesh check rather than cut into the solid. The hypoid sweep is one pinion tooth, not a full turn. The train solver does not check that the solids touch.

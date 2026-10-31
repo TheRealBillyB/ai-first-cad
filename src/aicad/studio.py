@@ -31,6 +31,7 @@ _LOUD = {
     "undo",
     "redo",
     "open_project",
+    "open_example",
     "save_project",
     "save_project_as",
     "measure_points",
@@ -281,6 +282,62 @@ def save_project_as(workspace, path: str, name: str | None = None) -> dict:
     return {"path": str(destination), "name": destination.name, "saved": True}
 
 
+def _example_project(folder_name: str) -> Path:
+    """The worked example shipped with the repository."""
+    root = Path(__file__).resolve().parents[2] / "examples" / folder_name
+    if not (root / "session.json").is_file():
+        raise GeometryError("The motor-mount example is not in this copy of aicad.")
+    return root
+
+
+def open_example(workspace, name: str | None = None) -> dict:
+    """Copy the motor-mount example beside this project and switch to it.
+
+    A second request opens that same folder. The example is a saved project,
+    so opening it does not run a script.
+    """
+    from aicad.paths import ensure_real_directory, refuse_link_ancestors
+
+    chosen = name or "motor_mount"
+    if not isinstance(chosen, str) or chosen.strip() != "motor_mount":
+        raise GeometryError("The worked example is motor_mount.")
+    parts = {part.name for part in workspace.document.list_parts()}
+    sketches = set(workspace.document.list_sketches())
+    if "motor_mount" in parts and "bracket_base" in sketches:
+        return {
+            "path": str(workspace.root),
+            "name": workspace.root.name,
+            "parts": sorted(parts),
+            "example": "motor_mount",
+        }
+    source = _example_project("motor_mount_workspace")
+    destination = workspace.root.resolve().parent / f"motor-mount-{workspace.root.name}"
+    if _same_folder(destination, workspace.root.resolve()):
+        return {
+            "path": str(workspace.root),
+            "name": workspace.root.name,
+            "parts": [part.name for part in workspace.document.list_parts()],
+            "example": "motor_mount",
+        }
+    if destination.is_file():
+        raise GeometryError(f"{destination.name} is a file, not a folder.")
+    if not (destination / "session.json").is_file():
+        if destination.exists() and any(destination.iterdir()):
+            raise GeometryError(
+                f"{destination.name} exists and is not an empty folder. Move it aside and try again."
+            )
+        refuse_link_ancestors(destination, "Example", GeometryError)
+        try:
+            ensure_real_directory(destination)
+            _copy_project(source, destination)
+        except OSError as exc:
+            reason = exc.strerror or str(exc)
+            raise GeometryError(f"Could not open the motor-mount example. {reason}.") from exc
+    opened = open_project(workspace, str(destination))
+    opened["example"] = "motor_mount"
+    return opened
+
+
 def open_project(workspace, path: str) -> dict:
     from aicad.paths import link_leaves, project_link_escapes
 
@@ -340,6 +397,8 @@ def list_parameters(workspace, name: str) -> dict:
             note = "This catalog part takes its size from the standard. You can move it."
     elif kind == "step":
         note = "This part is an imported STEP file. There is no size to slide. You can move it."
+    elif kind == "mesh":
+        note = "This part is an imported triangle mesh. It has no editable features. You can move it."
     elif kind == "gear":
         note = "This part is a generated gear. Tooth data is fixed until the gear is replaced. You can move it."
     else:
@@ -522,8 +581,8 @@ def note_for(name: str, arguments: dict | None, result: dict | None) -> dict:
     frame = ""
     follow = False
     if record and name not in _NO_FRAME:
-        if name in ("undo", "redo", "open_project") or not parts:
-            if name in ("undo", "redo", "open_project"):
+        if name in ("undo", "redo", "open_project", "open_example") or not parts:
+            if name in ("undo", "redo", "open_project", "open_example"):
                 follow = True
                 frame = "scene"
         else:
@@ -570,6 +629,12 @@ def register(add) -> None:
         "Open a project folder. The undo stack starts empty in that folder.",
         _obj({"path": _string("Folder that holds the project, or an empty folder for a new one.")}, ["path"]),
         lambda workspace, arguments: open_project(workspace, arguments["path"]),
+    ))
+    add(Command(
+        "open_example",
+        "Open the worked motor-mount example in its own project folder.",
+        _obj({"name": _string("Example name. motor_mount is the worked example.")}, []),
+        lambda workspace, arguments: open_example(workspace, arguments.get("name")),
     ))
     add(Command(
         "save_project",
@@ -640,6 +705,14 @@ def register(add) -> None:
 
 def register_mcp(mcp, run, guard) -> None:
     """Thin MCP wrappers. The work happens in the command layer."""
+
+    @mcp.tool()
+    def open_example(name: str | None = None) -> dict:
+        """Open the worked motor-mount example as its own project.
+
+        The copy sits beside the open project. Opening it does not run a script.
+        """
+        return guard(lambda: run("open_example", name=name))
 
     @mcp.tool()
     def open_project(path: str) -> dict:
@@ -1129,6 +1202,8 @@ def _summary(name: str, arguments: dict, result: dict, parts: list[str]) -> str:
         return f"Measured {result.get('text') or result.get('distance_mm')}"
     if name == "open_project":
         return f"Opened {result.get('name') or arguments.get('path')}"
+    if name == "open_example":
+        return f"Opened the {result.get('example') or 'motor_mount'} example"
     if name == "save_project":
         return f"Saved {result.get('name') or 'the project'}"
     if name == "save_project_as":

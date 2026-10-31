@@ -232,8 +232,13 @@ placement of a mounted pair. That sweep is not a full turn and not a spiral beve
 
 ## Sketches
 
-A sketch is points, lines, arcs, circles, and splines, plus constraints. A
-spline is `{"id": "s", "type": "spline", "points": ["a", "b", "c"], "closed": true}`.
+A sketch is points, lines, arcs, circles, and splines, plus constraints. `plane` is
+`xy`, `yz`, or `xz`, a datum `{"kind": "datum", "base": "xy", "offset": 10}`
+or with `angle` and `axis`, or a planar face
+`{"kind": "face", "part": "block", "ref": "plane/z+/0,0,10"}`. The sketch
+stays on that face when the solid rebuilds. A missing face is an error. The
+solver still uses the plane's own coordinates. A spline is
+`{"id": "s", "type": "spline", "points": ["a", "b", "c"], "closed": true}`.
 `closed` makes a profile that extrudes or revolves as the smooth curve, not
 the polygon through the points. Initial `at` coordinates are guesses. `fix`
 locks a point at its guess. The solver is
@@ -300,7 +305,8 @@ Boxes are axis-aligned. Cylinders take an optional `axis` (default `[0, 0, 1]`).
 ## Mechanics
 
 `list_materials` is a small handbook library: PLA, PETG, ABS, nylon, aluminum
-6061, and mild steel. The numbers are typical, not a certified allowable.
+6061, mild steel, quenched-and-tempered 42CrMo4, and case-hardening 16MnCr5.
+The numbers are typical, not a certified allowable.
 
 `describe_faces` lists every face. A boolean does not keep the name you used
 in the script, so you select a face by geometry:
@@ -508,9 +514,13 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("get_part_source", name=name))
 
     @mcp.tool()
-    def measure_part(name: str) -> dict:
-        """Bounding box, volume, area, center of mass, counts, valid, and watertight."""
-        return guard(lambda: run("measure_part", name=name))
+    def measure_part(name: str, material: str | None = None) -> dict:
+        """Bounding box, volume, surface area, center of mass, counts, valid, and watertight.
+
+        Pass material (a name from list_materials) to include mass. Mass is the
+        volume times that handbook density, in grams. It is not a weighed mass.
+        """
+        return guard(lambda: run("measure_part", name=name, material=material))
 
     @mcp.tool()
     def check_wall_thickness(name: str, min_wall_mm: float, samples: int = 4) -> dict:
@@ -577,15 +587,25 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def inspect_part(
-        name: str, min_wall_mm: float | None = None, samples: int = 4
+        name: str,
+        min_wall_mm: float | None = None,
+        samples: int = 4,
+        material: str | None = None,
     ) -> list[str | Image]:
         """Measure, estimate wall thickness, and render a part. Call this after every edit.
 
         Pass min_wall_mm (for example 1.2) to score the estimate against a print rule.
-        Look at the contact sheet, then the individual views. Do not treat a script
-        that ran cleanly as a part that is correct.
+        Pass material (a name from list_materials) to include mass. Mass is the
+        volume times that handbook density. Look at the contact sheet, then the
+        individual views. Do not treat a script that ran cleanly as a part that is correct.
         """
-        return guard(lambda: _images(run("inspect_part", name=name, min_wall_mm=min_wall_mm, samples=samples)))
+        return guard(lambda: _images(run(
+            "inspect_part",
+            name=name,
+            min_wall_mm=min_wall_mm,
+            samples=samples,
+            material=material,
+        )))
 
     @mcp.tool()
     def export_part(name: str, format: str, path: str | None = None) -> dict:
@@ -628,7 +648,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def create_sketch(name: str, spec: dict[str, Any]) -> list[str | Image]:
         """Solve and store a 2D sketch of entities and constraints.
 
-        spec has `entities` (point, line, circle, arc, spline) and `constraints`
+        spec has `plane` (`xy`, `yz`, `xz`, a datum with `offset`, `angle`,
+        or both, or `{"kind": "face", "part", "ref"}`), `entities`
+        (point, line, circle, arc, spline) and `constraints`
         (fix, coincident, parallel, perpendicular, tangent, equal, horizontal,
         vertical, symmetric, midpoint, distance, angle, radius, diameter,
         pattern_on_circle). Initial `at` coordinates are guesses. `fix` locks
@@ -733,17 +755,19 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         position: list[float] | None = None,
         rotation_deg: list[float] | None = None,
     ) -> dict:
-        """Create or replace a spur, helical, bevel, or hypoid gear.
+        """Create or replace a spur, helical, internal ring, bevel, or hypoid gear.
 
-        spec needs type, teeth, and face_width_mm. A spur, helical, or bevel
-        also needs module_mm. pressure_angle_deg defaults to 20. module_mm is
-        the normal module, or the outer transverse module for a bevel. A bevel
+        spec needs type, teeth, and face_width_mm. A spur, helical, internal
+        ring, or bevel also needs module_mm. pressure_angle_deg defaults to 20.
+        module_mm is the normal module, or the outer transverse module for a bevel.
+        An internal ring is a spur with teeth pointing inward. rim_thickness_mm
+        is the metal outside the root; omit it for four normal modules. A bevel
         needs mate_teeth or ratio. A hypoid needs offset_mm, ring_diameter_mm,
         spiral_angle_deg, and role (pinion or ring). ratio is ring teeth
         divided by pinion teeth. helix_angle_deg and spiral_angle_deg are
         positive for a right-hand tooth. bore_mm, hub, keyway (DIN 6885-1),
-        and spline (ISO 14 or DIN 5480) are optional. position and
-        rotation_deg are [x, y, z].
+        and spline (ISO 14 or DIN 5480) are optional on an external gear.
+        position and rotation_deg are [x, y, z].
         """
         return guard(
             lambda: run(
@@ -789,11 +813,12 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def list_materials() -> dict:
         """List the small material library used by solve_mechanics.
 
-        PLA, PETG, ABS, nylon, aluminum 6061, and mild steel, with modulus,
-        Poisson's ratio, and a strength. Plastics use a tensile strength.
-        Metals use a yield strength. These are handbook ballparks, not a
-        certified allowable. Printed materials are weaker across layers than
-        the in-plane number used here.
+        PLA, PETG, ABS, nylon, aluminum 6061, mild steel, quenched-and-tempered
+        42CrMo4, and case-hardening 16MnCr5, with modulus, Poisson's ratio,
+        and a strength. Plastics use a tensile strength. Metals use a yield
+        strength. These are handbook ballparks, not a certified allowable.
+        Printed materials are weaker across layers than the in-plane number
+        used here. The 16MnCr5 yield is the core, not the carburized case.
         """
         return guard(lambda: run("list_materials"))
 
@@ -836,6 +861,16 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         can be rebuilt later.
         """
         return guard(lambda: run("import_step", name=name, path=path))
+
+    @mcp.tool()
+    def import_stl(name: str, path: str) -> dict:
+        """Copy an STL file in as a mesh-backed part.
+
+        The triangles become one solid. The part has no editable features.
+        A mesh that is not a closed solid is refused. The file is copied into
+        the workspace so the part can be rebuilt later.
+        """
+        return guard(lambda: run("import_stl", name=name, path=path))
 
     @mcp.tool()
     def describe_edges(name: str) -> dict:

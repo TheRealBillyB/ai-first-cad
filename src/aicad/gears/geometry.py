@@ -154,10 +154,17 @@ def mesh_placement(pinion: dict, gear: dict, gear_angle_deg: float = 0.0) -> dic
 
 
 def profile_points(spec: dict) -> list[tuple[float, float]]:
-    """Closed transverse outline of a cylindrical gear. Tooth 0 is on +X."""
+    """Closed transverse outline of a cylindrical gear. Tooth 0 is on +X.
+
+    An internal ring returns the inner boundary, the hole inside the teeth.
+    """
     clean = normalize_spec(spec)
+    if clean["type"] == "internal":
+        from aicad.gears.internal import internal_hole_outline
+
+        return internal_hole_outline(clean)
     if clean["type"] not in CYLINDRICAL:
-        raise GeometryError("profile_points is the transverse outline of a spur or helical gear.")
+        raise GeometryError("profile_points is the transverse outline of a spur, helical, or internal gear.")
     return transverse_outline(clean)
 
 
@@ -173,7 +180,12 @@ def tooth_profile(
     if spec.get("virtual"):
         scalars = cylindrical_scalars(spec)
     else:
-        scalars = cylindrical_scalars(normalize_spec(spec))
+        clean = normalize_spec(spec)
+        if clean["type"] == "internal":
+            from aicad.gears.internal import internal_tooth_sector
+
+            return internal_tooth_sector(clean, involute_count, fillet_count)
+        scalars = cylindrical_scalars(clean)
     return _tooth_sector(scalars, involute_count, fillet_count)
 
 
@@ -254,12 +266,21 @@ def normalize_spec(spec: dict) -> dict:
         "spiralbevel": "spiral_bevel",
         "bevel": "straight_bevel",
         "hypoid_bevel": "hypoid",
+        "ring": "internal",
+        "ring_gear": "internal",
+        "internal_gear": "internal",
+        "internal_spur": "internal",
+        "annulus": "internal",
     }
     gear_type = aliases.get(raw_type, raw_type)
     if gear_type == "hypoid":
         from aicad.gears.hypoid import normalize_hypoid
 
         return normalize_hypoid(spec)
+    if gear_type == "internal":
+        from aicad.gears.internal import normalize_internal
+
+        return normalize_internal(spec)
     offset = _number(spec.get("offset_mm"), "offset_mm", default=0.0)
     if abs(offset) > 1e-12:
         raise GeometryError(
@@ -1207,6 +1228,10 @@ def cylindrical_mount(left: dict, right: dict, centre_mm: float | None = None) -
 
 
 def _cylindrical_pair(left: dict, right: dict) -> dict:
+    if left.get("internal") or right.get("internal"):
+        from aicad.gears.internal import internal_pair
+
+        return internal_pair(left, right)
     mount = cylindrical_mount(left, right, None)
     spin = 180.0 * (1.0 + 1.0 / right["teeth"])
     return {
@@ -1386,7 +1411,7 @@ def _contact_ratio(
 
 
 def _reject_unknown(name: str) -> None:
-    known = ", ".join(sorted(set(CYLINDRICAL | BEVEL | {"hypoid"})))
+    known = ", ".join(sorted(set(CYLINDRICAL | BEVEL | {"hypoid", "internal"})))
     raise GeometryError(f"Unknown gear type {name!r}. Use one of: {known}.")
 
 
