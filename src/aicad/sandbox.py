@@ -820,6 +820,8 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
             if not path.is_absolute():
                 path = Path.cwd() / path
             _refuse_project_link(path, root, read_roots, writing)
+            if writing:
+                _refuse_library_config_write(path)
         return real_open(file, mode, *args, **kwargs)
 
     def os_open(path, flags, mode=0o777, *, dir_fd=None):
@@ -829,6 +831,8 @@ def install_python_guard(workspace: Path, read_roots: list[Path]) -> None:
             if not file_path.is_absolute():
                 file_path = Path.cwd() / file_path
             _refuse_project_link(file_path, root, read_roots, writing)
+            if writing:
+                _refuse_library_config_write(file_path)
         return real_os_open(path, flags, mode, dir_fd=dir_fd)
 
     builtins.open = py_open
@@ -2020,6 +2024,161 @@ def library_env_steers(name: str) -> bool:
     if upper in _LIBRARY_NAMES:
         return True
     return upper.startswith(_LIBRARY_PREFIXES)
+
+
+def _refuse_library_config_write(path: Path) -> None:
+    """A design script cannot write the library configuration directory.
+
+    Libraries may still write a cache there. A call that comes from the
+    script, rather than from one of those libraries, is refused.
+    """
+
+    home = _LIBRARY_HOME
+    if not home:
+        return
+    try:
+        resolved = path.resolve()
+        root = Path(home).resolve()
+    except OSError:
+        return
+    if resolved != root and root not in resolved.parents:
+        return
+    if _script_writes_directly():
+        raise ScriptError("A design script cannot write the library configuration directory.")
+
+
+def _script_writes_directly() -> bool:
+    """True when the script called ``open`` itself, not a geometry library."""
+
+    library_roots = {"matplotlib", "ezdxf", "gmsh", "fontTools", "build123d", "OCP", "PIL"}
+    saw_script = False
+    frame = sys._getframe()
+    while frame is not None:
+        filename = frame.f_code.co_filename
+        module = str(frame.f_globals.get("__name__", ""))
+        if filename in {"<aicad-design>", "<aicad-script>"}:
+            saw_script = True
+        root = module.split(".", 1)[0]
+        if root in library_roots:
+            return False
+        frame = frame.f_back
+    return saw_script
+
+
+_LOCKED_ENV = frozenset(
+    {
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "MPLCONFIGDIR",
+        "FONTCONFIG_FILE",
+        "FONTCONFIG_PATH",
+        "EZDXF_CONFIG_FILE",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+    }
+)
+
+
+def lock_library_environment() -> None:
+    """Keep library config paths from being pointed somewhere else.
+
+    Setting a locked name to the value it already has is left alone, so a
+    later refresh of the packaged path still works. A different value is refused.
+    """
+
+    if getattr(os.environ, "_aicad_locked", False):
+        return
+    inner = os.environ
+
+    class _Locked(dict):
+        _aicad_locked = True
+
+        def __getitem__(self, key):
+            return inner[key]
+
+        def __setitem__(self, key, value):
+            if _env_name_locked(key):
+                if inner.get(key) == value:
+                    return
+                raise PermissionError(1, "Operation not permitted")
+            inner[key] = value
+
+        def __delitem__(self, key):
+            if _env_name_locked(key):
+                raise PermissionError(1, "Operation not permitted")
+            del inner[key]
+
+        def __iter__(self):
+            return iter(inner)
+
+        def __len__(self):
+            return len(inner)
+
+        def __contains__(self, key):
+            return key in inner
+
+        def copy(self):
+            return inner.copy()
+
+        def get(self, key, default=None):
+            return inner.get(key, default)
+
+        def items(self):
+            return inner.items()
+
+        def keys(self):
+            return inner.keys()
+
+        def values(self):
+            return inner.values()
+
+        def setdefault(self, key, default=None):
+            if key in inner:
+                return inner[key]
+            self[key] = default
+            return inner[key]
+
+        def pop(self, key, *default):
+            if _env_name_locked(key):
+                raise PermissionError(1, "Operation not permitted")
+            if default:
+                return inner.pop(key, default[0])
+            return inner.pop(key)
+
+        def update(self, other=(), **kwargs):
+            if isinstance(other, dict):
+                pairs = other.items()
+            else:
+                pairs = other
+            for key, value in pairs:
+                self[key] = value
+            for key, value in kwargs.items():
+                self[key] = value
+
+    os.environ = _Locked()  # type: ignore[assignment]
+    real_putenv = os.putenv
+
+    def putenv(name, value):
+        if _env_name_locked(name) and os.environ.get(name) != value:
+            raise PermissionError(1, "Operation not permitted")
+        if _env_name_locked(name):
+            return None
+        return real_putenv(name, value)
+
+    os.putenv = putenv  # type: ignore[assignment]
+
+
+def _env_name_locked(name: str) -> bool:
+    upper = str(name).upper()
+    if upper in _LOCKED_ENV or library_env_steers(str(name)):
+        return True
+    return False
 
 
 def scrub_library_environment() -> None:

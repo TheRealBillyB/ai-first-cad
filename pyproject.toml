@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-timeout>=2.3", "pytest-xdist>=3.6"]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "pytest-xdist>=3.6", "matplotlib>=3.8"]
 robot = ["mujoco>=3.1"]
 
 [project.scripts]
