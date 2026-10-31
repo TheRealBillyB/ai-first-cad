@@ -1693,8 +1693,10 @@ def _text(value: Any, label: str, required: bool = False, limit: int = _MAX_TEXT
         value = ""
     if not isinstance(value, str):
         raise PlanError(f"{label} has to be text.")
-    from aicad.labels import plain_title
+    from aicad.labels import has_hidden_control, plain_title
 
+    if has_hidden_control(value):
+        raise PlanError(f"{label} has to stay on one line.")
     value = plain_title(value, label, PlanError)
     if required and not value:
         raise PlanError(f"{label} is required.")

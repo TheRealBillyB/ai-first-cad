@@ -120,6 +120,11 @@ def _compose_sheet(
     font_note = _font(_SANS, 15 * scale_px)
     font_small = _font(_SANS, 13 * scale_px)
 
+    from aicad.labels import strip_hidden
+
+    title = strip_hidden(title)
+    subtitle = strip_hidden(subtitle)
+    footer = strip_hidden(footer)
     header = 72 * scale_px
     footer_lines = [line for line in footer.split("\n") if line.strip()] if footer else []
     footer_h = (22 * max(len(footer_lines), 1) + 16) * scale_px if footer_lines else 12 * scale_px
@@ -170,8 +175,15 @@ def _status_text(status: str) -> str:
 def _draw_panel(draw, panel: dict, rect, scale_px, font_panel, font_dim, font_note, font_small) -> None:
     left, top, right, bottom = rect
     draw.rectangle(rect, fill=_PANEL, outline=_FRAME, width=max(1, scale_px))
-    draw.text((left + 12 * scale_px, top + 8 * scale_px), str(panel.get("title") or "View"), font=font_panel, fill=_TITLE)
-    notes = [str(line) for line in panel.get("notes") or [] if str(line).strip()]
+    from aicad.labels import strip_hidden
+
+    draw.text(
+        (left + 12 * scale_px, top + 8 * scale_px),
+        strip_hidden(str(panel.get("title") or "View")).strip() or "View",
+        font=font_panel,
+        fill=_TITLE,
+    )
+    notes = [strip_hidden(str(line)) for line in panel.get("notes") or [] if strip_hidden(str(line)).strip()]
     blocks = list(panel.get("blocks") or [])
     dimensions = list(panel.get("dimensions") or [])
     labels = list(panel.get("labels") or [])
@@ -211,7 +223,16 @@ def _draw_panel(draw, panel: dict, rect, scale_px, font_panel, font_dim, font_no
     for dim in dimensions:
         _dimension(draw, dim, px, font_dim, scale_px)
     for label in labels:
-        _text_backed(draw, px(float(label["x"]), float(label["y"])), str(label.get("text") or ""), font_small, _LABEL, 0)
+        from aicad.labels import strip_hidden
+
+        _text_backed(
+            draw,
+            px(float(label["x"]), float(label["y"])),
+            strip_hidden(str(label.get("text") or "")),
+            font_small,
+            _LABEL,
+            0,
+        )
 
     _scale_bar(draw, scale, left, right, top, font_small, scale_px)
 
@@ -239,7 +260,9 @@ def _block(draw, block: dict, px, font, scale_px) -> None:
     if fill is not None:
         draw.polygon(pts, fill=fill)
     draw.line(pts + [pts[0]], fill=outline, width=max(2, scale_px * 2))
-    text = str(block.get("label") or "")
+    from aicad.labels import strip_hidden
+
+    text = strip_hidden(str(block.get("label") or ""))
     if not text:
         return
     color = _DARK if _luminance(fill or _PANEL) > 140 else _INK
@@ -285,7 +308,9 @@ def _dimension(draw, dim: dict, px, font, scale_px) -> None:
     side = 1 if offset >= 0 else -1
     nudge = 16 * scale_px
     text_at = (mid[0] + lx * nudge * side, mid[1] - ly * nudge * side)
-    _text_backed(draw, text_at, str(dim.get("text") or ""), font, _DIM, angle)
+    from aicad.labels import strip_hidden
+
+    _text_backed(draw, text_at, strip_hidden(str(dim.get("text") or "")), font, _DIM, angle)
 
 
 def _tick(draw, point, lx, ly, scale_px) -> None:
