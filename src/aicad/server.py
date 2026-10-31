@@ -232,8 +232,13 @@ placement of a mounted pair. That sweep is not a full turn and not a spiral beve
 
 ## Sketches
 
-A sketch is points, lines, arcs, and circles, plus constraints. Initial `at`
-coordinates are guesses. `fix` locks a point at its guess. The solver is
+A sketch is points, lines, arcs, and circles, plus constraints. `plane` is
+`xy`, `yz`, or `xz`, a datum `{"kind": "datum", "base": "xy", "offset": 10}`
+or with `angle` and `axis`, or a planar face
+`{"kind": "face", "part": "block", "ref": "plane/z+/0,0,10"}`. The sketch
+stays on that face when the solid rebuilds. A missing face is an error. The
+solver still uses the plane's own coordinates. Initial `at` coordinates are
+guesses. `fix` locks a point at its guess. The solver is
 SolveSpace. The report's `status` is `fully_constrained`, `under_constrained`
 (with `free` naming the entities that can still move), or `over_constrained`
 (with `conflicts` naming the constraints that disagree).
@@ -505,9 +510,13 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("get_part_source", name=name))
 
     @mcp.tool()
-    def measure_part(name: str) -> dict:
-        """Bounding box, volume, area, center of mass, counts, valid, and watertight."""
-        return guard(lambda: run("measure_part", name=name))
+    def measure_part(name: str, material: str | None = None) -> dict:
+        """Bounding box, volume, surface area, center of mass, counts, valid, and watertight.
+
+        Pass material (a name from list_materials) to include mass. Mass is the
+        volume times that handbook density, in grams. It is not a weighed mass.
+        """
+        return guard(lambda: run("measure_part", name=name, material=material))
 
     @mcp.tool()
     def check_wall_thickness(name: str, min_wall_mm: float, samples: int = 4) -> dict:
@@ -574,15 +583,25 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
     @mcp.tool()
     def inspect_part(
-        name: str, min_wall_mm: float | None = None, samples: int = 4
+        name: str,
+        min_wall_mm: float | None = None,
+        samples: int = 4,
+        material: str | None = None,
     ) -> list[str | Image]:
         """Measure, estimate wall thickness, and render a part. Call this after every edit.
 
         Pass min_wall_mm (for example 1.2) to score the estimate against a print rule.
-        Look at the contact sheet, then the individual views. Do not treat a script
-        that ran cleanly as a part that is correct.
+        Pass material (a name from list_materials) to include mass. Mass is the
+        volume times that handbook density. Look at the contact sheet, then the
+        individual views. Do not treat a script that ran cleanly as a part that is correct.
         """
-        return guard(lambda: _images(run("inspect_part", name=name, min_wall_mm=min_wall_mm, samples=samples)))
+        return guard(lambda: _images(run(
+            "inspect_part",
+            name=name,
+            min_wall_mm=min_wall_mm,
+            samples=samples,
+            material=material,
+        )))
 
     @mcp.tool()
     def export_part(name: str, format: str, path: str | None = None) -> dict:
@@ -625,7 +644,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def create_sketch(name: str, spec: dict[str, Any]) -> list[str | Image]:
         """Solve and store a 2D sketch of entities and constraints.
 
-        spec has `entities` (point, line, circle, arc) and `constraints`
+        spec has `plane` (`xy`, `yz`, `xz`, a datum with `offset`, `angle`,
+        or both, or `{"kind": "face", "part", "ref"}`), `entities`
+        (point, line, circle, arc) and `constraints`
         (fix, coincident, parallel, perpendicular, tangent, equal, horizontal,
         vertical, symmetric, midpoint, distance, angle, radius, diameter,
         pattern_on_circle). Initial `at` coordinates are guesses. `fix` locks

@@ -79,33 +79,53 @@ class Measurement:
     area_mm2: float
     center_of_mass_mm: Vec3
     bounding_box: BoundingBox
+    mass_g: float | None = None
+    material: str | None = None
+    density_g_cm3: float | None = None
 
     def to_dict(self) -> dict[str, object]:
+        assumptions = [
+            "Units are millimeters.",
+            "Volume, area, and the center of mass come from the geometry kernel.",
+            "Watertight means the kernel reports a valid solid whose edges each belong to two faces.",
+        ]
+        if self.mass_g is not None:
+            assumptions.append("Mass is the model volume times the chosen material density.")
+            mass_limit = (
+                "Mass is this volume times the chosen handbook density. "
+                "It is a rough estimate, not a weighed part."
+            )
+        else:
+            mass_limit = (
+                "Mass is not included. Mass is this volume times a handbook density, "
+                "and that number is a rough estimate."
+            )
+        payload: dict[str, object] = {
+            "units": self.units,
+            "valid": self.valid,
+            "watertight": self.watertight,
+            "solid_count": self.solid_count,
+            "face_count": self.face_count,
+            "edge_count": self.edge_count,
+            "vertex_count": self.vertex_count,
+            "volume_mm3": self.volume_mm3,
+            "area_mm2": self.area_mm2,
+            "center_of_mass_mm": self.center_of_mass_mm.to_dict(),
+            "bounding_box": self.bounding_box.to_dict(),
+            "assumptions": assumptions,
+        }
+        if self.mass_g is not None:
+            payload["mass_g"] = self.mass_g
+            payload["material"] = self.material
+            payload["density_g_cm3"] = self.density_g_cm3
         return finish(
-            {
-                "units": self.units,
-                "valid": self.valid,
-                "watertight": self.watertight,
-                "solid_count": self.solid_count,
-                "face_count": self.face_count,
-                "edge_count": self.edge_count,
-                "vertex_count": self.vertex_count,
-                "volume_mm3": self.volume_mm3,
-                "area_mm2": self.area_mm2,
-                "center_of_mass_mm": self.center_of_mass_mm.to_dict(),
-                "bounding_box": self.bounding_box.to_dict(),
-                "assumptions": [
-                    "Units are millimeters.",
-                    "Volume, area, and the center of mass come from the geometry kernel.",
-                    "Watertight means the kernel reports a valid solid whose edges each belong to two faces.",
-                ],
-            },
+            payload,
             kind=VERIFIED_CHECK,
             name="Model measurement",
             what="Volume, area, center of mass, the bounding box, and the watertight check are properties of the CAD model.",
             limits=[
                 "This is the model, not a part weighed or measured with calipers.",
-                "Mass is not included. Mass is this volume times a handbook density, and that number is a rough estimate.",
+                mass_limit,
                 "The kernel's own tolerance applies.",
             ],
         )
@@ -602,7 +622,7 @@ class SketchReport:
             what="Fully constrained, under-constrained, or over-constrained is a verified check of this sketch.",
             limits=[
                 "A tolerance on a dimension is stored and printed. It does not move the geometry.",
-                "The sketch is on the XY plane. The initial guess has to be near a shape that satisfies the constraints.",
+                "The sketch lies on its plane: XY, YZ, XZ, an offset or angled datum, or a planar face. The initial guess has to be near a shape that satisfies the constraints.",
             ],
         )
 
