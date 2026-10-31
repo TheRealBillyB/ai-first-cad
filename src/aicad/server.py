@@ -287,7 +287,8 @@ Boxes are axis-aligned. Cylinders take an optional `axis` (default `[0, 0, 1]`).
 ## Mechanics
 
 `list_materials` is a small handbook library: PLA, PETG, ABS, nylon, aluminum
-6061, and mild steel. The numbers are typical, not a certified allowable.
+6061, mild steel, quenched-and-tempered 42CrMo4, and case-hardening 16MnCr5.
+The numbers are typical, not a certified allowable.
 
 `describe_faces` lists every face. A boolean does not keep the name you used
 in the script, so you select a face by geometry:
@@ -769,11 +770,12 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def list_materials() -> dict:
         """List the small material library used by solve_mechanics.
 
-        PLA, PETG, ABS, nylon, aluminum 6061, and mild steel, with modulus,
-        Poisson's ratio, and a strength. Plastics use a tensile strength.
-        Metals use a yield strength. These are handbook ballparks, not a
-        certified allowable. Printed materials are weaker across layers than
-        the in-plane number used here.
+        PLA, PETG, ABS, nylon, aluminum 6061, mild steel, quenched-and-tempered
+        42CrMo4, and case-hardening 16MnCr5, with modulus, Poisson's ratio,
+        and a strength. Plastics use a tensile strength. Metals use a yield
+        strength. These are handbook ballparks, not a certified allowable.
+        Printed materials are weaker across layers than the in-plane number
+        used here. The 16MnCr5 yield is the core, not the carburized case.
         """
         return guard(lambda: run("list_materials"))
 
