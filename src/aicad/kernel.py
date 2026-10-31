@@ -581,6 +581,24 @@ def overlap_volume(a: Shape, b: Shape) -> float:
     return 0.0 if overlap < 0 else overlap
 
 
+def overlap_center(a: Shape, b: Shape) -> tuple[float, Vec3 | None]:
+    """Intersection volume and the center of that solid.
+
+    Separated boxes are not sent to the boolean. The center is omitted when
+    the volume is only numerical noise. One call is enough for both numbers,
+    so a hit does not cut the same pair again to find the center.
+    """
+    if aabb_separated(a, b):
+        return 0.0, None
+    common = a.impl & b.impl
+    overlap = float(common.volume) if common is not None else 0.0
+    if overlap < 0:
+        overlap = 0.0
+    if overlap <= _INTERFERENCE_VOLUME or common is None:
+        return overlap, None
+    return overlap, _vec(common.center())
+
+
 def _aabb(shape: Shape) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     box = shape.impl.bounding_box()
     low, high = box.min, box.max
@@ -602,10 +620,16 @@ def clearance_between(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Ve
 
 def _clearance_between_on_this_thread(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Vec3 | None]:
     _pin_opencascade_to_this_thread()
-    common = a.impl & b.impl
-    overlap = float(common.volume) if common is not None else 0.0
-    if overlap < 0:
+    # Boxes that cannot meet have no intersection solid. The boolean would
+    # only rediscover that, and on a toothed solid it is the slow part.
+    if aabb_separated(a, b):
         overlap = 0.0
+        common = None
+    else:
+        common = a.impl & b.impl
+        overlap = float(common.volume) if common is not None else 0.0
+        if overlap < 0:
+            overlap = 0.0
     if overlap > _INTERFERENCE_VOLUME and common is not None:
         center = common.center()
         point = _vec(center)

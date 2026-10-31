@@ -1570,3 +1570,93 @@ def test_an_assembly_that_says_inches_is_refused():
     spec["units"] = "mm"
     solved = solve(spec)
     assert solved["instances"][0]["name"] == "block"
+
+
+def test_a_repeated_part_is_meshed_once(tmp_path, monkeypatch):
+    from aicad import kernel
+
+    document = Document(tmp_path)
+    _box(document, "base", [20, 20, 10], [0, 0, 5])
+    _box(document, "bolt", [4, 4, 4], [0, 0, 2])
+    document.create_assembly(
+        {
+            "name": "plate",
+            "instances": [
+                {"name": "base", "part": "base"},
+                {"name": "bolt_a", "part": "bolt"},
+                {"name": "bolt_b", "part": "bolt"},
+            ],
+            "joints": [
+                {
+                    "name": "seat_a",
+                    "type": "fixed",
+                    "parent": "base",
+                    "child": "bolt_a",
+                    "parent_anchor": [6, 0, 7],
+                },
+                {
+                    "name": "seat_b",
+                    "type": "fixed",
+                    "parent": "base",
+                    "child": "bolt_b",
+                    "parent_anchor": [-6, 0, 7],
+                },
+            ],
+        }
+    )
+    calls = []
+    real = kernel.tessellate
+
+    def counting(shape):
+        calls.append(shape)
+        return real(shape)
+
+    monkeypatch.setattr(kernel, "tessellate", counting)
+    mesh = document.assembly_mesh("plate")
+    assert len(calls) == 2
+    assert {face["ref"] for face in mesh["faces"]} == {
+        "instance/base",
+        "instance/bolt_a",
+        "instance/bolt_b",
+    }
+
+    def xs(ref):
+        index = next(face["index"] for face in mesh["faces"] if face["ref"] == ref)
+        return [
+            mesh["positions"][tri * 9 + corner * 3]
+            for tri, face in enumerate(mesh["triangle_face"])
+            if face == index
+            for corner in range(3)
+        ]
+
+    assert max(xs("instance/bolt_a")) > max(xs("instance/bolt_b"))
+    document.assembly_mesh("plate")
+    assert len(calls) == 2
+
+
+def test_a_motion_hit_uses_one_boolean(monkeypatch):
+    from aicad import kernel
+    from aicad.assembly import collisions
+
+    left = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10], "center": [0, 0, 0]}])
+    right = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10], "center": [5, 0, 0]}])
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("the hit asked for a second boolean")
+
+    monkeypatch.setattr(kernel, "clearance_between", boom)
+    hits = collisions({"joints": []}, {"left": left, "right": right})
+    assert len(hits) == 1
+    assert hits[0]["interference_volume_mm3"] == pytest.approx(500, abs=1e-3)
+    assert hits[0]["gap_mm"] == 0
+    assert hits[0]["at_mm"] is not None
+
+
+def test_separated_boxes_keep_the_surface_gap():
+    from aicad import kernel
+
+    left = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10], "center": [0, 0, 0]}])
+    right = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10], "center": [30, 0, 0]}])
+    overlap, gap, *_rest = kernel.clearance_between(left, right)
+    assert overlap == 0
+    assert gap == pytest.approx(20)
