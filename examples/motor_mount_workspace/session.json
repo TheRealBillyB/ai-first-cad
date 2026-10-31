@@ -1,0 +1,521 @@
+{
+  "units": "mm",
+  "sketches": [
+    {
+      "name": "bracket_base",
+      "spec": {
+        "plane": "xy",
+        "entities": [
+          {
+            "id": "origin",
+            "type": "point",
+            "at": [
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "id": "sw",
+            "type": "point",
+            "at": [
+              -36.0,
+              -26.0
+            ]
+          },
+          {
+            "id": "se",
+            "type": "point",
+            "at": [
+              36.0,
+              -26.0
+            ]
+          },
+          {
+            "id": "ne",
+            "type": "point",
+            "at": [
+              36.0,
+              26.0
+            ]
+          },
+          {
+            "id": "nw",
+            "type": "point",
+            "at": [
+              -36.0,
+              26.0
+            ]
+          },
+          {
+            "id": "bottom",
+            "type": "line",
+            "start": "sw",
+            "end": "se",
+            "construction": false
+          },
+          {
+            "id": "right",
+            "type": "line",
+            "start": "se",
+            "end": "ne",
+            "construction": false
+          },
+          {
+            "id": "top",
+            "type": "line",
+            "start": "ne",
+            "end": "nw",
+            "construction": false
+          },
+          {
+            "id": "left",
+            "type": "line",
+            "start": "nw",
+            "end": "sw",
+            "construction": false
+          },
+          {
+            "id": "diag",
+            "type": "line",
+            "start": "sw",
+            "end": "ne",
+            "construction": true
+          },
+          {
+            "id": "bore",
+            "type": "circle",
+            "center": "origin",
+            "radius": 8.0
+          },
+          {
+            "id": "boss",
+            "type": "circle",
+            "center": "origin",
+            "radius": 18.0
+          },
+          {
+            "id": "b0",
+            "type": "point",
+            "at": [
+              8.0,
+              8.0
+            ]
+          },
+          {
+            "id": "b1",
+            "type": "point",
+            "at": [
+              -8.0,
+              8.0
+            ]
+          },
+          {
+            "id": "b2",
+            "type": "point",
+            "at": [
+              -8.0,
+              -8.0
+            ]
+          },
+          {
+            "id": "b3",
+            "type": "point",
+            "at": [
+              8.0,
+              -8.0
+            ]
+          },
+          {
+            "id": "c0",
+            "type": "circle",
+            "center": "b0",
+            "radius": 1.6
+          },
+          {
+            "id": "c1",
+            "type": "circle",
+            "center": "b1",
+            "radius": 1.6
+          },
+          {
+            "id": "c2",
+            "type": "circle",
+            "center": "b2",
+            "radius": 1.6
+          },
+          {
+            "id": "c3",
+            "type": "circle",
+            "center": "b3",
+            "radius": 1.6
+          },
+          {
+            "id": "hsw",
+            "type": "point",
+            "at": [
+              -30.0,
+              -20.0
+            ]
+          },
+          {
+            "id": "hse",
+            "type": "point",
+            "at": [
+              30.0,
+              -20.0
+            ]
+          },
+          {
+            "id": "hne",
+            "type": "point",
+            "at": [
+              30.0,
+              20.0
+            ]
+          },
+          {
+            "id": "hnw",
+            "type": "point",
+            "at": [
+              -30.0,
+              20.0
+            ]
+          },
+          {
+            "id": "f0",
+            "type": "circle",
+            "center": "hsw",
+            "radius": 1.7
+          },
+          {
+            "id": "f1",
+            "type": "circle",
+            "center": "hse",
+            "radius": 1.7
+          },
+          {
+            "id": "f2",
+            "type": "circle",
+            "center": "hne",
+            "radius": 1.7
+          },
+          {
+            "id": "f3",
+            "type": "circle",
+            "center": "hnw",
+            "radius": 1.7
+          }
+        ],
+        "constraints": [
+          {
+            "type": "fix",
+            "entity": "origin"
+          },
+          {
+            "type": "horizontal",
+            "entity": "bottom"
+          },
+          {
+            "type": "horizontal",
+            "entity": "top"
+          },
+          {
+            "type": "vertical",
+            "entity": "left"
+          },
+          {
+            "type": "vertical",
+            "entity": "right"
+          },
+          {
+            "type": "distance",
+            "a": "sw",
+            "b": "se",
+            "value": 72.0,
+            "name": "base_length"
+          },
+          {
+            "type": "distance",
+            "a": "sw",
+            "b": "nw",
+            "value": 52.0,
+            "name": "base_width"
+          },
+          {
+            "type": "midpoint",
+            "point": "origin",
+            "line": "diag"
+          },
+          {
+            "type": "diameter",
+            "entity": "bore",
+            "value": 16.0,
+            "name": "bore_diameter",
+            "tolerance": 0.05
+          },
+          {
+            "type": "diameter",
+            "entity": "boss",
+            "value": 36.0,
+            "name": "boss_diameter"
+          },
+          {
+            "type": "pattern_on_circle",
+            "center": "origin",
+            "points": [
+              "b0",
+              "b1",
+              "b2",
+              "b3"
+            ],
+            "diameter": 24.0,
+            "start_angle": 45.0,
+            "name": "bolt_circle"
+          },
+          {
+            "type": "diameter",
+            "entity": "c0",
+            "value": 3.2,
+            "name": "bolt_hole"
+          },
+          {
+            "type": "equal",
+            "a": "c0",
+            "b": "c1"
+          },
+          {
+            "type": "equal",
+            "a": "c0",
+            "b": "c2"
+          },
+          {
+            "type": "equal",
+            "a": "c0",
+            "b": "c3"
+          },
+          {
+            "type": "distance",
+            "a": "hsw",
+            "b": "left",
+            "value": -6.0,
+            "name": "frame_inset"
+          },
+          {
+            "type": "distance",
+            "a": "hsw",
+            "b": "bottom",
+            "value": -6.0,
+            "name": "frame_inset"
+          },
+          {
+            "type": "distance",
+            "a": "hse",
+            "b": "right",
+            "value": -6.0,
+            "name": "frame_inset"
+          },
+          {
+            "type": "distance",
+            "a": "hse",
+            "b": "bottom",
+            "value": -6.0,
+            "name": "frame_inset"
+          },
+          {
+            "type": "distance",
+            "a": "hne",
+            "b": "right",
+            "value": -6.0,
+            "name": "frame_inset"
+          },
+          {
+            "type": "distance",
+            "a": "hne",
+            "b": "top",
+            "value": -6.0,
+            "name": "frame_inset"
+          },
+          {
+            "type": "distance",
+            "a": "hnw",
+            "b": "left",
+            "value": -6.0,
+            "name": "frame_inset"
+          },
+          {
+            "type": "distance",
+            "a": "hnw",
+            "b": "top",
+            "value": -6.0,
+            "name": "frame_inset"
+          },
+          {
+            "type": "diameter",
+            "entity": "f0",
+            "value": 3.4,
+            "name": "frame_hole"
+          },
+          {
+            "type": "equal",
+            "a": "f0",
+            "b": "f1"
+          },
+          {
+            "type": "equal",
+            "a": "f0",
+            "b": "f2"
+          },
+          {
+            "type": "equal",
+            "a": "f0",
+            "b": "f3"
+          }
+        ]
+      }
+    }
+  ],
+  "parts": [
+    {
+      "name": "motor_mount",
+      "source": "sketch",
+      "script": null,
+      "ops": null,
+      "step_file": null,
+      "library": null,
+      "gear": null,
+      "placement": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "sketch": "bracket_base",
+      "steps": [
+        {
+          "op": "extrude",
+          "points": [
+            "sw",
+            "se",
+            "ne",
+            "nw"
+          ],
+          "height": 4.0,
+          "name": "base"
+        },
+        {
+          "op": "extrude",
+          "circle": "boss",
+          "height": 8.0,
+          "z": 4.0,
+          "name": "boss"
+        },
+        {
+          "op": "gusset",
+          "angle": 0,
+          "outer": 30,
+          "plate_thickness": 4.0,
+          "boss_height": 8.0,
+          "name": "gusset_0"
+        },
+        {
+          "op": "gusset",
+          "angle": 180,
+          "outer": 30,
+          "plate_thickness": 4.0,
+          "boss_height": 8.0,
+          "name": "gusset_180"
+        },
+        {
+          "op": "gusset",
+          "angle": 270,
+          "outer": 25,
+          "plate_thickness": 4.0,
+          "boss_height": 8.0,
+          "name": "gusset_270"
+        },
+        {
+          "op": "cut",
+          "circle": "bore",
+          "height": 14.0,
+          "name": "bore"
+        },
+        {
+          "op": "cut",
+          "circle": "c0",
+          "height": 14.0,
+          "name": "motor_bolt_0"
+        },
+        {
+          "op": "cut",
+          "circle": "c1",
+          "height": 14.0,
+          "name": "motor_bolt_1"
+        },
+        {
+          "op": "cut",
+          "circle": "c2",
+          "height": 14.0,
+          "name": "motor_bolt_2"
+        },
+        {
+          "op": "cut",
+          "circle": "c3",
+          "height": 14.0,
+          "name": "motor_bolt_3"
+        },
+        {
+          "op": "cut",
+          "circle": "f0",
+          "height": 6.0,
+          "z": -1,
+          "name": "frame_hole_0"
+        },
+        {
+          "op": "cut",
+          "circle": "f1",
+          "height": 6.0,
+          "z": -1,
+          "name": "frame_hole_1"
+        },
+        {
+          "op": "cut",
+          "circle": "f2",
+          "height": 6.0,
+          "z": -1,
+          "name": "frame_hole_2"
+        },
+        {
+          "op": "cut",
+          "circle": "f3",
+          "height": 6.0,
+          "z": -1,
+          "name": "frame_hole_3"
+        },
+        {
+          "op": "cut_box",
+          "center": [
+            0,
+            26,
+            2.0
+          ],
+          "size": [
+            10,
+            8,
+            6.0
+          ],
+          "name": "cable_slot"
+        }
+      ],
+      "geometry_file": null,
+      "script_sha256": null,
+      "features": null
+    }
+  ],
+  "assemblies": []
+}

@@ -97,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     measure = commands.add_parser("measure", parents=[common], help="Print measurements as JSON.")
     measure.add_argument("name")
+    measure.add_argument(
+        "--material",
+        default=None,
+        help="Handbook material. Mass is the volume times that density.",
+    )
 
     render = commands.add_parser("render", parents=[common], help="Render standard views to PNG.")
     render.add_argument("name")
@@ -167,10 +172,23 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("name")
     inspect.add_argument("--min-wall", dest="min_wall", type=float, default=None)
     inspect.add_argument("--samples", type=int, default=4)
+    inspect.add_argument(
+        "--material",
+        default=None,
+        help="Handbook material. Mass is the volume times that density.",
+    )
 
     imported = commands.add_parser("import-step", parents=[common], help="Copy a STEP file in as a part.")
     imported.add_argument("name")
     imported.add_argument("file", type=Path)
+
+    imported_stl = commands.add_parser(
+        "import-stl",
+        parents=[common],
+        help="Copy an STL file in as a mesh part. The mesh has no editable features.",
+    )
+    imported_stl.add_argument("name")
+    imported_stl.add_argument("file", type=Path)
 
     features = commands.add_parser(
         "features", parents=[common], help="Report how much each boolean step contributed."
@@ -732,7 +750,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "list":
         return emit({"units": "mm", "parts": [part.to_dict() for part in document.list_parts()]})
     if args.command == "measure":
-        return emit(document.measure(args.name).to_dict())
+        return emit(document.measure(args.name, args.material).to_dict())
     if args.command == "render":
         views = document.render(args.name)
         return emit({"views": [view.to_dict() for view in views]})
@@ -762,10 +780,13 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         return emit(report.to_dict())
     if args.command == "inspect":
-        report = document.inspect(args.name, args.min_wall, args.samples)
+        report = document.inspect(args.name, args.min_wall, args.samples, args.material)
         return emit(report.to_dict())
     if args.command == "import-step":
         info = document.import_step(args.name, args.file)
+        return emit(info.to_dict())
+    if args.command == "import-stl":
+        info = document.import_stl(args.name, args.file)
         return emit(info.to_dict())
     if args.command == "features":
         return emit(document.feature_report(args.name).to_dict())
