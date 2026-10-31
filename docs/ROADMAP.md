@@ -11,7 +11,7 @@ Where the software work stands. Statuses describe this repository. They are not 
 | **Planned** | The direction after those tracks |
 | **Later** | Far enough out that the shape can still change |
 
-What is already in the tree is listed under Done. The next release does not add a feature track. The tracks after that release are the ones that are not in the tree yet.
+What is already in the tree is listed under Done. Features planned for v1 are listed under Next release. The tracks after that release are the ones that are not in the tree yet.
 
 ## Done
 
@@ -114,7 +114,17 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 
 ## Next release
 
-**v1.0** is a stability and safety release for the feature set already in this repository. No new feature track starts before it.
+**v1** is planned to add the features below. They are not in the tree yet.
+
+- **Arc tool.** Three-point arcs, center-start-end arcs, and a tangent arc that continues a line, with the same snapping, constraints, and dimensions as lines and circles.
+- **Sketch planes.** A sketch on a planar face of a solid, or on an offset or angled datum, including the XY, YZ, and XZ planes. The sketch stays attached when the model rebuilds.
+- **Splines.** Smooth curves through picked points. A closed spline is a profile that can be extruded or revolved.
+- **Internal ring gear solid.** A ring gear with the teeth on the inside of the blank.
+- **Approving a plan builds the solid.** Approval of a plan builds the solid from that plan.
+- **Gear steel material.** A handbook gear steel in the material list used by the strength check.
+- **Joint-sized reducers.** A reducer sized from the joint it drives.
+- **Catalog mounting orientation.** A catalog part stores the orientation of its mount.
+- **Catalog mass and moment loads.** Catalog parts carry mass and the moment loads used by the checks.
 
 ## After v1.0
 
