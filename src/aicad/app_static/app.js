@@ -142,7 +142,7 @@ async function applyRefresh(options = {}) {
   else if (ui.page === "model" && ui.stage === "sketch") drawSketch();
   else if (ui.page === "model") {
     ui.mesh = null;
-    $("empty").hidden = false;
+    showEmpty();
     drawSolid();
   }
   await renderShape();
@@ -189,10 +189,34 @@ function renderScriptWarning() {
   document.documentElement.style.setProperty("--banner", box.offsetHeight + "px");
 }
 
+const EMPTY_NOTE = "The parts in this project show up here. Move one, or change a size on the left. With Live on, an assistant's edits show up here too.";
+
+function showEmpty(message) {
+  const box = $("empty");
+  if (!box) return;
+  box.hidden = false;
+  const text = $("empty-message");
+  if (text) text.textContent = message || EMPTY_NOTE;
+  const offer = $("open-example");
+  if (offer) offer.hidden = Boolean(ui.state && ui.state.parts && ui.state.parts.length);
+}
+
+async function openWorkedExample() {
+  await command("open_example", { name: "motor_mount" });
+  ui.part = null;
+  ui.sketchName = null;
+  ui.sketch = null;
+  ui.viewAssembly = null;
+  ui.stage = "solid";
+  ui.page = "model";
+  setStage();
+  await refresh({ fit: "scene", solid: true });
+}
+
 async function loadMesh(options = {}) {
   if (!ui.viewAssembly && !(ui.state && ui.state.parts && ui.state.parts.length)) {
     ui.mesh = null;
-    $("empty").hidden = false;
+    showEmpty();
     drawSolid();
     return;
   }
@@ -203,8 +227,7 @@ async function loadMesh(options = {}) {
   const body = await response.json();
   if (!body.ok) {
     ui.mesh = null;
-    $("empty").hidden = false;
-    $("empty").textContent = body.error;
+    showEmpty(body.error);
     return;
   }
   const partKey = (body.result.parts || [body.result.part || ""]).join(",");
@@ -212,7 +235,8 @@ async function loadMesh(options = {}) {
   ui.mesh = body.result;
   ui.mesh._key = partKey;
   const hasTriangles = ui.mesh.positions && ui.mesh.positions.length;
-  $("empty").hidden = Boolean(hasTriangles);
+  if (hasTriangles) $("empty").hidden = true;
+  else showEmpty();
   if (!hasTriangles) {
     drawSolid();
     return;
@@ -1109,8 +1133,7 @@ function initView() {
   const canvas = $("view");
   const gl = canvas.getContext("webgl", { antialias: true });
   if (!gl) {
-    $("empty").hidden = false;
-    $("empty").textContent = "This browser has no WebGL, so the solid cannot be drawn.";
+    showEmpty("This browser has no WebGL, so the solid cannot be drawn.");
     return;
   }
   view.gl = gl;
@@ -2237,6 +2260,8 @@ async function boot() {
     button.onclick = () => setStandardView(button.dataset.view);
   });
   $("open-project").onclick = () => browseProjects("open").catch(showError);
+  const exampleButton = $("open-example");
+  if (exampleButton) exampleButton.onclick = () => openWorkedExample().catch(showError);
   $("save-project").onclick = async () => {
     const result = await command("save_project");
     $("who").textContent = `Saved ${result.name}`;
