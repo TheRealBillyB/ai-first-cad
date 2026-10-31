@@ -70,7 +70,16 @@
           <button type="button" data-mode="move">Move</button>
           <button type="button" data-mode="measure">Measure</button>
         </div>
-        <button type="button" id="fit">Fit</button>
+        <div class="seg" id="standard-views" role="group" aria-label="Standard views">
+          <button type="button" data-view="front" title="Front (1)">Front</button>
+          <button type="button" data-view="back" title="Back (2)">Back</button>
+          <button type="button" data-view="top" title="Top (3)">Top</button>
+          <button type="button" data-view="bottom" title="Bottom (4)">Bottom</button>
+          <button type="button" data-view="left" title="Left (5)">Left</button>
+          <button type="button" data-view="right" title="Right (6)">Right</button>
+          <button type="button" data-view="iso" title="Isometric (7)">Iso</button>
+        </div>
+        <button type="button" id="fit" title="Fit (0)">Fit</button>
         <button type="button" id="measure-clear" hidden>Clear measure</button>
         <span id="selection-readout">Nothing selected</span>
         <div class="grow"></div>
@@ -83,7 +92,10 @@
         <canvas id="view"></canvas>
         <canvas id="overlay"></canvas>
         <canvas id="sketch-canvas" hidden></canvas>
-        <div id="empty" class="empty">The parts in this project show up here. Move one, or change a size on the left. With Live on, an assistant's edits show up here too.</div>
+        <div id="empty" class="empty">
+          <p id="empty-message">The parts in this project show up here. Move one, or change a size on the left. With Live on, an assistant's edits show up here too.</p>
+          <button type="button" id="open-example">Open the motor-mount example</button>
+        </div>
         <div id="sketch-status" class="sketch-status" hidden></div>
         <div id="measure-readout" class="measure-readout" hidden></div>
         <ol id="activity" class="activity" hidden></ol>
@@ -95,6 +107,7 @@
           <button type="button" data-tool="line">Line</button>
           <button type="button" data-tool="circle">Circle</button>
           <button type="button" data-tool="arc">Arc</button>
+          <button type="button" data-tool="spline">Spline</button>
           <button type="button" data-tool="rectangle">Rectangle</button>
         </div>
         <label>Arc <select id="arc-mode">

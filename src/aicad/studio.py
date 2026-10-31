@@ -30,6 +30,7 @@ _LOUD = {
     "undo",
     "redo",
     "open_project",
+    "open_example",
     "save_project",
     "save_project_as",
     "measure_points",
@@ -280,6 +281,62 @@ def save_project_as(workspace, path: str, name: str | None = None) -> dict:
     return {"path": str(destination), "name": destination.name, "saved": True}
 
 
+def _example_project(folder_name: str) -> Path:
+    """The worked example shipped with the repository."""
+    root = Path(__file__).resolve().parents[2] / "examples" / folder_name
+    if not (root / "session.json").is_file():
+        raise GeometryError("The motor-mount example is not in this copy of aicad.")
+    return root
+
+
+def open_example(workspace, name: str | None = None) -> dict:
+    """Copy the motor-mount example beside this project and switch to it.
+
+    A second request opens that same folder. The example is a saved project,
+    so opening it does not run a script.
+    """
+    from aicad.paths import ensure_real_directory, refuse_link_ancestors
+
+    chosen = name or "motor_mount"
+    if not isinstance(chosen, str) or chosen.strip() != "motor_mount":
+        raise GeometryError("The worked example is motor_mount.")
+    parts = {part.name for part in workspace.document.list_parts()}
+    sketches = set(workspace.document.list_sketches())
+    if "motor_mount" in parts and "bracket_base" in sketches:
+        return {
+            "path": str(workspace.root),
+            "name": workspace.root.name,
+            "parts": sorted(parts),
+            "example": "motor_mount",
+        }
+    source = _example_project("motor_mount_workspace")
+    destination = workspace.root.resolve().parent / f"motor-mount-{workspace.root.name}"
+    if _same_folder(destination, workspace.root.resolve()):
+        return {
+            "path": str(workspace.root),
+            "name": workspace.root.name,
+            "parts": [part.name for part in workspace.document.list_parts()],
+            "example": "motor_mount",
+        }
+    if destination.is_file():
+        raise GeometryError(f"{destination.name} is a file, not a folder.")
+    if not (destination / "session.json").is_file():
+        if destination.exists() and any(destination.iterdir()):
+            raise GeometryError(
+                f"{destination.name} exists and is not an empty folder. Move it aside and try again."
+            )
+        refuse_link_ancestors(destination, "Example", GeometryError)
+        try:
+            ensure_real_directory(destination)
+            _copy_project(source, destination)
+        except OSError as exc:
+            reason = exc.strerror or str(exc)
+            raise GeometryError(f"Could not open the motor-mount example. {reason}.") from exc
+    opened = open_project(workspace, str(destination))
+    opened["example"] = "motor_mount"
+    return opened
+
+
 def open_project(workspace, path: str) -> dict:
     from aicad.paths import link_leaves, project_link_escapes
 
@@ -316,11 +373,13 @@ def list_parameters(workspace, name: str) -> dict:
     note = "Change a size and the solid rebuilds. The placement is separate."
     if kind == "ops":
         parameters.extend(_op_parameters(source.get("ops") or []))
+        parameters.extend(_edge_parameters(source.get("edge_ops") or []))
         if not parameters:
             note = "This solid has no sizes to slide. You can still move it."
     elif kind == "sketch":
         parameters.extend(_dimension_parameters(workspace, source.get("sketch")))
         parameters.extend(_step_parameters(source.get("steps") or []))
+        parameters.extend(_edge_parameters(source.get("edge_ops") or []))
         if not parameters:
             note = "This sketch solid has no named size. You can still move it."
     elif kind == "library":
@@ -339,6 +398,8 @@ def list_parameters(workspace, name: str) -> dict:
             note = "This catalog part takes its size from the standard. You can move it."
     elif kind == "step":
         note = "This part is an imported STEP file. There is no size to slide. You can move it."
+    elif kind == "mesh":
+        note = "This part is an imported triangle mesh. It has no editable features. You can move it."
     elif kind == "gear":
         note = "This part is a generated gear. Tooth data is fixed until the gear is replaced. You can move it."
     else:
@@ -400,6 +461,10 @@ def set_parameter(workspace, name: str, parameter: str, value: float) -> dict:
         rebuilt = [info.to_dict()]
     elif parameter == "library/length":
         info = _set_library_length(workspace.document, name, number)
+        rebuilt = [info.to_dict()]
+    elif parameter.startswith("edge/"):
+        index, field = _edge_parameter(parameter)
+        info = workspace.document._set_edge_size(name, index, field, number)
         rebuilt = [info.to_dict()]
     else:
         raise GeometryError(f"Parameter {parameter!r} is not editable.")
@@ -521,8 +586,8 @@ def note_for(name: str, arguments: dict | None, result: dict | None) -> dict:
     frame = ""
     follow = False
     if record and name not in _NO_FRAME:
-        if name in ("undo", "redo", "open_project") or not parts:
-            if name in ("undo", "redo", "open_project"):
+        if name in ("undo", "redo", "open_project", "open_example") or not parts:
+            if name in ("undo", "redo", "open_project", "open_example"):
                 follow = True
                 frame = "scene"
         else:
@@ -571,6 +636,12 @@ def register(add) -> None:
         lambda workspace, arguments: open_project(workspace, arguments["path"]),
     ))
     add(Command(
+        "open_example",
+        "Open the worked motor-mount example in its own project folder.",
+        _obj({"name": _string("Example name. motor_mount is the worked example.")}, []),
+        lambda workspace, arguments: open_example(workspace, arguments.get("name")),
+    ))
+    add(Command(
         "save_project",
         "Write the open project to its folder.",
         _obj({}, []),
@@ -607,6 +678,44 @@ def register(add) -> None:
         lambda workspace, arguments: list_parameters(workspace, arguments["name"]),
     ))
     add(Command(
+        "add_fillet",
+        "Round edges of a part built from shapes or a sketch. The radius stays editable.",
+        _obj(
+            {
+                "name": _string("Part name."),
+                "radius": _number("Fillet radius in millimeters."),
+                "edges": {"type": "array", "description": "Edge indexes, or refs such as edge/line/5,0,2."},
+                "step_name": _string("Name for this step. Optional."),
+            },
+            ["name", "radius", "edges"],
+        ),
+        lambda workspace, arguments: _edge_result(
+            workspace.document.add_fillet(
+                arguments["name"], arguments["radius"], arguments["edges"], arguments.get("step_name")
+            )
+        ),
+        undo=True,
+    ))
+    add(Command(
+        "add_chamfer",
+        "Break edges of a part built from shapes or a sketch. The distance stays editable.",
+        _obj(
+            {
+                "name": _string("Part name."),
+                "distance": _number("Chamfer distance in millimeters."),
+                "edges": {"type": "array", "description": "Edge indexes, or refs such as edge/line/5,0,2."},
+                "step_name": _string("Name for this step. Optional."),
+            },
+            ["name", "distance", "edges"],
+        ),
+        lambda workspace, arguments: _edge_result(
+            workspace.document.add_chamfer(
+                arguments["name"], arguments["distance"], arguments["edges"], arguments.get("step_name")
+            )
+        ),
+        undo=True,
+    ))
+    add(Command(
         "set_parameter",
         "Change one size on a solid and rebuild it. Placement stays where it was.",
         _obj(
@@ -639,6 +748,14 @@ def register(add) -> None:
 
 def register_mcp(mcp, run, guard) -> None:
     """Thin MCP wrappers. The work happens in the command layer."""
+
+    @mcp.tool()
+    def open_example(name: str | None = None) -> dict:
+        """Open the worked motor-mount example as its own project.
+
+        The copy sits beside the open project. Opening it does not run a script.
+        """
+        return guard(lambda: run("open_example", name=name))
 
     @mcp.tool()
     def open_project(path: str) -> dict:
@@ -682,10 +799,31 @@ def register_mcp(mcp, run, guard) -> None:
 
         An operation box exposes size and center. A cylinder exposes radius and
         height. A sketch solid exposes named dimensions and the extrude height
-        or revolve angle. A screw exposes length. A script or a STEP file has
+        or revolve angle. A fillet exposes radius and a chamfer exposes distance.
+        A screw exposes length. A script or a STEP file has
         no size here; use place_part to move it.
         """
         return guard(lambda: run("list_parameters", name=name))
+
+    @mcp.tool()
+    def add_fillet(name: str, radius: float, edges: list, step_name: str | None = None) -> dict:
+        """Round edges of a shape or sketch part.
+
+        edges are indexes from describe_edges, or refs such as edge/line/5,0,2.
+        A radius that is too big, or an edge reference that does not match,
+        leaves the previous solid in place.
+        """
+        return guard(lambda: run("add_fillet", name=name, radius=radius, edges=edges, step_name=step_name))
+
+    @mcp.tool()
+    def add_chamfer(name: str, distance: float, edges: list, step_name: str | None = None) -> dict:
+        """Break edges of a shape or sketch part.
+
+        edges are indexes from describe_edges, or refs such as edge/line/5,0,2.
+        A distance that is too big, or an edge reference that does not match,
+        leaves the previous solid in place.
+        """
+        return guard(lambda: run("add_chamfer", name=name, distance=distance, edges=edges, step_name=step_name))
 
     @mcp.tool()
     def set_parameter(name: str, parameter: str, value: float) -> dict:
@@ -882,6 +1020,36 @@ def _op_parameters(ops: list) -> list[dict]:
             parameters.append(_scalar(f"op/{index}/height", f"{label} height", op.get("height"), "length"))
         parameters.extend(_vector_parameters(f"op/{index}", label, "center", op.get("center") or [0, 0, 0], "offset"))
     return [item for item in parameters if item is not None]
+
+
+def _edge_parameters(ops: list) -> list[dict]:
+    parameters = []
+    for index, op in enumerate(ops):
+        if not isinstance(op, dict):
+            continue
+        label = str(op.get("name") or op.get("op") or f"edge {index + 1}")
+        if op.get("op") == "fillet":
+            parameters.append(_scalar(f"edge/{index}/radius", f"{label} radius", op.get("radius"), "length"))
+        elif op.get("op") == "chamfer":
+            parameters.append(_scalar(f"edge/{index}/distance", f"{label} distance", op.get("distance"), "length"))
+    return [item for item in parameters if item is not None]
+
+
+def _edge_parameter(parameter: str) -> tuple[int, str]:
+    parts = parameter.split("/")
+    if len(parts) != 3 or parts[0] != "edge":
+        raise GeometryError(f"Parameter {parameter!r} is not an edge size.")
+    try:
+        index = int(parts[1])
+    except ValueError as exc:
+        raise GeometryError(f"Parameter {parameter!r} does not name an edge step.") from exc
+    if parts[2] not in ("radius", "distance"):
+        raise GeometryError(f"Parameter {parameter!r} is not a radius or a distance.")
+    return index, parts[2]
+
+
+def _edge_result(info) -> dict:
+    return {"part": info.to_dict(), "next": "Call inspect_part and look at the model before the next edit."}
 
 
 def _step_parameters(steps: list) -> list[dict]:
@@ -1119,6 +1287,8 @@ def _summary(name: str, arguments: dict, result: dict, parts: list[str]) -> str:
         return f"Measured {result.get('text') or result.get('distance_mm')}"
     if name == "open_project":
         return f"Opened {result.get('name') or arguments.get('path')}"
+    if name == "open_example":
+        return f"Opened the {result.get('example') or 'motor_mount'} example"
     if name == "save_project":
         return f"Saved {result.get('name') or 'the project'}"
     if name == "save_project_as":
@@ -1134,6 +1304,8 @@ def _summary(name: str, arguments: dict, result: dict, parts: list[str]) -> str:
         "update_part_script": f"Rebuilt {part} from a script",
         "update_part_ops": f"Rebuilt {part} from shapes",
         "update_part_from_sketch": f"Rebuilt {part} from a sketch",
+        "add_fillet": f"Rounded edges on {part}",
+        "add_chamfer": f"Broke edges on {part}",
         "delete_part": f"Deleted {part}",
         "insert_standard_part": f"Inserted {part}",
         "import_step": f"Imported {part}",

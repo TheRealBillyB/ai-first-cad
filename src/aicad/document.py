@@ -27,7 +27,15 @@ from aicad.modal import fatigue_check, solve_modal, solve_modal_assembly
 from aicad.printprep import analyze_print
 from aicad.printprep import list_printers as printer_catalog
 from aicad.robot import export_robot
-from aicad.errors import DocumentError, GeometryError, MountError, PartNotFound, PlanBuildError, PlanError
+from aicad.errors import (
+    DocumentError,
+    GeometryError,
+    MountError,
+    PartNotFound,
+    PlanBuildError,
+    PlanError,
+    SketchPlaneError,
+)
 from aicad.chain import solve_kinematics as solve_chain
 from aicad.error_budget import check_position_error as budget_position_error
 from aicad.kinematics import normalize as normalize_assembly
@@ -99,6 +107,7 @@ class _Part:
         script_pending: bool = False,
         rebuild_error: str | None = None,
         gear_spec: dict | None = None,
+        edge_ops: list[dict] | None = None,
     ):
         self.name = name
         self.source = source
@@ -116,6 +125,7 @@ class _Part:
         self.script_pending = script_pending
         self.rebuild_error = rebuild_error
         self.gear_spec = gear_spec
+        self.edge_ops = edge_ops
 
     @property
     def shape(self) -> kernel.Shape:
@@ -208,6 +218,43 @@ class Document:
             self._save()
             return self._info(self._parts[name])
 
+    def import_stl(self, name: str, path: str | Path) -> PartInfo:
+        """Copy an STL file in as a mesh-backed part.
+
+        The triangles become one solid. The part has no editable features.
+        A mesh that does not close is refused. The bytes are read with the
+        shared file reader and stored under ``imports``.
+        """
+        with self._lock:
+            self._require_new_name(name)
+            from aicad.file_access import TooLarge, read_file
+            from aicad.mesh_import import import_mesh_bytes
+            from aicad.paths import publish_bytes, refuse_reserved_device
+            from aicad.sandbox import require_in_project
+
+            require_in_project(path, self.workspace, writing=False)
+            source = _step_import_source(self.workspace, path, label="STL file")
+            if source.suffix.lower() != ".stl":
+                raise GeometryError(f"STL file {source.name} is not an .stl file.")
+            try:
+                data = read_file(source, maximum=kernel.MAX_STEP_BYTES)
+            except TooLarge as exc:
+                raise GeometryError(f"Mesh file {source.name} is too large.") from exc
+            except OSError as exc:
+                raise GeometryError(f"Could not read mesh file {source.name}.") from exc
+            shape = import_mesh_bytes(source, data)
+            relative = f"imports/{name}.stl"
+            refuse_reserved_device(relative, None, "Import copy", GeometryError)
+            destination = _project_file(self.workspace, self.workspace / relative, "Imported STL")
+            publish_bytes(destination, data)
+            note = (
+                f"# Imported STL, copied to {relative}\n"
+                "# A triangle mesh has no editable features. Move it, or replace the part.\n"
+            )
+            self._parts[name] = _Part(name, "mesh", shape, script=note, step_file=relative, base=shape)
+            self._save()
+            return self._info(self._parts[name])
+
     def update_part_script(self, name: str, script: str) -> PartInfo:
         """Replace a part's source. A failed script leaves the previous solid in place."""
         with self._lock:
@@ -230,13 +277,18 @@ class Document:
             part.geometry_file = self._store_script_geometry(name, script, shape)
             part.script_sha256 = _script_hash(script)
             part.script_pending = False
+            part.edge_ops = None
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def update_part_ops(self, name: str, ops: list[dict]) -> PartInfo:
         with self._lock:
             part = self._get(name)
+            edge_ops = list(part.edge_ops) if part.source == "ops" and part.edge_ops else None
             shape = kernel.make_from_ops(ops)
+            if edge_ops:
+                shape = kernel.apply_edge_ops(shape, edge_ops)
             placement = _identity_placement()
             followers = self._mounts_after({name: {"base": shape, "placement": placement}})
             part.shape = shape
@@ -254,7 +306,9 @@ class Document:
             part.geometry_file = None
             part.script_sha256 = None
             part.script_pending = False
+            part.edge_ops = edge_ops
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def delete_part(self, name: str) -> None:
@@ -295,15 +349,16 @@ class Document:
                 "placement": part.placement,
                 "sketch": part.sketch_name,
                 "steps": part.sketch_steps,
+                "edge_ops": copy.deepcopy(part.edge_ops) if part.edge_ops else [],
                 "built": part._shape is not None,
                 "script_pending": part.script_pending,
                 "geometry_file": part.geometry_file,
                 "problem": part.rebuild_error,
             }
 
-    def measure(self, name: str) -> Measurement:
+    def measure(self, name: str, material: str | None = None) -> Measurement:
         with self._lock:
-            return kernel.measure(self._get(name).shape)
+            return kernel.measure(self._get(name).shape, material)
 
     def check_wall_thickness(
         self,
@@ -609,11 +664,15 @@ class Document:
         name: str,
         min_wall_mm: float | None = None,
         samples: int = 4,
+        material: str | None = None,
     ) -> InspectReport:
-        """Measure, estimate wall thickness, and render. This is the step to call after every edit."""
+        """Measure, estimate wall thickness, and render. This is the step to call after every edit.
+
+        ``material`` is a handbook name. Mass is the volume times that density.
+        """
         with self._lock:
             part = self._get(name)
-            measurement = kernel.measure(part.shape)
+            measurement = kernel.measure(part.shape, material)
             wall = self.check_wall_thickness(name, min_wall_mm, samples)
             mesh = kernel.tessellate(part.shape)
             views = render_views(
@@ -714,7 +773,7 @@ class Document:
             if not isinstance(steps, list) or not steps:
                 raise GeometryError("steps must be a non-empty list of extrude, cut, revolve, cut_box, or gusset.")
             stored_steps = copy.deepcopy(steps)
-            shape = kernel.solid_from_sketch(report.geometry, stored_steps)
+            shape = self._sketch_solid_from(sketch.name, sketch.spec, stored_steps, building=name)
             self._parts[name] = _Part(
                 name,
                 "sketch",
@@ -723,6 +782,7 @@ class Document:
                 sketch_steps=stored_steps,
             )
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(self._parts[name])
 
     def update_part_from_sketch(self, name: str, sketch_name: str, steps: list[dict]) -> PartInfo:
@@ -736,7 +796,10 @@ class Document:
             if not isinstance(steps, list) or not steps:
                 raise GeometryError("steps must be a non-empty list of extrude, cut, revolve, cut_box, or gusset.")
             stored_steps = copy.deepcopy(steps)
-            shape = kernel.solid_from_sketch(report.geometry, stored_steps)
+            edge_ops = list(part.edge_ops) if part.source == "sketch" and part.edge_ops else None
+            shape = self._sketch_solid_from(
+                sketch.name, sketch.spec, stored_steps, building=name, edge_ops=edge_ops
+            )
             placement = _identity_placement()
             followers = self._mounts_after({name: {"base": shape, "placement": placement}})
             part.shape = shape
@@ -751,8 +814,102 @@ class Document:
             part.sketch_steps = stored_steps
             part.placement = placement
             self._apply_mount_poses(followers)
+            part.edge_ops = edge_ops
+            self._save()
+            self._refresh_face_sketches(name, raise_error=True)
+            return self._info(part)
+
+    def add_fillet(self, name: str, radius: float, edges: list, step_name: str | None = None) -> PartInfo:
+        """Round edges. A radius that does not fit leaves the previous solid."""
+        return self._add_edge_op(name, "fillet", radius, edges, step_name)
+
+    def add_chamfer(self, name: str, distance: float, edges: list, step_name: str | None = None) -> PartInfo:
+        """Break edges. A distance that does not fit leaves the previous solid."""
+        return self._add_edge_op(name, "chamfer", distance, edges, step_name)
+
+    def _set_edge_size(self, name: str, index: int, field: str, value: float) -> PartInfo:
+        """Change one fillet radius or chamfer distance and rebuild.
+
+        A value that does not fit leaves the previous radius and the previous solid.
+        """
+        with self._lock:
+            part = self._editable_edge_part(name)
+            if field not in ("radius", "distance"):
+                raise GeometryError(f"Edge size {field!r} is not a radius or a distance.")
+            ops = copy.deepcopy(part.edge_ops or [])
+            if index < 0 or index >= len(ops) or not isinstance(ops[index], dict):
+                raise GeometryError(f"Edge step {index} is outside this part.")
+            if ops[index].get("op") == "fillet" and field != "radius":
+                raise GeometryError("A fillet has a radius.")
+            if ops[index].get("op") == "chamfer" and field != "distance":
+                raise GeometryError("A chamfer has a distance.")
+            ops[index][field] = float(value)
+            shape = kernel.apply_edge_ops(self._source_solid(part), ops)
+            self._store_unplaced(part, shape)
+            part.edge_ops = ops
             self._save()
             return self._info(part)
+
+    def _add_edge_op(
+        self,
+        name: str,
+        kind: str,
+        amount: float,
+        edges: list,
+        step_name: str | None,
+    ) -> PartInfo:
+        with self._lock:
+            part = self._editable_edge_part(name)
+            amount = kernel.finite_number(amount, "radius" if kind == "fillet" else "distance", positive=True)
+            label = _edge_step_name(step_name, kind, len(part.edge_ops or []))
+            indexes = kernel.edge_indexes(part.shape, edges, label)
+            step = {"op": kind, "name": label, "edges": indexes}
+            if kind == "fillet":
+                step["radius"] = amount
+            else:
+                step["distance"] = amount
+            ops = [*(part.edge_ops or []), step]
+            shape = kernel.apply_edge_ops(self._source_solid(part), ops)
+            self._store_unplaced(part, shape)
+            part.edge_ops = ops
+            self._save()
+            return self._info(part)
+
+    def _editable_edge_part(self, name: str) -> _Part:
+        part = self._get(name)
+        if part.source not in ("ops", "sketch"):
+            raise GeometryError("A fillet or chamfer applies to a part built from shapes or a sketch.")
+        if part._shape is None:
+            raise GeometryError(f"Part {name!r} has no solid to round yet.")
+        return part
+
+    def _source_solid(self, part: _Part) -> kernel.Shape:
+        """The solid before fillet and chamfer steps, in part coordinates."""
+        if part.source == "ops":
+            return kernel.make_from_ops(part.ops or [])
+        sketch = self._get_sketch(part.sketch_name or "")
+        report = solve_sketch(sketch.spec, sketch.name)
+        if report.status in _UNBUILDABLE:
+            raise GeometryError(report.note)
+        return self._sketch_solid_from(
+            sketch.name, sketch.spec, part.sketch_steps or [], building=part.name
+        )
+
+    def _store_unplaced(self, part: _Part, base: kernel.Shape) -> None:
+        position = tuple(part.placement["position"])
+        rotation = tuple(part.placement["rotation_deg"])
+        placement = {
+            "position": [position[0], position[1], position[2]],
+            "rotation_deg": [rotation[0], rotation[1], rotation[2]],
+        }
+        mount = part.placement.get("mount") if isinstance(part.placement, dict) else None
+        if isinstance(mount, dict):
+            placement["mount"] = copy.deepcopy(mount)
+        followers = self._mounts_after({part.name: {"base": base, "placement": placement}})
+        part.base = base
+        part.shape = kernel.place(base, position, rotation)
+        part.placement = placement
+        self._apply_mount_poses(followers)
 
     def list_sketches(self) -> list[str]:
         with self._lock:
@@ -906,6 +1063,17 @@ class Document:
                 "The edge radius is recorded and is not cut as a fillet.",
                 "The flanks are shifted slightly apart so a flat facet cannot cross the mate.",
             ]
+        elif clean["type"] == "internal":
+            what = (
+                "Internal spur ring from ISO 21771. The teeth point inward and a rim "
+                "closes the solid outside the root."
+            )
+            limits = [
+                "Tooth thickness is the nominal zero-backlash size, not a tolerance grade.",
+                "The root fillet is a circular blend of the ISO 53 tip radius, tangent to the root circle. It is not a pinion-cutter trochoid.",
+                "This ring is a spur. A helical internal tooth is not generated.",
+                "Omitting rim_thickness_mm uses four normal modules of metal outside the root.",
+            ]
         else:
             what = (
                 "Nominal involute gear from the cited tooth standard. "
@@ -964,6 +1132,7 @@ class Document:
             part.placement = placement
             self._apply_mount_poses(followers)
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def _set_catalog_length(self, name: str, length: float) -> PartInfo:
@@ -1142,7 +1311,9 @@ class Document:
         rebuilt: list[tuple[_Part, kernel.Shape, kernel.Shape]] = []
         seeds: dict[str, dict] = {}
         for part in dependents:
-            base = kernel.solid_from_sketch(report.geometry, part.sketch_steps or [])
+            base = self._sketch_solid_from(
+                sketch.name, stored, part.sketch_steps or [], edge_ops=part.edge_ops
+            )
             placed = kernel.place(
                 base,
                 tuple(part.placement["position"]),
@@ -1157,6 +1328,145 @@ class Document:
             part.shape = placed
         self._apply_mount_poses(followers)
         self._save()
+        for part, _base, _placed in rebuilt:
+            self._refresh_face_sketches(part.name, raise_error=True)
+
+    def _sketch_solid_from(
+        self,
+        sketch_name: str,
+        spec: dict,
+        steps: list,
+        *,
+        building: str | None = None,
+        edge_ops: list[dict] | None = None,
+    ):
+        from aicad.sketch_plane import sketch_frame
+
+        report = solve_sketch(spec, sketch_name)
+        if report.status in _UNBUILDABLE:
+            raise GeometryError(report.note)
+        frame = sketch_frame(
+            spec.get("plane", "xy"),
+            sketch_name,
+            self._shape_named,
+            lambda name: sketch_name if building is not None and name == building else self._sketch_named(name),
+        )
+        shape = kernel.solid_from_sketch(report.geometry, steps, frame=frame)
+        if edge_ops:
+            shape = kernel.apply_edge_ops(shape, edge_ops)
+        return shape
+
+    def _shape_named(self, name: str):
+        part = self._parts.get(name)
+        if part is None or part._shape is None:
+            return None
+        return part._shape
+
+    def _sketch_named(self, name: str) -> str | None:
+        part = self._parts.get(name)
+        if part is None:
+            return None
+        return part.sketch_name
+
+    def _refresh_face_sketches(self, host_name: str, *, raise_error: bool, seen: set | None = None) -> None:
+        from aicad.sketch_plane import plane_hosts
+
+        seen = set() if seen is None else seen
+        if host_name in seen:
+            return
+        seen.add(host_name)
+        planned: list[tuple] = []
+        for part in list(self._parts.values()):
+            if part.source != "sketch" or not part.sketch_name or part.name == host_name:
+                continue
+            sketch = self._sketches.get(part.sketch_name)
+            if sketch is None or host_name not in plane_hosts(sketch.spec.get("plane")):
+                continue
+            try:
+                base = self._sketch_solid_from(
+                    sketch.name, sketch.spec, part.sketch_steps or [], edge_ops=part.edge_ops
+                )
+            except SketchPlaneError as exc:
+                part.base = None
+                part.shape = None
+                part.rebuild_error = str(exc)
+                self._save()
+                if raise_error:
+                    raise
+                continue
+            placed = kernel.place(
+                base,
+                tuple(part.placement["position"]),
+                tuple(part.placement["rotation_deg"]),
+            )
+            planned.append((part, base, placed))
+        followers: list[tuple] = []
+        if planned:
+            seeds = {
+                part.name: {"base": base, "placement": part.placement}
+                for part, base, _placed in planned
+            }
+            try:
+                followers = self._mounts_after(seeds)
+            except MountError:
+                if raise_error:
+                    raise
+                followers = []
+            for part, base, placed in planned:
+                part.base = base
+                part.shape = placed
+                part.rebuild_error = None
+            self._apply_mount_poses(followers)
+            self._save()
+        rebuilt = [part.name for part, _base, _placed in planned]
+        for name in rebuilt:
+            self._refresh_face_sketches(name, raise_error=raise_error, seen=seen)
+
+    def _finish_face_sketches(self) -> None:
+        from aicad.sketch_plane import plane_hosts
+
+        pending = []
+        for part in self._parts.values():
+            if part.source != "sketch" or not part.sketch_name:
+                continue
+            sketch = self._sketches.get(part.sketch_name)
+            if sketch is None or not plane_hosts(sketch.spec.get("plane")):
+                continue
+            pending.append(part)
+        for _round in range(len(pending) + 1):
+            progressed = False
+            for part in pending:
+                if part._shape is not None and not part.rebuild_error:
+                    continue
+                sketch = self._sketches.get(part.sketch_name)
+                if sketch is None:
+                    continue
+                try:
+                    base = self._sketch_solid_from(
+                        sketch.name,
+                        sketch.spec,
+                        part.sketch_steps or [],
+                        building=part.name,
+                        edge_ops=part.edge_ops,
+                    )
+                except SketchPlaneError as exc:
+                    part.rebuild_error = str(exc)
+                    continue
+                part.base = base
+                part.shape = kernel.place(
+                    base,
+                    tuple(part.placement["position"]),
+                    tuple(part.placement["rotation_deg"]),
+                )
+                part.rebuild_error = None
+                progressed = True
+            if not progressed:
+                break
+        for part in pending:
+            if part.rebuild_error:
+                message = f"Part {part.name!r} was not rebuilt: {part.rebuild_error}"
+                if message not in self.problems:
+                    self.problems.append(message)
 
     def _solve_and_render(self, name: str, spec: dict) -> SketchReport:
         report = solve_sketch(spec, name)
@@ -2162,8 +2472,8 @@ class Document:
     def _with_gear_teeth(self, spec: dict) -> dict:
         """Copy ``spec`` with tooth counts filled in from generated gears.
 
-        A motion study reads those counts from the train. An internal ring
-        keeps the count stated on the shaft.
+        A motion study reads those counts from the train. A generated internal
+        ring supplies its tooth count when the shaft does not state one.
         """
         spec = copy.deepcopy(spec)
         train = spec.get("gear_train")
@@ -2480,24 +2790,7 @@ class Document:
             "sketches": [
                 {"name": sketch.name, "spec": copy.deepcopy(sketch.spec)} for sketch in self._sketches.values()
             ],
-            "parts": [
-                {
-                    "name": part.name,
-                    "source": part.source,
-                    "script": part.script,
-                    "ops": copy.deepcopy(part.ops) if part.ops is not None else None,
-                    "step_file": part.step_file,
-                    "library": copy.deepcopy(part.library_spec) if part.library_spec is not None else None,
-                    "gear": copy.deepcopy(part.gear_spec) if part.gear_spec is not None else None,
-                    "placement": copy.deepcopy(part.placement),
-                    "sketch": part.sketch_name,
-                    "steps": copy.deepcopy(part.sketch_steps) if part.sketch_steps is not None else None,
-                    "geometry_file": part.geometry_file,
-                    "script_sha256": part.script_sha256,
-                    "features": part._shape.feature_report().to_dict() if part.source == "script" and part._shape is not None else None,
-                }
-                for part in self._parts.values()
-            ],
+            "parts": [_part_record(part) for part in self._parts.values()],
             "assemblies": [copy.deepcopy(spec) for spec in self._assemblies.values()],
         }
 
@@ -2572,6 +2865,7 @@ class Document:
             placement = record.get("placement") or _identity_placement()
             script_text = record.get("script") or ""
             script_pending = False
+            stored_edges = None
             try:
                 position = kernel.finite_vec3(placement.get("position", [0.0, 0.0, 0.0]), "position")
                 rotation = kernel.finite_vec3(
@@ -2584,6 +2878,11 @@ class Document:
                         self.workspace, record.get("step_file"), f"Part {name!r} step file"
                     )
                     base = kernel.import_step_file(step_path)
+                elif source == "mesh":
+                    mesh_path = _session_project_file(
+                        self.workspace, record.get("step_file"), f"Part {name!r} mesh file"
+                    )
+                    base = kernel.import_step_file(mesh_path)
                 elif source == "library":
                     spec = record["library"]
                     base = kernel.adopt(
@@ -2606,10 +2905,21 @@ class Document:
                         raise DocumentError(
                             f"Part {name!r} needs sketch {sketch_name!r}, which is not in the session."
                         )
-                    solved = solve_sketch(sketch.spec, sketch.name)
-                    if solved.status in _UNBUILDABLE:
-                        raise DocumentError(f"Could not rebuild part {name!r}: {solved.note}")
-                    base = kernel.solid_from_sketch(solved.geometry, record.get("steps") or [])
+                    from aicad.sketch_plane import plane_hosts
+
+                    if plane_hosts(sketch.spec.get("plane")):
+                        # The face may belong to a part later in this file.
+                        base = None
+                    else:
+                        solved = solve_sketch(sketch.spec, sketch.name)
+                        if solved.status in _UNBUILDABLE:
+                            raise DocumentError(f"Could not rebuild part {name!r}: {solved.note}")
+                        base = self._sketch_solid_from(
+                            sketch.name,
+                            sketch.spec,
+                            record.get("steps") or [],
+                            building=name,
+                        )
                 else:
                     source = "script"
                     script_hash = _script_hash(script_text)
@@ -2636,6 +2946,9 @@ class Document:
                         # A downloaded script is shown, not run.
                         base = None
                         script_pending = True
+                stored_edges = _stored_edge_ops(record, source)
+                if base is not None and stored_edges:
+                    base = kernel.apply_edge_ops(base, stored_edges)
                 if base is None:
                     shape = None
                 else:
@@ -2658,6 +2971,7 @@ class Document:
                 stored_placement = _identity_placement()
                 script_pending = True
                 rebuild_error = message
+                stored_edges = None
             self._parts[name] = _Part(
                 name,
                 source,
@@ -2675,7 +2989,9 @@ class Document:
                 script_sha256=record.get("script_sha256") if source == "script" else None,
                 script_pending=script_pending,
                 rebuild_error=rebuild_error,
+                edge_ops=stored_edges,
             )
+        self._finish_face_sketches()
         self._reapply_loaded_mounts()
         stored_assemblies = []
         for record in payload.get("assemblies", []):
@@ -2863,6 +3179,46 @@ def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> d
     return overrides
 
 
+def _part_record(part: _Part) -> dict:
+    record = {
+        "name": part.name,
+        "source": part.source,
+        "script": part.script,
+        "ops": copy.deepcopy(part.ops) if part.ops is not None else None,
+        "step_file": part.step_file,
+        "library": copy.deepcopy(part.library_spec) if part.library_spec is not None else None,
+        "gear": copy.deepcopy(part.gear_spec) if part.gear_spec is not None else None,
+        "placement": copy.deepcopy(part.placement),
+        "sketch": part.sketch_name,
+        "steps": copy.deepcopy(part.sketch_steps) if part.sketch_steps is not None else None,
+        "geometry_file": part.geometry_file,
+        "script_sha256": part.script_sha256,
+        "features": part._shape.feature_report().to_dict() if part.source == "script" and part._shape is not None else None,
+    }
+    if part.edge_ops:
+        record["edge_ops"] = copy.deepcopy(part.edge_ops)
+    return record
+
+
+def _stored_edge_ops(record: dict, source: str) -> list[dict] | None:
+    if source not in ("ops", "sketch"):
+        return None
+    raw = record.get("edge_ops")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise DocumentError(f"Part {record.get('name')!r} edge steps are not a list.")
+    return raw
+
+
+def _edge_step_name(step_name: str | None, kind: str, count: int) -> str:
+    if step_name is None:
+        return kind if count == 0 else f"{kind} {count + 1}"
+    if not isinstance(step_name, str) or not step_name.strip() or _name_has_control_line(step_name):
+        raise GeometryError("A step name must be a single non-empty line.")
+    return step_name.strip()
+
+
 def _name_has_control_line(name: str) -> bool:
     from aicad.labels import has_control_line
 
@@ -2886,7 +3242,11 @@ def _copy_spec(spec: Sketch | dict) -> dict:
         spec = spec.to_spec()
     if not isinstance(spec, dict):
         raise GeometryError("A sketch spec is an object with entities and constraints.")
-    return copy.deepcopy(spec)
+    from aicad.sketch_plane import normalize_plane
+
+    copied = copy.deepcopy(spec)
+    copied["plane"] = normalize_plane(copied.get("plane", "xy"))
+    return copied
 
 
 def _identity_placement() -> dict[str, list[float]]:
@@ -2898,8 +3258,8 @@ def _vec3(value, label: str) -> tuple[float, float, float]:
     return kernel.finite_vec3(value, label, unit=unit)
 
 
-def _step_import_source(root: Path, raw: str | Path) -> Path:
-    """The file ``import_step`` reads.
+def _step_import_source(root: Path, raw: str | Path, label: str = "STEP file") -> Path:
+    """The file ``import_step`` or ``import_stl`` reads.
 
     An absolute path is a file the person chose. A design script does not get
     that choice: its path stays inside the project. A relative path stays
@@ -2922,13 +3282,13 @@ def _step_import_source(root: Path, raw: str | Path) -> Path:
     # An absolute path is a file the person chose, unless a design script asked.
     if in_design_call() or not original.is_absolute() or lexical_inside:
         if not stays_inside(root_resolved, source):
-            raise DocumentError(f"STEP file {raw} is outside the project. It was not read.")
+            raise DocumentError(f"{label} {raw} is outside the project. It was not read.")
         lexical = given if given.is_absolute() else root_resolved / given
         # A directory link whose target stays inside the project is still a link.
         if _reparse_between(root_resolved, lexical):
-            raise DocumentError(f"STEP file {raw} is a link and was not followed.")
+            raise DocumentError(f"{label} {raw} is a link and was not followed.")
         if shared_file(source):
-            raise DocumentError(f"STEP file {raw} has another name and was not opened.")
+            raise DocumentError(f"{label} {raw} has another name and was not opened.")
     return source
 
 

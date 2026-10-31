@@ -82,11 +82,11 @@ from build123d import (
     CenterArc,
     Line,
     Polygon,
+    Spline,
     Pos,
     Rot,
     Sphere,
     Vector,
-    make_face,
     export_step,
     export_stl,
     extrude,
@@ -110,7 +110,7 @@ from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS
 from OCP.gp import gp_Ax2, gp_Dir, gp_Lin, gp_Pnt, gp_Trsf
 
-from aicad.errors import GeometryError, ScriptError
+from aicad.errors import EdgeOpError, GeometryError, ScriptError
 from aicad.paths import session_path_escapes, windows_trim_escapes
 from aicad.refs import edge_ref, face_ref
 from aicad.models import (
@@ -395,13 +395,166 @@ def make_from_ops(ops: list[dict]) -> Shape:
     return Shape(_require_solid(log.current), features=log.report())
 
 
-def measure(shape: Shape) -> Measurement:
+_EDGE_REF_TOLERANCE_MM = 1.0
+
+
+def edge_indexes(shape: Shape, spec, label: str) -> list[int]:
+    """Edge indexes for a fillet or chamfer.
+
+    ``spec`` is a list of indexes, or edge refs such as ``edge/line/5,0,2``.
+    An index past the end of the solid, or a ref that matches no nearby edge,
+    is a lost reference.
+    """
+    catalog = describe_edges(shape)
+    if isinstance(spec, (str, int)) and not isinstance(spec, bool):
+        spec = [spec]
+    if not isinstance(spec, list) or not spec:
+        raise GeometryError(f"{label} needs at least one edge.")
+    if len(spec) > 500:
+        raise GeometryError(f"{label} names too many edges.")
+    found: list[int] = []
+    for item in spec:
+        index = _one_edge_index(catalog, item, label)
+        if index not in found:
+            found.append(index)
+    return found
+
+
+def apply_edge_ops(shape: Shape, ops: list[dict]) -> Shape:
+    """Round or break edges. The input solid is left as it was.
+
+    Each step is ``{"op": "fillet", "radius": mm, "edges": [...]}`` or
+    ``{"op": "chamfer", "distance": mm, "edges": [...]}``. A radius or
+    distance that does not fit, or an edge reference that does not match,
+    raises :class:`EdgeOpError`.
+    """
+    if not isinstance(ops, list):
+        raise GeometryError("Edge steps must be a list.")
+    if len(ops) > 500:
+        raise GeometryError("A part may have at most 500 edge steps.")
+    current = shape
+    for index, op in enumerate(ops):
+        current = _apply_edge_op(current, op, index)
+    return current
+
+
+def _apply_edge_op(shape: Shape, op: dict, index: int) -> Shape:
+    if not isinstance(op, dict):
+        raise EdgeOpError(f"Edge step {index} must be an object.", "edge_lost")
+    kind = op.get("op")
+    raw_name = op.get("name")
+    label = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else f"edge step {index + 1}"
+    if kind == "fillet":
+        amount = finite_number(op.get("radius"), f"{label} radius", positive=True)
+    elif kind == "chamfer":
+        amount = finite_number(op.get("distance"), f"{label} distance", positive=True)
+    else:
+        raise EdgeOpError(
+            f"Edge step {index} has op {kind!r}. Use fillet or chamfer.",
+            "edge_lost",
+        )
+    indexes = edge_indexes(shape, op.get("edges"), label)
+    working = _copy_solid(shape.impl)
+    edges = list(working.edges())
+    if any(item >= len(edges) for item in indexes):
+        raise EdgeOpError(
+            f"The edge reference on {label} was lost. This solid has {len(edges)} edges.",
+            "edge_lost",
+        )
+    chosen = [edges[item] for item in indexes]
+    try:
+        from build123d import chamfer, fillet
+
+        if kind == "fillet":
+            result = fillet(chosen, radius=amount)
+        else:
+            result = chamfer(chosen, length=amount)
+    except EdgeOpError:
+        raise
+    except Exception as exc:
+        if kind == "fillet":
+            message = f"The fillet radius {amount:g} mm is too big for the selected edges."
+            code = "radius_too_big"
+        else:
+            message = f"The chamfer distance {amount:g} mm is too big for the selected edges."
+            code = "distance_too_big"
+        raise EdgeOpError(message, code) from exc
+    return Shape(_require_solid(result), features=shape.feature_report())
+
+
+def _one_edge_index(catalog: list[dict], item, label: str) -> int:
+    if isinstance(item, bool) or isinstance(item, float):
+        raise GeometryError(f"{label} edge indexes must be whole numbers or edge refs.")
+    if isinstance(item, int):
+        if item < 0 or item >= len(catalog):
+            raise EdgeOpError(
+                f"The edge reference {item} on {label} was lost. This solid has {len(catalog)} edges.",
+                "edge_lost",
+            )
+        return item
+    if not isinstance(item, str) or not item.strip():
+        raise GeometryError(f"{label} edge indexes must be whole numbers or edge refs.")
+    from aicad.refs import ref_to_selector
+
+    try:
+        selector = ref_to_selector(item)
+    except GeometryError as exc:
+        raise EdgeOpError(f"The edge reference {item!r} on {label} was lost. {exc}", "edge_lost") from exc
+    if selector.get("kind") != "edge":
+        raise EdgeOpError(f"The edge reference {item!r} on {label} was lost. It is not an edge.", "edge_lost")
+    kind = selector.get("edge_kind")
+    pool = [edge for edge in catalog if edge.get("kind") == kind]
+    if not pool:
+        raise EdgeOpError(
+            f"The edge reference {item!r} on {label} was lost. This solid has no {kind} edge.",
+            "edge_lost",
+        )
+    at = selector["at"]
+    best = min(pool, key=lambda edge: _point_distance(edge["midpoint_mm"], at))
+    if _point_distance(best["midpoint_mm"], at) > _EDGE_REF_TOLERANCE_MM:
+        raise EdgeOpError(
+            f"The edge reference {item!r} on {label} was lost. No {kind} edge is near that point.",
+            "edge_lost",
+        )
+    return int(best["index"])
+
+
+def _point_distance(a, b) -> float:
+    return math.sqrt(sum((float(a[index]) - float(b[index])) ** 2 for index in range(3)))
+
+
+def _copy_solid(impl):
+    """A fillet changes the solid it is given, so the previous one is copied first."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+
+    copied = BRepBuilderAPI_Copy(impl.wrapped)
+    copied.Perform(impl.wrapped)
+    if not copied.IsDone():
+        raise GeometryError("Could not copy the solid before an edge step.")
+    from build123d import Part
+
+    return Part(copied.Shape())
+
+
+def measure(shape: Shape, material: str | None = None) -> Measurement:
+    """Measure a solid. ``material`` adds mass as volume times that handbook density."""
     impl = shape.impl
     bbox = impl.bounding_box()
     low = bbox.min
     high = bbox.max
     size = bbox.size
     center = impl.center()
+    mass_g = None
+    material_id = None
+    density = None
+    if material is not None:
+        from aicad.fea import lookup_material
+
+        found = lookup_material(material)
+        density = float(found["density_g_cm3"])
+        material_id = str(found["id"])
+        # mm^3 times g/cm^3 is grams after dividing by 1000.
+        mass_g = round_mm(float(impl.volume) * density / 1000.0)
     return Measurement(
         units=UNITS,
         valid=bool(impl.is_valid),
@@ -418,6 +571,9 @@ def measure(shape: Shape) -> Measurement:
             max=_vec(high),
             size=_vec(size),
         ),
+        mass_g=mass_g,
+        material=material_id,
+        density_g_cm3=density,
     )
 
 
@@ -1857,12 +2013,12 @@ def import_step_file(path: Path) -> Shape:
     not followed, so a shared part cannot read or write outside the project
     by naming some other path. A file past the size cap is not read.
 
-    A glTF, OBJ, or COLLADA file is read the same way. An external buffer, image,
+    A glTF, OBJ, COLLADA, or STL file is read the same way. An external buffer, image,
     or material library is opened only when it stays inside that file's folder,
     including a subfolder, and only through the shared file reader. The project
     path is not given to a geometry reader.
     """
-    if path.suffix.lower() in {".gltf", ".glb", ".obj", ".dae"}:
+    if path.suffix.lower() in {".gltf", ".glb", ".obj", ".dae", ".stl"}:
         from aicad.mesh_import import import_mesh_file
 
         return import_mesh_file(path)
@@ -3029,7 +3185,12 @@ def distance_to_point(shape: Shape, point: tuple[float, float, float] | list[flo
     return {"distance_mm": round_mm(gap), "inside": inside}
 
 
-def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | None = None) -> Shape:
+def solid_from_sketch(
+    geometry: dict,
+    steps: list[dict],
+    feature: FeatureLog | None = None,
+    frame: dict | None = None,
+) -> Shape:
     """Extrude, revolve, or cut a solved sketch into a solid.
 
     ``geometry`` is the ``geometry`` dict from a sketch report. ``steps`` is a
@@ -3050,10 +3211,13 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
     - ``{"op": "cut_box", "center": [0, 26, 2], "size": [10, 8, 6], "name": "slot"}``
     - ``{"op": "gusset", "angle": 0, "outer": 30, "plate_thickness": 4, "boss_height": 8, "name": "gusset_0"}``
 
-    ``z`` is the bottom of an extrusion or a cutter. A revolve spins the XY
-    profile about the sketch X or Y axis. The profile must stay on one side of
-    that axis. Consecutive points that are the ends of a sketch arc follow
-    that arc. A profile with only straight edges stays a polygon.
+    ``z`` is the bottom of an extrusion or a cutter, along the sketch normal.
+    A revolve spins the profile about the sketch X or Y axis. The profile must
+    stay on one side of that axis. Consecutive points that are the ends of a
+    sketch arc follow that arc. A closed spline through the profile points is
+    that smooth curve, not the polygon of its points. A profile with only
+    straight edges stays a polygon. ``frame`` places that solid on the sketch
+    plane. ``cut_box`` and ``gusset`` stay in world coordinates.
     """
     if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
         raise GeometryError(
@@ -3074,14 +3238,14 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
         if not isinstance(name, str) or not name.strip():
             raise GeometryError(f"Sketch step {index} name must be a non-empty string.")
         if op in ("extrude", "revolve", "gusset"):
-            tool = _sketch_tool(step, geometry, index, name)
+            tool = _sketch_tool(step, geometry, index, name, frame)
             log.add(name, tool)
         elif op in ("cut", "cut_box"):
             if log.current is None:
                 raise GeometryError(
                     f"Sketch step {index} ({name}) is a cut, but nothing has been added yet."
                 )
-            tool = _sketch_tool(step, geometry, index, name)
+            tool = _sketch_tool(step, geometry, index, name, frame)
             log.cut(name, tool)
         else:
             raise GeometryError(
@@ -3091,7 +3255,7 @@ def solid_from_sketch(geometry: dict, steps: list[dict], feature: FeatureLog | N
     return Shape(_require_solid(log.current), features=log.report())
 
 
-def _sketch_tool(step: dict, geometry: dict, index: int, name: str):
+def _sketch_tool(step: dict, geometry: dict, index: int, name: str, frame: dict | None = None):
     op = step["op"]
     if op == "cut_box":
         center = _vec3_field(step.get("center", [0, 0, 0]), f"{name} center")
@@ -3102,14 +3266,37 @@ def _sketch_tool(step: dict, geometry: dict, index: int, name: str):
     if op == "gusset":
         return _radial_gusset(step, name)
     if op == "revolve":
-        return _revolve_profile(step, geometry, name)
+        return _on_sketch_plane(_revolve_profile(step, geometry, name), frame)
     if "circle" in step:
-        return _circle_prism(step, geometry, name)
+        return _on_sketch_plane(_circle_prism(step, geometry, name), frame)
     if "points" in step:
-        return _polygon_prism(step, geometry, name)
+        return _on_sketch_plane(_polygon_prism(step, geometry, name), frame)
     raise GeometryError(
         f"{name}: an {op} needs `circle` or `points` from the solved sketch."
     )
+
+
+def _on_sketch_plane(solid, frame: dict | None):
+    """Map a solid built on world XY onto the sketch plane. XY at the origin stays put."""
+    if not isinstance(frame, dict):
+        return solid
+    try:
+        origin = tuple(float(component) for component in frame["origin"])
+        x_dir = tuple(float(component) for component in frame["x"])
+        normal = tuple(float(component) for component in frame["normal"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GeometryError("A sketch frame needs origin, x, and normal.") from exc
+    if (
+        _near(origin, (0.0, 0.0, 0.0))
+        and _near(x_dir, (1.0, 0.0, 0.0))
+        and _near(normal, (0.0, 0.0, 1.0))
+    ):
+        return solid
+    return Plane(origin=origin, x_dir=x_dir, z_dir=normal).location * solid
+
+
+def _near(left: tuple[float, float, float], right: tuple[float, float, float]) -> bool:
+    return all(abs(left[index] - right[index]) < 1e-9 for index in range(3))
 
 
 def _circle_prism(step: dict, geometry: dict, name: str):
@@ -3172,32 +3359,140 @@ def _revolve_profile(step: dict, geometry: dict, name: str):
 
 
 def _profile_face(step: dict, geometry: dict, name: str, coords: list[tuple[float, float]]):
-    """A polygon when every edge is straight. An arc edge follows the circle."""
+    """A polygon when every edge is straight. An arc or a spline follows the curve."""
     ids = step.get("points")
+    closed = _closed_spline(ids, geometry) if isinstance(ids, list) else None
+    if closed is not None:
+        try:
+            return _sketch_face(
+                Spline(*(_point_xy(geometry.get("points") or {}, point_id) for point_id in closed), periodic=True),
+                name,
+            )
+        except GeometryError:
+            raise
+        except Exception as exc:
+            raise GeometryError(f"{name}: could not build a face from that spline. {exc}") from exc
     edges = _boundary_arcs(geometry)
-    if not isinstance(ids, list) or not _profile_uses_arc(ids, edges):
+    if not isinstance(ids, list) or not (_profile_uses_arc(ids, edges) or _profile_uses_spline(ids, geometry)):
         return Plane.XY * Polygon(*coords)
     points = geometry.get("points") or {}
     wire = None
     count = len(ids)
-    for index in range(count):
-        left = ids[index]
-        right = ids[(index + 1) % count]
-        pair = frozenset((left, right))
-        matches = edges.get(pair) or []
-        if matches:
-            if len(matches) != 1:
-                raise GeometryError(f"{name}: more than one arc joins {left} and {right}.")
-            segment = _boundary_arc(matches[0], left, right, name)
+    index = 0
+    while index < count:
+        run = _spline_run(ids, index, geometry)
+        if run is not None and run[0] >= 1:
+            span, order = run
+            segment = Spline(*(_point_xy(points, point_id) for point_id in order))
+            index += span
+            if index >= count:
+                index = count
         else:
-            segment = Line(_point_xy(points, left), _point_xy(points, right))
+            left = ids[index]
+            right = ids[(index + 1) % count]
+            pair = frozenset((left, right))
+            matches = edges.get(pair) or []
+            if matches:
+                if len(matches) != 1:
+                    raise GeometryError(f"{name}: more than one arc joins {left} and {right}.")
+                segment = _boundary_arc(matches[0], left, right, name)
+            else:
+                segment = Line(_point_xy(points, left), _point_xy(points, right))
+            index += 1
         wire = segment if wire is None else wire + segment
     try:
-        return make_face(wire)
+        return _sketch_face(wire, name)
     except GeometryError:
         raise
     except Exception as exc:
         raise GeometryError(f"{name}: could not build a face from that profile. {exc}") from exc
+
+
+def _sketch_face(perimeter, name: str):
+    """A face from a closed profile.
+
+    Shape repair is applied when it finishes. A closed spline can already be a
+    valid face when that repair raises, and that face is kept.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.ShapeFix import ShapeFix_Face
+    from OCP.TopoDS import TopoDS
+    from build123d import Face, Wire
+
+    if isinstance(perimeter, Wire):
+        wire = perimeter
+    else:
+        combined = Wire.combine(perimeter.edges())
+        if not combined:
+            raise GeometryError(f"{name}: could not build a closed wire from that profile.")
+        wire = combined[0]
+    builder = BRepBuilderAPI_MakeFace(wire.wrapped, True)
+    builder.Build()
+    if not builder.IsDone():
+        raise GeometryError(f"{name}: could not build a face from that profile.")
+    face = builder.Face()
+    try:
+        fixer = ShapeFix_Face(face)
+        fixer.FixOrientation()
+        fixer.Perform()
+        face = TopoDS.Face(fixer.Result())
+    except Exception:
+        pass
+    built = Face(face)
+    try:
+        if built.normal_at().Z < 0:
+            built = -built
+    except Exception:
+        pass
+    return built
+
+
+def _closed_spline(ids: list, geometry: dict) -> list | None:
+    from aicad.sketch_spline import same_cycle
+
+    for spline in (geometry.get("splines") or {}).values():
+        if not isinstance(spline, dict) or spline.get("construction") or not spline.get("closed"):
+            continue
+        order = [point_id for point_id in spline.get("points") or [] if isinstance(point_id, str)]
+        if same_cycle(list(ids), order):
+            return order
+    return None
+
+
+def _profile_uses_spline(ids: list, geometry: dict) -> bool:
+    return _spline_run(ids, 0, geometry) is not None or any(
+        _spline_run(ids, index, geometry) is not None for index in range(1, len(ids))
+    )
+
+
+def _spline_run(ids: list, index: int, geometry: dict):
+    """Edges of one open spline starting at ``index``, as (edge count, point ids)."""
+    count = len(ids)
+    best_edges = 0
+    best_points = None
+    for spline in (geometry.get("splines") or {}).values():
+        if not isinstance(spline, dict) or spline.get("construction") or spline.get("closed"):
+            continue
+        order = spline.get("points") or []
+        edges = 0
+        while index + edges < count and _spline_adjacent(
+            order, ids[(index + edges) % count], ids[(index + edges + 1) % count]
+        ):
+            edges += 1
+        if edges > best_edges:
+            best_edges = edges
+            best_points = [ids[(index + step) % count] for step in range(edges + 1)]
+    if best_edges < 1 or best_points is None:
+        return None
+    return best_edges, best_points
+
+
+def _spline_adjacent(order: list, left: str, right: str) -> bool:
+    try:
+        found = order.index(left)
+    except ValueError:
+        return False
+    return found + 1 < len(order) and order[found + 1] == right
 
 
 def _profile_uses_arc(ids: list, edges: dict) -> bool:
@@ -3220,6 +3515,15 @@ def _profile_samples(step: dict, geometry: dict, coords: list[tuple[float, float
         matches = edges.get(frozenset((ids[index], ids[(index + 1) % count]))) or []
         if len(matches) == 1:
             samples.extend(_arc_extrema(matches[0]))
+    for spline in (geometry.get("splines") or {}).values():
+        if not isinstance(spline, dict) or spline.get("construction"):
+            continue
+        order = spline.get("points") or []
+        if not order or any(point_id not in ids for point_id in order):
+            continue
+        for sample in spline.get("samples") or []:
+            if isinstance(sample, dict) and "x" in sample and "y" in sample:
+                samples.append((float(sample["x"]), float(sample["y"])))
     return samples
 
 

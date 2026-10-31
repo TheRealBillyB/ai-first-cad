@@ -92,6 +92,42 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "printed": False,
         "note": "A generic mild steel, near AISI 1020. The safety factor is against yield.",
     },
+    "steel_42crmo4": {
+        "name": "42CrMo4 quenched and tempered",
+        "youngs_modulus_mpa": 210000.0,
+        "poisson": 0.30,
+        "strength_mpa": 750.0,
+        "strength_kind": "yield",
+        "ultimate_mpa": 1000.0,
+        "density_g_cm3": 7.85,
+        "printed": False,
+        "endurance": "steel",
+        "note": (
+            "Through-hardened gear and shaft steel. EN 10083-3:2006, 42CrMo4+QT, "
+            "minimum 0.2% proof strength 750 MPa and tensile strength 1000 MPa to 1200 MPa "
+            "for a ruling section from 16 mm to 40 mm. The 1000 MPa figure is the bottom of that band. "
+            "Young's modulus 210000 MPa, Poisson's ratio 0.30, and density 7.85 g/cm³ are the steel "
+            "figures already used for mild steel in this library. The safety factor is against the proof strength."
+        ),
+    },
+    "steel_16mncr5": {
+        "name": "16MnCr5 case-hardened",
+        "youngs_modulus_mpa": 210000.0,
+        "poisson": 0.30,
+        "strength_mpa": 590.0,
+        "strength_kind": "yield",
+        "ultimate_mpa": 780.0,
+        "density_g_cm3": 7.85,
+        "printed": False,
+        "endurance": "steel",
+        "note": (
+            "Case-hardening gear steel 16MnCr5, EN 10084:2008. That standard specifies composition "
+            "and hardenability, not a finished core yield. The 590 MPa proof strength and 780 MPa "
+            "tensile strength are handbook figures for the core of a small section, not the carburized case. "
+            "The case is harder than this core. Modulus, Poisson's ratio, and density match the steel "
+            "figures in this library. The safety factor is against the core proof strength."
+        ),
+    },
 }
 _ALIASES = {
     "aluminum": "aluminum_6061",
@@ -101,6 +137,8 @@ _ALIASES = {
     "pa6": "nylon",
     "pa12": "nylon",
     "mild_steel": "steel",
+    "42crmo4": "steel_42crmo4",
+    "16mncr5": "steel_16mncr5",
 }
 
 

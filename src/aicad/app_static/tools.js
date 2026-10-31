@@ -1265,7 +1265,9 @@ async function runClearance() {
 function renderStepPanel() {
   const root = $("panel");
   const draft = ui.reports.stepDraft || { name: "imported", path: "" };
+  const stlDraft = ui.reports.stlDraft || { name: "mesh", path: "" };
   const report = ui.reports.step;
+  const stlReport = ui.reports.stl;
   const project = ui.state && ui.state.project ? ui.state.project.path : "";
   root.innerHTML = `<h3>STEP</h3>
     <form id="step-form" class="tool-form">
@@ -1279,10 +1281,26 @@ function renderStepPanel() {
       <p data-tool-error class="warn" hidden></p>
       <button type="submit" id="step-import" class="primary">Import STEP</button>
     </form>
-    <div id="step-result">${report ? stepHtml(report) : `<p class="muted">The imported solid shows in the model view.</p>`}</div>`;
+    <div id="step-result">${report ? stepHtml(report) : `<p class="muted">The imported solid shows in the model view.</p>`}</div>
+    <h3>STL</h3>
+    <form id="stl-form" class="tool-form">
+      <p class="muted">Copy an STL file in as a mesh part. This calls import_stl. The part is the triangle mesh. It has no editable features. A mesh that is not a closed solid is refused.</p>
+      <div class="field-grid">
+        <label>Part name <input id="stl-name" value="${escapeAttr(stlDraft.name)}" /></label>
+        <label>Path <input id="stl-path" value="${escapeAttr(stlDraft.path)}" /></label>
+      </div>
+      <p data-tool-progress class="muted" role="status"></p>
+      <p data-tool-error class="warn" hidden></p>
+      <button type="submit" id="stl-import" class="primary">Import STL</button>
+    </form>
+    <div id="stl-result">${stlReport ? stepHtml(stlReport) : `<p class="muted">The mesh shows in the model view. Its faces are not editable features.</p>`}</div>`;
   $("step-form").onsubmit = (event) => {
     event.preventDefault();
     runImportStep().catch(showError);
+  };
+  $("stl-form").onsubmit = (event) => {
+    event.preventDefault();
+    runImportStl().catch(showError);
   };
 }
 
@@ -1295,6 +1313,20 @@ function stepHtml(report) {
       <span>Volume</span><b>${part.volume_mm3 != null ? `${part.volume_mm3} mm³` : ""}</b>
     </div>
     <p class="muted">The part is in the model view.</p>`;
+}
+
+async function runImportStl() {
+  const name = $("stl-name").value.trim();
+  if (!name) throw new Error("Name the part.");
+  const path = $("stl-path").value.trim();
+  if (!path) throw new Error("Name the STL file on this computer.");
+  ui.reports.stlDraft = { name, path };
+  const report = await runTool($("stl-import"), "Importing the STL file…", () => command("import_stl", { name, path }));
+  if (!report) return;
+  clearNotice();
+  ui.reports.stl = report;
+  ui.part = name;
+  await refresh({ fit: "part", focus: name, solid: true });
 }
 
 async function runImportStep() {

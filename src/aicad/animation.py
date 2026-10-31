@@ -61,6 +61,8 @@ _MATERIAL_COLOR = {
     "nylon": (232.0, 228.0, 216.0),
     "aluminum_6061": (196.0, 202.0, 208.0),
     "steel": (110.0, 116.0, 124.0),
+    "steel_42crmo4": (96.0, 102.0, 110.0),
+    "steel_16mncr5": (128.0, 132.0, 138.0),
 }
 _FFMPEG_MISSING = (
     "ffmpeg was not found on PATH, so no MP4 or WebM was written. "
