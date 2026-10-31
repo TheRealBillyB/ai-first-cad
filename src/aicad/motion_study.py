@@ -25,6 +25,12 @@ a driver that is itself coupled, up to a chain of eight. An assembly gear,
 linkage, or cylinder that already drives that joint is left as it is; the
 study does not add a second rule for it.
 
+A gear train stored on the assembly is the same pose. Driving one shaft
+turns the others by the tooth ratios, in the matching direction, from the
+angles they already had. A fixed member does not turn. A planet joint
+parented to the carrier is the spin relative to the carrier. A shaft whose
+speed is not determined stays where it is.
+
 Joint limits are enforced by the joint solver. A command outside ``min`` or
 ``max`` is held on the stop, and that step records a limit hit. The posed
 solid is the stopped one.
@@ -229,7 +235,6 @@ def run_study(
         if clearance < 0:
             raise GeometryError("clearance_mm cannot be negative.")
         chosen["clearance_mm"] = clearance
-    posed = _with_couplings(spec, chosen)
     times = _sample_times(chosen["duration_s"], chosen["steps"])
     step_rows = []
     flat_collisions = []
@@ -237,7 +242,8 @@ def run_study(
     rejected = 0
     narrow = 0
     for index, time_s in enumerate(times):
-        solved, placed = posed_shapes(posed, shapes, _commands(chosen, time_s))
+        posed, commands = _study_pose(spec, chosen, time_s)
+        solved, placed = posed_shapes(posed, shapes, commands)
         limits = [_limit_hit(joint) for joint in solved["joints"]]
         limits = [hit for hit in limits if hit is not None]
         collisions, step_rejected, step_narrow = _collisions(
@@ -316,6 +322,7 @@ def run_study(
         "assumptions": [
             "Samples are evenly spaced from the start of the timeline to the end.",
             "A gear coupling is driven = ratio × driver + offset, applied with the assembly relations.",
+            "A gear train turns the other shafts from the driven joint. A fixed member stays fixed. The starting angle is kept.",
             "A command past a joint limit is held at the stop.",
             "The broad phase is the axis-aligned box. The narrow phase is the boolean intersection of the solids.",
             "Penetration depth for a convex solid is the minimum translation that separates it.",
@@ -351,10 +358,10 @@ def iter_study_poses(spec: dict, shapes: dict, study: dict, steps: int | None = 
     chosen = normalize_study(study, spec["joints"], spec["relations"], name=study.get("name"))
     if steps is not None:
         chosen["steps"] = _require_steps(steps, chosen["name"])
-    posed = _with_couplings(spec, chosen)
     rows = []
     for index, time_s in enumerate(_sample_times(chosen["duration_s"], chosen["steps"])):
-        solved, placed = posed_shapes(posed, shapes, _commands(chosen, time_s))
+        posed, commands = _study_pose(spec, chosen, time_s)
+        solved, placed = posed_shapes(posed, shapes, commands)
         rows.append(
             {
                 "index": index,
@@ -376,10 +383,10 @@ def posed_at(spec: dict, study: dict, frames: int) -> list[dict]:
     spec = normalize_assembly(spec)
     chosen = normalize_study(study, spec["joints"], spec["relations"], name=study.get("name"))
     count = _require_steps(frames, chosen["name"])
-    posed = _with_couplings(spec, chosen)
     rows = []
     for index, time_s in enumerate(_sample_times(chosen["duration_s"], count)):
-        solved = solve_joints(posed, _commands(chosen, time_s))
+        posed, commands = _study_pose(spec, chosen, time_s)
+        solved = solve_joints(posed, commands)
         rows.append({"index": index, "time_s": round(time_s, 6), "solved": solved})
     return rows
 
@@ -599,6 +606,33 @@ def _conflicts(study: str, drivers: list[dict], couplings: list[dict], relations
             node = graph[node]
             if len(seen) > _MAX_CHAIN:
                 raise GeometryError(f"Study {study!r} coupling chain is longer than {_MAX_CHAIN} joints.")
+
+
+def _study_pose(spec: dict, study: dict, time_s: float) -> tuple[dict, dict]:
+    """The posed assembly and the joint commands at ``time_s``.
+
+    Gear-train followers are written here. A gear relation that would drive
+    one of those joints is left out, so a pairwise ratio cannot replace the
+    train.
+    """
+    from aicad.gears.train import motion_joint_targets
+
+    commands = _commands(study, time_s)
+    targets = motion_joint_targets(spec, commands)
+    for name, value in targets.items():
+        previous = commands.get(name)
+        if isinstance(previous, dict):
+            commands[name] = {**previous, "value": value}
+        else:
+            commands[name] = value
+    posed = _with_couplings(spec, study)
+    if targets:
+        posed["relations"] = [
+            relation
+            for relation in posed["relations"]
+            if not (relation.get("type") == "gear" and relation.get("driven") in targets)
+        ]
+    return posed, commands
 
 
 def _with_couplings(spec: dict, study: dict) -> dict:
