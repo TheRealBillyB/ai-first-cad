@@ -184,6 +184,8 @@ That stops another website, including one that tries to reach this computer by a
 - A script remove opens that name only to delete it. It does not read or write the file, and a link is removed without opening the file it names. The quota still counts a removed file the watch is holding.
 - **BY.** Only the person at the workspace can open a project folder or save a copy and switch to it. The assistant cannot. A session file cannot.
 
+- **BZ.** An assembly name, a part name, an instance name, a joint name, or a material name stays on one line. A line separator, a paragraph separator, or another control character in that name is refused. A drawing, a bill of materials, a report, and a log do not gain a line from that character.
+
 - **CA.** A CalculiX input line is one card. A part name, a note, or a material name is not written into that file. A line break in a card is refused, so it cannot add another card.
 
 - **CB.** The model process does not read a Matplotlib config from the project directory. A design script cannot write the library configuration directory and cannot point that directory somewhere else.
