@@ -10,6 +10,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A fillet or chamfer is its own step | A shape or sketch part can round or break edges as a later step with a radius or a distance. A radius that does not fit, or an edge reference that no longer matches, raises an error and leaves the previous solid in place. |
 | A motion study follows the gear train, including a planetary set | Driving one member turns the others at the tooth ratio and in the matching direction, from the angles they already have. A member held fixed stays fixed. A shaft whose speed is not determined stays where it is. |
 | A sketch can sit on a planar face or on an offset or angled datum | The sketch stores that plane and is placed there again when the model rebuilds, and a face that is no longer in the model raises SketchPlaneError. |
 | An arc is three points, a center and two ends, or a tangent continuation of a line | The sketch solver stores all three as one arc with a named radius, and the canvas keeps each unfinished point across a refresh the same way it keeps a line start or a circle center. |
