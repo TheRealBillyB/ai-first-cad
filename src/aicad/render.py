@@ -133,10 +133,11 @@ def _compose_view(
     scale: float,
     title: str,
     footer: str,
+    center: tuple[float, float] | None = None,
 ) -> Image.Image:
     buffer_w = _VIEW_W * _SSAA
     buffer_h = _VIEW_H * _SSAA
-    color, depth = _rasterize(mesh, basis, scale, buffer_w, buffer_h)
+    color, depth = _rasterize(mesh, basis, scale, buffer_w, buffer_h, center=center)
     view = Image.fromarray(color, mode="RGB").resize((_VIEW_W, _VIEW_H), Image.Resampling.BOX)
     canvas = Image.new("RGB", (_VIEW_W, _HEADER + _VIEW_H + _FOOTER), _PAPER)
     canvas.paste(view, (0, _HEADER))
@@ -157,9 +158,11 @@ def _rasterize(
     width: int,
     height: int,
     background: tuple[int, int, int] | None = None,
+    center: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     x_cam, y_cam, z_cam = basis
-    center = _projection_center(mesh.vertices, x_cam, y_cam)
+    if center is None:
+        center = _projection_center(mesh.vertices, x_cam, y_cam)
     screen = _project(mesh.vertices, x_cam, y_cam, z_cam, scale, width, height, center)
     light_key = _unit(np.array([0.35, -0.55, 0.85]))
     light_fill = _unit(np.array([-0.7, 0.25, 0.35]))
@@ -883,6 +886,44 @@ def _scalar_contact(panels: dict[str, Image.Image]) -> Image.Image:
     return sheet
 
 
+def sequence_centers(
+    meshes: list[TriangleMesh],
+    bases: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+) -> list[tuple[float, float]]:
+    """One picture center for every frame that shares a camera.
+
+    A frame centered on itself hides a slide: the moving part stays put and
+    the fixed part drifts. Frames from one camera use the center of every
+    pose together, so a fixed part stays and the moving part travels.
+    """
+    groups: dict[tuple[float, ...], list[int]] = {}
+    keys: list[tuple[float, ...]] = []
+    for index, basis in enumerate(bases):
+        key = tuple(round(float(value), 5) for axis in basis for value in axis)
+        keys.append(key)
+        groups.setdefault(key, []).append(index)
+    chosen: dict[tuple[float, ...], tuple[float, float]] = {}
+    for key, indexes in groups.items():
+        x_cam, y_cam, _z_cam = bases[indexes[0]]
+        low_x = low_y = 1e300
+        high_x = high_y = -1e300
+        for index in indexes:
+            vertices = meshes[index].vertices
+            if len(vertices) == 0:
+                continue
+            x = vertices @ x_cam
+            y = vertices @ y_cam
+            low_x = min(low_x, float(x.min()))
+            high_x = max(high_x, float(x.max()))
+            low_y = min(low_y, float(y.min()))
+            high_y = max(high_y, float(y.max()))
+        if low_x > high_x:
+            chosen[key] = (0.0, 0.0)
+        else:
+            chosen[key] = ((low_x + high_x) / 2.0, (low_y + high_y) / 2.0)
+    return [chosen[key] for key in keys]
+
+
 def frame_scale(
     meshes: list[TriangleMesh],
     bases: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
@@ -915,6 +956,7 @@ def render_frame(
     background: tuple[int, int, int] = _PAPER,
     overlay: str = "",
     ssaa: int = 1,
+    center: tuple[float, float] | None = None,
 ) -> Image.Image:
     """One RGB frame. ``width`` and ``height`` are the picture size."""
     header = 0
@@ -926,7 +968,7 @@ def render_frame(
     paper = tuple(int(channel) for channel in background)
     buffer_w = width * ssaa
     buffer_h = view_h * ssaa
-    color, _depth = _rasterize(mesh, basis, scale, buffer_w, buffer_h, background=paper)
+    color, _depth = _rasterize(mesh, basis, scale, buffer_w, buffer_h, background=paper, center=center)
     view = Image.fromarray(color, mode="RGB")
     if ssaa != 1:
         view = view.resize((width, view_h), Image.Resampling.BOX)
@@ -960,11 +1002,12 @@ def render_motion_frames(
     basis = _camera_basis((1.0, -1.0, 0.85), (0.0, 0.0, 1.0))
     combined = np.vstack([mesh.vertices for mesh in meshes])
     scale, _span = _shared_scale(combined, {"iso": basis})
+    centers = sequence_centers(meshes, [basis] * len(meshes))
     images: list[Image.Image] = []
     frames = []
     for index, mesh in enumerate(meshes):
         title = titles[index] if index < len(titles) else f"frame {index}"
-        image = _compose_view(mesh, basis, scale, title=title, footer=stem)
+        image = _compose_view(mesh, basis, scale, title=title, footer=stem, center=centers[index])
         path = out_dir / f"{stem}_{index:02d}.png"
         _save_png(path, image, optimize=True)
         images.append(image)
