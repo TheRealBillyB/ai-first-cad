@@ -239,7 +239,8 @@ def test_the_workspace_mounts_a_catalog_part(tmp_path):
 
 
 def test_a_catalog_length_change_keeps_the_mount(tmp_path):
-    document = Document(tmp_path)
+    workspace = Workspace(tmp_path)
+    document = workspace.document
     document.create_part_from_script("plate", "part = Pos(0, 0, 4) * Box(20, 20, 8) - Cylinder(3, 30)\n")
     hole = _cylinder(document, "plate", 3)
     document.insert_standard_part(
@@ -249,7 +250,7 @@ def test_a_catalog_length_change_keeps_the_mount(tmp_path):
         length=12,
         mount={"part": "plate", "ref": hole["ref"]},
     )
-    document.set_catalog_length("screw", 20)
+    workspace.execute("set_parameter", {"name": "screw", "parameter": "library/length", "value": 20})
     hole = _cylinder(document, "plate", 3)
     center = document.measure("screw").center_of_mass_mm
     assert document.get_source("screw")["placement"]["mount"]["part"] == "plate"

@@ -1032,7 +1032,7 @@ def _restore_placement(workspace, name: str, placement: dict, info):
 
 
 def _set_library_length(document, name: str, length: float):
-    return document.set_catalog_length(name, length)
+    return document._set_catalog_length(name, length)  # noqa: SLF001
 
 
 def _parts_from_sketch(workspace, sketch: str) -> list[dict]:

@@ -966,7 +966,7 @@ class Document:
             self._save()
             return self._info(part)
 
-    def set_catalog_length(self, name: str, length: float) -> PartInfo:
+    def _set_catalog_length(self, name: str, length: float) -> PartInfo:
         """Change a catalog length and keep a mount on the rebuilt solid."""
         with self._lock:
             part = self._get(name)
