@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 
 import pytest
@@ -16,6 +17,24 @@ import pytest
 from aicad.sandbox import _DiskWatch, _open_real_directory
 
 _MARKER = "CANARY_HIT"
+
+
+def _link_directory(link, target) -> None:
+    """A directory link. Windows uses a junction, which does not need extra rights."""
+
+    if sys.platform == "win32":
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode == 0:
+            return
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot create a directory link")
 
 
 def test_a_child_record_cannot_replace_a_live_process(tmp_path):
@@ -44,10 +63,7 @@ def test_a_link_is_not_a_directory_the_quota_watch_opens(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
     link = project / "link"
-    try:
-        link.symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pytest.skip("this machine cannot create a directory symlink")
+    _link_directory(link, outside)
     assert _open_real_directory(link) is None
     if sys.platform.startswith("linux"):
         opened = _open_real_directory(project)
