@@ -487,6 +487,9 @@ async function runLibraryInsert() {
   const args = { name, kind: pick.kind, size: pick.size };
   const lengthField = $("library-length");
   if (lengthField) args.length = requiredNumber(lengthField.value, "Enter the length under the head, in millimeters.");
+  if (ui.pick === "mount" && ui.mountTarget && ui.mountTarget.part && ui.mountTarget.ref && ui.mountTarget.part !== name) {
+    args.mount = { part: ui.mountTarget.part, ref: ui.mountTarget.ref, rotation_deg: 0, flip: false };
+  }
   const report = await runTool($("library-insert"), "Inserting…", () => command("insert_standard_part", args));
   if (!report) return;
   clearNotice();
