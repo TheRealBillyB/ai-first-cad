@@ -2363,9 +2363,14 @@ def _watch_library_environment(snapshot: dict[str, str], read, write) -> None:
                 os.environ[key] = value
 
     def loop() -> None:
-        while True:
-            restore()
-            time.sleep(0.05)
+        try:
+            # Stop once this process is no longer the locked script environment.
+            # A test that restores os.environ must not keep resetting TEMP.
+            while getattr(os.environ, "_aicad_locked", False):
+                restore()
+                time.sleep(0.05)
+        finally:
+            _watch_library_environment.started = False
 
     threading.Thread(target=loop, name="aicad-library-env", daemon=True).start()
 
