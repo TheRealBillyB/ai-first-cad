@@ -10,6 +10,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A catalog part mounts on a face or an axis | The mate frame snaps onto the picked face or axis, then turns about that axis in steps of 15 degrees, and a flip turns the frame around. A project that only stores a position and an Euler rotation still places the part. |
 | A fillet or chamfer is its own step | A shape or sketch part can round or break edges as a later step with a radius or a distance. A radius that does not fit, or an edge reference that no longer matches, raises an error and leaves the previous solid in place. |
 | A motion study follows the gear train, including a planetary set | Driving one member turns the others at the tooth ratio and in the matching direction, from the angles they already have. A member held fixed stays fixed. A shaft whose speed is not determined stays where it is. |
 | A sketch can sit on a planar face or on an offset or angled datum | The sketch stores that plane and is placed there again when the model rebuilds, and a face that is no longer in the model raises SketchPlaneError. |
