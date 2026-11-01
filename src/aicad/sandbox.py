@@ -5674,7 +5674,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool, helper
             raise
         command = [*command_prefix(str(profile_path), workspace), *command]
     wall = wall_seconds(workspace)
-    disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes(), file_count())
+    disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
     disk.child_report = job / "child-writes.json"
     quota_hold: list[int | None] = [None]
     stop_watch: threading.Event | None = None
