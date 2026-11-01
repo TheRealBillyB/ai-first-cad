@@ -7,27 +7,29 @@ carries the error from the last rebuild when that step did not fit.
 
 from __future__ import annotations
 
+from aicad.labels import plain_line, strip_hidden
+
 
 def history_for(part) -> list[dict]:
-    errors = part.step_errors or {}
+    errors = part.step_errors if isinstance(part.step_errors, dict) else {}
     rows: list[dict] = []
     source = part.source
     if source == "ops":
-        for index, op in enumerate(part.ops or []):
+        for index, op in enumerate(_records(part.ops)):
             kind = "add"
             name = f"op {index + 1}"
             if isinstance(op, dict):
-                kind = str(op.get("op") or "add")
-                name = str(op.get("name") or op.get("shape") or name)
+                kind = _label(op.get("op"), "add")
+                name = _label(op.get("name") or op.get("shape"), name)
             rows.append(_row(f"op/{index}", kind, name, errors))
     elif source == "sketch":
-        rows.append(_row("sketch", "sketch", str(part.sketch_name or "sketch"), errors))
-        for index, step in enumerate(part.sketch_steps or []):
+        rows.append(_row("sketch", "sketch", _label(part.sketch_name, "sketch"), errors))
+        for index, step in enumerate(_records(part.sketch_steps)):
             kind = "step"
             name = f"step {index + 1}"
             if isinstance(step, dict):
-                kind = str(step.get("op") or "step")
-                name = str(step.get("name") or step.get("op") or name)
+                kind = _label(step.get("op"), "step")
+                name = _label(step.get("name") or step.get("op"), name)
             rows.append(_row(f"step/{index}", kind, name, errors))
     elif source == "script":
         rows.append(_row("script", "script", "script", errors))
@@ -38,15 +40,28 @@ def history_for(part) -> list[dict]:
     elif source == "gear":
         rows.append(_row("gear", "gear", "gear", errors))
     else:
-        rows.append(_row(source or "part", source or "part", part.name, errors))
-    for index, op in enumerate(part.edge_ops or []):
+        label = _label(source, "part")
+        rows.append(_row(label, label, _label(getattr(part, "name", None), label), errors))
+    for index, op in enumerate(_records(part.edge_ops)):
         kind = "edge"
         name = f"edge {index + 1}"
         if isinstance(op, dict):
-            kind = str(op.get("op") or "edge")
-            name = str(op.get("name") or op.get("op") or name)
+            kind = _label(op.get("op"), "edge")
+            name = _label(op.get("name") or op.get("op"), name)
         rows.append(_row(f"edge/{index}", kind, name, errors))
     return rows
+
+
+def _records(value) -> list:
+    """Step rows are a list. A number, a string, or an object is not a list of steps."""
+    return value if isinstance(value, list) else []
+
+
+def _label(value, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    text = plain_line(value)
+    return text or fallback
 
 
 def _row(step_id: str, kind: str, name: str, errors: dict) -> dict:
@@ -55,5 +70,5 @@ def _row(step_id: str, kind: str, name: str, errors: dict) -> dict:
         "id": step_id,
         "kind": kind,
         "name": name,
-        "error": None if error is None else str(error),
+        "error": None if error is None else (strip_hidden(str(error)) or None),
     }

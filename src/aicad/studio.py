@@ -1060,10 +1060,21 @@ def _op_parameters(ops: list) -> list[dict]:
     return [item for item in parameters if item is not None]
 
 
+def _one_line_step_name(name) -> None:
+    """A step name is one line, or absent when the step has no name of its own."""
+    if name is None:
+        return
+    from aicad.labels import has_control_line
+
+    if not isinstance(name, str) or not name.strip() or has_control_line(name):
+        raise GeometryError("A step name must be a single non-empty line.")
+
+
 def add_step(workspace, name: str, step: dict) -> dict:
     """Append one step. A fillet or chamfer that does not fit leaves the previous solid."""
     if not isinstance(step, dict):
         raise GeometryError("A step is an object.")
+    _one_line_step_name(step.get("name"))
     operation = step.get("op")
     source = workspace.document.get_source(name)
     kind = str(source.get("source") or "")

@@ -195,7 +195,7 @@ class Document:
         with self._lock:
             self._require_new_name(name)
             shape = kernel.make_from_ops(ops)
-            self._parts[name] = _Part(name, "ops", shape, ops=list(ops))
+            self._parts[name] = _Part(name, "ops", shape, ops=copy.deepcopy(list(ops)))
             self._save()
             return self._info(self._parts[name])
 
@@ -301,7 +301,7 @@ class Document:
             part.base = shape
             part.source = "ops"
             part.step_errors = errors or None
-            part.ops = list(ops)
+            part.ops = copy.deepcopy(ops)
             part.script = None
             part.step_file = None
             part.library_spec = None
@@ -3054,14 +3054,14 @@ class Document:
                 source,
                 shape,
                 script=record.get("script"),
-                ops=record.get("ops"),
+                ops=record.get("ops") if isinstance(record.get("ops"), list) else None,
                 step_file=record.get("step_file") if isinstance(record.get("step_file"), str) else None,
                 base=base,
                 placement=stored_placement,
                 library_spec=record.get("library"),
                 gear_spec=record.get("gear") if source == "gear" else None,
                 sketch_name=record.get("sketch") if source == "sketch" else None,
-                sketch_steps=record.get("steps") if source == "sketch" else None,
+                sketch_steps=record.get("steps") if source == "sketch" and isinstance(record.get("steps"), list) else None,
                 geometry_file=record.get("geometry_file") if source == "script" else None,
                 script_sha256=record.get("script_sha256") if source == "script" else None,
                 script_pending=script_pending,
