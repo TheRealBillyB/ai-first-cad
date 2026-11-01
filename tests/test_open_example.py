@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -39,6 +41,45 @@ def test_the_empty_canvas_offers_the_example():
     part = next(item for item in session["parts"] if item["name"] == "motor_mount")
     assert part["source"] == "sketch"
     assert part["sketch"] == "bracket_base"
+
+
+def _directory_link(link: Path, target: Path) -> None:
+    if sys.platform == "win32":
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            pytest.skip("this machine cannot create a junction")
+        return
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot create a directory symlink")
+
+
+def test_open_example_does_not_follow_a_link(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "session.json").write_text(
+        '{"units":"mm","parts":[],"sketches":[],"assemblies":[]}\n',
+        encoding="utf-8",
+    )
+    (outside / "CANARY.txt").write_text("CANARY_HIT\n", encoding="utf-8")
+    project = tmp_path / "empty"
+    project.mkdir()
+    link = tmp_path / "motor-mount-empty"
+    _directory_link(link, outside)
+    before = (outside / "session.json").read_bytes()
+    workspace = Workspace(project)
+    with pytest.raises(GeometryError, match="link and was not followed"):
+        workspace.execute("open_example", {"name": "motor_mount"}, source="ui")
+    assert workspace.root.resolve() == project.resolve()
+    assert workspace.document.list_parts() == []
+    assert (outside / "session.json").read_bytes() == before
+    assert (outside / "CANARY.txt").read_text(encoding="utf-8") == "CANARY_HIT\n"
 
 
 def test_open_example_switches_to_the_motor_mount(tmp_path):

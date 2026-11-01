@@ -31,6 +31,37 @@ def test_mass_is_volume_times_the_chosen_density(tmp_path):
         document.measure("box", "unobtanium")
 
 
+def test_a_catalog_envelope_is_not_reported_as_volume_times_density(tmp_path):
+    document = Document(tmp_path)
+    document.insert_standard_part("motor", "stepper_motor", "NEMA17")
+    measured = document.measure("motor", "steel")
+    assert measured.volume_mm3 > 0
+    assert measured.mass_g is None
+    assert measured.density_g_cm3 is None
+    assert "not a motor mass" in (measured.mass_note or "")
+    payload = measured.to_dict()
+    assert "mass_g" not in payload
+    assert "mass_note" in payload
+    wrong = measured.volume_mm3 * 7.85 / 1000.0
+    assert wrong > 1
+    inspected = document.inspect("motor", material="steel")
+    assert inspected.measurement.mass_g is None
+
+
+def test_a_published_catalog_mass_does_not_follow_the_material(tmp_path):
+    document = Document(tmp_path)
+    document.insert_standard_part("drive", "gearbox", "S-MG17-G10")
+    measured = document.measure("drive", "aluminum")
+    assert measured.mass_g == pytest.approx(310)
+    assert measured.density_g_cm3 is None
+    assert measured.material is None
+    payload = measured.to_dict()
+    assert payload["mass_g"] == pytest.approx(310)
+    assert "density_g_cm3" not in payload
+    assert "catalog" in " ".join(payload["assumptions"]).lower()
+    assert "310" in str(payload["mass_note"]) or "Catalog mass" in str(payload["mass_note"])
+
+
 def test_inspect_panel_shows_area_center_and_mass():
     script = (ROOT / "src" / "aicad" / "app_static" / "app.js").read_text(encoding="utf-8")
     assert "Surface area" in script
@@ -42,3 +73,4 @@ def test_inspect_panel_shows_area_center_and_mass():
     assert "area_mm2" in body
     assert "center_of_mass_mm" in body
     assert "mass_g" in body
+    assert "mass_note" in body

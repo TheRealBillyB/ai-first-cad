@@ -366,7 +366,8 @@ class Document:
 
     def measure(self, name: str, material: str | None = None) -> Measurement:
         with self._lock:
-            return kernel.measure(self._get(name).shape, material)
+            part = self._get(name)
+            return _catalog_mass(part, kernel.measure(part.shape, material))
 
     def check_wall_thickness(
         self,
@@ -680,7 +681,7 @@ class Document:
         """
         with self._lock:
             part = self._get(name)
-            measurement = kernel.measure(part.shape, material)
+            measurement = _catalog_mass(part, kernel.measure(part.shape, material))
             wall = self.check_wall_thickness(name, min_wall_mm, samples)
             mesh = kernel.tessellate(part.shape)
             views = render_views(
@@ -2768,8 +2769,14 @@ class Document:
 
         With no build steps, this returns the dimensions and does not build a solid.
         With build steps, it runs the approved scripts when those parts are not saved yet.
+        A script cannot start that build.
         """
+        from aicad.plan import script_build_refusal
+        from aicad.sandbox_state import in_design_call, in_sandbox
+
         with self._lock:
+            if in_sandbox() or in_design_call():
+                raise PlanError(script_build_refusal(name))
             released = self._plan_store().start_work(name, "model")
             report = self._build_approved_plan(name)
             if report is None:
@@ -2823,7 +2830,7 @@ class Document:
             return None
         if not _receipt_matches(self.workspace, plan):
             raise PlanError(untrusted_refusal(plan, "model"))
-        if store.build_is_saved(plan):
+        if store.build_is_saved(plan) and self._parts_match_scripts(steps):
             return {
                 "progress": copy.deepcopy(plan.get("build_progress") or []),
                 "parts": list(plan["built"]["parts"]),
@@ -2842,14 +2849,51 @@ class Document:
         except Exception:
             self._save()
             raise
-        self._commit_built_parts(built)
-        for row in progress:
-            row["status"] = "built"
-        parts = [part_name for part_name, _script, _shape in built]
-        store.write_build_result(plan, progress, parts)
+        previous = None
+        try:
+            previous = self._commit_built_parts(built)
+            for row in progress:
+                row["status"] = "built"
+            parts = [part_name for part_name, _script, _shape in built]
+            store.write_build_result(plan, progress, parts)
+        except Exception:
+            if previous is not None:
+                plan.pop("built", None)
+                self._restore_built_parts(previous)
+                try:
+                    store.write_build_progress(plan, progress)
+                except Exception:
+                    pass
+            raise
         return {"progress": progress, "parts": parts, "reused": False}
 
-    def _commit_built_parts(self, built: list) -> None:
+    def _plan_build_will_run(self, name: str) -> bool:
+        """True when modeling from ``name`` would run the approved scripts."""
+        from aicad.plan import _current, _receipt_matches
+        from aicad.sandbox_state import in_design_call, in_sandbox
+
+        if in_sandbox() or in_design_call():
+            return False
+        with self._lock:
+            store = self._plan_store()
+            try:
+                plan = store.for_build(name)
+            except PlanError:
+                return False
+            steps = list(_current(plan).get("build") or [])
+            if not steps or not _receipt_matches(self.workspace, plan):
+                return False
+            return not (store.build_is_saved(plan) and self._parts_match_scripts(steps))
+
+    def _parts_match_scripts(self, steps: list) -> bool:
+        """True when every listed part is still the script that was approved."""
+        for step in steps:
+            part = self._parts.get(step["part"])
+            if part is None or part.source != "script" or part.script != step["script"]:
+                return False
+        return True
+
+    def _commit_built_parts(self, built: list) -> dict:
         """Save every finished solid. A failure puts the previous parts back."""
         previous = {part_name: self._parts.get(part_name) for part_name, _script, _shape in built}
         staged = []
@@ -2869,13 +2913,17 @@ class Document:
                 )
             self._save()
         except Exception:
-            for part_name, old in previous.items():
-                if old is None:
-                    self._parts.pop(part_name, None)
-                else:
-                    self._parts[part_name] = old
-            self._save()
+            self._restore_built_parts(previous)
             raise
+        return previous
+
+    def _restore_built_parts(self, previous: dict) -> None:
+        for part_name, old in previous.items():
+            if old is None:
+                self._parts.pop(part_name, None)
+            else:
+                self._parts[part_name] = old
+        self._save()
 
     def start_simulation_from_plan(self, name: str) -> dict:
         """Hand the approved plan to simulation. Refuses until the person approves."""
@@ -3384,6 +3432,40 @@ def _copy_spec(spec: Sketch | dict) -> dict:
 
 def _identity_placement() -> dict[str, list[float]]:
     return {"position": [0.0, 0.0, 0.0], "rotation_deg": [0.0, 0.0, 0.0]}
+
+
+def _catalog_mass(part, measured: Measurement) -> Measurement:
+    """Use a published catalog mass, and do not invent one from an envelope.
+
+    The bill of materials already follows this rule. Inspect and measure use
+    the same one, so a motor envelope is not reported as volume times density.
+    """
+    spec = part.library_spec
+    if not isinstance(spec, dict) or not spec.get("kind"):
+        return measured
+    try:
+        meta = library.metadata(str(spec["kind"]), str(spec.get("size") or ""), spec.get("length"))
+    except GeometryError:
+        return measured
+    note = str(meta.get("mass_note") or "").strip()
+    if meta.get("mass_estimate_kg") is not None:
+        grams = round(float(meta["mass_estimate_kg"]) * 1000.0, 4)
+        return replace(
+            measured,
+            mass_g=grams,
+            material=None,
+            density_g_cm3=None,
+            mass_note=note or "Catalog mass.",
+        )
+    if meta.get("mass_from_volume", True):
+        return measured
+    return replace(
+        measured,
+        mass_g=None,
+        material=None,
+        density_g_cm3=None,
+        mass_note=note or "This solid is an envelope, so volume times density is not a mass.",
+    )
 
 
 def _vec3(value, label: str) -> tuple[float, float, float]:

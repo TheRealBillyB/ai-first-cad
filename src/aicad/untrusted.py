@@ -17,14 +17,22 @@ _NOTE = (
 )
 
 
+def _disarm(body: str, marker: str) -> str:
+    """Break a copy of ``marker`` inside ``body`` so it cannot close the wrapper."""
+    if marker not in body:
+        return body
+    return body.replace(marker, marker.replace(">>>", ">> >", 1))
+
+
 def fence_external_text(text: str) -> str:
     """Wrap ``text`` so an assistant sees it as data.
 
     The marker is written every time. Text that already begins with it is
-    still data, so it stays inside the marker this function writes.
+    still data, so it stays inside the marker this function writes. A copy of
+    the closing marker inside the text cannot close the wrapper.
     """
 
-    body = text if isinstance(text, str) else ""
+    body = _disarm(text if isinstance(text, str) else "", _END)
     return f"{_START}\n{body}\n{_END}"
 
 
@@ -39,10 +47,11 @@ def fence_resource_text(text: str) -> str:
     """Wrap a resource or session body so an assistant sees it as data.
 
     The marker is written every time. Text that already begins with it is
-    still data, so it stays inside the marker this function writes.
+    still data, so it stays inside the marker this function writes. A copy of
+    the closing marker inside the text cannot close the wrapper.
     """
 
-    body = text if isinstance(text, str) else ""
+    body = _disarm(text if isinstance(text, str) else "", _RESOURCE_END)
     return f"{_RESOURCE_START}\n{body}\n{_RESOURCE_END}"
 
 

@@ -293,7 +293,7 @@ def open_example(workspace, name: str | None = None) -> dict:
     """Copy the motor-mount example beside this project and switch to it.
 
     A second request opens that same folder. The example is a saved project,
-    so opening it does not run a script.
+    so opening it does not run a script. A link is not followed.
     """
     from aicad.paths import ensure_real_directory, refuse_link_ancestors
 
@@ -318,6 +318,7 @@ def open_example(workspace, name: str | None = None) -> dict:
             "parts": [part.name for part in workspace.document.list_parts()],
             "example": "motor_mount",
         }
+    refuse_link_ancestors(destination, "Example", GeometryError)
     if destination.is_file():
         raise GeometryError(f"{destination.name} is a file, not a folder.")
     if not (destination / "session.json").is_file():
@@ -325,7 +326,6 @@ def open_example(workspace, name: str | None = None) -> dict:
             raise GeometryError(
                 f"{destination.name} exists and is not an empty folder. Move it aside and try again."
             )
-        refuse_link_ancestors(destination, "Example", GeometryError)
         try:
             ensure_real_directory(destination)
             _copy_project(source, destination)
