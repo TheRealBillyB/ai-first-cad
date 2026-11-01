@@ -1,5 +1,6 @@
 """Modeling from a plan rebuilds a part that is no longer the approved script."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,25 @@ def test_a_changed_script_is_built_again_from_the_approval(tmp_path):
     # The undo restored the edited solid, so modeling builds the approved script again.
     assert _volume(workspace, "block") == pytest.approx(24)
     assert "not run again" not in kept["note"]
+
+
+def test_a_part_without_its_solid_is_built_again(tmp_path):
+    script = "part = Box(2, 3, 4)\n"
+    workspace = _approve(tmp_path, script)
+    assert _volume(workspace, "block") == pytest.approx(24)
+    session_path = tmp_path / "session.json"
+    payload = json.loads(session_path.read_text(encoding="utf-8"))
+    part = next(item for item in payload["parts"] if item["name"] == "block")
+    part["script_sha256"] = "0" * 64
+    session_path.write_text(json.dumps(payload), encoding="utf-8")
+    reopened = Workspace(tmp_path)
+    assert reopened.document.get_source("block")["built"] is False
+    again = reopened.execute("start_model_from_plan", {"name": "bracket"}, source="ui")
+    assert _volume(reopened, "block") == pytest.approx(24)
+    assert "not run again" not in again["note"]
+    reopened.execute("undo", source="ui")
+    assert reopened.document.get_source("block")["built"] is False
+    assert reopened.execute("get_plan", {"name": "bracket"}, source="ui")["status"] == "approved"
 
 
 def test_an_unchanged_part_is_not_built_twice(tmp_path):
