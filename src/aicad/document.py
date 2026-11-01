@@ -107,6 +107,7 @@ class _Part:
         rebuild_error: str | None = None,
         gear_spec: dict | None = None,
         edge_ops: list[dict] | None = None,
+        step_errors: dict[str, str] | None = None,
     ):
         self.name = name
         self.source = source
@@ -125,6 +126,7 @@ class _Part:
         self.rebuild_error = rebuild_error
         self.gear_spec = gear_spec
         self.edge_ops = edge_ops
+        self.step_errors = step_errors
 
     @property
     def shape(self) -> kernel.Shape:
@@ -274,6 +276,7 @@ class Document:
             part.script_sha256 = _script_hash(script)
             part.script_pending = False
             part.edge_ops = None
+            part.step_errors = None
             self._save()
             self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
@@ -282,12 +285,16 @@ class Document:
         with self._lock:
             part = self._get(name)
             edge_ops = list(part.edge_ops) if part.source == "ops" and part.edge_ops else None
-            shape = kernel.make_from_ops(ops)
+            shape, errors = kernel.prefix_from_ops(ops)
+            if shape is None:
+                raise GeometryError(_first_error(errors))
             if edge_ops:
-                shape = kernel.apply_edge_ops(shape, edge_ops)
+                shape, failures = kernel.apply_edge_ops_partial(shape, edge_ops)
+                errors.update({key: str(failure) for key, failure in failures.items()})
             part.shape = shape
             part.base = shape
             part.source = "ops"
+            part.step_errors = errors or None
             part.ops = list(ops)
             part.script = None
             part.step_file = None
@@ -785,12 +792,15 @@ class Document:
                 raise GeometryError("steps must be a non-empty list of extrude, cut, revolve, cut_box, or gusset.")
             stored_steps = copy.deepcopy(steps)
             edge_ops = list(part.edge_ops) if part.source == "sketch" and part.edge_ops else None
-            shape = self._sketch_solid_from(
+            shape, errors = self._sketch_prefix(
                 sketch.name, sketch.spec, stored_steps, building=name, edge_ops=edge_ops
             )
+            if shape is None:
+                raise GeometryError(_first_error(errors))
             part.shape = shape
             part.base = shape
             part.source = "sketch"
+            part.step_errors = errors or None
             part.script = None
             part.ops = None
             part.step_file = None
@@ -829,9 +839,19 @@ class Document:
             if ops[index].get("op") == "chamfer" and field != "distance":
                 raise GeometryError("A chamfer has a distance.")
             ops[index][field] = float(value)
-            shape = kernel.apply_edge_ops(self._source_solid(part), ops)
+            shape, failures = kernel.apply_edge_ops_partial(self._source_solid(part), ops)
+            own = failures.get(f"edge/{index}")
+            if own is not None:
+                raise own
+            kept = {
+                key: value
+                for key, value in (part.step_errors or {}).items()
+                if not str(key).startswith("edge/")
+            }
+            kept.update({key: str(failure) for key, failure in failures.items()})
             self._store_unplaced(part, shape)
             part.edge_ops = ops
+            part.step_errors = kept or None
             self._save()
             return self._info(part)
 
@@ -857,6 +877,12 @@ class Document:
             shape = kernel.apply_edge_ops(self._source_solid(part), ops)
             self._store_unplaced(part, shape)
             part.edge_ops = ops
+            kept = {
+                key: value
+                for key, value in (part.step_errors or {}).items()
+                if not str(key).startswith("edge/")
+            }
+            part.step_errors = kept or None
             self._save()
             return self._info(part)
 
@@ -1119,23 +1145,26 @@ class Document:
             sketch.spec = stored
             self._save()
             return
-        rebuilt: list[tuple[_Part, kernel.Shape, kernel.Shape]] = []
+        rebuilt: list[tuple[_Part, kernel.Shape, kernel.Shape, dict[str, str]]] = []
         for part in dependents:
-            base = self._sketch_solid_from(
+            base, errors = self._sketch_prefix(
                 sketch.name, stored, part.sketch_steps or [], edge_ops=part.edge_ops
             )
+            if base is None:
+                raise GeometryError(_first_error(errors))
             placed = kernel.place(
                 base,
                 tuple(part.placement["position"]),
                 tuple(part.placement["rotation_deg"]),
             )
-            rebuilt.append((part, base, placed))
+            rebuilt.append((part, base, placed, errors))
         sketch.spec = stored
-        for part, base, placed in rebuilt:
+        for part, base, placed, errors in rebuilt:
             part.base = base
             part.shape = placed
+            part.step_errors = errors or None
         self._save()
-        for part, _base, _placed in rebuilt:
+        for part, _base, _placed, _errors in rebuilt:
             self._refresh_face_sketches(part.name, raise_error=True)
 
     def _sketch_solid_from(
@@ -1162,6 +1191,34 @@ class Document:
         if edge_ops:
             shape = kernel.apply_edge_ops(shape, edge_ops)
         return shape
+
+    def _sketch_prefix(
+        self,
+        sketch_name: str,
+        spec: dict,
+        steps: list,
+        *,
+        building: str | None = None,
+        edge_ops: list[dict] | None = None,
+    ) -> tuple[kernel.Shape | None, dict[str, str]]:
+        """Sketch solid through the last step that fits, placed on the sketch plane."""
+        from aicad.sketch_plane import sketch_frame
+
+        report = solve_sketch(spec, sketch_name)
+        if report.status in _UNBUILDABLE:
+            raise GeometryError(report.note)
+        frame = sketch_frame(
+            spec.get("plane", "xy"),
+            sketch_name,
+            self._shape_named,
+            lambda name: sketch_name if building is not None and name == building else self._sketch_named(name),
+        )
+        shape, errors = kernel.prefix_from_sketch(report.geometry, steps, frame=frame)
+        if shape is not None and edge_ops:
+            shape, failures = kernel.apply_edge_ops_partial(shape, edge_ops)
+            errors = dict(errors)
+            errors.update({key: str(failure) for key, failure in failures.items()})
+        return shape, errors
 
     def _shape_named(self, name: str):
         part = self._parts.get(name)
@@ -1190,17 +1247,9 @@ class Document:
             if sketch is None or host_name not in plane_hosts(sketch.spec.get("plane")):
                 continue
             try:
-                base = self._sketch_solid_from(
+                base, errors = self._sketch_prefix(
                     sketch.name, sketch.spec, part.sketch_steps or [], edge_ops=part.edge_ops
                 )
-                part.base = base
-                part.shape = kernel.place(
-                    base,
-                    tuple(part.placement["position"]),
-                    tuple(part.placement["rotation_deg"]),
-                )
-                part.rebuild_error = None
-                rebuilt.append(part.name)
             except SketchPlaneError as exc:
                 part.base = None
                 part.shape = None
@@ -1208,6 +1257,25 @@ class Document:
                 self._save()
                 if raise_error:
                     raise
+                continue
+            if base is None:
+                part.base = None
+                part.shape = None
+                part.step_errors = errors or None
+                part.rebuild_error = _first_error(errors)
+                self._save()
+                if raise_error:
+                    raise GeometryError(part.rebuild_error)
+                continue
+            part.base = base
+            part.shape = kernel.place(
+                base,
+                tuple(part.placement["position"]),
+                tuple(part.placement["rotation_deg"]),
+            )
+            part.step_errors = errors or None
+            part.rebuild_error = None
+            rebuilt.append(part.name)
         if rebuilt:
             self._save()
         for name in rebuilt:
@@ -1233,7 +1301,7 @@ class Document:
                 if sketch is None:
                     continue
                 try:
-                    base = self._sketch_solid_from(
+                    base, errors = self._sketch_prefix(
                         sketch.name,
                         sketch.spec,
                         part.sketch_steps or [],
@@ -1243,12 +1311,17 @@ class Document:
                 except SketchPlaneError as exc:
                     part.rebuild_error = str(exc)
                     continue
+                if base is None:
+                    part.rebuild_error = _first_error(errors)
+                    part.step_errors = errors or None
+                    continue
                 part.base = base
                 part.shape = kernel.place(
                     base,
                     tuple(part.placement["position"]),
                     tuple(part.placement["rotation_deg"]),
                 )
+                part.step_errors = errors or None
                 part.rebuild_error = None
                 progressed = True
             if not progressed:
@@ -2657,13 +2730,16 @@ class Document:
             script_text = record.get("script") or ""
             script_pending = False
             stored_edges = None
+            source_errors: dict[str, str] = {}
             try:
                 position = kernel.finite_vec3(placement.get("position", [0.0, 0.0, 0.0]), "position")
                 rotation = kernel.finite_vec3(
                     placement.get("rotation_deg", [0.0, 0.0, 0.0]), "rotation_deg", unit="deg"
                 )
                 if source == "ops":
-                    base = kernel.make_from_ops(record["ops"])
+                    base, source_errors = kernel.prefix_from_ops(record["ops"])
+                    if base is None:
+                        raise DocumentError(_first_error(source_errors))
                 elif source == "step":
                     step_path = _session_project_file(
                         self.workspace, record.get("step_file"), f"Part {name!r} step file"
@@ -2702,15 +2778,14 @@ class Document:
                         # The face may belong to a part later in this file.
                         base = None
                     else:
-                        solved = solve_sketch(sketch.spec, sketch.name)
-                        if solved.status in _UNBUILDABLE:
-                            raise DocumentError(f"Could not rebuild part {name!r}: {solved.note}")
-                        base = self._sketch_solid_from(
+                        base, source_errors = self._sketch_prefix(
                             sketch.name,
                             sketch.spec,
                             record.get("steps") or [],
                             building=name,
                         )
+                        if base is None:
+                            raise DocumentError(_first_error(source_errors))
                 else:
                     source = "script"
                     script_hash = _script_hash(script_text)
@@ -2739,7 +2814,9 @@ class Document:
                         script_pending = True
                 stored_edges = _stored_edge_ops(record, source)
                 if base is not None and stored_edges:
-                    base = kernel.apply_edge_ops(base, stored_edges)
+                    base, failures = kernel.apply_edge_ops_partial(base, stored_edges)
+                    source_errors = dict(source_errors)
+                    source_errors.update({key: str(failure) for key, failure in failures.items()})
                 if base is None:
                     shape = None
                 else:
@@ -2760,6 +2837,7 @@ class Document:
                 script_pending = True
                 rebuild_error = message
                 stored_edges = None
+                source_errors = {}
             self._parts[name] = _Part(
                 name,
                 source,
@@ -2778,6 +2856,7 @@ class Document:
                 script_pending=script_pending,
                 rebuild_error=rebuild_error,
                 edge_ops=stored_edges,
+                step_errors=source_errors or None,
             )
         self._finish_face_sketches()
         stored_assemblies = []
@@ -2964,6 +3043,12 @@ def _packaging_overrides(spec: dict, pose: str | None, joints: dict | None) -> d
             f"Unknown joint {unknown[0]!r} on {spec['name']!r}. Joints: {listed}."
         )
     return overrides
+
+
+def _first_error(errors: dict[str, str]) -> str:
+    if not errors:
+        return "The part could not be built."
+    return next(iter(errors.values()))
 
 
 def _part_record(part: _Part) -> dict:

@@ -393,6 +393,7 @@ def list_parameters(workspace, name: str) -> dict:
                     "value": float(spec["length"]),
                     "unit": "mm",
                     "kind": "length",
+                    "step": "library",
                 }
             )
         else:
@@ -1014,12 +1015,13 @@ def _op_parameters(ops: list) -> list[dict]:
             continue
         label = str(op.get("name") or op.get("shape") or f"step {index + 1}")
         shape = op.get("shape")
+        step = f"op/{index}"
         if shape == "box":
-            parameters.extend(_vector_parameters(f"op/{index}", label, "size", op.get("size"), "length"))
+            parameters.extend(_vector_parameters(f"op/{index}", label, "size", op.get("size"), "length", step))
         elif shape == "cylinder":
-            parameters.append(_scalar(f"op/{index}/radius", f"{label} radius", op.get("radius"), "length"))
-            parameters.append(_scalar(f"op/{index}/height", f"{label} height", op.get("height"), "length"))
-        parameters.extend(_vector_parameters(f"op/{index}", label, "center", op.get("center") or [0, 0, 0], "offset"))
+            parameters.append(_scalar(f"op/{index}/radius", f"{label} radius", op.get("radius"), "length", step))
+            parameters.append(_scalar(f"op/{index}/height", f"{label} height", op.get("height"), "length", step))
+        parameters.extend(_vector_parameters(f"op/{index}", label, "center", op.get("center") or [0, 0, 0], "offset", step))
     return [item for item in parameters if item is not None]
 
 
@@ -1029,10 +1031,11 @@ def _edge_parameters(ops: list) -> list[dict]:
         if not isinstance(op, dict):
             continue
         label = str(op.get("name") or op.get("op") or f"edge {index + 1}")
+        step = f"edge/{index}"
         if op.get("op") == "fillet":
-            parameters.append(_scalar(f"edge/{index}/radius", f"{label} radius", op.get("radius"), "length"))
+            parameters.append(_scalar(f"edge/{index}/radius", f"{label} radius", op.get("radius"), "length", step))
         elif op.get("op") == "chamfer":
-            parameters.append(_scalar(f"edge/{index}/distance", f"{label} distance", op.get("distance"), "length"))
+            parameters.append(_scalar(f"edge/{index}/distance", f"{label} distance", op.get("distance"), "length", step))
     return [item for item in parameters if item is not None]
 
 
@@ -1062,13 +1065,13 @@ def _step_parameters(steps: list) -> list[dict]:
         op = step.get("op")
         prefix = f"step/{index}"
         if op in ("extrude", "cut"):
-            parameters.append(_scalar(f"{prefix}/height", f"{label} height", step.get("height"), "length"))
-            parameters.append(_scalar(f"{prefix}/z", f"{label} z", step.get("z", 0), "offset"))
+            parameters.append(_scalar(f"{prefix}/height", f"{label} height", step.get("height"), "length", prefix))
+            parameters.append(_scalar(f"{prefix}/z", f"{label} z", step.get("z", 0), "offset", prefix))
         elif op == "revolve":
-            parameters.append(_scalar(f"{prefix}/angle", f"{label} angle", step.get("angle", 360), "angle"))
+            parameters.append(_scalar(f"{prefix}/angle", f"{label} angle", step.get("angle", 360), "angle", prefix))
         elif op == "cut_box":
-            parameters.extend(_vector_parameters(prefix, label, "size", step.get("size"), "length"))
-            parameters.extend(_vector_parameters(prefix, label, "center", step.get("center") or [0, 0, 0], "offset"))
+            parameters.extend(_vector_parameters(prefix, label, "size", step.get("size"), "length", prefix))
+            parameters.extend(_vector_parameters(prefix, label, "center", step.get("center") or [0, 0, 0], "offset", prefix))
         elif op == "gusset":
             for field, kind in (
                 ("angle", "angle"),
@@ -1077,7 +1080,7 @@ def _step_parameters(steps: list) -> list[dict]:
                 ("boss_height", "length"),
             ):
                 if field in step:
-                    parameters.append(_scalar(f"{prefix}/{field}", f"{label} {field.replace('_', ' ')}", step.get(field), kind))
+                    parameters.append(_scalar(f"{prefix}/{field}", f"{label} {field.replace('_', ' ')}", step.get(field), kind, prefix))
     return [item for item in parameters if item is not None]
 
 
@@ -1116,6 +1119,7 @@ def _dimension_parameters(workspace, sketch_name) -> list[dict]:
             "value": float(value),
             "unit": unit,
             "kind": kind,
+            "step": "sketch",
         }
         existing = parameters.get(identifier)
         if existing is None:
@@ -1138,26 +1142,29 @@ def _signed_distance(constraint: dict, entities: dict) -> bool:
     return {entity.get("type") for entity in ends} == {"point", "line"}
 
 
-def _scalar(identifier: str, label: str, value, kind: str) -> dict | None:
+def _scalar(identifier: str, label: str, value, kind: str, step: str | None = None) -> dict | None:
     try:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return {
+    item = {
         "id": identifier,
         "label": label,
         "value": number,
         "unit": "deg" if kind == "angle" else "mm",
         "kind": kind,
     }
+    if step:
+        item["step"] = step
+    return item
 
 
-def _vector_parameters(prefix: str, label: str, field: str, value, kind: str) -> list[dict]:
+def _vector_parameters(prefix: str, label: str, field: str, value, kind: str, step: str | None = None) -> list[dict]:
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         return []
     parameters = []
     for axis, component in zip(("x", "y", "z"), value, strict=True):
-        item = _scalar(f"{prefix}/{field}.{axis}", f"{label} {field} {axis}", component, kind)
+        item = _scalar(f"{prefix}/{field}.{axis}", f"{label} {field} {axis}", component, kind, step)
         if item is not None:
             parameters.append(item)
     return parameters
