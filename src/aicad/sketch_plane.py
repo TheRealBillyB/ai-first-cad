@@ -165,7 +165,9 @@ def _face_frame(
     normal = _unit(tuple(float(component) for component in face["normal"]))
     center = tuple(float(component) for component in face["center_mm"])
     anchor = tuple(float(component) for component in selector["at"])
-    origin = _project(anchor, center, normal)
+    # A face stored on the part is attached to that face's center, so an edit
+    # that moves the face carries the sketch. The stored point only picks the face.
+    origin = center if on_part else _project(anchor, center, normal)
     x_axis, _y_axis = _axes(normal)
     frame = _payload(origin, x_axis, normal)
     if on_part and placement_of is not None:

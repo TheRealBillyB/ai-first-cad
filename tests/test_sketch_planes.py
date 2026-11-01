@@ -194,6 +194,31 @@ def test_a_sketch_on_a_face_moves_and_turns_with_that_part(tmp_path):
     assert again.min.z == pytest.approx(turned.min.z, abs=0.05)
 
 
+def test_a_sketch_follows_a_face_that_moves_in_the_part(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_ops(
+        "block",
+        [{"op": "add", "shape": "box", "size": [30, 20, 10], "center": [0, 0, 5], "name": "block"}],
+    )
+    top = next(face for face in document.describe_faces("block")["faces"] if face["normal"] == [0, 0, 1])
+    document.create_sketch("lid", _plate({"kind": "face", "part": "block", "ref": top["ref"]}))
+    document.create_part_from_sketch(
+        "pad",
+        "lid",
+        [{"op": "extrude", "points": ["a", "b", "c", "d"], "height": 4, "name": "pad"}],
+    )
+    document.update_part_ops(
+        "block",
+        [{"op": "add", "shape": "box", "size": [30, 20, 10], "center": [30, 0, 5], "name": "block"}],
+    )
+    moved = document.measure("pad").bounding_box
+    assert moved.min.x == pytest.approx(30, abs=0.05)
+    assert moved.max.x == pytest.approx(40, abs=0.05)
+    assert moved.min.y == pytest.approx(0, abs=0.05)
+    assert moved.min.z == pytest.approx(10, abs=0.05)
+    assert moved.max.z == pytest.approx(14, abs=0.05)
+
+
 def test_a_sketch_started_on_a_moved_face_stays_on_it(tmp_path):
     document = Document(tmp_path)
     document.create_part_from_ops(
