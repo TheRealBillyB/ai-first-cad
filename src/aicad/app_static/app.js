@@ -26,6 +26,7 @@ const ui = {
   viewAssembly: null,
   assemblySignature: "",
   measurePoints: [],
+  mountTarget: null,
   measure: null,
   dragOffset: null,
   live: sessionStorage.getItem("aicad-live") !== "off",
@@ -284,9 +285,15 @@ function renderTree() {
     node.onclick = async () => {
       ui.viewAssembly = null;
       ui.part = node.dataset.part;
+      ui.selectedFaces = [];
+      ui.selectedEdges = [];
       ui.historyStep = "";
       ui.stage = "solid";
       setStage();
+      // The workspace selection is what a later refresh follows. Leave it on
+      // this part, or the shape editor snaps back to the previous face.
+      await command("set_selection", { part: ui.part, faces: [], edges: [] });
+      ui.part = node.dataset.part;
       await refresh();
     };
   });
@@ -1640,6 +1647,10 @@ async function onPointerUp(event) {
   const hit = ui.pick === "edge"
     ? pickEdge(event.clientX - rect.left, event.clientY - rect.top, rect)
     : pickHit(event.clientX - rect.left, event.clientY - rect.top, rect);
+  if (ui.pick === "mount") {
+    mountFromHit(hit).catch(showError);
+    return;
+  }
   if (!hit) {
     ui.selectedFaces = [];
     ui.selectedEdges = [];
@@ -2088,6 +2099,13 @@ async function renderShape() {
   const report = ui.parameters;
   if (!report) return;
   const placement = report.placement || { position: [0, 0, 0], rotation_deg: [0, 0, 0] };
+  const mount = placement.mount;
+  const mountBlock = mount ? `
+    <p class="muted">Mount on ${escapeHtml(mount.part)} · ${escapeHtml(mount.mate || "mate")}</p>
+    <div class="mount-line">
+      <label><span>Spin</span><input data-mount-spin type="number" step="15" value="${Number(mount.rotation_deg || 0)}" /></label>
+      <label><span>Flip</span><input data-mount-flip type="checkbox" ${mount.flip ? "checked" : ""} /></label>
+    </div>` : "";
   const place = ["X", "Y", "Z"].map((axis, index) => `
     <label><span>${axis}</span><input data-place="${index}" type="number" step="1" value="${Number(placement.position[index]).toFixed(2)}" /></label>`).join("");
   const spin = ["Rx", "Ry", "Rz"].map((axis, index) => `
@@ -2103,7 +2121,8 @@ async function renderShape() {
     </label>`;
   }).join("");
   slot.innerHTML = `
-    <p class="muted">Place</p>
+    ${mountBlock}
+    <p class="muted">${mount ? "Position replaces the mount" : "Place"}</p>
     <div class="place-grid">${place}</div>
     <div class="place-grid">${spin}</div>
     <p class="muted">${chosen ? escapeHtml(chosen.name) : "Size"}</p>
@@ -2112,6 +2131,9 @@ async function renderShape() {
     ${sizes ? `<p class="muted">${escapeHtml(report.note || "")}</p>` : ""}`;
   slot.querySelectorAll("[data-place], [data-spin]").forEach((input) => {
     input.onchange = () => commitPlacement().catch(showError);
+  });
+  slot.querySelectorAll("[data-mount-spin], [data-mount-flip]").forEach((input) => {
+    input.onchange = () => commitMount().catch(showError);
   });
   slot.querySelectorAll("[data-range]").forEach((input) => {
     input.oninput = () => {
@@ -2184,6 +2206,54 @@ async function commitParameter(id, value) {
 async function restoreShape() {
   ui.parameterKey = "";
   await renderShape();
+}
+
+async function mountFromHit(hit) {
+  if (hit && hit.part && hit.ref && hit.part !== ui.part) {
+    ui.mountTarget = { part: hit.part, ref: hit.ref };
+  }
+  const previous = { ...((ui.parameters && ui.parameters.placement && ui.parameters.placement.mount) || {}) };
+  const spinInput = document.querySelector("[data-mount-spin]");
+  const flipInput = document.querySelector("[data-mount-flip]");
+  if (spinInput) previous.rotation_deg = spinInput.value;
+  if (flipInput) previous.flip = flipInput.checked;
+  const request = mountPickRequest(ui.part, hit, previous);
+  if (request.error) {
+    $("selection-readout").textContent = request.error;
+    return;
+  }
+  if (ui.parameters && ui.parameters.source && ui.parameters.source !== "library") {
+    $("selection-readout").textContent = "Select a catalog part to mount.";
+    return;
+  }
+  $("selection-readout").textContent = request.mount.ref;
+  await command("place_part", { name: request.name, mount: request.mount });
+  ui.parameterKey = "";
+  await refresh();
+}
+
+async function commitMount() {
+  if (!ui.part || !ui.parameters || !ui.parameters.placement || !ui.parameters.placement.mount) return;
+  const current = ui.parameters.placement.mount;
+  const slot = $("shape-editor");
+  const spin = snapMountDegrees(slot.querySelector("[data-mount-spin]").value);
+  const flip = slot.querySelector("[data-mount-flip]").checked;
+  slot.querySelector("[data-mount-spin]").value = String(spin);
+  const mount = {
+    part: current.part,
+    ref: current.ref,
+    rotation_deg: spin,
+    flip,
+  };
+  if (current.mate) mount.mate = current.mate;
+  try {
+    await command("place_part", { name: ui.part, mount });
+  } catch (error) {
+    await restoreShape();
+    throw error;
+  }
+  ui.parameterKey = "";
+  await refresh();
 }
 
 async function commitPlacement() {
@@ -2489,8 +2559,8 @@ async function boot() {
     if (!button) return;
     ui.pick = button.dataset.mode;
     $("pick-mode").querySelectorAll("button").forEach((item) => item.classList.toggle("on", item === button));
-    $("view").style.cursor = ui.pick === "measure" ? "crosshair" : ui.pick === "move" ? "grab" : "default";
-    if ((ui.pick === "move" || ui.pick === "measure") && ui.viewAssembly) {
+    $("view").style.cursor = ui.pick === "measure" || ui.pick === "mount" ? "crosshair" : ui.pick === "move" ? "grab" : "default";
+    if ((ui.pick === "move" || ui.pick === "measure" || ui.pick === "mount") && ui.viewAssembly) {
       ui.viewAssembly = null;
       loadMesh().catch(showError);
     }
