@@ -231,3 +231,5 @@ That stops another website, including one that tries to reach this computer by a
 - **DH.** A plan build counts every new name, including a link, a pipe, and a socket. More names than the file limit stop the build, and those names are removed without following a link. A name that was already there stays. The previous model stays in place.
 
 - **DI.** The approval result is the revision that was approved and built. A plan file replaced while that build runs is not the revision the result shows, and it is not the revision a later build runs.
+
+- **DJ.** The recent-project list names a folder the app recorded. Each entry is authenticated with a key kept for this install, and that key is readable by its owner only. An entry without a valid authentication is left out, and the list still opens. An older list with no authentication is signed once when the key is created.
