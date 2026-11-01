@@ -209,3 +209,7 @@ That stops another website, including one that tries to reach this computer by a
 - **CK.** A geometry library may write a cache under the private library-config folder. A design script cannot write that folder itself. It cannot point the cache somewhere else by changing a locked name, by clearing one, or by replacing the environment mapping.
 
 - **CL.** A mesh vertex that is not a finite millimeter within the part limit is refused before a solid is built. The limit is the same one ordinary parts already use.
+
+- **CM.** Changing a script size rewrites that one number. The rest of the script is unchanged, so a comment on the same line stays a comment.
+
+- **DA.** Approving a plan records that revision and runs its scripts. A plan file replaced before the build is not the revision that runs. The receipt stays the revision that was approved.
