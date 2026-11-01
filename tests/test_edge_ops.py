@@ -3,7 +3,7 @@
 import pytest
 
 from aicad.document import Document
-from aicad.errors import EdgeOpError, GeometryError
+from aicad.errors import EdgeOpError, GeometryError, SketchPlaneError
 from aicad.llm import tool_specs
 from aicad.workspace import Workspace
 
@@ -174,6 +174,86 @@ def test_a_catalog_part_has_no_fillet_step(tmp_path, monkeypatch):
     with pytest.raises(GeometryError, match="shapes or a sketch"):
         workspace.execute("add_fillet", {"name": "screw", "radius": 1, "edges": [0]})
     assert _volume(workspace, "screw") == pytest.approx(plain)
+
+
+def _face_plate(ref: str) -> dict:
+    return {
+        "plane": {"kind": "face", "part": "block", "ref": ref},
+        "entities": [
+            {"id": "a", "type": "point", "at": [0, 0]},
+            {"id": "b", "type": "point", "at": [10, 0]},
+            {"id": "c", "type": "point", "at": [10, 8]},
+            {"id": "d", "type": "point", "at": [0, 8]},
+            {"id": "ab", "type": "line", "start": "a", "end": "b"},
+            {"id": "bc", "type": "line", "start": "b", "end": "c"},
+            {"id": "cd", "type": "line", "start": "c", "end": "d"},
+            {"id": "da", "type": "line", "start": "d", "end": "a"},
+        ],
+        "constraints": [
+            {"type": "fix", "entity": "a"},
+            {"type": "fix", "entity": "b"},
+            {"type": "fix", "entity": "c"},
+            {"type": "fix", "entity": "d"},
+        ],
+    }
+
+
+def test_a_fillet_keeps_a_sketch_on_a_face_and_a_lost_face_can_be_undone(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    workspace = Workspace(tmp_path / "project")
+    workspace.execute(
+        "create_part_from_ops",
+        {
+            "name": "block",
+            "ops": [{"op": "add", "shape": "box", "size": [30, 20, 10], "center": [0, 0, 5], "name": "block"}],
+        },
+        source="ui",
+    )
+    top = next(
+        face
+        for face in workspace.execute("describe_faces", {"name": "block"})["faces"]
+        if face["normal"] == [0, 0, 1]
+    )
+    workspace.execute("create_sketch", {"name": "lid", "spec": _face_plate(top["ref"])})
+    workspace.execute(
+        "create_part_from_sketch",
+        {
+            "name": "pad",
+            "sketch": "lid",
+            "steps": [{"op": "extrude", "points": ["a", "b", "c", "d"], "height": 4, "name": "pad"}],
+        },
+    )
+    assert workspace.document.measure("pad").bounding_box.min.z == pytest.approx(10, abs=0.05)
+    workspace.execute("add_fillet", {"name": "block", "radius": 1, "edges": [0], "step_name": "round"}, source="ui")
+    assert workspace.document.get_source("pad")["built"] is True
+    assert workspace.document.measure("pad").bounding_box.min.z == pytest.approx(10, abs=0.05)
+    assert workspace.document.get_source("block")["edge_ops"][0]["op"] == "fillet"
+    with pytest.raises(SketchPlaneError, match="no longer there"):
+        workspace.execute(
+            "update_part_ops",
+            {
+                "name": "block",
+                "ops": [{
+                    "op": "add",
+                    "shape": "cylinder",
+                    "radius": 8,
+                    "height": 20,
+                    "center": [0, 0, 0],
+                    "axis": [1, 0, 0],
+                    "name": "pin",
+                }],
+            },
+            source="ui",
+        )
+    assert workspace.document.get_source("pad")["built"] is False
+    workspace.execute("undo")
+    assert workspace.document.measure("block").bounding_box.max.z == pytest.approx(10, abs=0.05)
+    assert workspace.document.measure("block").volume_mm3 < 30 * 20 * 10
+    assert workspace.document.get_source("block")["edge_ops"][0]["op"] == "fillet"
+    assert workspace.document.get_source("pad")["built"] is True
+    assert workspace.document.measure("pad").bounding_box.min.z == pytest.approx(10, abs=0.05)
+    workspace.execute("undo")
+    assert workspace.document.get_source("block")["edge_ops"] == []
 
 
 def test_fillet_tools_are_on_the_shared_list():

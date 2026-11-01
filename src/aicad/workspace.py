@@ -117,6 +117,8 @@ class Workspace:
                 if len(self._undo) > _UNDO_LIMIT:
                     self._undo.pop(0)
                 self._redo.clear()
+            document = self.document
+            writes = document._writes
             previous_actor = self.document.actor
             self.document.actor = "user" if source in {"ui", "cli", "api"} else "agent"
             try:
@@ -130,7 +132,9 @@ class Workspace:
                     if name == "read_document" and source not in _PERSON_SOURCES:
                         result = _fence_note(result)
             except Exception:
-                if command.undo:
+                # A handler that saved and then failed left a model the person can undo.
+                # A handler that changed nothing does not add an undo step.
+                if command.undo and self.document is document and self.document._writes == writes:
                     self._undo.pop()
                 raise
             finally:

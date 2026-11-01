@@ -173,6 +173,7 @@ class Document:
         self.problems: list[str] = []
         self._lock = threading.RLock()
         self.actor = "user"
+        self._writes = 0
         self._load()
 
     def create_part_from_script(self, name: str, script: str) -> PartInfo:
@@ -868,6 +869,7 @@ class Document:
             part.edge_ops = ops
             part.step_errors = kept or None
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def _add_edge_op(
@@ -899,6 +901,7 @@ class Document:
             }
             part.step_errors = kept or None
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def _editable_edge_part(self, name: str) -> _Part:
@@ -2923,6 +2926,7 @@ class Document:
                 "The session has a number that is not finite, so it was not saved."
             ) from exc
         publish_text(path, text)
+        self._writes += 1
 
     def _reload(self) -> None:
         """Read ``session.json`` again. Script text is loaded and not executed."""
