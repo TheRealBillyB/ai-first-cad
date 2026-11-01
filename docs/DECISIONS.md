@@ -6,11 +6,36 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-11-01
+
+| Decision | Rationale |
+| --- | --- |
+| A failed step edit can be undone | A fillet or a chamfer rebuilds a sketch that sits on a face of that part. When a step edit saves and then fails, that edit stays on the undo stack. An edit that changes nothing does not add an undo step. |
+| A sketch on a face moves with that part | The face is stored on the part, in that part's own coordinates. Moving or turning the part, or an edit that moves the face, carries the sketch with that face. A face that is no longer there still raises SketchPlaneError. |
+| A three-point or tangent arc is part of the profile | The outline uses the arc's two ends. A three-point arc keeps its middle point off the outline, and a tangent arc continues the line it leaves. The solid follows that outline. |
+| Inspect uses a catalog mass when the part has one | A published catalog mass is the mass Inspect reports, and it does not follow the chosen material. A motor or gearbox envelope has no mass from volume times density. A modeled part still uses the handbook density. |
+| Modeling from a plan rebuilds a changed part | `start_model_from_plan` runs the approved scripts when a listed part is missing or is no longer that script. When every listed part is still that script, the scripts are not run again. A rebuild can be undone. |
+
 ## 2026-10-31
 
 | Decision | Rationale |
 | --- | --- |
+| A catalog part mounts on a face or an axis | The mate frame snaps onto the picked face or axis, then turns about that axis in steps of 15 degrees, and a flip turns the frame around. A project that only stores a position and an Euler rotation still places the part. |
+| A fillet or chamfer is its own step | A shape or sketch part can round or break edges as a later step with a radius or a distance. A radius that does not fit, or an edge reference that no longer matches, raises an error and leaves the previous solid in place. |
 | A motion study follows the gear train, including a planetary set | Driving one member turns the others at the tooth ratio and in the matching direction, from the angles they already have. A member held fixed stays fixed. A shaft whose speed is not determined stays where it is. |
+| A script size is a top-level number | A script part exposes each top-level assignment of a number, such as width = 40, as a size. Changing it rewrites that number and rebuilds the script. Adding a shape, sketch, fillet, or chamfer step appends that step and leaves the earlier steps in place. |
+| A sketch can sit on a planar face or on an offset or angled datum | The sketch stores that plane and is placed there again when the model rebuilds, and a face that is no longer in the model raises SketchPlaneError. |
+| A spline is a smooth curve through sketch points, and a closed one is a profile | The points stay ordinary sketch points, so a later dimension moves the curve, and extrude or revolve follows that curve instead of the polygon. |
+| An arc is three points, a center and two ends, or a tangent continuation of a line | The sketch solver stores all three as one arc with a named radius, and the canvas keeps each unfinished point across a refresh the same way it keeps a line start or a circle center. |
+| An empty project can open the motor-mount example | An empty project offers to open the motor-mount example. The example is a saved project beside the one that is open. Opening it rebuilds the sketch and the solid from that file and does not run a script. |
+| An internal ring is a generated spur solid | The planetary ring is an involute solid with a rim outside the root, and it meshes with the generated sun and planet. |
+| An STL file imports as a mesh part | STL import sits beside STEP import. The file is read with the shared file reader and stored in the project. The triangles become one solid. That part has no editable features. A mesh that does not close is refused. |
+| Approving a plan builds its solids | A plan may store build steps, each a part name and a script that assigns `part`. The script is data. Opening the project does not run it. When the person approves that revision, the app runs each script in the part-script sandbox, with the network off, and builds those parts. The approval receipt covers the scripts. A later edit does not match that receipt, so the edited script does not run. A failed step names the step and leaves the previous model in place. A plan with no build steps still only hands over its dimensions and assumptions. The assistant cannot approve. |
+| Gear steels join the material library | 42CrMo4 uses the EN 10083-3 proof strength, and 16MnCr5 uses a handbook core yield so a stress check does not treat the case as the whole part. |
+| Inspect reports mass from the material density | Inspect and measure show surface area and the center of mass with the volume. When a handbook material is chosen, mass is the model volume times that material's density. The density is a handbook number, so the mass is an estimate beside the measured geometry. |
+| The feature list is the build history | Each shape, sketch, extrude, cut, fillet, and chamfer is a row in order. Choosing a row shows that step's sizes. Changing one rebuilds the steps after it. A step that cannot build is marked with its error, and the solid stays at the last step that could. An older project with no stored history still opens. |
+| The sketch toolbar uses the solver constraints | The sketch toolbar and the assistant tools expose the constraints the solver already accepts, including parallel, perpendicular, tangent, equal, angle, radius, symmetric, and midpoint. A line, circle, or arc can be construction geometry. The sketch reports fully constrained, under-constrained, or over-constrained. |
+| The viewport uses the rendered view directions | Front, back, top, bottom, left, right, and isometric in the solid view use the same camera directions as the rendered pictures. Fit stays beside them. The number keys 1 through 7 select those views, and 0 fits the scene, when the cursor is not in a text field. |
 
 ## 2026-10-30
 

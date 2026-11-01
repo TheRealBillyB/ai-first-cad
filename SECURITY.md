@@ -207,3 +207,23 @@ That stops another website, including one that tries to reach this computer by a
 - **CJ.** The disk-quota watch counts the project directory it opened. A link is not a directory it watches or counts. A record of collected children cannot replace the bytes already counted for a live process, and it cannot move the watched directory.
 
 - **CK.** A geometry library may write a cache under the private library-config folder. A design script cannot write that folder itself. It cannot point the cache somewhere else by changing a locked name, by clearing one, or by replacing the environment mapping.
+
+- **CL.** A mesh vertex that is not a finite millimeter within the part limit is refused before a solid is built. The limit is the same one ordinary parts already use.
+
+- **CM.** Changing a script size rewrites that one number. The rest of the script is unchanged, so a comment on the same line stays a comment.
+
+- **CM.** Opening the worked example does not follow a link. A folder next to the project that is a link is not opened and is not written.
+
+- **CN.** A step record that is not a list is not a list of steps. The feature list still opens. A step name in that list stays on one line. An extra field on a step is data and is not run as a script.
+
+- **DA.** Approving a plan records that revision and runs its scripts. A plan file replaced before the build is not the revision that runs. The receipt stays the revision that was approved.
+
+- **DB.** A plan build script runs in the part-script sandbox with the network off. Its directory is not the project, so it does not read or write the project. The project's time limit and the script byte limits still apply. A failed step leaves the previous model in place.
+
+- **DC.** A script cannot approve a plan or start its build. Approval stays with the person at the workspace. A design-script call cannot approve or start that build either.
+
+- **DE.** Text inside an untrusted-result marker cannot close that marker. A plan script or a build error that contains the closing line stays inside the marker.
+
+- **DF.** A plan build script stops when it creates more than the file limit, and a solid whose STEP is past the size limit is not saved. The previous model stays in place. An environment value cannot raise either limit.
+
+- **DG.** Another website cannot approve a plan, and the assistant token cannot approve it. Two approvals at the same time run the scripts once. If recording that build fails, the new solids are not kept.
