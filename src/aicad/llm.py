@@ -47,7 +47,7 @@ equal, angle, radius, symmetric, and midpoint. Set construction true on a
 line, circle, or arc for construction geometry. A point-to-line distance is
 signed: positive is to the right of the directed line.
 
-place_part moves a part. list_parameters and set_parameter change a size on a
+place_part moves a part. A catalog mount snaps a mate onto a face or an axis from describe_faces: pass mount with part, ref, optional mate, rotation_deg about that axis, and flip. list_parameters and set_parameter change a size on a
 solid built from shapes, a sketch, or a catalog length. add_fillet and
 add_chamfer round or break edges of a shape or sketch part; set_parameter
 changes that radius or distance. A radius that does not fit leaves the part
