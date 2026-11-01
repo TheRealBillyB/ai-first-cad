@@ -733,7 +733,7 @@ class Document:
         """Store a sketch spec and solve it. A conflict is reported, not rejected."""
         with self._lock:
             self._require_new_sketch(name)
-            stored = _copy_spec(spec)
+            stored = self._bind_sketch_plane(_copy_spec(spec))
             report = self._solve_and_render(name, stored)
             self._sketches[name] = _Sketch(name, stored)
             self._save()
@@ -743,7 +743,7 @@ class Document:
         """Replace a sketch. Dependent parts rebuild, or the previous spec stays."""
         with self._lock:
             sketch = self._get_sketch(name)
-            stored = _copy_spec(spec)
+            stored = self._bind_sketch_plane(_copy_spec(spec))
             report = solve_sketch(stored, name)
             self._commit_sketch(sketch, stored, report)
             return self._solve_and_render(name, stored)
@@ -1369,17 +1369,10 @@ class Document:
         building: str | None = None,
         edge_ops: list[dict] | None = None,
     ):
-        from aicad.sketch_plane import sketch_frame
-
         report = solve_sketch(spec, sketch_name)
         if report.status in _UNBUILDABLE:
             raise GeometryError(report.note)
-        frame = sketch_frame(
-            spec.get("plane", "xy"),
-            sketch_name,
-            self._shape_named,
-            lambda name: sketch_name if building is not None and name == building else self._sketch_named(name),
-        )
+        frame = self._sketch_frame(spec, sketch_name, building)
         shape = kernel.solid_from_sketch(report.geometry, steps, frame=frame)
         if edge_ops:
             shape = kernel.apply_edge_ops(shape, edge_ops)
@@ -1395,23 +1388,72 @@ class Document:
         edge_ops: list[dict] | None = None,
     ) -> tuple[kernel.Shape | None, dict[str, str]]:
         """Sketch solid through the last step that fits, placed on the sketch plane."""
-        from aicad.sketch_plane import sketch_frame
-
         report = solve_sketch(spec, sketch_name)
         if report.status in _UNBUILDABLE:
             raise GeometryError(report.note)
-        frame = sketch_frame(
-            spec.get("plane", "xy"),
-            sketch_name,
-            self._shape_named,
-            lambda name: sketch_name if building is not None and name == building else self._sketch_named(name),
-        )
+        frame = self._sketch_frame(spec, sketch_name, building)
         shape, errors = kernel.prefix_from_sketch(report.geometry, steps, frame=frame)
         if shape is not None and edge_ops:
             shape, failures = kernel.apply_edge_ops_partial(shape, edge_ops)
             errors = dict(errors)
             errors.update({key: str(failure) for key, failure in failures.items()})
         return shape, errors
+
+    def _sketch_frame(self, spec: dict, sketch_name: str, building: str | None):
+        from aicad.sketch_plane import sketch_frame
+
+        return sketch_frame(
+            spec.get("plane", "xy"),
+            sketch_name,
+            self._shape_named,
+            lambda name: sketch_name if building is not None and name == building else self._sketch_named(name),
+            base_of=self._base_named,
+            placement_of=self._placement_named,
+        )
+
+    def _bind_sketch_plane(self, spec: dict) -> dict:
+        """Store a face sketch on the part, in that part's own coordinates."""
+        plane = spec.get("plane", "xy")
+        if not isinstance(plane, dict) or plane.get("kind") != "face" or plane.get("space") == "part":
+            return spec
+        localized = self._face_plane_on_part(plane)
+        if localized is None:
+            return spec
+        stored = dict(spec)
+        stored["plane"] = localized
+        return stored
+
+    def _face_plane_on_part(self, plane: dict) -> dict | None:
+        part = self._parts.get(plane.get("part"))
+        if part is None or part._shape is None or part._base is None:
+            return None
+        from aicad.fea import select_faces
+        from aicad.kernel import describe_faces
+        from aicad.mount import _base_face
+
+        try:
+            world = select_faces(describe_faces(part.shape), {"ref": plane["ref"]})
+            base_faces = describe_faces(part.base)
+        except (GeometryError, DocumentError):
+            return None
+        if not world:
+            return None
+        local = _base_face(part, world[0], base_faces)
+        if local is None or not local.get("ref"):
+            return None
+        return {"kind": "face", "part": plane["part"], "ref": local["ref"], "space": "part"}
+
+    def _base_named(self, name: str):
+        part = self._parts.get(name)
+        if part is None or part._base is None:
+            return None
+        return part._base
+
+    def _placement_named(self, name: str):
+        part = self._parts.get(name)
+        if part is None:
+            return None
+        return part.placement
 
     def _shape_named(self, name: str):
         part = self._parts.get(name)

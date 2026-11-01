@@ -2,8 +2,9 @@
 
 A plane is the XY, YZ, or XZ datum, that datum shifted or tilted, or a
 planar face of a solid. Solving stays in the plane's own coordinates. The
-solid is placed on the plane when it is built. A face that is no longer in
-the model raises :class:`aicad.errors.SketchPlaneError`.
+solid is placed on the plane when it is built. A face reference stored on
+the part moves and turns with that part. A face that is no longer in the
+model raises :class:`aicad.errors.SketchPlaneError`.
 """
 
 from __future__ import annotations
@@ -60,7 +61,10 @@ def normalize_plane(plane: Any) -> str | dict:
             raise GeometryError(
                 "A sketch on a face needs the face reference, such as plane/z+/0,0,10."
             )
-        return {"kind": "face", "part": part, "ref": ref}
+        stored = {"kind": "face", "part": part.strip(), "ref": ref}
+        if plane.get("space") == "part":
+            stored["space"] = "part"
+        return stored
     raise GeometryError("A sketch plane is xy, yz, xz, a datum, or a planar face.")
 
 
@@ -80,12 +84,16 @@ def sketch_frame(
     sketch_name: str,
     shape_of: Callable[[str], Any] | None = None,
     sketch_of: Callable[[str], str | None] | None = None,
+    *,
+    base_of: Callable[[str], Any] | None = None,
+    placement_of: Callable[[str], dict | None] | None = None,
 ) -> dict[str, list[float]]:
     """The plane's origin, x axis, and normal in world millimeters.
 
     ``shape_of`` returns a part's placed solid, or None when that part is
     missing. ``sketch_of`` returns the sketch that built a part, so a sketch
-    cannot sit on the solid it builds.
+    cannot sit on the solid it builds. A face stored in part coordinates uses
+    ``base_of`` for the unplaced solid and ``placement_of`` for the move.
     """
     stored = normalize_plane(plane)
     if isinstance(stored, str):
@@ -103,17 +111,28 @@ def sketch_frame(
             distance = stored["offset"]
             origin = tuple(origin[index] + normal[index] * distance for index in range(3))
         return _payload(origin, x_axis, normal)
-    return _face_frame(stored, sketch_name, shape_of, sketch_of)
+    return _face_frame(stored, sketch_name, shape_of, sketch_of, base_of, placement_of)
 
 
-def _face_frame(stored: dict, sketch_name: str, shape_of, sketch_of) -> dict[str, list[float]]:
+def _face_frame(
+    stored: dict,
+    sketch_name: str,
+    shape_of,
+    sketch_of,
+    base_of,
+    placement_of,
+) -> dict[str, list[float]]:
     part_name = stored["part"]
     ref = stored["ref"]
     if sketch_of is not None and sketch_of(part_name) == sketch_name:
         raise SketchPlaneError(
             f"Sketch {sketch_name!r} cannot use a face of {part_name!r}, the solid that sketch builds."
         )
-    shape = None if shape_of is None else shape_of(part_name)
+    on_part = stored.get("space") == "part" and base_of is not None
+    if on_part:
+        shape = base_of(part_name)
+    else:
+        shape = None if shape_of is None else shape_of(part_name)
     if shape is None:
         raise SketchPlaneError(
             f"Sketch {sketch_name!r} is attached to {part_name!r}, which is not in this model."
@@ -148,7 +167,48 @@ def _face_frame(stored: dict, sketch_name: str, shape_of, sketch_of) -> dict[str
     anchor = tuple(float(component) for component in selector["at"])
     origin = _project(anchor, center, normal)
     x_axis, _y_axis = _axes(normal)
-    return _payload(origin, x_axis, normal)
+    frame = _payload(origin, x_axis, normal)
+    if on_part and placement_of is not None:
+        frame = _apply_placement(frame, placement_of(part_name))
+    return frame
+
+
+def _apply_placement(frame: dict[str, list[float]], placement: dict | None) -> dict[str, list[float]]:
+    """Carry a part-local sketch frame into the part's placed position."""
+    if not isinstance(placement, dict):
+        return frame
+    position = placement.get("position") or [0.0, 0.0, 0.0]
+    rotation = placement.get("rotation_deg") or [0.0, 0.0, 0.0]
+    try:
+        still = all(abs(float(value)) < 1e-12 for value in (*position, *rotation))
+    except (TypeError, ValueError):
+        still = False
+    if still:
+        return frame
+    from aicad.kinematics import matrix_from_placement
+
+    matrix = matrix_from_placement(placement)
+    return _payload(
+        _mul_point(matrix, frame["origin"]),
+        _mul_dir(matrix, frame["x"]),
+        _mul_dir(matrix, frame["normal"]),
+    )
+
+
+def _mul_point(matrix, point) -> tuple[float, float, float]:
+    return (
+        matrix[0][0] * point[0] + matrix[0][1] * point[1] + matrix[0][2] * point[2] + matrix[0][3],
+        matrix[1][0] * point[0] + matrix[1][1] * point[1] + matrix[1][2] * point[2] + matrix[1][3],
+        matrix[2][0] * point[0] + matrix[2][1] * point[1] + matrix[2][2] * point[2] + matrix[2][3],
+    )
+
+
+def _mul_dir(matrix, direction) -> tuple[float, float, float]:
+    return (
+        matrix[0][0] * direction[0] + matrix[0][1] * direction[1] + matrix[0][2] * direction[2],
+        matrix[1][0] * direction[0] + matrix[1][1] * direction[1] + matrix[1][2] * direction[2],
+        matrix[2][0] * direction[0] + matrix[2][1] * direction[1] + matrix[2][2] * direction[2],
+    )
 
 
 def _principal(name: str):

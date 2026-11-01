@@ -158,6 +158,66 @@ def test_a_missing_face_raises_a_typed_error(tmp_path):
         )
 
 
+def test_a_sketch_on_a_face_moves_and_turns_with_that_part(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_ops(
+        "block",
+        [{"op": "add", "shape": "box", "size": [30, 20, 10], "center": [0, 0, 5], "name": "block"}],
+    )
+    top = next(face for face in document.describe_faces("block")["faces"] if face["normal"] == [0, 0, 1])
+    document.create_sketch("lid", _plate({"kind": "face", "part": "block", "ref": top["ref"]}))
+    document.create_part_from_sketch(
+        "pad",
+        "lid",
+        [{"op": "extrude", "points": ["a", "b", "c", "d"], "height": 4, "name": "pad"}],
+    )
+    before = document.measure("pad").bounding_box
+    document.place_part("block", [40, 0, 0])
+    moved = document.measure("pad").bounding_box
+    assert moved.min.x == pytest.approx(before.min.x + 40, abs=0.05)
+    assert moved.max.x == pytest.approx(before.max.x + 40, abs=0.05)
+    assert moved.min.y == pytest.approx(before.min.y, abs=0.05)
+    assert moved.min.z == pytest.approx(before.min.z, abs=0.05)
+
+    document.place_part("block", [0, 0, 0], [0, 0, 90])
+    turned = document.measure("pad").bounding_box
+    assert turned.min.x == pytest.approx(-8, abs=0.05)
+    assert turned.max.x == pytest.approx(0, abs=0.05)
+    assert turned.min.y == pytest.approx(0, abs=0.05)
+    assert turned.max.y == pytest.approx(10, abs=0.05)
+    assert turned.min.z == pytest.approx(10, abs=0.05)
+    assert turned.max.z == pytest.approx(14, abs=0.05)
+    reloaded = Document(tmp_path)
+    again = reloaded.measure("pad").bounding_box
+    assert again.min.x == pytest.approx(turned.min.x, abs=0.05)
+    assert again.max.y == pytest.approx(turned.max.y, abs=0.05)
+    assert again.min.z == pytest.approx(turned.min.z, abs=0.05)
+
+
+def test_a_sketch_started_on_a_moved_face_stays_on_it(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_ops(
+        "block",
+        [{"op": "add", "shape": "box", "size": [30, 20, 10], "center": [0, 0, 5], "name": "block"}],
+    )
+    document.place_part("block", [40, 0, 0])
+    top = next(face for face in document.describe_faces("block")["faces"] if face["normal"] == [0, 0, 1])
+    document.create_sketch("lid", _plate({"kind": "face", "part": "block", "ref": top["ref"]}))
+    document.create_part_from_sketch(
+        "pad",
+        "lid",
+        [{"op": "extrude", "points": ["a", "b", "c", "d"], "height": 4, "name": "pad"}],
+    )
+    placed = document.measure("pad").bounding_box
+    assert placed.min.x == pytest.approx(40, abs=0.05)
+    assert placed.min.z == pytest.approx(10, abs=0.05)
+    document.place_part("block", [0, 0, 0])
+    home = document.measure("pad").bounding_box
+    assert home.min.x == pytest.approx(0, abs=0.05)
+    assert home.max.x == pytest.approx(10, abs=0.05)
+    assert home.min.z == pytest.approx(10, abs=0.05)
+
+
 def test_a_sketch_cannot_use_a_face_of_the_solid_it_builds(tmp_path):
     document = Document(tmp_path)
     document.create_part_from_ops(
