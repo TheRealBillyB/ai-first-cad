@@ -47,11 +47,16 @@ equal, angle, radius, symmetric, and midpoint. Set construction true on a
 line, circle, or arc for construction geometry. A point-to-line distance is
 signed: positive is to the right of the directed line.
 
-place_part moves a part. A catalog mount snaps a mate onto a face or an axis from describe_faces: pass mount with part, ref, optional mate, rotation_deg about that axis, and flip. list_parameters and set_parameter change a size on a
-solid built from shapes, a sketch, or a catalog length. add_fillet and
-add_chamfer round or break edges of a shape or sketch part; set_parameter
-changes that radius or distance. A radius that does not fit leaves the part
-as it was. measure_points reports
+place_part moves a part. A catalog mount snaps a mate onto a face or an axis
+from describe_faces: pass mount with part, ref, optional mate, rotation_deg
+about that axis, and flip. list_parameters and set_parameter change one size
+on an existing step: an operation size, a sketch dimension, an extrude height,
+a fillet radius, a chamfer distance, a catalog length, or a script size.
+A script size is a top-level assignment of a number, such as width = 40.
+add_step appends one shape, sketch, fillet, or chamfer step. add_fillet and
+add_chamfer do the same for an edge. Do not replace the part with
+update_part_ops or update_part_script when set_parameter or add_step can do it.
+A radius that does not fit leaves the part as it was. measure_points reports
 the distance between two coordinates, and the angle at the second point when
 you pass a third. The person opens a project folder and saves a copy.
 You cannot change the open folder.
