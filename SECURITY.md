@@ -227,3 +227,5 @@ That stops another website, including one that tries to reach this computer by a
 - **DF.** A plan build script stops when it creates more than the file limit, and a solid whose STEP is past the size limit is not saved. The previous model stays in place. An environment value cannot raise either limit.
 
 - **DG.** Another website cannot approve a plan, and the assistant token cannot approve it. Two approvals at the same time run the scripts once. If recording that build fails, the new solids are not kept.
+
+- **DH.** A plan build counts every new name, including a link, a pipe, and a socket. More names than the file limit stop the build, and those names are removed without following a link. A name that was already there stays. The previous model stays in place.
