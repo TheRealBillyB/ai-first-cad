@@ -27,6 +27,8 @@ EXACT = frozenset(
     {
         "README.md",
         "LICENSE",
+        # The contributor license agreement is a project legal document.
+        "CLA.md",
         "SECURITY.md",
         "CONTRIBUTING.md",
         "CODE_OF_CONDUCT.md",
