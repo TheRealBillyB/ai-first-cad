@@ -637,9 +637,8 @@ GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/
 ## Next steps
 
 - Mesh refinement at a hot spot, contact at a bolt, and a check that is not limited to linear elasticity. Modal analysis here is undamped and, for an assembly, locked at the joints.
-- Driving dimensions on 3D features (extrude height, gusset length), not only on the sketch.
 - More catalog rows (extrusions, and more bearing and seal sizes) and a way to drop a screw into a hole by naming the hole.
-- Driving dimensions on the 3D pictures, the way the sketch view already labels them.
+- Driving dimensions on the 3D pictures, the way the sketch view already labels them. An extrude height and a gusset length already rebuild from the shape panel.
 - A tighter wall-thickness check, for example an offset of the solid, used beside the rays and the sections.
 - A flexible cable: a Cosserat rod or a chain of segments with bending springs, sagging and contacting the parts the polyline only measures.
 - Spatial loop closure, so a linkage can be a real mechanism instead of a planar map from one angle to another.
