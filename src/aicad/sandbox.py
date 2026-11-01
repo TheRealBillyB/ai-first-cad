@@ -103,6 +103,9 @@ CPU_SECONDS = 60
 MEMORY_BYTES = 4 * 1024 * 1024 * 1024
 FILE_BYTES = 512 * 1024 * 1024
 DISK_BYTES = FILE_BYTES
+# New files and directories one script may create. Empty files have no bytes,
+# so the byte caps do not stop a flood of names.
+FILE_COUNT = 1024
 SCRIPT_MAX_CHARS = 200_000
 STDOUT_MAX = 64_000
 _MAX_SCRIPT_LOG_BYTES = 1_000_000
@@ -526,6 +529,11 @@ def file_bytes() -> int:
 def disk_bytes() -> int:
     """Cumulative bytes one script may write. An environment value cannot raise it."""
     return _capped("AICAD_SCRIPT_DISK_BYTES", DISK_BYTES, DISK_BYTES)
+
+
+def file_count() -> int:
+    """New files and directories one script may create. An environment value cannot raise it."""
+    return _capped("AICAD_SCRIPT_FILE_COUNT", FILE_COUNT, FILE_COUNT)
 
 
 def config_dir() -> Path:
@@ -4226,11 +4234,19 @@ class _DiskWatch:
     # treated as a failed quota check instead of holding the run.
     _stop_timeout = 2.0
 
-    def __init__(self, root: Path, before: dict[str, int], file_cap: int, disk_cap: int):
+    def __init__(
+        self,
+        root: Path,
+        before: dict[str, int],
+        file_cap: int,
+        disk_cap: int,
+        count_cap: int | None = None,
+    ):
         self.root = root
         self.before = before
         self.file_cap = file_cap
         self.disk_cap = disk_cap
+        self.count_cap = file_count() if count_cap is None else count_cap
         self.hit = threading.Event()
         self._directories = _snapshot_directories(root)
         self._io_base: dict[int, int] = {}
@@ -4860,7 +4876,7 @@ class _DiskWatch:
             with self._lock:
                 self._pids = set(pids)
         try:
-            over = self._growth_over()
+            over = self._growth_over() or self._too_many_files()
         except OSError:
             return
         if over:
@@ -4905,12 +4921,55 @@ class _DiskWatch:
                 return True
         return False
 
+    def _created_names(self) -> tuple[list[str], list[str]]:
+        """New regular files and new directories since this run started."""
+        files = [key for key in _snapshot_files(self.root) if key not in self.before]
+        directories = [key for key in _snapshot_directories(self.root) if key not in self._directories]
+        return files, directories
+
+    def _too_many_files(self) -> bool:
+        files, directories = self._created_names()
+        return len(files) + len(directories) > self.count_cap
+
+    def _remove_created(self, files: list[str], directories: list[str]) -> None:
+        """Drop names this run created. A link is not followed."""
+        from aicad.paths import is_reparse
+
+        for key in files:
+            path = Path(key)
+            try:
+                if path.is_symlink() or is_reparse(path) or not path.is_file():
+                    continue
+                path.unlink()
+            except OSError:
+                continue
+        for key in sorted(directories, key=len, reverse=True):
+            path = Path(key)
+            try:
+                if path.is_symlink() or is_reparse(path) or not path.is_dir():
+                    continue
+                if any(path.iterdir()):
+                    continue
+                path.rmdir()
+            except OSError:
+                continue
+
     def settle(self) -> str | None:
         """Remove writes past the caps. The message is None when the run stayed inside them."""
         if sys.platform == "win32":
             from aicad.sandbox_windows import _reclaim_for_user
 
             _reclaim_for_user(self.root)
+        try:
+            created_files, created_directories = self._created_names()
+        except OSError:
+            created_files, created_directories = [], []
+        if len(created_files) + len(created_directories) > self.count_cap:
+            self._remove_created(created_files, created_directories)
+            _remove_new_empty_directories(self.root, self._directories)
+            return (
+                f"The script was stopped because it created more than {self.count_cap} files."
+            )
         grown: list[tuple[int, str]] = []
         total = 0
         file_over = False
