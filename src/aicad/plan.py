@@ -52,6 +52,13 @@ def status_phrase(status: str) -> str:
     return status
 
 
+def script_build_refusal(name: str) -> str:
+    return (
+        f"Only you can build {name!r} from its approved scripts. "
+        "A script cannot start that build. Nothing was built."
+    )
+
+
 def approval_refusal(plan: dict) -> str:
     version = plan["current_revision"]
     return (
@@ -417,8 +424,10 @@ class PlanStore:
         return public
 
     def approve(self, name: str) -> dict:
+        from aicad.sandbox_state import in_design_call, in_sandbox
+
         plan = self._load(name) if self._path(name).is_file() else {"title": name, "current_revision": 1, "id": name}
-        if self.actor != "user":
+        if self.actor != "user" or in_sandbox() or in_design_call():
             raise PlanError(approval_refusal(plan if "status" in plan else {**plan, "title": name, "current_revision": 1}))
         plan = self._load(name)
         confirming = plan["status"] == "approved" and not _receipt_matches(self.root, plan)

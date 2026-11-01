@@ -2768,8 +2768,14 @@ class Document:
 
         With no build steps, this returns the dimensions and does not build a solid.
         With build steps, it runs the approved scripts when those parts are not saved yet.
+        A script cannot start that build.
         """
+        from aicad.plan import script_build_refusal
+        from aicad.sandbox_state import in_design_call, in_sandbox
+
         with self._lock:
+            if in_sandbox() or in_design_call():
+                raise PlanError(script_build_refusal(name))
             released = self._plan_store().start_work(name, "model")
             report = self._build_approved_plan(name)
             if report is None:
