@@ -50,13 +50,15 @@ def test_the_assistant_is_not_given_a_folder_outside_the_project(tmp_path, monke
     marker = outside / "SANDBOX_CANARY.txt"
     marker.write_text(_MARKER + "\n", encoding="utf-8")
     workspace = Workspace(project)
-    _write_recent(
-        recent,
-        [
-            {"path": str(project.resolve()), "name": project.name},
-            {"path": str(outside.resolve()), "name": f"outside{_LINE}{_MARKER}"},
-        ],
-    )
+    from aicad.studio import remember_project
+
+    remember_project(project)
+    payload = json.loads(recent.read_text(encoding="utf-8"))
+    payload["projects"].append({"path": str(outside.resolve()), "name": f"outside{_LINE}{_MARKER}"})
+    for item in payload["projects"]:
+        if item.get("path") == str(project.resolve()):
+            item["name"] = f"project{_LINE}{_MARKER}"
+    recent.write_text(json.dumps(payload), encoding="utf-8")
     listed = workspace.execute("list_recent_projects", {}, source="agent")
     shown = json.dumps(listed)
     assert str(outside.resolve()) not in shown
@@ -65,10 +67,11 @@ def test_the_assistant_is_not_given_a_folder_outside_the_project(tmp_path, monke
     assert any(item["path"] == str(project.resolve()) for item in listed["projects"])
     chosen = workspace.execute("list_recent_projects", {}, source="ui")
     paths = [item["path"] for item in chosen["projects"]]
-    assert str(outside.resolve()) in paths
+    assert str(outside.resolve()) not in paths
+    assert str(project.resolve()) in paths
     assert all(_LINE not in item["name"] and _MARKER not in item["name"] for item in chosen["projects"])
-    outside_row = next(item for item in chosen["projects"] if item["path"] == str(outside.resolve()))
-    assert outside_row["name"] == outside.name
+    project_row = next(item for item in chosen["projects"] if item["path"] == str(project.resolve()))
+    assert project_row["name"] == project.name
     with pytest.raises(GeometryError, match="Only the person"):
         workspace.execute("open_project", {"path": str(outside)}, source="agent")
     assert marker.read_text(encoding="utf-8") == _MARKER + "\n"
@@ -106,9 +109,15 @@ def test_a_design_script_is_not_given_a_folder_outside_the_project(tmp_path, mon
     marker = outside / "SANDBOX_CANARY.txt"
     marker.write_text(_MARKER + "\n", encoding="utf-8")
     workspace = Workspace(project)
+    from aicad.studio import remember_project
+
+    remember_project(project)
     _write_recent(recent, [{"path": str(outside.resolve()), "name": outside.name}])
     monkeypatch.setattr("aicad.sandbox_state.in_sandbox", lambda: True)
     listed = workspace.execute("list_recent_projects", {}, source="ui")
     assert str(outside.resolve()) not in json.dumps(listed)
+    from aicad.studio import list_recent
+
+    assert str(outside.resolve()) not in json.dumps(list_recent(person=True))
     assert _MARKER not in json.dumps(listed)
     assert marker.read_text(encoding="utf-8") == _MARKER + "\n"
