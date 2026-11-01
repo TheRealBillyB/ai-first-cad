@@ -42,6 +42,7 @@ _CABLE_KEYS = {
     "actuator_force_n",
     "actuator_end",
     "max_strain",
+    "modulus_mpa",
     "pinch_mm",
     "points",
     "waypoints",
@@ -112,10 +113,7 @@ def normalize_tendon(cable: dict, index: int = 0) -> dict:
         if item["role"] == "anchor":
             raise GeometryError(f"{name} can only use an anchor at the two ends.")
     diameter = _positive(cable.get("diameter_mm", cable.get("diameter", 2.0)), f"{name} diameter_mm")
-    material_name = cable.get("material")
-    if not isinstance(material_name, str) or not material_name.strip():
-        raise GeometryError(f"{name} needs a material.")
-    material = lookup_material(material_name.strip())
+    material = _line_material(cable, name)
     if cable.get("min_bend_radius_mm") is None and cable.get("min_bend_radius") is None:
         bend_limit = 8.0 * diameter
     else:
@@ -152,6 +150,25 @@ def normalize_tendon(cable: dict, index: int = 0) -> dict:
         "rest_length_mm": rest,
         "points": cleaned,
     }
+
+
+def _line_material(cable: dict, name: str) -> dict:
+    """A library material, or the modulus stated for this line.
+
+    A braided or laid line is not a bulk material, so its datasheet modulus can
+    be given as modulus_mpa. material is then only its label.
+    """
+    from aicad.labels import require_one_line
+
+    material_name = cable.get("material")
+    named = isinstance(material_name, str) and bool(material_name.strip())
+    if cable.get("modulus_mpa") is None:
+        if not named:
+            raise GeometryError(f"{name} needs a material, or modulus_mpa for the line.")
+        return lookup_material(material_name.strip())
+    modulus = _positive(cable.get("modulus_mpa"), f"{name} modulus_mpa")
+    label = require_one_line(material_name.strip(), "A tendon material", GeometryError) if named else "stated line"
+    return {"id": label, "name": label, "youngs_modulus_mpa": modulus}
 
 
 def evaluate(cable: dict, solved: dict, placed: dict, rest_length: float | None) -> tuple[dict, float]:
