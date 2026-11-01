@@ -5,7 +5,7 @@ import json
 import pytest
 
 from aicad.document import Document
-from aicad.errors import EdgeOpError
+from aicad.errors import EdgeOpError, GeometryError
 from aicad.workspace import Workspace
 
 
@@ -133,6 +133,122 @@ def test_sketch_history_includes_the_sketch_the_extrude_and_the_fillet(tmp_path,
         if item["id"] == "dimension/width"
     ]
     assert widths[0]["step"] == "sketch"
+
+
+def test_a_step_that_is_not_a_list_still_opens(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    folder = tmp_path / "project"
+    folder.mkdir()
+    (folder / "session.json").write_text(
+        json.dumps(
+            {
+                "units": "mm",
+                "sketches": [
+                    {
+                        "name": "plate",
+                        "spec": {
+                            "plane": "xy",
+                            "entities": [{"id": "p0", "type": "point", "at": [0, 0]}],
+                            "constraints": [{"type": "fix", "entity": "p0"}],
+                        },
+                    }
+                ],
+                "assemblies": [],
+                "parts": [
+                    {
+                        "name": "block",
+                        "source": "ops",
+                        "ops": 5,
+                        "edge_ops": {"op": "fillet"},
+                        "placement": {"position": [0, 0, 0], "rotation_deg": [0, 0, 0]},
+                    },
+                    {
+                        "name": "plate",
+                        "source": "sketch",
+                        "sketch": "plate",
+                        "steps": {"op": "extrude"},
+                        "placement": {"position": [0, 0, 0], "rotation_deg": [0, 0, 0]},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    workspace = Workspace(folder)
+    state = workspace.state()
+    by_name = {part["name"]: part for part in state["parts"]}
+    assert by_name["block"]["history"] == []
+    assert by_name["plate"]["history"] == [{"id": "sketch", "kind": "sketch", "name": "plate", "error": None}]
+    assert workspace.document.problems
+    assert workspace.document.get_source("block")["ops"] is None
+    assert workspace.document.get_source("plate")["steps"] is None
+
+
+def test_an_extra_field_on_a_step_is_not_a_script_and_a_gap_is_recorded(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    folder = tmp_path / "project"
+    folder.mkdir()
+    (folder / "session.json").write_text(
+        json.dumps(
+            {
+                "units": "mm",
+                "sketches": [],
+                "assemblies": [],
+                "parts": [
+                    {
+                        "name": "block",
+                        "source": "ops",
+                        "ops": [
+                            {
+                                "op": "add",
+                                "shape": "box",
+                                "size": [2, 3, 4],
+                                "name": "base\nsecond",
+                                "script": "part = Box(1, 1, 1)\n",
+                            },
+                            {"name": "gap"},
+                        ],
+                        "placement": {"position": [0, 0, 0], "rotation_deg": [0, 0, 0]},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    workspace = Workspace(folder)
+    assert workspace.document.measure("block").volume_mm3 == pytest.approx(24)
+    rows = _history(workspace, "block")
+    assert [row["id"] for row in rows] == ["op/0", "op/1"]
+    assert rows[0]["name"] == "base second"
+    assert "\n" not in rows[0]["name"]
+    assert rows[0]["error"] is None
+    assert rows[1]["error"]
+    assert workspace.document.get_source("block")["ops"][0]["size"] == [2, 3, 4]
+
+
+def test_an_appended_step_does_not_follow_later_changes_to_the_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    workspace = Workspace(tmp_path / "project")
+    workspace.execute(
+        "create_part_from_ops",
+        {"name": "block", "ops": [{"op": "add", "shape": "box", "size": [10, 10, 10], "name": "base"}]},
+        source="ui",
+    )
+    step = {"op": "cut", "shape": "box", "size": [2, 2, 20], "name": "slot"}
+    workspace.execute("add_step", {"name": "block", "step": step}, source="ui")
+    step["size"][0] = 9
+    step["name"] = "other\nline"
+    stored = workspace.document.get_source("block")["ops"]
+    assert stored[0] == {"op": "add", "shape": "box", "size": [10, 10, 10], "name": "base"}
+    assert stored[1]["name"] == "slot"
+    assert stored[1]["size"] == [2, 2, 20]
+    with pytest.raises(GeometryError, match="single non-empty line"):
+        workspace.execute(
+            "add_step",
+            {"name": "block", "step": {"op": "cut", "shape": "box", "size": [1, 1, 20], "name": "a\nb"}},
+            source="ui",
+        )
+    assert [row["name"] for row in _history(workspace, "block")] == ["base", "slot"]
 
 
 def test_an_old_project_without_history_still_opens(tmp_path, monkeypatch):
