@@ -2775,7 +2775,7 @@ class Document:
             return None
         if not _receipt_matches(self.workspace, plan):
             raise PlanError(untrusted_refusal(plan, "model"))
-        if store.build_is_saved(plan):
+        if store.build_is_saved(plan) and self._parts_match_scripts(steps):
             return {
                 "progress": copy.deepcopy(plan.get("build_progress") or []),
                 "parts": list(plan["built"]["parts"]),
@@ -2800,6 +2800,32 @@ class Document:
         parts = [part_name for part_name, _script, _shape in built]
         store.write_build_result(plan, progress, parts)
         return {"progress": progress, "parts": parts, "reused": False}
+
+    def plan_build_will_run(self, name: str) -> bool:
+        """True when modeling from ``name`` would run the approved scripts."""
+        from aicad.plan import _current, _receipt_matches
+        from aicad.sandbox_state import in_design_call, in_sandbox
+
+        if in_sandbox() or in_design_call():
+            return False
+        with self._lock:
+            store = self._plan_store()
+            try:
+                plan = store.for_build(name)
+            except PlanError:
+                return False
+            steps = list(_current(plan).get("build") or [])
+            if not steps or not _receipt_matches(self.workspace, plan):
+                return False
+            return not (store.build_is_saved(plan) and self._parts_match_scripts(steps))
+
+    def _parts_match_scripts(self, steps: list) -> bool:
+        """True when every listed part is still the script that was approved."""
+        for step in steps:
+            part = self._parts.get(step["part"])
+            if part is None or part.source != "script" or part.script != step["script"]:
+                return False
+        return True
 
     def _commit_built_parts(self, built: list) -> None:
         """Save every finished solid. A failure puts the previous parts back."""
