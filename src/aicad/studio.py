@@ -13,7 +13,6 @@ import math
 import os
 from pathlib import Path
 
-from aicad import kernel, library
 from aicad.errors import GeometryError
 from aicad.models import round_mm
 
@@ -405,7 +404,11 @@ def list_parameters(workspace, name: str) -> dict:
     elif kind == "gear":
         note = "This part is a generated gear. Tooth data is fixed until the gear is replaced. You can move it."
     else:
-        note = "This part is a script. There is no size to slide. Move it, or replace the script."
+        parameters.extend(_script_parameters(source.get("script") or ""))
+        if parameters:
+            note = "A top-level number, such as width = 40, is a size. Changing it rebuilds the script."
+        else:
+            note = "This script has no top-level number to slide. Move it, or edit the script."
     return {
         "part": name,
         "source": kind,
@@ -467,6 +470,15 @@ def set_parameter(workspace, name: str, parameter: str, value: float) -> dict:
     elif parameter.startswith("edge/"):
         index, field = _edge_parameter(parameter)
         info = workspace.document._set_edge_size(name, index, field, number)
+        rebuilt = [info.to_dict()]
+    elif parameter.startswith("script/"):
+        from aicad.script_params import rewrite_script_size
+
+        size_name = parameter.split("/", 1)[1]
+        script = source.get("script") or ""
+        updated = rewrite_script_size(script, size_name, number)
+        info = workspace.document.update_part_script(name, updated)
+        info = _restore_placement(workspace, name, placement, info)
         rebuilt = [info.to_dict()]
     else:
         raise GeometryError(f"Parameter {parameter!r} is not editable.")
@@ -680,6 +692,19 @@ def register(add) -> None:
         lambda workspace, arguments: list_parameters(workspace, arguments["name"]),
     ))
     add(Command(
+        "add_step",
+        "Append one shape, sketch, fillet, or chamfer step. The earlier steps stay.",
+        _obj(
+            {
+                "name": _string("Part name."),
+                "step": {"type": "object", "description": "One add, cut, extrude, revolve, cut_box, gusset, fillet, or chamfer."},
+            },
+            ["name", "step"],
+        ),
+        lambda workspace, arguments: add_step(workspace, arguments["name"], arguments["step"]),
+        undo=True,
+    ))
+    add(Command(
         "add_fillet",
         "Round edges of a part built from shapes or a sketch. The radius stays editable.",
         _obj(
@@ -802,10 +827,20 @@ def register_mcp(mcp, run, guard) -> None:
         An operation box exposes size and center. A cylinder exposes radius and
         height. A sketch solid exposes named dimensions and the extrude height
         or revolve angle. A fillet exposes radius and a chamfer exposes distance.
-        A screw exposes length. A script or a STEP file has
-        no size here; use place_part to move it.
+        A screw exposes length. A script exposes top-level numbers such as
+        width = 40. A STEP file has no size here; use place_part to move it.
         """
         return guard(lambda: run("list_parameters", name=name))
+
+    @mcp.tool()
+    def add_step(name: str, step: dict) -> dict:
+        """Append one step to a shape or sketch part.
+
+        A shape part accepts add, cut, fillet, or chamfer. A sketch part accepts
+        extrude, cut, revolve, cut_box, gusset, fillet, or chamfer. Earlier steps
+        stay. A script part has named sizes instead; use set_parameter.
+        """
+        return guard(lambda: run("add_step", name=name, step=step))
 
     @mcp.tool()
     def add_fillet(name: str, radius: float, edges: list, step_name: str | None = None) -> dict:
@@ -1025,6 +1060,53 @@ def _op_parameters(ops: list) -> list[dict]:
     return [item for item in parameters if item is not None]
 
 
+def add_step(workspace, name: str, step: dict) -> dict:
+    """Append one step. A fillet or chamfer that does not fit leaves the previous solid."""
+    if not isinstance(step, dict):
+        raise GeometryError("A step is an object.")
+    operation = step.get("op")
+    source = workspace.document.get_source(name)
+    kind = str(source.get("source") or "")
+    placement = source.get("placement") or {"position": [0.0, 0.0, 0.0], "rotation_deg": [0.0, 0.0, 0.0]}
+    if operation == "fillet":
+        info = workspace.document.add_fillet(name, step.get("radius"), step.get("edges"), step.get("name"))
+        return _edge_result(info)
+    if operation == "chamfer":
+        info = workspace.document.add_chamfer(name, step.get("distance"), step.get("edges"), step.get("name"))
+        return _edge_result(info)
+    if kind == "ops":
+        if operation not in ("add", "cut"):
+            raise GeometryError("A shape part accepts add, cut, fillet, or chamfer.")
+        ops = json.loads(json.dumps(source.get("ops") or []))
+        ops.append(step)
+        info = workspace.document.update_part_ops(name, ops)
+        info = _restore_placement(workspace, name, placement, info)
+        return {"part": info.to_dict(), "next": "Call inspect_part and look at the model before the next edit."}
+    if kind == "sketch":
+        if operation not in ("extrude", "cut", "revolve", "cut_box", "gusset"):
+            raise GeometryError(
+                "A sketch part accepts extrude, cut, revolve, cut_box, gusset, fillet, or chamfer."
+            )
+        steps = json.loads(json.dumps(source.get("steps") or []))
+        steps.append(step)
+        sketch = source.get("sketch")
+        if not isinstance(sketch, str):
+            raise GeometryError(f"Part {name!r} has no sketch.")
+        info = workspace.document.update_part_from_sketch(name, sketch, steps)
+        info = _restore_placement(workspace, name, placement, info)
+        return {"part": info.to_dict(), "next": "Call inspect_part and look at the model before the next edit."}
+    raise GeometryError("This part has no step to append. A script exposes named sizes instead.")
+
+
+def _script_parameters(script: str) -> list[dict]:
+    from aicad.script_params import script_sizes
+
+    parameters = []
+    for item in script_sizes(script):
+        parameters.append(_scalar(f"script/{item['name']}", str(item["name"]), item["value"], "signed", "script"))
+    return [item for item in parameters if item is not None]
+
+
 def _edge_parameters(ops: list) -> list[dict]:
     parameters = []
     for index, op in enumerate(ops):
@@ -1196,6 +1278,10 @@ def _write_indexed(records: list, parameter: str, prefix: str, value: float) -> 
 
 
 def _restore_placement(workspace, name: str, placement: dict, info):
+    part = workspace.document._get(name)
+    mount = placement.get("mount") if isinstance(placement, dict) else None
+    if mount and part.library_spec:
+        return workspace.document.place_part(name, mount=mount)
     position = placement.get("position") or [0, 0, 0]
     rotation = placement.get("rotation_deg") or [0, 0, 0]
     if any(abs(float(component)) > 1e-12 for component in list(position) + list(rotation)):
@@ -1204,20 +1290,7 @@ def _restore_placement(workspace, name: str, placement: dict, info):
 
 
 def _set_library_length(document, name: str, length: float):
-    with document._lock:
-        part = document._get(name)
-        spec = dict(part.library_spec or {})
-        spec["length"] = float(length)
-        base = kernel.adopt(library.build(spec["kind"], spec["size"], spec["length"], spec.get("fastener_type")))
-        part.library_spec = spec
-        part.base = base
-        part.shape = kernel.place(
-            base,
-            tuple(part.placement["position"]),
-            tuple(part.placement["rotation_deg"]),
-        )
-        document._save()
-        return document._info(part)
+    return document._set_catalog_length(name, length)  # noqa: SLF001
 
 
 def _parts_from_sketch(workspace, sketch: str) -> list[dict]:
@@ -1321,6 +1394,7 @@ def _summary(name: str, arguments: dict, result: dict, parts: list[str]) -> str:
         "update_part_script": f"Rebuilt {part} from a script",
         "update_part_ops": f"Rebuilt {part} from shapes",
         "update_part_from_sketch": f"Rebuilt {part} from a sketch",
+        "add_step": f"Added a step on {part}",
         "add_fillet": f"Rounded edges on {part}",
         "add_chamfer": f"Broke edges on {part}",
         "delete_part": f"Deleted {part}",

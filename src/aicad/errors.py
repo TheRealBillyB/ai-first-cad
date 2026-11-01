@@ -18,6 +18,10 @@ class GeometryError(AICADError):
     """Geometry could not be built, measured, or checked."""
 
 
+class MountError(GeometryError):
+    """A catalog part could not be mounted. The part was not moved."""
+
+
 class EdgeOpError(GeometryError):
     """A fillet or chamfer could not be applied. The previous solid stays."""
 
