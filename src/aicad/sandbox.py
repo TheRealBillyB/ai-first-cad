@@ -4254,6 +4254,10 @@ class _DiskWatch:
         self.count_cap = file_count() if count_cap is None else count_cap
         self.hit = threading.Event()
         self._directories = _snapshot_directories(root)
+        # Every name, including a link. The byte snapshot is only regular files,
+        # so a link that was already there has to be remembered here or the
+        # file count treats it as new.
+        self._names = _snapshot_names(root)
         self._io_base: dict[int, int] = {}
         self._io_fds: dict[int, int] = {}
         self._pids: set[int] = set()
@@ -4927,9 +4931,21 @@ class _DiskWatch:
         return False
 
     def _created_names(self) -> tuple[list[str], list[str]]:
-        """New regular files and new directories since this run started."""
-        files = [key for key in _snapshot_files(self.root) if key not in self.before]
-        directories = [key for key in _snapshot_directories(self.root) if key not in self._directories]
+        """New names since this run started.
+
+        A link, a pipe, and a socket count. They are not regular files, so the
+        byte cap does not see them. A link is not entered.
+        """
+        files: list[str] = []
+        directories: list[str] = []
+        for key in _snapshot_names(self.root):
+            if key in self._names:
+                continue
+            path = Path(key)
+            if _real_directory(path):
+                directories.append(key)
+            else:
+                files.append(key)
         return files, directories
 
     def _too_many_files(self) -> bool:
@@ -4938,20 +4954,24 @@ class _DiskWatch:
 
     def _remove_created(self, files: list[str], directories: list[str]) -> None:
         """Drop names this run created. A link is not followed."""
-        from aicad.paths import is_reparse
+        from aicad.paths import is_reparse, remove_tree
 
         for key in files:
             path = Path(key)
             try:
-                if path.is_symlink() or is_reparse(path) or not path.is_file():
+                if path.is_symlink() or is_reparse(path):
+                    remove_tree(path)
                     continue
-                path.unlink()
+                if _real_directory(path):
+                    continue
+                if path.exists() or path.is_symlink():
+                    path.unlink()
             except OSError:
                 continue
         for key in sorted(directories, key=len, reverse=True):
             path = Path(key)
             try:
-                if path.is_symlink() or is_reparse(path) or not path.is_dir():
+                if not _real_directory(path):
                     continue
                 if any(path.iterdir()):
                     continue
@@ -4968,7 +4988,7 @@ class _DiskWatch:
         try:
             created_files, created_directories = self._created_names()
         except OSError:
-            created_files, created_directories = [], []
+            return "The script was stopped because its files could not be counted."
         if len(created_files) + len(created_directories) > self.count_cap:
             self._remove_created(created_files, created_directories)
             _remove_new_empty_directories(self.root, self._directories)
@@ -5003,6 +5023,38 @@ class _DiskWatch:
             _remove_new_empty_directories(self.root, self._directories)
             return f"The script was stopped because it wrote more than {self.file_cap} bytes."
         return None
+
+
+def _snapshot_names(root: Path) -> set[str]:
+    """Every directory entry under ``root``. A link is a name and is not entered."""
+    from aicad.paths import is_reparse
+
+    found: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        kept: list[str] = []
+        for name in dirnames:
+            child = current / name
+            found.add(_file_key(child))
+            if child.is_symlink() or is_reparse(child):
+                continue
+            kept.append(name)
+        dirnames[:] = kept
+        for name in filenames:
+            found.add(_file_key(current / name))
+    return found
+
+
+def _real_directory(path: Path) -> bool:
+    """True for a directory. A symlink or junction is not one."""
+    from aicad.paths import is_reparse
+
+    try:
+        if path.is_symlink() or is_reparse(path):
+            return False
+        return path.is_dir()
+    except OSError:
+        return False
 
 
 def _snapshot_directories(root: Path) -> set[str]:
