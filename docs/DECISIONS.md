@@ -11,6 +11,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | Decision | Rationale |
 | --- | --- |
 | A failed step edit can be undone | A fillet or a chamfer rebuilds a sketch that sits on a face of that part. When a step edit saves and then fails, that edit stays on the undo stack. An edit that changes nothing does not add an undo step. |
+| A plan part without its solid is built again | `start_model_from_plan` runs the approved scripts when a listed part is missing, has no solid, or is no longer that script. A saved hash that does not belong to that script is not treated as the approved solid. When every listed part is still that script and its solid, the scripts are not run again. A rebuild can be undone. |
 | A sketch on a face moves with that part | The face is stored on the part, in that part's own coordinates. Moving or turning the part, or an edit that moves the face, carries the sketch with that face. A face that is no longer there still raises SketchPlaneError. |
 | A three-point or tangent arc is part of the profile | The outline uses the arc's two ends. A three-point arc keeps its middle point off the outline, and a tangent arc continues the line it leaves. The solid follows that outline. |
 | Inspect uses a catalog mass when the part has one | A published catalog mass is the mass Inspect reports, and it does not follow the chosen material. A motor or gearbox envelope has no mass from volume times density. A modeled part still uses the handbook density. |
