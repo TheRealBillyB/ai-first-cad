@@ -1163,6 +1163,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         min_bend_radius_mm, and stiffness (low, medium, high, or newtons per
         unit strain). A tendon has points: an anchor, then pulleys, guides, or
         wraps fixed on parts, then an end anchor, plus diameter_mm and material.
+        modulus_mpa states a braided line's own modulus; material is then its label.
         A pulley has at (the center), axis, radius_mm for the cable centerline,
         optional wrap of cw or ccw, and optional friction. Length includes the
         wrap arc. The report has length change, slack or stretch, wrap angle,

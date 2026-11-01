@@ -8,6 +8,7 @@ import pytest
 
 from aicad.cli import main as cli_main
 from aicad.document import Document
+from aicad.errors import GeometryError
 from aicad.workspace import Workspace
 
 
@@ -96,6 +97,49 @@ def test_straight_tendon_length_slack_and_stretch(tmp_path: Path):
     workspace = Workspace(tmp_path)
     again = workspace.execute("check_cables", {"name": "span"})
     assert _by_name(again)["exact"]["length_mm"] == pytest.approx([100])
+
+
+def test_a_braided_line_states_its_own_modulus(tmp_path: Path):
+    document = Document(tmp_path)
+    _box(document, "block", [10, 10, 10], [0, 0, 40])
+    points = [
+        {"role": "anchor", "instance": "frame", "at": [0, 0, 0]},
+        {"role": "anchor", "instance": "frame", "at": [100, 0, 0]},
+    ]
+    line = {"kind": "tendon", "diameter_mm": 0.5, "actuator_force_n": 50, "points": points}
+    document.create_assembly(
+        {
+            "name": "braid",
+            "instances": [{"name": "frame", "part": "block"}],
+            "joints": [],
+            "cables": [
+                {"name": "braid", "material": "UHMWPE braid", "modulus_mpa": 50000, **line},
+                {"name": "unnamed", "modulus_mpa": 50000, **line},
+            ],
+        }
+    )
+    cables = _by_name(document.check_cables("braid"))
+    braid = cables["braid"]
+    assert braid["status"] == "pass"
+    assert braid["material"] == "UHMWPE braid"
+    frame = braid["frames"][0]
+    assert frame["modulus_mpa"] == pytest.approx(50000)
+    # F L / (E π d² / 4) = 50 × 100 / (50000 × π × 0.0625)
+    assert frame["elastic_elongation_mm"] == pytest.approx(5000 / (50000 * math.pi * 0.0625), rel=1e-5)
+    assert cables["unnamed"]["material"] == "stated line"
+    bom = document.bill_of_materials("braid")
+    assert next(row for row in bom["rows"] if row["name"] == "braid")["material"] == "UHMWPE braid"
+
+    document.create_assembly(
+        {
+            "name": "bare",
+            "instances": [{"name": "frame", "part": "block"}],
+            "joints": [],
+            "cables": [{"name": "bare", **line}],
+        }
+    )
+    with pytest.raises(GeometryError, match="needs a material, or modulus_mpa"):
+        document.check_cables("bare")
 
 
 def test_one_pulley_wraps_ninety_degrees_and_a_tight_sheave_fails(tmp_path: Path):

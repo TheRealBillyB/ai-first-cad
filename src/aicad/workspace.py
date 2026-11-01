@@ -1955,7 +1955,7 @@ _add(Command(
 _add(Command(
     "check_cables",
     "Measure cable, hose, and tendon routes through a pose, a motion, or a motion study. "
-    "A clip route uses waypoints. A tendon uses points: an anchor, pulleys or guides or wraps fixed on parts, and an end anchor, plus diameter_mm and material. "
+    "A clip route uses waypoints. A tendon uses points: an anchor, pulleys or guides or wraps fixed on parts, and an end anchor, plus diameter_mm and material, or modulus_mpa for a braided line. "
     "A pulley has at, axis, radius_mm for the cable centerline, optional wrap cw or ccw, and optional friction. "
     "The report has path length with wrap arcs, length change, slack or stretch, wrap angle, bend-radius violations, capstan tension from actuator_force_n, and collisions. "
     "sequence names a motion, or a study when no motion has that name. study is an inline motion study. steps overrides the study.",
