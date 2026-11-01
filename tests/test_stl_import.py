@@ -82,6 +82,49 @@ def test_an_open_mesh_and_a_file_outside_the_project_are_refused(tmp_path):
     assert "open" not in {part.name for part in document.list_parts()}
 
 
+def test_a_vertex_past_the_part_limit_is_refused_before_a_solid_is_built(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    document = Document(project)
+    (project / "far.stl").write_text(_ascii_at((2_000_000.0, 0.0, 0.0)), encoding="utf-8")
+    (project / "nan.stl").write_text(_ascii_at((float("nan"), 0.0, 0.0)), encoding="utf-8")
+    (project / "inf.stl").write_text(_ascii_at((float("inf"), 0.0, 0.0)), encoding="utf-8")
+    (project / "binary-far.stl").write_bytes(_binary_at((2_000_000.0, 0.0, 0.0)))
+    for name, path in (
+        ("far", "far.stl"),
+        ("nan", "nan.stl"),
+        ("inf", "inf.stl"),
+        ("binary_far", "binary-far.stl"),
+    ):
+        with pytest.raises(GeometryError, match="finite millimeter"):
+            document.import_stl(name, path)
+    assert {part.name for part in document.list_parts()} == set()
+    assert not (project / "imports").exists()
+
+
+def _ascii_at(point: tuple[float, float, float]) -> str:
+    x, y, z = point
+    return (
+        "solid probe\n"
+        "  facet normal 0 0 0\n"
+        "    outer loop\n"
+        f"      vertex {x} {y} {z}\n"
+        "      vertex 1 0 0\n"
+        "      vertex 0 1 0\n"
+        "    endloop\n"
+        "  endfacet\n"
+        "endsolid probe\n"
+    )
+
+
+def _binary_at(point: tuple[float, float, float]) -> bytes:
+    blob = bytearray(b"\0" * 80)
+    blob += struct.pack("<I", 1)
+    numbers = [0.0, 0.0, 0.0, point[0], point[1], point[2], 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    blob += struct.pack("<12fH", *numbers, 0)
+    return bytes(blob)
+
+
 def test_the_import_panel_offers_stl_beside_step():
     script = Path("src/aicad/app_static/tools.js").read_text(encoding="utf-8")
     assert "Import STL" in script

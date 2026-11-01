@@ -19,7 +19,7 @@ from urllib.parse import unquote
 import numpy as np
 
 from aicad.errors import GeometryError
-from aicad.kernel import MAX_STEP_BYTES
+from aicad.kernel import MAX_MM, MAX_STEP_BYTES
 from aicad.paths import is_reserved_device_name
 
 _MAX_TRIANGLES = 1_000_000
@@ -608,6 +608,21 @@ def _collada_triangles(main: str, root):
     return np.asarray(positions, dtype=np.float64), np.asarray(triangles, dtype=np.int64)
 
 
+def _refuse_vertex_range(main: str, vertices: np.ndarray) -> None:
+    """Refuse a vertex before the geometry kernel sees it.
+
+    The same kilometer limit ordinary parts use. A coordinate past that, or one
+    that is not finite, is not a mesh this program builds.
+    """
+
+    coords = np.asarray(vertices, dtype=np.float64)
+    if coords.ndim != 2 or coords.shape[1] < 3 or coords.shape[0] == 0:
+        raise _fail(main, "the mesh text could not be read.")
+    finite = np.isfinite(coords[:, :3])
+    if not bool(finite.all()) or float(np.max(np.abs(coords[:, :3]))) > MAX_MM:
+        raise _fail(main, f"a vertex is not a finite millimeter within {MAX_MM:g} mm.")
+
+
 def _limit_triangles(main: str, triangles) -> None:
     if len(triangles) > _MAX_TRIANGLES:
         raise _fail(main, f"the mesh has too many triangles. The limit is {_MAX_TRIANGLES}.")
@@ -695,6 +710,7 @@ def _solid(main: str, vertices: np.ndarray, triangles: np.ndarray):
 
     if len(triangles) == 0:
         raise _fail(main, "the mesh has no triangles.")
+    _refuse_vertex_range(main, vertices)
     sewing = BRepBuilderAPI_Sewing(1e-6)
     for triangle in triangles:
         corners = []
