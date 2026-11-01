@@ -72,6 +72,20 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "printed": True,
         "note": "Dry nylon, roughly PA6 or PA12. Moisture lowers both the modulus and the strength.",
     },
+    "tpu_95a": {
+        "name": "TPU 95A",
+        "youngs_modulus_mpa": 26.0,
+        "poisson": 0.48,
+        "strength_mpa": 8.6,
+        "strength_kind": "yield",
+        "density_g_cm3": 1.22,
+        "printed": True,
+        "note": (
+            "Flexible filament, Shore 95A. Typical filament datasheet values: tensile modulus 26 MPa, "
+            "yield 8.6 MPa, density 1.22 g/cm³. The rubber stretches far past yield, so a linear stress "
+            "check is only a small-strain estimate."
+        ),
+    },
     "aluminum_6061": {
         "name": "aluminum 6061-T6",
         "youngs_modulus_mpa": 68900.0,
@@ -136,6 +150,8 @@ _ALIASES = {
     "al6061": "aluminum_6061",
     "pa6": "nylon",
     "pa12": "nylon",
+    "tpu": "tpu_95a",
+    "tpu95a": "tpu_95a",
     "mild_steel": "steel",
     "42crmo4": "steel_42crmo4",
     "16mncr5": "steel_16mncr5",
