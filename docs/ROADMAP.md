@@ -11,7 +11,7 @@ Where the software work stands. Statuses describe this repository. They are not 
 | **Planned** | The direction after those tracks |
 | **Later** | Far enough out that the shape can still change |
 
-What is already in the tree is listed under Done. Features planned for v1 are listed under Next release. The tracks after that release are the ones that are not in the tree yet.
+What is already in the tree is listed under Done. The Next release section names the 0.9 preview items that are already in the tree, then what is still left for 1.0. The tracks after that release are the ones that are not in the tree yet.
 
 ## Done
 
@@ -114,23 +114,28 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 
 ## Next release
 
-**v1** is planned to add the features below. They are not in the tree yet.
+**0.9** is the preview in this tree. **v1.0** is the release of that feature set. These items were named for v1 and are already in the tree:
 
 - **Arc tool.** Three-point arcs, center-start-end arcs, and a tangent arc that continues a line, with the same snapping, constraints, and dimensions as lines and circles.
 - **Sketch planes.** A sketch on a planar face of a solid, or on an offset or angled datum, including the XY, YZ, and XZ planes. The sketch stays attached when the model rebuilds.
 - **Splines.** Smooth curves through picked points. A closed spline is a profile that can be extruded or revolved.
 - **Internal ring gear solid.** A ring gear with the teeth on the inside of the blank.
-- **Approving a plan builds the solid.** Approval of a plan builds the solid from that plan.
-- **Gear steel material.** A handbook gear steel in the material list used by the strength check.
-- **Joint-sized reducers.** A reducer sized from the joint it drives.
-- **Catalog mounting orientation.** A catalog part stores the orientation of its mount.
+- **Approving a plan builds the solid.** Stored build steps run when the plan is approved. The assistant cannot approve it.
+- **Gear steel material.** Handbook gear steels 42CrMo4 and 16MnCr5 are in the material list used by the strength check.
 - **Fillet and chamfer.** Fillet and chamfer with sizes that can be edited, then rebuilt.
 - **Feature history.** An earlier step can be edited, and the solid rebuilds from that step.
-- **Sketch constraints.** The remaining geometric constraints, and construction geometry, on the sketch toolbar.
-- **Standard views.** Buttons for the standard views in the workspace.
-- **Open an example.** The empty canvas can open an example.
-- **Inspect.** Area, center of mass, and mass on Inspect.
-- **STL import.** An STL file can be imported as a part.
+- **Sketch constraints.** Geometric constraints, and construction geometry, are on the sketch toolbar.
+- **Standard views.** Buttons for the standard views are in the workspace.
+- **Open an example.** The worked motor-mount example can be opened as its own project folder.
+- **Inspect.** Area, center of mass, and mass are on Inspect. Mass is the volume times a handbook density.
+- **STL import.** A closed STL file can be imported as a part. The mesh has no editable features.
+
+Left for 1.0, and not in the tree:
+
+- **Joint-sized reducers.** A reducer sized from the joint it drives.
+- **Catalog mounting orientation.** A catalog row does not store the orientation of its mount. A mount can snap a catalog mate onto a face or an axis and turn in steps of 15 degrees.
+
+v1.0 does not add another feature track. CNC machining and sheet metal stay in the section after this one.
 
 ## After v1.0
 
