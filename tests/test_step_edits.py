@@ -1,5 +1,7 @@
 """Appending a step, and script sizes, leave the rest of the part in place."""
 
+import ast
+
 import pytest
 
 from aicad.errors import GeometryError, ScriptError
@@ -140,6 +142,44 @@ def test_a_script_size_rebuilds_through_the_sandbox(tmp_path, monkeypatch):
     with pytest.raises(ScriptError):
         workspace.execute("set_parameter", {"name": "block", "parameter": "script/width", "value": 0})
     assert workspace.document.measure("block").volume_mm3 == pytest.approx(1000)
+
+
+def test_a_script_size_on_a_line_with_other_text_changes_only_the_number():
+    script = "宽 = 10 #;marker = 1\npart = Box(宽, 2, 2)\n"
+    updated = rewrite_script_size(script, "宽", 16)
+    assert updated == "宽 = 16 #;marker = 1\npart = Box(宽, 2, 2)\n"
+    names = [
+        node.targets[0].id
+        for node in ast.parse(updated).body
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    ]
+    assert names == ["宽", "part"]
+    same_line = "café = 10; height = 20 # keep\npart = Box(café, height, 1)\n"
+    assert rewrite_script_size(same_line, "café", 4) == "café = 4; height = 20 # keep\npart = Box(café, height, 1)\n"
+    windows = "宽 = -10 #;marker = 1\r\npart = Box(1, 1, 1)\r\n"
+    assert rewrite_script_size(windows, "宽", 3) == "宽 = 3 #;marker = 1\r\npart = Box(1, 1, 1)\r\n"
+    assert rewrite_script_size(windows, "宽", -2) == "宽 = -2 #;marker = 1\r\npart = Box(1, 1, 1)\r\n"
+    paged = "width = 10\f#;marker = 1\npart = Box(width, 1, 1)\n"
+    assert rewrite_script_size(paged, "width", 12) == "width = 12\f#;marker = 1\npart = Box(width, 1, 1)\n"
+    old_mac = "width = 10 # keep\rheight = 4\rpart = Box(width, height, 1)\r"
+    assert rewrite_script_size(old_mac, "width", 6) == "width = 6 # keep\rheight = 4\rpart = Box(width, height, 1)\r"
+    assert rewrite_script_size("width = 10", "width", 4) == "width = 4"
+    assert rewrite_script_size("宽 = (10) #;marker = 1\n", "宽", 16) == "宽 = (16) #;marker = 1\n"
+
+
+def test_a_script_size_with_other_text_on_the_line_rebuilds_that_number(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    workspace = Workspace(tmp_path / "project")
+    script = "宽 = 10 #;marker = 1\npart = Box(宽, 2, 2)\n"
+    workspace.execute("create_part_from_script", {"name": "block", "script": script}, source="ui")
+    assert workspace.document.measure("block").volume_mm3 == pytest.approx(40)
+    workspace.execute("set_parameter", {"name": "block", "parameter": "script/宽", "value": 16}, source="ui")
+    stored = workspace.document.get_source("block")["script"]
+    assert stored == "宽 = 16 #;marker = 1\npart = Box(宽, 2, 2)\n"
+    assert workspace.document.measure("block").volume_mm3 == pytest.approx(64)
+    workspace.execute("undo")
+    assert workspace.document.measure("block").volume_mm3 == pytest.approx(40)
+    assert "#;marker = 1" in workspace.document.get_source("block")["script"]
 
 
 def test_the_assistant_is_told_to_edit_a_step():
