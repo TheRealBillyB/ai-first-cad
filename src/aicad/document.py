@@ -2503,8 +2503,9 @@ class Document:
         A failed step leaves the previous model in place.
         """
         with self._lock:
-            public = self._plan_store().approve(name)
-            report = self._build_approved_plan(name)
+            store = self._plan_store()
+            public = store.approve(name)
+            report = self._build_approved_plan(name, store=store)
             if report is None:
                 return public
             return self._with_build_report(name, report, approved=True)
@@ -2556,12 +2557,14 @@ class Document:
             )
         return public
 
-    def _build_approved_plan(self, name: str) -> dict | None:
+    def _build_approved_plan(self, name: str, store=None) -> dict | None:
         from aicad.plan import _current, _receipt_matches, untrusted_refusal
         from aicad.plan_build import run_build_steps
 
-        store = self._plan_store()
-        plan = store.for_build(name)
+        if store is None:
+            store = self._plan_store()
+        pinned = store.take_pinned(name)
+        plan = pinned if pinned is not None else store.for_build(name)
         steps = list(_current(plan).get("build") or [])
         if not steps:
             return None
