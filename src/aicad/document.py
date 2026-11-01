@@ -2849,11 +2849,22 @@ class Document:
         except Exception:
             self._save()
             raise
-        self._commit_built_parts(built)
-        for row in progress:
-            row["status"] = "built"
-        parts = [part_name for part_name, _script, _shape in built]
-        store.write_build_result(plan, progress, parts)
+        previous = None
+        try:
+            previous = self._commit_built_parts(built)
+            for row in progress:
+                row["status"] = "built"
+            parts = [part_name for part_name, _script, _shape in built]
+            store.write_build_result(plan, progress, parts)
+        except Exception:
+            if previous is not None:
+                plan.pop("built", None)
+                self._restore_built_parts(previous)
+                try:
+                    store.write_build_progress(plan, progress)
+                except Exception:
+                    pass
+            raise
         return {"progress": progress, "parts": parts, "reused": False}
 
     def _plan_build_will_run(self, name: str) -> bool:
@@ -2882,7 +2893,7 @@ class Document:
                 return False
         return True
 
-    def _commit_built_parts(self, built: list) -> None:
+    def _commit_built_parts(self, built: list) -> dict:
         """Save every finished solid. A failure puts the previous parts back."""
         previous = {part_name: self._parts.get(part_name) for part_name, _script, _shape in built}
         staged = []
@@ -2902,13 +2913,17 @@ class Document:
                 )
             self._save()
         except Exception:
-            for part_name, old in previous.items():
-                if old is None:
-                    self._parts.pop(part_name, None)
-                else:
-                    self._parts[part_name] = old
-            self._save()
+            self._restore_built_parts(previous)
             raise
+        return previous
+
+    def _restore_built_parts(self, previous: dict) -> None:
+        for part_name, old in previous.items():
+            if old is None:
+                self._parts.pop(part_name, None)
+            else:
+                self._parts[part_name] = old
+        self._save()
 
     def start_simulation_from_plan(self, name: str) -> dict:
         """Hand the approved plan to simulation. Refuses until the person approves."""
