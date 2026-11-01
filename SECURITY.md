@@ -212,4 +212,8 @@ That stops another website, including one that tries to reach this computer by a
 
 - **CM.** Changing a script size rewrites that one number. The rest of the script is unchanged, so a comment on the same line stays a comment.
 
+- **CN.** A step record that is not a list is not a list of steps. The feature list still opens. A step name in that list stays on one line. An extra field on a step is data and is not run as a script.
+
 - **DA.** Approving a plan records that revision and runs its scripts. A plan file replaced before the build is not the revision that runs. The receipt stays the revision that was approved.
+
+- **DB.** A plan build script runs in the part-script sandbox with the network off. Its directory is not the project, so it does not read or write the project. The project's time limit and the script byte limits still apply. A failed step leaves the previous model in place.
