@@ -47,7 +47,9 @@ equal, angle, radius, symmetric, and midpoint. Set construction true on a
 line, circle, or arc for construction geometry. A point-to-line distance is
 signed: positive is to the right of the directed line.
 
-place_part moves a part. list_parameters and set_parameter change one size
+place_part moves a part. A catalog mount snaps a mate onto a face or an axis
+from describe_faces: pass mount with part, ref, optional mate, rotation_deg
+about that axis, and flip. list_parameters and set_parameter change one size
 on an existing step: an operation size, a sketch dimension, an extrude height,
 a fillet radius, a chamfer distance, a catalog length, or a script size.
 A script size is a top-level assignment of a number, such as width = 40.
