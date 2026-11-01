@@ -106,6 +106,8 @@ nav { display: flex; gap: 4px; }
 .tree li.on, #doc-list li.on { background: #efe4d2; }
 .meta { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
 .flag { color: var(--fail); font-size: 11px; }
+#feature-list li.broken { color: var(--fail); flex-wrap: wrap; }
+#feature-list li .flag { flex: 1 0 100%; }
 
 .stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 #assembly-tools { flex-wrap: wrap; }
@@ -139,9 +141,10 @@ nav { display: flex; gap: 4px; }
   position: absolute; top: 12px; left: 12px; padding: 6px 10px; border-radius: 999px;
   background: rgba(255,255,255,0.92); font-size: 13px; box-shadow: var(--shadow);
 }
-.sketch-status.fully_constrained { color: var(--pass); }
-.sketch-status.under_constrained { color: var(--free); }
-.sketch-status.over_constrained, .sketch-status.didnt_converge { color: var(--fail); }
+.sketch-status.fully_constrained, .constraint-status.fully_constrained { color: var(--pass); }
+.sketch-status.under_constrained, .constraint-status.under_constrained { color: var(--free); }
+.sketch-status.over_constrained, .sketch-status.didnt_converge,
+.constraint-status.over_constrained, .constraint-status.didnt_converge { color: var(--fail); }
 .measure-readout, .activity {
   position: absolute; z-index: 2; pointer-events: none;
   background: rgba(243, 239, 230, 0.95); color: var(--ink);

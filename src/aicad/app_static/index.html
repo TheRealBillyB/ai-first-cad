@@ -114,16 +114,24 @@
           <option value="center">Center, start, end</option>
           <option value="tangent">Tangent to a line</option>
         </select></label>
-        <div class="seg">
+        <div class="seg" id="constraint-tools">
           <button type="button" data-constraint="horizontal">Horizontal</button>
           <button type="button" data-constraint="vertical">Vertical</button>
           <button type="button" data-constraint="coincident">Coincident</button>
           <button type="button" data-constraint="fix">Fix</button>
           <button type="button" data-constraint="distance">Distance</button>
           <button type="button" data-constraint="diameter">Diameter</button>
-          <button type="button" data-constraint="radius">Radius</button>
+          <button type="button" data-constraint="parallel">Parallel</button>
+          <button type="button" data-constraint="perpendicular">Perpendicular</button>
           <button type="button" data-constraint="tangent">Tangent</button>
+          <button type="button" data-constraint="equal">Equal</button>
+          <button type="button" data-constraint="angle">Angle</button>
+          <button type="button" data-constraint="radius">Radius</button>
+          <button type="button" data-constraint="symmetric">Symmetric</button>
+          <button type="button" data-constraint="midpoint">Midpoint</button>
         </div>
+        <button type="button" id="construction-toggle" aria-pressed="false">Construction</button>
+        <span id="constraint-status" class="meta">Unsolved</span>
         <div class="seg" id="dimension-list"></div>
         <label>Height <input id="extrude-height" type="number" value="4" step="0.5" /></label>
         <label>Part <input id="extrude-name" value="part" /></label>
