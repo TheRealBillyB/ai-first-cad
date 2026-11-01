@@ -83,3 +83,29 @@ def test_a_replaced_plan_file_is_not_the_build(tmp_path, monkeypatch):
     with pytest.raises(PlanError, match="does not match an approval"):
         workspace.execute("start_model_from_plan", {"name": "bracket"}, source="ui")
     assert _volume(workspace, "block") == pytest.approx(24)
+
+
+def test_a_replaced_plan_file_is_not_the_approval_result(tmp_path, monkeypatch):
+    import aicad.paths as paths
+
+    workspace = _draft(tmp_path)
+    original = paths.publish_text
+
+    def wrapped(path, text, *args, **kwargs):
+        original(path, text, *args, **kwargs)
+        if Path(path).name != "bracket.json":
+            return
+        if "Box(2, 3, 4)" not in text or '"status": "approved"' not in text:
+            return
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload["revisions"][-1]["build"][0]["script"] = "part = Box(9, 9, 9)\n"
+        Path(path).write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(paths, "publish_text", wrapped)
+    approved = workspace.execute("approve_plan", {"name": "bracket"}, source="ui")
+    assert _volume(workspace, "block") == pytest.approx(24)
+    assert "Box(2, 3, 4)" in approved["revision"]["build"][0]["script"]
+    assert "Box(9, 9, 9)" not in approved["revision"]["build"][0]["script"]
+    with pytest.raises(PlanError, match="does not match an approval"):
+        workspace.execute("start_model_from_plan", {"name": "bracket"}, source="ui")
+    assert _volume(workspace, "block") == pytest.approx(24)

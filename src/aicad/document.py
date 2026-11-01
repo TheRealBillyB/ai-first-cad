@@ -2784,9 +2784,11 @@ class Document:
             return self._with_build_report(name, report, approved=False)
 
     def _with_build_report(self, name: str, report: dict, *, approved: bool) -> dict:
-        public = self._plan_store().get(name) if approved else None
+        public = report.get("public") if approved else None
+        if public is None and not approved:
+            public = self._plan_store().start_work(name, "model", plan=report.get("plan"))
         if public is None:
-            public = self._plan_store().start_work(name, "model")
+            public = self._plan_store().get(name) if approved else self._plan_store().start_work(name, "model")
         names = ", ".join(report["parts"])
         public["progress"] = report["progress"]
         public["parts"] = report["parts"]
@@ -2835,6 +2837,8 @@ class Document:
                 "progress": copy.deepcopy(plan.get("build_progress") or []),
                 "parts": list(plan["built"]["parts"]),
                 "reused": True,
+                "plan": plan,
+                "public": store._public(plan),
             }
 
         def on_progress(progress: list) -> None:
@@ -2865,7 +2869,13 @@ class Document:
                 except Exception:
                     pass
             raise
-        return {"progress": progress, "parts": parts, "reused": False}
+        return {
+            "progress": progress,
+            "parts": parts,
+            "reused": False,
+            "plan": plan,
+            "public": store._public(plan),
+        }
 
     def _plan_build_will_run(self, name: str) -> bool:
         """True when modeling from ``name`` would run the approved scripts."""
