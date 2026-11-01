@@ -8,15 +8,20 @@ placement, not one of those numbers.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import math
 import os
+import secrets
 from pathlib import Path
 
 from aicad.errors import GeometryError
 from aicad.models import round_mm
 
 _RECENT_LIMIT = 8
+_RECENT_MAC_PREFIX = b"aicad-recent-v1\0"
+_RECENT_KEY_BYTES = 32
 _ACTIVITY_LIMIT = 12
 _FOLDER_LIMIT = 200
 # The viewport keeps coordinates in 32-bit floats. Past this, a normal part
@@ -83,28 +88,55 @@ def recent_path() -> Path:
     return Path.home() / ".config" / "aicad" / "recent.json"
 
 
+def recent_key_path() -> Path:
+    """The per-install key for the recent-project list. Not inside a project."""
+    return recent_path().with_name("recent.key")
+
+
 def remember_project(path: Path) -> None:
-    """Put this folder at the front of the recent-project list."""
+    """Put this folder at the front of the recent-project list.
+
+    Only a folder opened through the app is recorded. The entry is
+    authenticated with this install's key.
+    """
     folder = Path(path).resolve()
-    if not folder.is_dir():
+    try:
+        if not folder.is_dir():
+            return
+        from aicad.paths import is_reparse
+
+        if folder.is_symlink() or is_reparse(folder):
+            return
+    except OSError:
         return
-    current = _read_recent()
-    kept = [item for item in current if item.get("path") != str(folder)]
-    kept.insert(0, {"path": str(folder), "name": folder.name})
-    _write_recent(kept[:_RECENT_LIMIT])
+    text = str(folder)
+    try:
+        current = _read_recent()
+    except (OSError, UnicodeError, ValueError):
+        current = []
+    kept = [item for item in current if item != text]
+    kept.insert(0, text)
+    try:
+        _write_recent(kept[:_RECENT_LIMIT])
+    except OSError:
+        return
 
 
 def list_recent(*, project: Path | None = None, person: bool = True) -> dict:
     """Folders this person opened. A link is not named.
 
     The assistant only hears about the open project. A stored name is not
-    used: the name is the folder's own name, on one line.
+    used: the name is the folder's own name, on one line. An entry that was
+    not recorded by this install is left out.
     """
 
-    stored = _read_recent()
+    try:
+        stored = _read_recent()
+    except (OSError, UnicodeError, ValueError):
+        stored = []
     projects = []
-    for item in stored:
-        folder = _real_recent_folder(item.get("path"))
+    for raw in stored:
+        folder = _real_recent_folder(raw)
         if folder is None:
             continue
         from aicad.labels import plain_line
@@ -113,8 +145,6 @@ def list_recent(*, project: Path | None = None, person: bool = True) -> dict:
         if not name:
             continue
         projects.append({"path": str(folder), "name": name})
-    if projects != [{"path": item.get("path"), "name": item.get("name")} for item in stored]:
-        _write_recent(projects)
     shown = projects
     if not person:
         shown = [item for item in projects if _recent_inside(item["path"], project)]
@@ -881,31 +911,171 @@ def register_mcp(mcp, run, guard) -> None:
         return guard(lambda: run("measure_points", a=a, b=b, c=c))
 
 
-def _read_recent() -> list[dict]:
+def _recent_mac(key: bytes, path: str) -> str:
+    return hmac.new(key, _RECENT_MAC_PREFIX + path.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _recent_mac_matches(key: bytes, path: object, mac: object) -> bool:
+    if not isinstance(path, str) or not isinstance(mac, str) or len(mac) != 64:
+        return False
+    try:
+        expected = _recent_mac(key, path)
+    except UnicodeEncodeError:
+        return False
+    return hmac.compare_digest(expected, mac)
+
+
+def _read_recent_key() -> tuple[bytes | None, bool]:
+    """Return the key and whether a key file is already there.
+
+    A file that cannot be read still counts as there, so an unreadable key
+    does not cause the current list to be signed as if it were new.
+    """
+    path = recent_key_path()
+    try:
+        present = path.exists() or path.is_symlink()
+    except OSError:
+        return None, True
+    if not present:
+        return None, False
+    try:
+        from aicad.file_access import read_text
+
+        text = read_text(path, maximum=256).strip()
+        key = bytes.fromhex(text)
+    except (OSError, UnicodeError, ValueError):
+        return None, True
+    if len(key) != _RECENT_KEY_BYTES:
+        return None, True
+    return key, True
+
+
+def _create_recent_key() -> bytes | None:
+    path = recent_key_path()
+    key = secrets.token_bytes(_RECENT_KEY_BYTES)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from aicad.paths import publish_text
+
+        publish_text(path, key.hex() + "\n", root=path.parent, private=True)
+    except OSError:
+        return None
+    return key
+
+
+def _recent_items() -> list:
     path = recent_path()
-    if not path.is_file():
+    try:
+        present = path.is_file() or path.is_symlink()
+    except OSError:
+        return []
+    if not present:
         return []
     try:
         from aicad.file_access import read_text
 
         payload = json.loads(read_text(path, maximum=1_000_000))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeError):
         return []
     projects = payload.get("projects") if isinstance(payload, dict) else None
     if not isinstance(projects, list):
         return []
-    return [item for item in projects if isinstance(item, dict) and item.get("path")]
+    return projects
 
 
-def _write_recent(projects: list[dict]) -> None:
+def _accepted_recent_path(raw: object) -> str | None:
+    folder = _real_recent_folder(raw)
+    if folder is None:
+        return None
+    return str(folder)
+
+
+def _read_recent() -> list[str]:
+    """Authenticated folders, in list order.
+
+    An older list with no authentication is signed once, when this install's
+    key is created. After that, an entry without a valid authentication is
+    left out. A broken list is empty. This does not raise.
+    """
+    projects = _recent_items()
+    key, existed = _read_recent_key()
+    has_mac = any(isinstance(item, dict) and "mac" in item for item in projects)
+    if key is None and not existed and projects and not has_mac:
+        migrated: list[str] = []
+        seen: set[str] = set()
+        for item in projects:
+            raw = item.get("path") if isinstance(item, dict) else None
+            accepted = _accepted_recent_path(raw)
+            if accepted is None or accepted in seen:
+                continue
+            seen.add(accepted)
+            migrated.append(accepted)
+        migrated = migrated[:_RECENT_LIMIT]
+        created = _create_recent_key()
+        if created is None:
+            return []
+        try:
+            _write_recent_with(migrated, created)
+        except OSError:
+            try:
+                recent_key_path().unlink()
+            except OSError:
+                pass
+        return migrated
+    if key is None:
+        return []
+    kept: list[str] = []
+    for item in projects:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("path")
+        if not _recent_mac_matches(key, raw, item.get("mac")):
+            continue
+        accepted = _accepted_recent_path(raw)
+        if accepted is None:
+            continue
+        kept.append(accepted)
+    if not _recent_file_matches(projects, kept, key):
+        try:
+            _write_recent_with(kept, key)
+        except OSError:
+            pass
+    return kept
+
+
+def _recent_file_matches(projects: list, kept: list[str], key: bytes) -> bool:
+    if len(projects) != len(kept):
+        return False
+    for item, path in zip(projects, kept):
+        if not isinstance(item, dict) or item.get("path") != path:
+            return False
+        if not _recent_mac_matches(key, path, item.get("mac")):
+            return False
+    return True
+
+
+def _write_recent(projects: list[str]) -> None:
+    key, existed = _read_recent_key()
+    if key is None:
+        if existed:
+            return
+        key = _create_recent_key()
+        if key is None:
+            return
+    _write_recent_with(projects, key)
+
+
+def _write_recent_with(projects: list[str], key: bytes) -> None:
     path = recent_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        from aicad.paths import publish_text
+    rows = []
+    for item in projects:
+        if not isinstance(item, str):
+            continue
+        rows.append({"path": item, "mac": _recent_mac(key, item)})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from aicad.paths import publish_text
 
-        publish_text(path, json.dumps({"projects": projects}, indent=2) + "\n", root=path.parent)
-    except OSError:
-        return
+    publish_text(path, json.dumps({"projects": rows}, indent=2) + "\n", root=path.parent)
 
 
 # Same ceiling as a script file. A larger project file is not copied into memory.
