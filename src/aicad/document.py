@@ -2801,7 +2801,7 @@ class Document:
         store.write_build_result(plan, progress, parts)
         return {"progress": progress, "parts": parts, "reused": False}
 
-    def plan_build_will_run(self, name: str) -> bool:
+    def _plan_build_will_run(self, name: str) -> bool:
         """True when modeling from ``name`` would run the approved scripts."""
         from aicad.plan import _current, _receipt_matches
         from aicad.sandbox_state import in_design_call, in_sandbox

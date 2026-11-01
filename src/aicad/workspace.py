@@ -2211,7 +2211,7 @@ def _cmd_set_plan_build(workspace: Workspace, arguments: dict) -> dict:
 
 def _cmd_start_model_from_plan(workspace: Workspace, arguments: dict) -> dict:
     name = arguments["name"]
-    pending = workspace.document.plan_build_will_run(name)
+    pending = workspace.document._plan_build_will_run(name)
     if pending:
         workspace._undo.append(workspace._snapshot())
         if len(workspace._undo) > _UNDO_LIMIT:
