@@ -73,20 +73,23 @@ def deep_groove(row: DeepGroove):
     radial = (outside - bore) / 2
     wall = max(chamfer + 0.25, radial * 0.12)
     ball = min(radial - 2 * wall, width * 0.62)
-    if ball < 1:
-        raise GeometryError(f"Bearing {row.designation} has no room for a ball in the ISO 15 section.")
+    if ball < 0.5:
+        raise GeometryError(f"Bearing {row.designation} has no room for a ball in its section.")
     pitch = (bore + outside) / 4
     inner_shoulder = pitch - ball * 0.2
     outer_shoulder = pitch + ball * 0.2
     edge = min(chamfer, (outside / 2 - outer_shoulder) * 0.45, (inner_shoulder - bore / 2) * 0.45, width * 0.2)
+    if row.flange_mm is None:
+        start = [(outside / 2, edge), (outside / 2 - edge, 0)]
+    else:
+        start = [(outside / 2, row.flange_width_mm), (row.flange_mm / 2, row.flange_width_mm), (row.flange_mm / 2, 0)]
     outer = _revolve(
         [
             (outer_shoulder, 0),
             (outer_shoulder, width),
             (outside / 2 - edge, width),
             (outside / 2, width - edge),
-            (outside / 2, edge),
-            (outside / 2 - edge, 0),
+            *start,
         ]
     )
     inner = _revolve(
