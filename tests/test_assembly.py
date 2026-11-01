@@ -1684,3 +1684,34 @@ def test_separated_boxes_keep_the_surface_gap():
     overlap, gap, *_rest = kernel.clearance_between(left, right)
     assert overlap == 0
     assert gap == pytest.approx(20)
+
+
+def _turned_child(joint_type: str = "fixed") -> dict:
+    return {
+        "name": "mount",
+        "instances": [{"name": "frame", "part": "frame"}, {"name": "cup", "part": "cup"}],
+        "joints": [
+            {
+                "name": "seat",
+                "type": joint_type,
+                "parent": "frame",
+                "child": "cup",
+                "parent_anchor": [10, 0, 5],
+                "child_anchor": [0, 0, 1],
+                "rotation_deg": [180, 0, 0],
+            }
+        ],
+    }
+
+
+def test_a_fixed_joint_can_turn_its_child():
+    solved = solve(_turned_child())
+    cup = next(item for item in solved["instances"] if item["name"] == "cup")
+    assert transform_point(cup["matrix"], [0, 0, 1]) == pytest.approx([10, 0, 5])
+    assert transform_point(cup["matrix"], [0, 0, 2]) == pytest.approx([10, 0, 4])
+    assert transform_point(cup["matrix"], [0, 3, 1]) == pytest.approx([10, -3, 5])
+
+
+def test_only_a_fixed_joint_takes_a_rotation():
+    with pytest.raises(GeometryError, match="fixed joint only"):
+        solve(_turned_child("revolute"))
