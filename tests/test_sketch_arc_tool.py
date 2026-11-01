@@ -141,6 +141,137 @@ def test_changing_the_tangent_radius_moves_the_end(tmp_path):
     assert math.hypot(center["x"] - 10, center["y"]) == pytest.approx(8, abs=1e-2)
 
 
+def test_a_tangent_or_three_point_arc_stays_in_the_extruded_profile(tmp_path):
+    node = shutil.which("node")
+    assert node
+    probe = tmp_path / "arc-profile.js"
+    probe.write_text(_PROFILE, encoding="utf-8")
+    result = subprocess.run([node, str(probe), str(GEOM)], check=True, capture_output=True, text=True)
+    report = json.loads(result.stdout)
+    assert report["tangent"] == ["a", "b", "c", "d"]
+    assert None not in report["tangent"]
+    assert report["three"] == ["a", "b", "c", "d"]
+    assert "m" not in report["three"]
+    assert report["rounded"] == ["a", "b", "c"]
+    assert report["center"] == ["o", "a", "b"]
+
+    tangent = (
+        Sketch()
+        .point("a", 0, 0)
+        .fix("a")
+        .point("b", 10, 0)
+        .fix("b")
+        .point("c", 10, 8)
+        .point("d", 0, 8)
+        .fix("d")
+        .line("ab", "a", "b")
+        .tangent_arc("turn", "ab", "c")
+        .line("cd", "c", "d")
+        .line("da", "d", "a")
+    )
+    solved = solve_sketch(tangent)
+    shape = solid_from_sketch(
+        solved.geometry,
+        [{"op": "extrude", "points": report["tangent"], "height": 4, "name": "pad"}],
+    )
+    assert shape.impl.volume > 0
+    assert shape.impl.volume != pytest.approx(10 * 8 * 4, rel=1e-3)
+
+    rounded = (
+        Sketch()
+        .point("a", 0, 0)
+        .fix("a")
+        .point("m1", 5, -3)
+        .fix("m1")
+        .point("b", 10, 0)
+        .fix("b")
+        .point("m2", 13, 5)
+        .fix("m2")
+        .point("c", 5, 10)
+        .fix("c")
+        .point("m3", -3, 5)
+        .fix("m3")
+        .three_point_arc("ab", "a", "m1", "b")
+        .three_point_arc("bc", "b", "m2", "c")
+        .three_point_arc("ca", "c", "m3", "a")
+    )
+    round_report = solve_sketch(rounded)
+    round_shape = solid_from_sketch(
+        round_report.geometry,
+        [{"op": "extrude", "points": report["rounded"], "height": 2, "name": "pad"}],
+    )
+    straight = solid_from_sketch(
+        {"points": round_report.geometry["points"], "lines": {}, "circles": {}, "arcs": {}, "splines": {}},
+        [{"op": "extrude", "points": report["rounded"], "height": 2, "name": "flat"}],
+    )
+    assert round_shape.impl.volume > 0
+    assert abs(round_shape.impl.volume - straight.impl.volume) > 1
+
+
+_PROFILE = r"""
+const fs = require("fs");
+const vm = require("vm");
+const sandbox = {};
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), sandbox, { filename: "sketch_geom.js" });
+
+const tangent = {
+  entities: [
+    { id: "a", type: "point", at: [0, 0] },
+    { id: "b", type: "point", at: [10, 0] },
+    { id: "c", type: "point", at: [10, 8] },
+    { id: "d", type: "point", at: [0, 8] },
+    { id: "ab", type: "line", start: "a", end: "b" },
+    { id: "turn", type: "arc", tangent_to: "ab", end: "c", from: "end" },
+    { id: "cd", type: "line", start: "c", end: "d" },
+    { id: "da", type: "line", start: "d", end: "a" },
+  ],
+};
+const three = {
+  entities: [
+    { id: "a", type: "point", at: [0, 0] },
+    { id: "b", type: "point", at: [10, 0] },
+    { id: "m", type: "point", at: [5, 4] },
+    { id: "c", type: "point", at: [10, 8] },
+    { id: "d", type: "point", at: [0, 8] },
+    { id: "ab", type: "line", start: "a", end: "b" },
+    { id: "arc", type: "arc", through: ["b", "m", "c"] },
+    { id: "cd", type: "line", start: "c", end: "d" },
+    { id: "da", type: "line", start: "d", end: "a" },
+  ],
+};
+const rounded = {
+  entities: [
+    { id: "a", type: "point" },
+    { id: "b", type: "point" },
+    { id: "c", type: "point" },
+    { id: "m1", type: "point" },
+    { id: "m2", type: "point" },
+    { id: "m3", type: "point" },
+    { id: "ab", type: "arc", through: ["a", "m1", "b"] },
+    { id: "bc", type: "arc", through: ["b", "m2", "c"] },
+    { id: "ca", type: "arc", through: ["c", "m3", "a"] },
+  ],
+};
+const center = {
+  entities: [
+    { id: "o", type: "point" },
+    { id: "a", type: "point" },
+    { id: "b", type: "point" },
+    { id: "oa", type: "line", start: "o", end: "a" },
+    { id: "arc", type: "arc", center: "o", start: "a", end: "b" },
+    { id: "bo", type: "line", start: "b", end: "o" },
+  ],
+};
+process.stdout.write(JSON.stringify({
+  tangent: sandbox.sketchProfile(tangent),
+  three: sandbox.sketchProfile(three),
+  rounded: sandbox.sketchProfile(rounded),
+  center: sandbox.sketchProfile(center),
+}));
+"""
+
+
 def test_a_point_on_the_line_is_refused():
     sketch = (
         Sketch()
