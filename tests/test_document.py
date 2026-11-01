@@ -3,9 +3,10 @@
 from pathlib import Path
 
 import pytest
+from build123d import Axis, Box, Shell
 from PIL import Image
 
-from aicad import Document
+from aicad import Document, kernel
 from aicad.errors import PartNotFound
 
 
@@ -57,6 +58,22 @@ def test_step_round_trip_and_stl(tmp_path):
     assert imported.watertight is True
     again = Document(tmp_path)
     assert again.measure("box_again").volume_mm3 == pytest.approx(6000, rel=1e-6)
+
+
+def test_a_sphere_or_a_cone_is_watertight_and_an_open_shell_is_not(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_script("ball", "part = Sphere(5)\n")
+    document.create_part_from_script(
+        "egg", "part = Box(8, 6, 6) + Pos(4, 0, 0) * scale(Sphere(1), by=(4, 3, 3))\n"
+    )
+    document.create_part_from_script("point", "part = Cone(5, 0, 10)\n")
+    for name in ("ball", "egg", "point"):
+        assert document.measure(name).watertight is True, name
+
+    box = Box(10, 10, 10)
+    lid = box.faces().sort_by(Axis.Z)[-1]
+    open_shell = Shell(list(set(box.faces()) - {lid}))
+    assert kernel._is_watertight(open_shell) is False
 
 
 def test_render_writes_distinct_views(tmp_path):
