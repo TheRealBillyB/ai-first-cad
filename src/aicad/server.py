@@ -957,6 +957,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """Place parts that are already in the document.
 
         spec needs name and instances [{name, part, material, payload_kg, color}].
+        A color is #rrggbb, #rgb, or three numbers, and is stored as three numbers.
         An int color is three bytes from 0 to 255. A float color from 0 to 1 is
         a fraction of full scale. A float above 1 is a byte already on that scale.
         joints are {name, type, parent, child, parent_anchor, child_anchor, axis, value, min, max}.

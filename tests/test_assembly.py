@@ -1219,6 +1219,30 @@ def test_assembly_mesh_colors_each_part(tmp_path):
     assert mesh["colors"][0:3] == [10.0, 20.0, 30.0]
 
 
+def test_an_instance_color_can_be_written_as_hex(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [10, 10, 10], [0, 0, 0])
+    _box(document, "arm", [20, 10, 10], [10, 0, 0])
+    document.create_assembly(
+        {
+            "name": "painted",
+            "instances": [
+                {"name": "base", "part": "base", "color": "#0a141e"},
+                {"name": "arm", "part": "arm", "color": "#fff"},
+            ],
+            "joints": [{"name": "glued", "type": "fixed", "parent": "base", "child": "arm"}],
+        }
+    )
+    colors = {item["name"]: item["color"] for item in document.get_assembly("painted")["assembly"]["instances"]}
+    assert colors == {"base": [10, 20, 30], "arm": [255, 255, 255]}
+    mesh = document.assembly_mesh("painted")
+    assert mesh["colors"][0:3] == [10.0, 20.0, 30.0]
+    with pytest.raises(GeometryError, match="#rrggbb"):
+        document.create_assembly(
+            {"name": "smudged", "instances": [{"name": "base", "part": "base", "color": "#12345"}]}
+        )
+
+
 def test_a_child_must_meet_its_parent_and_the_viewport_uses_that_placement(tmp_path):
     from aicad.assembly import loose_mounts, posed_shapes
 
