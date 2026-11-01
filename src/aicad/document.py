@@ -2886,10 +2886,20 @@ class Document:
             return not (store.build_is_saved(plan) and self._parts_match_scripts(steps))
 
     def _parts_match_scripts(self, steps: list) -> bool:
-        """True when every listed part is still the script that was approved."""
+        """True when every listed part is still that script and still has its solid.
+
+        A missing part, a different script, or a script whose solid was not
+        loaded is built again. The text of the script is not enough: the saved
+        solid has to be the one that script recorded.
+        """
         for step in steps:
             part = self._parts.get(step["part"])
-            if part is None or part.source != "script" or part.script != step["script"]:
+            script = step["script"]
+            if part is None or part.source != "script" or part.script != script:
+                return False
+            if part.script_pending or part._shape is None:
+                return False
+            if part.script_sha256 != _script_hash(script):
                 return False
         return True
 
