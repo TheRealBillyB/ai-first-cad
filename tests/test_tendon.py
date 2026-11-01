@@ -8,6 +8,7 @@ import pytest
 
 from aicad.cli import main as cli_main
 from aicad.document import Document
+from aicad.errors import GeometryError
 from aicad.workspace import Workspace
 
 
@@ -262,6 +263,67 @@ def test_tendon_length_stays_constant_through_a_revolute(tmp_path: Path, capsys)
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["cables"][0]["length_mm"] == pytest.approx([70, 70, 70, 70, 70], abs=0.01)
+
+
+def test_a_tendon_can_be_tied_off_on_its_own_drum(tmp_path: Path):
+    document = Document(tmp_path)
+    _box(document, "base", [8, 8, 8], [-30, 0, 40])
+    _box(document, "drum", [8, 8, 8], [30, 0, 40])
+    drum = {
+        "role": "pulley",
+        "name": "drum",
+        "instance": "drum",
+        "at": [0, 0, 0],
+        "axis": [0, 0, 1],
+        "radius_mm": 10,
+        "wrap": "cw",
+    }
+    lead = {"role": "anchor", "name": "lead", "instance": "base", "at": [-50, 10, 0]}
+    shared = {"kind": "tendon", "diameter_mm": 1, "material": "steel", "min_bend_radius_mm": 4}
+    spec = {
+        "name": "winch",
+        "instances": [{"name": "base", "part": "base"}, {"name": "drum", "part": "drum"}],
+        "joints": [{"name": "spin", "type": "revolute", "parent": "base", "child": "drum", "axis": [0, 0, 1]}],
+        "studies": {"turn": {"duration_s": 1, "steps": 2, "drivers": [{"joint": "spin", "expression": "30 * t"}]}},
+        "cables": [
+            {
+                "name": "on_rim",
+                **shared,
+                "points": [lead, drum, {"role": "anchor", "name": "tie", "instance": "drum", "at": [10, 0, 0]}],
+            },
+            {
+                "name": "in_hole",
+                **shared,
+                "points": [lead, drum, {"role": "anchor", "name": "knot", "instance": "drum", "at": [6, 0, 0]}],
+            },
+        ],
+    }
+    document.create_assembly(spec)
+    cables = _by_name(document.check_cables("winch", sequence="turn"))
+    rim = cables["on_rim"]
+    # 50 mm to the top of the drum, then 90° clockwise to the tie at +X.
+    assert rim["status"] == "pass"
+    assert rim["wraps"][0]["wrap_deg"] == pytest.approx([90, 60], abs=0.05)
+    assert rim["length_mm"][0] == pytest.approx(50 + 5 * math.pi, abs=0.01)
+    # Turning the drum 30° counter-clockwise unwinds 30° of line.
+    assert rim["length_change_mm"] == pytest.approx([0, -10 * math.pi / 6], abs=0.01)
+    assert rim["frames"][0]["contacts"][-1]["at_mm"] == pytest.approx([10, 0, 0], abs=0.01)
+    hole = cables["in_hole"]
+    assert hole["status"] == "pass"
+    assert hole["length_mm"][0] == pytest.approx(50 + 5 * math.pi + 4, abs=0.01)
+    assert hole["length_change_mm"] == pytest.approx(rim["length_change_mm"], abs=0.01)
+
+    spec["name"] = "loose_end"
+    spec["cables"] = [
+        {
+            "name": "elsewhere",
+            **shared,
+            "points": [lead, drum, {"role": "anchor", "name": "off", "instance": "base", "at": [6, 0, 0]}],
+        }
+    ]
+    document.create_assembly(spec)
+    with pytest.raises(GeometryError, match="inside its radius"):
+        document.check_cables("loose_end")
 
 
 def test_capstan_tension_ratio(tmp_path: Path):

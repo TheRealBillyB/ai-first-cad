@@ -404,11 +404,15 @@ def _connect(name: str, left: dict, right: dict) -> tuple[list[float], list[floa
     if left["kind"] == "point" and right["kind"] == "point":
         return left["at"], right["at"], {}
     if left["kind"] == "point" and right["kind"] == "sheave":
-        tangent, meta = _tangent_from_point(name, right, left["at"], right["sense"], arriving=True)
+        tangent, meta = _tangent_from_point(
+            name, right, left["at"], right["sense"], arriving=True, tied=_tied(left, right)
+        )
         meta["fleet_deg"] = _fleet(left["at"], tangent, right["axis"])
         return left["at"], tangent, meta
     if left["kind"] == "sheave" and right["kind"] == "point":
-        tangent, meta = _tangent_from_point(name, left, right["at"], left["sense"], arriving=False)
+        tangent, meta = _tangent_from_point(
+            name, left, right["at"], left["sense"], arriving=False, tied=_tied(right, left)
+        )
         meta["fleet_deg"] = _fleet(tangent, right["at"], left["axis"])
         return tangent, right["at"], meta
     start, end, meta = _sheave_span(name, left, right)
@@ -419,7 +423,18 @@ def _connect(name: str, left: dict, right: dict) -> tuple[list[float], list[floa
     return start, end, meta
 
 
-def _tangent_from_point(name: str, sheave: dict, point: list[float], sense: int, arriving: bool) -> tuple[list[float], dict]:
+def _tied(point: dict, sheave: dict) -> bool:
+    """An end anchor fixed on the same part as the sheave next to it.
+
+    That is a line tied off on its own drum or hub: it can sit on the
+    sheave circle, or inside it in a hole, instead of reaching it from outside.
+    """
+    return point["role"] == "anchor" and point["instance"] == sheave["instance"]
+
+
+def _tangent_from_point(
+    name: str, sheave: dict, point: list[float], sense: int, arriving: bool, tied: bool = False
+) -> tuple[list[float], dict]:
     center = sheave["center"]
     axis = sheave["axis"]
     radius = sheave["radius"]
@@ -428,8 +443,16 @@ def _tangent_from_point(name: str, sheave: dict, point: list[float], sense: int,
     planar = _sub(offset_vector, _scale(axis, offset))
     dist = _norm(planar)
     if dist <= radius + 1e-7:
+        if tied and dist > 1e-6:
+            # The wrap ends at the anchor's angle, then runs straight to the anchor.
+            return _add(center, _scale(planar, radius / dist)), {"plane_offset_mm": offset}
+        if tied:
+            raise GeometryError(
+                f"{name} is tied off at the centre of {sheave['name']}, so it has no angle to wrap to."
+            )
         raise GeometryError(
-            f"{name} meets {sheave['name']} inside its radius. The cable has to reach the sheave from outside."
+            f"{name} meets {sheave['name']} inside its radius. The cable has to reach the sheave from outside, "
+            "unless it is the end anchor on the same part as that sheave."
         )
     direction = _scale(planar, 1.0 / dist)
     beta = math.acos(max(-1.0, min(1.0, radius / dist)))
