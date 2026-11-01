@@ -6,7 +6,9 @@ Deep-groove 6001 is ISO 15: 12 × 28 × 8 mm. Tapered 30205 is ISO 355:
 32005X is 25 × 47 × 15 mm, cone 15 mm, cup 11.5 mm. The 20 × 35 × 7 seal
 is ISO 6194-1 Table 1. NEMA 17 face numbers are ICS 16 inches times 25.4.
 ISO 4762 M5 head is 8.5 × 5 mm. ISO 4032 M5 is 8 mm across flats and 4.7 mm
-high. ISO 7089 M5 is 5.3 × 10 × 1 mm.
+high. ISO 7089 M5 is 5.3 × 10 × 1 mm. The small sizes are in the same tables:
+ISO 4762 M2 head is 3.8 × 2 mm, ISO 4032 M2 is 4 mm across flats and 1.6 mm
+high, and ISO 7089 M2 is 2.2 × 5 × 0.3 mm.
 """
 
 import math
@@ -190,6 +192,43 @@ def test_solids_match_the_boundary_and_are_not_boxes(tmp_path):
     assert document.check_clearance("washer", "washer_clear").intersecting is False
     _pin(document, "washer_hit", 2.8, 4, (0, 0, 0.5))
     assert document.check_clearance("washer", "washer_hit").intersecting is True
+
+
+@pytest.mark.parametrize(
+    ("size", "head", "flats", "nut_height", "washer"),
+    [
+        ("M1.6", (3.0, 1.6), 3.2, 1.3, (1.7, 4.0, 0.3)),
+        ("M2", (3.8, 2.0), 4.0, 1.6, (2.2, 5.0, 0.3)),
+        ("M2.5", (4.5, 2.5), 5.0, 2.0, (2.7, 6.0, 0.5)),
+    ],
+)
+def test_small_metric_fasteners_come_from_the_iso_tables(tmp_path, size, head, flats, nut_height, washer):
+    document = Document(tmp_path)
+    document.insert_standard_part("screw", "socket_head_cap_screw", size, length=8)
+    screw = document.measure("screw")
+    assert screw.valid and screw.watertight
+    assert screw.bounding_box.size.x == pytest.approx(head[0], abs=0.05)
+    assert screw.bounding_box.max.z == pytest.approx(head[1], abs=0.05)
+    assert screw.bounding_box.min.z == pytest.approx(-8, abs=0.05)
+
+    document.insert_standard_part("nut", "hex_nut", size)
+    nut = document.measure("nut")
+    assert nut.valid and nut.watertight
+    assert min(nut.bounding_box.size.x, nut.bounding_box.size.y) == pytest.approx(flats, abs=0.05)
+    assert nut.bounding_box.size.z == pytest.approx(nut_height, abs=0.05)
+
+    document.insert_standard_part("washer", "plain_washer", size)
+    plain = document.measure("washer")
+    inside, outside, thickness = washer
+    assert plain.bounding_box.size.x == pytest.approx(outside, abs=0.05)
+    assert plain.bounding_box.size.z == pytest.approx(thickness, abs=0.02)
+    _pin(document, "through", inside / 2 - 0.05, 4, (0, 0, 0.1))
+    assert document.check_clearance("washer", "through").intersecting is False
+    _pin(document, "tight", inside / 2 + 0.05, 4, (0, 0, 0.1))
+    assert document.check_clearance("washer", "tight").intersecting is True
+
+    note = library.metadata("socket_head_cap_screw", size, 8)["dimension_note"]
+    assert "bd_warehouse" not in note
 
 
 def test_deep_groove_bearings_are_closed_solids():
