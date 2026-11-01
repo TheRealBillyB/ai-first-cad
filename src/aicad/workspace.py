@@ -68,6 +68,7 @@ class Workspace:
         self._sketch_cache_revision = -1
         self._script_network_once = False
         self._script_network_all = os.environ.get("AICAD_SCRIPT_NETWORK") == "1"
+        self._note_mutation = False
         self._activity: list[dict] = []
         self._ensure_project_files()
 
@@ -135,7 +136,9 @@ class Workspace:
                 raise
             finally:
                 self.document.actor = previous_actor
-            if command.undo:
+            changed = command.undo or self._note_mutation
+            self._note_mutation = False
+            if changed:
                 self.geometry_revision += 1
                 self._mesh_cache.clear()
                 self._requirement_cache.clear()
@@ -2207,7 +2210,24 @@ def _cmd_set_plan_build(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_start_model_from_plan(workspace: Workspace, arguments: dict) -> dict:
-    return workspace.document.start_model_from_plan(arguments["name"])
+    name = arguments["name"]
+    pending = workspace.document._plan_build_will_run(name)
+    if pending:
+        workspace._undo.append(workspace._snapshot())
+        if len(workspace._undo) > _UNDO_LIMIT:
+            workspace._undo.pop(0)
+        workspace._redo.clear()
+    try:
+        result = workspace.document.start_model_from_plan(name)
+    except Exception as exc:
+        from aicad.errors import PlanBuildError
+
+        if pending and not isinstance(exc, PlanBuildError):
+            workspace._undo.pop()
+        raise
+    if pending:
+        workspace._note_mutation = True
+    return result
 
 
 def _cmd_start_simulation_from_plan(workspace: Workspace, arguments: dict) -> dict:
