@@ -473,10 +473,13 @@ class PlanStore:
         )
         return public
 
-    def start_work(self, name: str, kind: str) -> dict:
+    def start_work(self, name: str, kind: str, plan: dict | None = None) -> dict:
         if kind not in {"model", "simulation"}:
             raise PlanError("Work from a plan is either model or simulation.")
-        plan = self._load(name)
+        # The caller can pass the revision it already checked. Reading the file
+        # again would describe a replacement instead of that revision.
+        if plan is None:
+            plan = self._load(name)
         if plan["status"] != "approved" or plan["approved_revision"] != plan["current_revision"]:
             raise PlanError(work_refusal(plan, kind))
         if not _receipt_matches(self.root, plan):
