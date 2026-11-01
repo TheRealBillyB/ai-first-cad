@@ -656,7 +656,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         (point, line, circle, arc, spline) and `constraints`
         (fix, coincident, parallel, perpendicular, tangent, equal, horizontal,
         vertical, symmetric, midpoint, distance, angle, radius, diameter,
-        pattern_on_circle). Initial `at` coordinates are guesses. `fix` locks
+        pattern_on_circle). Set `construction` true on a line, circle, or arc
+        for construction geometry. It is solved and is not part of the solid
+        profile. Initial `at` coordinates are guesses. `fix` locks
         a point. Name a distance, diameter, radius, angle, or pattern so
         set_dimension can change it later. A tolerance is a number or
         {plus, minus}; it is stored and does not move the geometry.
