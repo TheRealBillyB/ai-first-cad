@@ -33,9 +33,9 @@ def _watch_spawn(monkeypatch):
     seen = []
     original = sandbox._spawn
 
-    def wrapped(workspace, kind, script, network, helper=False):
+    def wrapped(workspace, kind, script, network, helper=False, **kwargs):
         seen.append({"kind": kind, "network": network})
-        return original(workspace, kind, script, network, helper=helper)
+        return original(workspace, kind, script, network, helper=helper, **kwargs)
 
     monkeypatch.setattr(sandbox, "_spawn", wrapped)
     return seen
