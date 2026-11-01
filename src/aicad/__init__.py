@@ -105,6 +105,7 @@ del _imported_shadows
 del _same_directory
 del _module_invocation
 
+from aicad._version import __version__
 from aicad.document import Document
 from aicad.errors import (
     AICADError,
@@ -137,8 +138,6 @@ from aicad.models import (
     WallReport,
 )
 from aicad.sketch import Sketch, set_spec_dimension, solve_sketch
-
-__version__ = "0.9.0"
 
 __all__ = [
     "AICADError",

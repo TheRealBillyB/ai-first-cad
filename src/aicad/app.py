@@ -494,7 +494,16 @@ def _handler(session: Workspace):
             if "__AICAD_TOKEN__" not in text:
                 self._error(500, "The workspace page is missing its session slot.")
                 return
-            data = text.replace("__AICAD_TOKEN__", self.server.page_token).encode("utf-8")
+            if "__AICAD_VERSION__" not in text:
+                self._error(500, "The workspace page is missing its version slot.")
+                return
+            from aicad._version import __version__
+
+            data = (
+                text.replace("__AICAD_TOKEN__", self.server.page_token)
+                .replace("__AICAD_VERSION__", __version__)
+                .encode("utf-8")
+            )
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))

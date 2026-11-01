@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from aicad._version import __version__
 from aicad.errors import AICADError, GeometryError
 
 
@@ -39,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="aicad",
         description="AI-first CAD for hard-body parts. Units are millimeters.",
     )
+    parser.add_argument("--version", action="version", version=f"aicad {__version__}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--workspace",
@@ -106,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     render = commands.add_parser("render", parents=[common], help="Render standard views to PNG.")
     render.add_argument("name")
 
-    export = commands.add_parser("export", parents=[common], help="Write STEP or STL.")
+    export = commands.add_parser("export", parents=[common], help="Write STEP, STL, or 3MF.")
     export.add_argument("name")
     export.add_argument("--format", "-f", required=True, choices=["step", "stl", "3mf"])
     export.add_argument("--out", "-o", type=Path)

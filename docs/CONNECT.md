@@ -6,7 +6,7 @@ You need `aicad` installed (`pip install -e ".[dev]"` from this repo, or `pip in
 
 ## Cursor
 
-Open Cursor settings, then MCP, or edit `~/.cursor/mcp.json`. Use the full path to `aicad` and the full path to the project folder.
+Open Cursor settings, then MCP, or edit the config file. On Mac and Linux that file is `~/.cursor/mcp.json`. On Windows it is `%USERPROFILE%\.cursor\mcp.json`. A project file `.cursor/mcp.json` is the same shape. Use the full path to `aicad` and the full path to the project folder.
 
 ```json
 {
@@ -19,11 +19,11 @@ Open Cursor settings, then MCP, or edit `~/.cursor/mcp.json`. Use the full path 
 }
 ```
 
-On Windows the command is `C:\\full\\path\\to\\.venv\\Scripts\\aicad.exe`. Restart the MCP server in Cursor after you save the file. The tool list should include `list_parts` and `inspect_part`.
+On Windows the command is `C:\\full\\path\\to\\.venv\\Scripts\\aicad.exe`, and the workspace argument uses the same kind of path (`C:\\full\\path\\to\\your-project`). Restart the MCP server in Cursor after you save the file. The tool list should include `list_parts` and `inspect_part`.
 
 ## Claude Desktop
 
-Claude Desktop reads `claude_desktop_config.json`. On a Mac that file is in `~/Library/Application Support/Claude/`. On Windows it is in `%APPDATA%\\Claude\\`.
+Claude Desktop reads `claude_desktop_config.json`. On a Mac that file is `~/Library/Application Support/Claude/claude_desktop_config.json`. On Linux it is `~/.config/Claude/claude_desktop_config.json`. On Windows it is `%APPDATA%\\Claude\\claude_desktop_config.json`. The command below is the Mac and Linux virtualenv path. On Windows use `C:\\full\\path\\to\\.venv\\Scripts\\aicad.exe` and a Windows path for the project.
 
 ```json
 {
