@@ -207,3 +207,5 @@ That stops another website, including one that tries to reach this computer by a
 - **CJ.** The disk-quota watch counts the project directory it opened. A link is not a directory it watches or counts. A record of collected children cannot replace the bytes already counted for a live process, and it cannot move the watched directory.
 
 - **CK.** A geometry library may write a cache under the private library-config folder. A design script cannot write that folder itself. It cannot point the cache somewhere else by changing a locked name, by clearing one, or by replacing the environment mapping.
+
+- **CL.** A mesh vertex that is not a finite millimeter within the part limit is refused before a solid is built. The limit is the same one ordinary parts already use.
