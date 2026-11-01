@@ -1,11 +1,17 @@
 """Appending a step, and script sizes, leave the rest of the part in place."""
 
 import ast
+import json
+import socket
+import threading
+from http.client import HTTPConnection
 
 import pytest
 
+from aicad.app import make_server
 from aicad.errors import GeometryError, ScriptError
 from aicad.llm import _SYSTEM, tool_specs
+from aicad.sandbox import CPU_SECONDS, MEMORY_BYTES, WALL_SECONDS, cpu_seconds, memory_bytes, wall_seconds
 from aicad.script_params import rewrite_script_size, script_sizes
 from aicad.workspace import Workspace
 
@@ -180,6 +186,155 @@ def test_a_script_size_with_other_text_on_the_line_rebuilds_that_number(tmp_path
     workspace.execute("undo")
     assert workspace.document.measure("block").volume_mm3 == pytest.approx(40)
     assert "#;marker = 1" in workspace.document.get_source("block")["script"]
+
+
+def test_a_script_size_rebuild_stays_inside_the_sandbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    monkeypatch.setenv("AICAD_SCRIPT_NETWORK", "1")
+    monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "999999")
+    monkeypatch.setenv("AICAD_SCRIPT_CPU_SECONDS", "999999")
+    monkeypatch.setenv("AICAD_SCRIPT_MEMORY_MB", "999999")
+    project = tmp_path / "project"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    canary = outside / "SANDBOX_CANARY.txt"
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(0.2)
+    port = listener.getsockname()[1]
+    script = (
+        "width = 10\n"
+        "def _touch():\n"
+        "    try:\n"
+        "        import socket\n"
+        "        from pathlib import Path\n"
+        f"        sock = socket.create_connection(('127.0.0.1', {port}), 1)\n"
+        "        sock.close()\n"
+        "        Path('connected.txt').write_text('CONNECTED', encoding='utf-8')\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    try:\n"
+        "        from pathlib import Path\n"
+        f"        Path({str(canary)!r}).write_text('CANARY_HIT', encoding='utf-8')\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "_touch()\n"
+        "part = Box(width, 2, 2)\n"
+    )
+    dot = project / ".aicad"
+    try:
+        workspace = Workspace(project)
+        dot.mkdir(exist_ok=True)
+        claims = {
+            "network": True,
+            "AICAD_SCRIPT_NETWORK": "1",
+            "AICAD_SCRIPT_WALL_SECONDS": 999999,
+            "AICAD_SCRIPT_CPU_SECONDS": 999999,
+            "AICAD_SCRIPT_MEMORY_MB": 999999,
+        }
+        (dot / "config.json").write_text(json.dumps(claims) + "\n", encoding="utf-8")
+        (project / ".env").write_text("AICAD_SCRIPT_NETWORK=1\n", encoding="utf-8")
+        assert wall_seconds(project) == WALL_SECONDS
+        assert cpu_seconds() == CPU_SECONDS
+        assert memory_bytes() == MEMORY_BYTES
+        workspace.execute("create_part_from_script", {"name": "block", "script": script}, source="ui")
+        workspace.execute(
+            "set_parameter",
+            {"name": "block", "parameter": "script/width", "value": 16},
+            source="ui",
+        )
+        assert workspace.document.measure("block").volume_mm3 == pytest.approx(64)
+        assert "width = 16" in workspace.document.get_source("block")["script"]
+        assert not canary.exists()
+        assert not (project / "connected.txt").exists()
+        assert list(outside.iterdir()) == []
+        try:
+            accepted, _address = listener.accept()
+        except TimeoutError:
+            accepted = None
+        assert accepted is None
+    finally:
+        listener.close()
+
+
+def test_a_page_from_another_site_cannot_change_a_size(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
+    monkeypatch.setenv("AICAD_SERVER_TOKENS", str(tmp_path / "tokens"))
+    server = make_server(tmp_path / "project", "127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        workspace = server.workspace
+        workspace.execute(
+            "create_part_from_ops",
+            {"name": "block", "ops": [{"op": "add", "shape": "box", "size": [10, 10, 10], "name": "base"}]},
+            source="ui",
+        )
+        body = json.dumps(
+            {
+                "name": "set_parameter",
+                "arguments": {"name": "block", "parameter": "op/0/size.x", "value": 30},
+                "source": "ui",
+            }
+        )
+
+        def post(origin, token):
+            connection = HTTPConnection(host, port, timeout=30)
+            headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+            if origin is not None:
+                headers["Origin"] = origin
+            if token is not None:
+                headers["X-Aicad-Token"] = token
+            connection.request("POST", "/api/command", body=body, headers=headers)
+            response = connection.getresponse()
+            payload = response.read()
+            connection.close()
+            return response.status, payload
+
+        status, payload = post("http://evil.example", server.page_token)
+        assert status == 403
+        assert b"another site" in payload
+        status, payload = post(None, server.page_token)
+        assert status == 403
+        assert b"another site" in payload
+        append = json.dumps(
+            {
+                "name": "add_step",
+                "arguments": {
+                    "name": "block",
+                    "step": {"op": "cut", "shape": "box", "size": [4, 4, 20], "name": "slot"},
+                },
+                "source": "ui",
+            }
+        )
+        connection = HTTPConnection(host, port, timeout=30)
+        connection.request(
+            "POST",
+            "/api/command",
+            body=append,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(append)),
+                "Origin": "http://evil.example",
+                "X-Aicad-Token": server.page_token,
+            },
+        )
+        response = connection.getresponse()
+        assert response.status == 403
+        response.read()
+        connection.close()
+        assert workspace.document.measure("block").volume_mm3 == pytest.approx(1000)
+        assert [row["name"] for row in workspace.document.get_source("block")["ops"]] == ["base"]
+
+        status, payload = post(f"http://127.0.0.1:{port}", server.agent_token)
+        assert status == 200
+        assert json.loads(payload)["ok"] is True
+        assert workspace.document.measure("block").volume_mm3 == pytest.approx(3000)
+        assert workspace.state()["activity"][-1]["source"] == "agent"
+    finally:
+        server.shutdown()
 
 
 def test_the_assistant_is_told_to_edit_a_step():
