@@ -173,6 +173,7 @@ class Document:
         self.problems: list[str] = []
         self._lock = threading.RLock()
         self.actor = "user"
+        self._writes = 0
         self._load()
 
     def create_part_from_script(self, name: str, script: str) -> PartInfo:
@@ -195,7 +196,7 @@ class Document:
         with self._lock:
             self._require_new_name(name)
             shape = kernel.make_from_ops(ops)
-            self._parts[name] = _Part(name, "ops", shape, ops=list(ops))
+            self._parts[name] = _Part(name, "ops", shape, ops=copy.deepcopy(list(ops)))
             self._save()
             return self._info(self._parts[name])
 
@@ -301,7 +302,7 @@ class Document:
             part.base = shape
             part.source = "ops"
             part.step_errors = errors or None
-            part.ops = list(ops)
+            part.ops = copy.deepcopy(ops)
             part.script = None
             part.step_file = None
             part.library_spec = None
@@ -868,6 +869,7 @@ class Document:
             part.edge_ops = ops
             part.step_errors = kept or None
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def _add_edge_op(
@@ -899,6 +901,7 @@ class Document:
             }
             part.step_errors = kept or None
             self._save()
+            self._refresh_face_sketches(name, raise_error=True)
             return self._info(part)
 
     def _editable_edge_part(self, name: str) -> _Part:
@@ -2923,6 +2926,7 @@ class Document:
                 "The session has a number that is not finite, so it was not saved."
             ) from exc
         publish_text(path, text)
+        self._writes += 1
 
     def _reload(self) -> None:
         """Read ``session.json`` again. Script text is loaded and not executed."""
@@ -3099,14 +3103,14 @@ class Document:
                 source,
                 shape,
                 script=record.get("script"),
-                ops=record.get("ops"),
+                ops=record.get("ops") if isinstance(record.get("ops"), list) else None,
                 step_file=record.get("step_file") if isinstance(record.get("step_file"), str) else None,
                 base=base,
                 placement=stored_placement,
                 library_spec=record.get("library"),
                 gear_spec=record.get("gear") if source == "gear" else None,
                 sketch_name=record.get("sketch") if source == "sketch" else None,
-                sketch_steps=record.get("steps") if source == "sketch" else None,
+                sketch_steps=record.get("steps") if source == "sketch" and isinstance(record.get("steps"), list) else None,
                 geometry_file=record.get("geometry_file") if source == "script" else None,
                 script_sha256=record.get("script_sha256") if source == "script" else None,
                 script_pending=script_pending,

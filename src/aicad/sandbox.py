@@ -499,6 +499,16 @@ def wall_seconds(workspace: str | Path | None = None) -> int:
     return _capped("AICAD_SCRIPT_WALL_SECONDS", limit, limit)
 
 
+def _wall_for_run(workspace: Path, wall_seconds_limit: int | None) -> int:
+    """Seconds for this run. A caller can select a project's limit and cannot raise the cap."""
+    if wall_seconds_limit is None:
+        return wall_seconds(workspace)
+    if isinstance(wall_seconds_limit, bool) or not isinstance(wall_seconds_limit, int) or wall_seconds_limit < 1:
+        raise ScriptError("The script time limit is not a whole number of seconds.")
+    chosen = min(wall_seconds_limit, WALL_SECONDS_CAP)
+    return _capped("AICAD_SCRIPT_WALL_SECONDS", chosen, chosen)
+
+
 def cpu_seconds() -> int:
     return _capped("AICAD_SCRIPT_CPU_SECONDS", CPU_SECONDS, CPU_SECONDS)
 
@@ -5549,7 +5559,15 @@ def _remove_job_when_watch_leaves(disk: _DiskWatch, job: Path) -> None:
     shutil.rmtree(job, ignore_errors=True)
 
 
-def _spawn(workspace: Path, kind: str, script: str | None, network: bool, helper: bool = False) -> dict:
+def _spawn(
+    workspace: Path,
+    kind: str,
+    script: str | None,
+    network: bool,
+    helper: bool = False,
+    *,
+    wall_seconds_limit: int | None = None,
+) -> dict:
     ok, reason = sandbox_supported()
     if not ok:
         raise ScriptError(reason)
@@ -5614,7 +5632,7 @@ def _spawn(workspace: Path, kind: str, script: str | None, network: bool, helper
             profile_dir = None
             raise
         command = [*command_prefix(str(profile_path), workspace), *command]
-    wall = wall_seconds(workspace)
+    wall = _wall_for_run(workspace, wall_seconds_limit)
     disk = _DiskWatch(workspace, _snapshot_files(workspace), file_bytes(), disk_bytes())
     disk.child_report = job / "child-writes.json"
     quota_hold: list[int | None] = [None]
@@ -5998,15 +6016,25 @@ def _drop_job(payload: dict) -> None:
         shutil.rmtree(job, ignore_errors=True)
 
 
-def run_part_script(code: str, workspace: str | Path | None = None):
-    """Run a part script (``part = ...``) in the sandbox and return the solid."""
+def run_part_script(
+    code: str,
+    workspace: str | Path | None = None,
+    *,
+    wall_from: str | Path | None = None,
+):
+    """Run a part script (``part = ...``) in the sandbox and return the solid.
+
+    ``wall_from`` selects the project whose time limit applies when ``workspace``
+    is a private directory. The limit cannot be raised past the cap.
+    """
     _check_script(code)
     temporary = None
     if workspace is None:
         temporary = tempfile.TemporaryDirectory(prefix="aicad-script-")
         workspace = Path(temporary.name)
+    limit = wall_seconds(wall_from) if wall_from is not None else None
     try:
-        payload = _spawn(Path(workspace), "part", code, network=False)
+        payload = _spawn(Path(workspace), "part", code, network=False, wall_seconds_limit=limit)
         if not payload.get("ok"):
             from aicad.paths import hide_project_path
 

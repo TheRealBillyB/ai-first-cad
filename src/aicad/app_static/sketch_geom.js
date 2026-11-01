@@ -156,10 +156,10 @@ function sketchProfile(spec) {
   let best = [];
   let bestClosed = false;
   edges.forEach((edge, index) => {
-    const chain = walkSketchChain(edges, index);
+    const walked = walkSketchChain(edges, entities, index);
+    const chain = walked.chain;
     if (chain.length < 3) return;
-    const closed = sketchChainCloses(edges, chain);
-    if (closed) {
+    if (walked.closed) {
       if (!bestClosed || chain.length > best.length) {
         best = chain;
         bestClosed = true;
@@ -178,29 +178,54 @@ function sketchProfile(spec) {
   return best;
 }
 
-function walkSketchChain(edges, startIndex) {
-  const first = edges[startIndex];
-  const chain = [first.start, first.end];
-  const used = new Set([first.id]);
-  let cursor = first.end;
-  while (used.size < edges.length) {
-    const next = edges.find((edge) => !used.has(edge.id) && (edge.start === cursor || edge.end === cursor));
-    if (!next) break;
-    used.add(next.id);
-    cursor = next.start === cursor ? next.end : next.start;
-    if (cursor === chain[0]) break;
-    chain.push(cursor);
+function sketchEdgeEnds(edge, entities) {
+  if (!edge || edge.construction) return null;
+  if (edge.type === "line" && edge.start && edge.end && edge.start !== edge.end) {
+    return [edge.start, edge.end];
   }
-  return chain;
+  if (edge.type !== "arc") return null;
+  if (edge.start && edge.end && edge.start !== edge.end) return [edge.start, edge.end];
+  if (Array.isArray(edge.through) && edge.through.length >= 2) {
+    const start = edge.through[0];
+    const end = edge.through[edge.through.length - 1];
+    if (start && end && start !== end) return [start, end];
+  }
+  if (edge.tangent_to && edge.end) {
+    const line = (entities || []).find((item) => item && item.type === "line" && item.id === edge.tangent_to);
+    const origin = line && (edge.from === "start" ? line.start : line.end);
+    if (origin && origin !== edge.end) return [origin, edge.end];
+  }
+  return null;
 }
 
-function sketchChainCloses(edges, chain) {
-  if (!chain || chain.length < 3) return false;
-  const start = chain[0];
-  const end = chain[chain.length - 1];
-  return edges.some((edge) =>
-    (edge.start === end && edge.end === start) || (edge.start === start && edge.end === end)
-  );
+function walkSketchChain(edges, entities, startIndex) {
+  const first = sketchEdgeEnds(edges[startIndex], entities);
+  if (!first) return { chain: [], closed: false };
+  const chain = first.slice();
+  const used = new Set([edges[startIndex].id]);
+  let cursor = first[first.length - 1];
+  let closed = false;
+  while (used.size < edges.length) {
+    const next = edges.find((edge) => {
+      if (used.has(edge.id)) return false;
+      const ends = sketchEdgeEnds(edge, entities);
+      return ends && (ends[0] === cursor || ends[ends.length - 1] === cursor);
+    });
+    if (!next) break;
+    const ends = sketchEdgeEnds(next, entities);
+    used.add(next.id);
+    const forward = ends[0] === cursor;
+    const rest = forward ? ends.slice(1) : ends.slice(0, -1).reverse();
+    if (rest[rest.length - 1] === chain[0]) {
+      chain.push(...rest.slice(0, -1));
+      closed = true;
+      break;
+    }
+    chain.push(...rest);
+    cursor = rest[rest.length - 1];
+  }
+  if (chain.some((id) => !id)) return { chain: [], closed: false };
+  return { chain, closed };
 }
 
 function sketchStepName(steps, base) {
