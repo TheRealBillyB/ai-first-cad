@@ -229,9 +229,13 @@ class Workspace:
                 self._sketch_cache_revision = self.geometry_revision
             sketches = self._sketch_cache
             parts = []
+            from aicad.history import history_for
+
             for part in self.document.list_parts():
+                stored = self.document._get(part.name)  # noqa: SLF001
                 payload = part.to_dict()
-                payload["placement"] = copy.deepcopy(self.document._get(part.name).placement)  # noqa: SLF001
+                payload["placement"] = copy.deepcopy(stored.placement)
+                payload["history"] = history_for(stored)
                 parts.append(payload)
             return {
                 "units": "mm",
@@ -1517,17 +1521,34 @@ _add(Command(
     ),
     _cmd_section,
 ))
+from aicad.sketch import constraint_list as _constraint_list  # noqa: E402
+
+_SKETCH_CONSTRAINTS = _constraint_list()
+_SKETCH_SPEC = {
+    "type": "object",
+    "description": (
+        "entities (point, line, circle, arc; construction true is construction geometry) and constraints ("
+        + _SKETCH_CONSTRAINTS
+        + ")."
+    ),
+}
 _add(Command(
     "create_sketch",
-    "Store and solve a 2D sketch. status is fully_constrained, under_constrained, or over_constrained.",
-    _obj({"name": _string("Sketch name."), "spec": {"type": "object", "description": "entities and constraints."}}, ["name", "spec"]),
+    "Store and solve a 2D sketch. Constraints: "
+    + _SKETCH_CONSTRAINTS
+    + ". Set construction true on a line, circle, or arc for construction geometry. "
+    "status is fully_constrained, under_constrained, or over_constrained.",
+    _obj({"name": _string("Sketch name."), "spec": _SKETCH_SPEC}, ["name", "spec"]),
     _cmd_create_sketch,
     undo=True,
 ))
 _add(Command(
     "update_sketch",
-    "Replace a sketch spec and rebuild parts made from it.",
-    _obj({"name": _string("Sketch name."), "spec": {"type": "object"}}, ["name", "spec"]),
+    "Replace a sketch spec and rebuild parts made from it. Constraints: "
+    + _SKETCH_CONSTRAINTS
+    + ". construction true marks construction geometry. "
+    "status is fully_constrained, under_constrained, or over_constrained.",
+    _obj({"name": _string("Sketch name."), "spec": _SKETCH_SPEC}, ["name", "spec"]),
     _cmd_update_sketch,
     undo=True,
 ))
