@@ -184,11 +184,27 @@ def _seals(*rows: tuple) -> tuple[ShaftSeal, ...]:
 
 
 # designation, bore, outside, width, chamfer, dynamic N, static N, mass g
+# Bores under 10 mm are the open bearing. A shielded 68 or 69 bearing can be wider.
 DEEP_GROOVE: tuple[DeepGroove, ...] = _deep(
+    ("683", 3, 7, 2, 0.1, None, None, None),
+    ("693", 3, 8, 3, 0.15, None, None, None),
+    ("623", 3, 10, 4, 0.15, None, None, None),
+    ("684", 4, 9, 2.5, 0.1, None, None, None),
+    ("694", 4, 11, 4, 0.15, None, None, None),
     ("624", 4, 13, 5, 0.2, None, None, None),
+    ("685", 5, 11, 3, 0.15, None, None, None),
+    ("695", 5, 13, 4, 0.2, None, None, None),
     ("625", 5, 16, 5, 0.3, None, None, None),
+    ("686", 6, 13, 3.5, 0.15, None, None, None),
+    ("696", 6, 15, 5, 0.2, None, None, None),
     ("626", 6, 19, 6, 0.3, None, None, None),
+    ("687", 7, 14, 3.5, 0.15, None, None, None),
+    ("697", 7, 17, 5, 0.3, None, None, None),
+    ("688", 8, 16, 4, 0.2, None, None, None),
+    ("698", 8, 19, 6, 0.3, None, None, None),
     ("608", 8, 22, 7, 0.3, 3450, 1370, 12),
+    ("689", 9, 17, 4, 0.2, None, None, None),
+    ("699", 9, 20, 6, 0.3, None, None, None),
     ("6000", 10, 26, 8, 0.3, 4620, 1960, 19),
     ("6001", 12, 28, 8, 0.3, 5070, 2360, 22),
     ("6002", 15, 32, 9, 0.3, 5590, 2850, None),

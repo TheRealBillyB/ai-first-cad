@@ -1,7 +1,8 @@
 """Catalog dimensions, solids, bill of materials, and joint mates.
 
 Reference numbers below are written out, not read back from the tables.
-Deep-groove 6001 is ISO 15: 12 × 28 × 8 mm. Tapered 30205 is ISO 355:
+Deep-groove 6001 is ISO 15: 12 × 28 × 8 mm. The open miniature sizes are
+ISO 15 as well: 683 is 3 × 7 × 2 mm and 694 is 4 × 11 × 4 mm. Tapered 30205 is ISO 355:
 25 mm bore, 52 mm outside, 16.25 mm overall, 15 mm cone, 13 mm cup.
 32005X is 25 × 47 × 15 mm, cone 15 mm, cup 11.5 mm. The 20 × 35 × 7 seal
 is ISO 6194-1 Table 1. NEMA 17 face numbers are ICS 16 inches times 25.4.
@@ -206,6 +207,39 @@ def test_deep_groove_bearings_are_closed_solids():
         solid = kernel.adopt(build_deep_groove(row))
         measured = kernel.measure(solid)
         assert measured.valid and measured.watertight and measured.volume_mm3 > 0
+
+
+@pytest.mark.parametrize(
+    ("designation", "bore", "outside", "width"),
+    [
+        ("683", 3, 7, 2),
+        ("693", 3, 8, 3),
+        ("623", 3, 10, 4),
+        ("684", 4, 9, 2.5),
+        ("694", 4, 11, 4),
+        ("686", 6, 13, 3.5),
+        ("698", 8, 19, 6),
+        ("699", 9, 20, 6),
+    ],
+)
+def test_miniature_bearings_are_listed_and_build(tmp_path, designation, bore, outside, width):
+    document = Document(tmp_path)
+    match = _match(document, designation, "ball_bearing")
+    assert match["size"] == designation
+    assert match["dimensions"]["bore_mm"] == bore
+    assert match["dimensions"]["outside_mm"] == outside
+    assert match["dimensions"]["width_mm"] == width
+
+    document.insert_standard_part("small", "ball_bearing", designation)
+    measured = document.measure("small")
+    assert measured.valid and measured.watertight
+    size = sorted((measured.bounding_box.size.x, measured.bounding_box.size.y, measured.bounding_box.size.z))
+    assert size[0] == pytest.approx(width, abs=0.02)
+    assert size[2] == pytest.approx(outside, abs=0.05)
+    _pin(document, "shaft", bore / 2 - 0.05, width + 2, (0, 0, -1))
+    assert document.check_clearance("small", "shaft").intersecting is False
+    _pin(document, "oversize", bore / 2 + 0.05, width + 2, (0, 0, -1))
+    assert document.check_clearance("small", "oversize").intersecting is True
 
 
 def test_a_size_outside_the_local_table_still_builds(tmp_path):
