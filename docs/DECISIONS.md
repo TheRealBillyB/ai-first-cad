@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-11-01
+
+| Decision | Rationale |
+| --- | --- |
+| A sketch on a face moves with that part | The face is stored on the part, in that part's own coordinates. Moving or turning the part, or an edit that moves the face, carries the sketch with that face. A face that is no longer there still raises SketchPlaneError. |
+
 ## 2026-10-31
 
 | Decision | Rationale |
