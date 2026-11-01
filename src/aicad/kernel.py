@@ -2756,16 +2756,40 @@ def _volume(obj) -> float:
 
 
 def _is_watertight(impl) -> bool:
-    """A valid manifold solid with volume. ``is_manifold`` is build123d's closed-shell check."""
+    """A valid manifold solid with volume."""
     try:
         return bool(
             len(impl.solids()) >= 1
             and impl.volume > 0
             and impl.is_valid
-            and impl.is_manifold
+            and _every_edge_joins_two_faces(impl)
         )
     except Exception:
         return False
+
+
+def _every_edge_joins_two_faces(impl) -> bool:
+    """The closed-shell test, skipping degenerate edges.
+
+    A sphere pole or a cone apex is a zero-length edge on one face. It has
+    vertices, so build123d's ``is_manifold`` does not skip it and calls a
+    closed sphere open. ``BRep_Tool.Degenerated`` marks those edges.
+    """
+    from build123d.topology.shape_core import get_top_level_topods_shapes
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.collections import IndexedDataMap_TopoDS_Shape_List_TopoDS_Shape_TopTools_ShapeMapHasher as EdgeFaces
+
+    for top in get_top_level_topods_shapes(impl.wrapped):
+        edge_faces = EdgeFaces()
+        TopExp.MapShapesAndAncestors_s(top, TopAbs_EDGE, TopAbs_FACE, edge_faces)
+        for index in range(1, edge_faces.Extent() + 1):
+            if BRep_Tool.Degenerated_s(TopoDS.Edge(edge_faces.FindKey(index))):
+                continue
+            if edge_faces.FindFromIndex(index).Extent() != 2:
+                return False
+    return True
 
 
 def _vec(vector) -> Vec3:
