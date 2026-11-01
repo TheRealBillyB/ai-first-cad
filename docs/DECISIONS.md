@@ -18,6 +18,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | A three-point or tangent arc is part of the profile | The outline uses the arc's two ends. A three-point arc keeps its middle point off the outline, and a tangent arc continues the line it leaves. The solid follows that outline. |
 | Inspect uses a catalog mass when the part has one | A published catalog mass is the mass Inspect reports, and it does not follow the chosen material. A motor or gearbox envelope has no mass from volume times density. A modeled part still uses the handbook density. |
 | Modeling from a plan rebuilds a changed part | `start_model_from_plan` runs the approved scripts when a listed part is missing or is no longer that script. When every listed part is still that script, the scripts are not run again. A rebuild can be undone. |
+| TPU joins the material library | TPU 95A is a printed flexible material with typical filament datasheet values, so a soft printed part is weighed and checked as itself. Its note says a linear stress check is only a small-strain estimate. |
 
 ## 2026-10-31
 
