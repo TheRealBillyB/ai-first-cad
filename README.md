@@ -68,6 +68,16 @@ The mechanics solver is [CalculiX](https://www.calculix.de/) (`ccx`), which is G
 
 `aicad fea` reports a clear error when `ccx` is missing. The tests skip in that case.
 
+## Examples
+
+Three short projects rebuild with no display. The pictures are already in the repo.
+
+- An enclosure with mounting holes, a fillet, and a chamfer: `python examples/enclosure.py`. ![Enclosure](examples/renders/enclosure_contact.png)
+- A constrained sketch extruded into a pad: `python examples/sketch_pad.py`. ![Pad sketch](examples/renders/sketch_pad.png) ![Pad](examples/renders/sketch_pad_contact.png)
+- An STL block measured with inspect: `python examples/mesh_block.py`. ![Imported block](examples/renders/mesh_block_contact.png)
+
+The motor mount below is the longer worked example. Print prep, a robot export, and the assembly examples are further down.
+
 ## Try the motor mount
 
 The worked example is a 72 × 52 × 4 mm plate with a boss, a 16 mm bore, four motor screws, four frame holes, a cable slot on the +Y edge, and three gussets that brace the boss to the plate. The plate outline, the bore, the boss, and both hole patterns are a constrained sketch: the four motor screws are "evenly spaced on a 24 mm circle, starting at 45°", and each frame hole is 6 mm inside the edges. `examples/shaft.py` is a 15.6 mm shaft meant to pass through that bore.
@@ -567,6 +577,9 @@ A result is either a **verified check** or a **rough estimate**. A verified chec
 ```bash
 pytest
 python examples/motor_mount.py   # refresh examples/renders and the report
+python examples/enclosure.py      # box, holes, fillet, and chamfer
+python examples/sketch_pad.py     # constrained sketch and an extrude
+python examples/mesh_block.py     # STL import measured with inspect
 python examples/rod_arm.py       # assembly keyframes, cable check, and power estimate
 python examples/vibration_arm.py  # modes, resonance, and bolted-joint loosening
 python examples/print_and_robot.py  # overhang map, printer fit, URDF, and MJCF
