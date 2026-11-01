@@ -1,6 +1,6 @@
 # Start here
 
-This is a CAD program you drive yourself, or hand to an AI assistant. You describe a solid part, look at it, and check whether it is strong enough, whether it will print, and whether a bolted joint will stay tight. The same buttons the app shows are the tools an assistant calls, so you and the assistant are editing one project.
+This is version 0.9.0, a public preview ahead of 1.0. It is a CAD program you drive yourself, or hand to an AI assistant. You describe a solid part, look at it, and check whether it is strong enough, whether it will print, and whether a bolted joint will stay tight. The same buttons the app shows are the tools an assistant calls, so you and the assistant are editing one project. What this preview contains is listed in [docs/reference/changelog.md](docs/reference/changelog.md).
 
 You do not need a mechanical-engineering background to walk through the examples. The numbers are in millimeters. A force is in newtons. A stress from the solver is in megapascals, which is newtons per square millimeter.
 
@@ -83,7 +83,7 @@ Open the app, click **Settings** in the assistant panel, and paste an API key fo
 
 This is the MCP server. It speaks the same commands over a local pipe.
 
-In Cursor, put this in `~/.cursor/mcp.json`. Use the full path to `aicad` inside the virtual environment, and the full path to the workspace folder.
+In Cursor, put this in `~/.cursor/mcp.json` on Mac or Linux, or in `%USERPROFILE%\.cursor\mcp.json` on Windows. A project file `.cursor/mcp.json` is the same shape. Use the full path to `aicad` inside the virtual environment, and the full path to the workspace folder.
 
 Mac or Linux:
 

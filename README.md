@@ -10,9 +10,9 @@ A CAD tool built so an assistant can use it as well as a person can.
 
 Today an assistant writing CAD code (OpenSCAD, CadQuery, build123d) works blind. It emits a script and hopes the solid is the one you described. aicad is the missing perception loop: after each modeling step the assistant can look at the part and check it. The focus is hard-body mechanical parts, the kind you print or bolt onto a robot.
 
-This is a small first version. It does not invent a geometry kernel. [build123d](https://github.com/gumyr/build123d) (OpenCascade) sits behind one module, `aicad.kernel`, so it can be swapped later. A person and an assistant share one command layer: the workspace app, the in-app chat, the CLI, the Python API, and the MCP server all call the same operations on the same document.
+Version 0.9.0 is a public preview ahead of 1.0. It does not invent a geometry kernel. [build123d](https://github.com/gumyr/build123d) (OpenCascade) sits behind one module, `aicad.kernel`, so it can be swapped later. A person and an assistant share one command layer: the workspace app, the in-app chat, the CLI, the Python API, and the MCP server all call the same operations on the same document.
 
-New to CAD, or new to this repo? Read [START_HERE.md](START_HERE.md). It is a plain-language tour: install on Windows or Mac, open the app, connect an assistant, and walk the examples.
+New to CAD, or new to this repo? Read [START_HERE.md](START_HERE.md). It is a plain-language tour: install on Windows or Mac, open the app, connect an assistant, and walk the examples. What this preview contains is listed in [docs/reference/changelog.md](docs/reference/changelog.md).
 
 Report a vulnerability in private. The steps are in [SECURITY.md](SECURITY.md).
 
@@ -25,21 +25,21 @@ Report a vulnerability in private. The steps are in [SECURITY.md](SECURITY.md).
 ## What you can do
 
 - Plan a design before modeling it. Research with sources, a rough dimensioned blueprint of blocks, assumptions, and open questions stay with the project. You approve the plan in the Plan panel. The assistant cannot approve it, and modeling or simulation started from that plan waits until you do. See [Plan & Sketch](docs/PLAN_AND_SKETCH.md).
-- Describe a 2D profile the way a sketcher does: points, lines, arcs, and circles, plus geometric and dimensional constraints. SolveSpace solves it and reports whether it is fully constrained, still free, or conflicting. Extrude, revolve, or cut the solved profile into a solid. Change a named dimension and the solid rebuilds.
+- Describe a 2D profile the way a sketcher does: points, lines, arcs, circles, and splines, plus geometric and dimensional constraints. The sketch can sit on XY, YZ, XZ, an offset or angled datum, or a planar face. SolveSpace solves it and reports whether it is fully constrained, still free, or conflicting. Extrude, revolve, or cut the solved profile into a solid. Change a named dimension and the solid rebuilds.
 - Create or replace a part by running a build123d script, or with a short list of `add` / `cut` boxes and cylinders.
 - Optionally record each boolean step with `feature.add` / `feature.cut`, and see how much of an added solid was already buried inside the part.
 - Keep a document of named parts and sketches on disk. The script, the operation list, the sketch plus its build steps, a catalog part, or a copied STEP file is the source. Opening the workspace rebuilds the solids.
 - Measure a part: bounding box, volume, surface area, center of mass, face and edge counts, and whether the solid is valid and watertight.
 - Render it headless, with no GPU and no display: front, back, left, right, top, bottom, isometric, one contact sheet, and a planar section. The MCP tools return those pictures so the assistant can see them.
-- Export STEP and STL. Import a STEP file and place it.
+- Export STEP, STL, and 3MF. Import a STEP file, or a closed STL mesh, and place it. An imported STL has no editable features.
 - Search a catalog of standard parts by designation (bearings, seals, fasteners, small motors, and gearboxes), insert one, and check clearance against your part.
 - Estimate minimum wall thickness from rays and from cross-sections, and compare it with a threshold. The report says which method produced the number.
 - Check interference or clearance between two parts.
-- Run a linear static check. Pick a material (PLA, PETG, ABS, nylon, aluminum 6061, or mild steel), hold faces and apply forces, pressures, or bolt loads by describing the face, and read the peak von Mises stress, the peak displacement, the minimum safety factor, and a pass/fail against a target. Stress and displacement pictures come back from several angles.
+- Run a linear static check. Pick a material (PLA, PETG, ABS, nylon, aluminum 6061, mild steel, 42CrMo4, or 16MnCr5), hold faces and apply forces, pressures, or bolt loads by describing the face, and read the peak von Mises stress, the peak displacement, the minimum safety factor, and a pass/fail against a target. Stress and displacement pictures come back from several angles.
 - Open the workspace with `aicad app` and edit the same document in the browser: open and save a project folder, orbit the parts, move one, pick a face or an edge by the reference an assistant uses, measure between two clicks, draw a constrained sketch, extrude or revolve or cut it, change a dimension or another size on the solid, undo, and read inspection, section, feature, and FEA panels. Live mode follows an assistant's edits. A chat panel drives those same commands with an API key you keep on the machine. Each project also has markdown notes and structured requirements that pass or fail against the current solid.
 - Assemble parts you already modeled, including catalog parts, with fixed, revolute, prismatic, and cylindrical joints, plus gear and planar linkage relations. Name poses, sweep a motion, and see where the moving solids collide. Route a cable or a hose through clips, or a tendon over pulleys and guides, and check length, bend radius, tension, and pinching. Estimate the joint torque and the hydraulic or electric power that motion needs.
 - Find natural frequencies, compare them with a motor or a pump, and rate a bolted joint for slip and vibration loosening.
-- Turn a part for printing, see the faces that need support, and check the oriented size against a Bambu A1, P1, X1, Prusa MK4, or Ender 3. A requirement kind `fits_printer` is that check. PrusaSlicer or OrcaSlicer, when installed, adds time and filament grams.
+- Turn a part for printing, see the faces that need support, and check the oriented size against a Bambu A1, A1 mini, P1, or X1, a Prusa MK4, or an Ender 3. A requirement kind `fits_printer` is that check. PrusaSlicer or OrcaSlicer, when installed, adds time and filament grams.
 - Export an assembly as URDF and MJCF, with meshes, joint limits, masses, and inertias. MuJoCo, when installed, loads the file and steps it.
 
 Units are millimeters. Forces are newtons, so a stress from the solver is in megapascals. Joint torque is newton-meters. Hydraulic pressure is megapascals.
@@ -370,33 +370,48 @@ When MuJoCo is installed (`pip install -e ".[robot]"`), the export loads the MJC
 
 `aicad serve` speaks [MCP](https://modelcontextprotocol.io) over stdio. The tools are the same operations as the CLI and the workspace app. The short connect guide, including a generic MCP client, is [docs/CONNECT.md](docs/CONNECT.md). One worked session is [docs/EXAMPLE_SESSION.md](docs/EXAMPLE_SESSION.md).
 
-Cursor (`~/.cursor/mcp.json`, or the project's `.cursor/mcp.json`):
+Cursor reads `~/.cursor/mcp.json` on Mac and Linux, and `%USERPROFILE%\.cursor\mcp.json` on Windows. A project file `.cursor/mcp.json` is the same shape. Use the `aicad` from the virtual environment.
+
+Mac or Linux:
 
 ```json
 {
   "mcpServers": {
     "aicad": {
-      "command": "aicad",
-      "args": ["serve", "--workspace", "/absolute/path/to/aicad_workspace"]
+      "command": "/full/path/to/.venv/bin/aicad",
+      "args": ["serve", "--workspace", "/full/path/to/aicad_workspace"]
     }
   }
 }
 ```
 
-Claude Desktop:
+Windows:
 
 ```json
 {
   "mcpServers": {
     "aicad": {
-      "command": "/absolute/path/to/.venv/bin/aicad",
-      "args": ["serve", "--workspace", "/absolute/path/to/aicad_workspace"]
+      "command": "C:\\full\\path\\to\\.venv\\Scripts\\aicad.exe",
+      "args": ["serve", "--workspace", "C:\\full\\path\\to\\aicad_workspace"]
     }
   }
 }
 ```
 
-Use the virtualenv's `aicad` if it is not already on the assistant's `PATH`. The workspace directory is the session. It holds `session.json`, rendered PNGs, exports, and any STEP files you import.
+Claude Desktop reads `claude_desktop_config.json`. On a Mac that file is `~/Library/Application Support/Claude/claude_desktop_config.json`. On Linux it is `~/.config/Claude/claude_desktop_config.json`. On Windows it is `%APPDATA%\\Claude\\claude_desktop_config.json`. The `command` is the same virtualenv path as above: `.venv/bin/aicad` on Mac and Linux, and `.venv\\Scripts\\aicad.exe` on Windows.
+
+```json
+{
+  "mcpServers": {
+    "aicad": {
+      "command": "/full/path/to/.venv/bin/aicad",
+      "args": ["serve", "--workspace", "/full/path/to/aicad_workspace"]
+    }
+  }
+}
+```
+
+The workspace directory is the session. It holds `session.json`, rendered PNGs, exports, and any STEP or STL files you import.
 
 A resource at `aicad://guide` repeats the script rules below. The server instructions tell the assistant to call `inspect_part` after every edit and to look at the pictures.
 
@@ -579,8 +594,8 @@ GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/
 ## Limitations
 
 - Assistant scripts run in a confined process on Linux, Windows, and macOS: the project folder only, no network unless you turn it on, and a time and memory limit. Linux uses Landlock and seccomp. Windows uses an AppContainer and a Job Object. macOS uses a Seatbelt profile and stops the script when its resident memory passes the cap. A design script stays off until you allow it. Opening a project does not run scripts stored in it. See [SECURITY.md](SECURITY.md). The script can still change or delete files inside the project, so point it at a project you are willing to let it edit.
-- Sketch dimensions are the parametric hook. Changing `bolt_circle` rebuilds parts made from that sketch. There is still no 3D feature tree. The Shape panel can change an operation size, a sketch dimension, an extrude height, or a catalog length. A script or an imported STEP file has no such number; it can still be moved. A size or a move past 1 000 000 mm is refused, because the viewport stores positions in 32-bit floats and a larger value makes the other parts disappear. Save As refuses a folder name Windows cannot create, and a folder it cannot write. A failed dimension change or a failed script replacement leaves the previous solid.
-- Structured operations are only axis-aligned boxes and cylinders. Fillets, chamfers, and rotated boxes belong in a script.
+- Sketch dimensions are one parametric hook. Changing `bolt_circle` rebuilds parts made from that sketch. The feature list is the other: an earlier operation size, sketch step, extrude height, fillet radius, chamfer distance, catalog length, or top-level number in a script can be changed, and the solid rebuilds from that step. A failed change leaves the previous solid. An imported STEP file and an imported STL mesh have no such number; they can still be moved. A size or a move past 1 000 000 mm is refused, because the viewport stores positions in 32-bit floats and a larger value makes the other parts disappear. Save As refuses a folder name Windows cannot create, and a folder it cannot write.
+- Structured operations are axis-aligned boxes and cylinders. A cylinder can name an axis. A rotated box belongs in a script. A fillet or a chamfer is a later step on a shape or sketch part, and its radius or distance stays editable.
 - Wall thickness can still miss a thin spot that no ray and no slice crosses. A passing check is evidence, not a guarantee. The probe starts inside the face, at 0.01 mm or a smaller step when that would land on the opposite face. A wall thinner than the smallest step, 0.0004 mm, is an upper bound that cannot pass a minimum. A knife-edge gusset reads as a very thin wall, which is why the example gussets end in a 2.4 mm toe.
 - A section only shows the plane you asked for. Buried geometry between planes is still invisible until you cut there.
 - Clearance does not report how deep an interference goes, only its volume. Catalog screws omit threads, so a fit check is against the ISO 724 basic minor diameter, not the major diameter.
@@ -588,7 +603,7 @@ GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/
 - The catalog is the tables in `catalog_data.py`: common coarse fasteners, deep-groove and tapered bearings, radial shaft seals, two NEMA stepper frames, and two gearboxes. It is not a McMaster mirror. An arbitrary bought part is a STEP import. A published mass is used when the row has one. A motor or gearbox with no published mass is left blank, because the solid is the mounting envelope.
 - A spur, helical, or bevel is the nominal involute at zero backlash. A bevel solid rules the back-cone profile along the face; the reported face and root angles are the parallel-clearance angles, and a spiral is a constant-angle spiral rather than a circular cutter path. A hypoid ring tooth is one face-mill blade cone, not a face-hob, and the pinion is the blank that blade leaves when it is rolled at the tooth ratio. The edge radius is recorded and not cut. See [docs/reference/gears.md](docs/reference/gears.md).
 - Renders are shaded orthographic pictures from a software rasterizer, not a dimensioned drawing. Sections are filled profiles with a scale bar, not a hatched drawing. The solid view measures a click: the distance between two points, and the angle at the second point when a third point is chosen.
-- Sketches are on the XY plane and extrude along +Z. A revolve uses the X or Y axis of that same plane. The initial `at` guess has to be near a shape that satisfies the constraints, or the solver reports that it did not converge. Circle-to-line tangency is built from a point and a perpendicular radius, because the solver's tangent constraint does not take a full circle.
+- A sketch sits on the XY, YZ, or XZ plane, on that plane shifted or tilted, or on a planar face. Extrude follows the plane normal. A revolve uses the X or Y axis of the sketch plane. The initial `at` guess has to be near a shape that satisfies the constraints, or the solver reports that it did not converge. Circle-to-line tangency is built from a point and a perpendicular radius, because the solver's tangent constraint does not take a full circle.
 - The SolveSpace solver linked through python-solvespace is GPL-3.0-or-later. Gmsh is GPL-2.0-or-later. CalculiX, which aicad runs as a separate program, is GPL-2.0-only. aicad is AGPL-3.0-or-later. Those solvers travel with the package or, for `ccx`, with the system install. The combination is covered in [docs/LICENSE_AUDIT.md](docs/LICENSE_AUDIT.md).
 - The static solve is linear elasticity. Plasticity, contact, and buckling are outside it. A safety factor below 1 means the pictured stress has left the elastic range. A force is shared equally by the nodes on the face. Pressure on a curved face uses that face's normal at its center. A bolt load in that solve is an axial force along the hole.
 - Modal analysis is an undamped eigenvalue solve. The pictures are magnified shapes, not amplitudes. An assembly ties joints with a few equations, and a revolute does not flex, so those frequencies are high relative to a real pin. Harmonic response is one mode with an assumed damping ratio. Random response is Miles' equation on a flat spectrum. Fatigue is a Goodman check of a stress you type in. None of those three re-solves the mesh.
@@ -602,7 +617,7 @@ GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/
 - Power is quasi-static. Gravity and payloads are included. Inertia, friction, seal drag, pressure drop, and pump dynamics are not. A hydraulic moment arm is a number you supply, not a cylinder located in the assembly. Electric braking energy is counted as spent.
 - The session file is for one writer. Two servers on the same workspace will overwrite each other. `aicad app` plus `aicad serve --connect` is one writer: the app process.
 - The workspace page answers only `localhost` and `127.0.0.1` on its own port, and an API call needs the session token from that launch. The page is the person. The attached assistant is not. Another website cannot send commands as you. A program with a shell on this computer can still read the page and act as you, so an approval step is a guardrail, not a boundary against that program. See [SECURITY.md](SECURITY.md).
-- The solid view needs WebGL. The sketch view is a 2D canvas. Rectangle, line, circle, and point are the drawing tools in this version, and a rectangle replaces the current sketch profile.
+- The solid view needs WebGL. The sketch view is a 2D canvas. The drawing tools are select, point, line, circle, arc (three points, center with start and end, or tangent to a line), spline, and rectangle. Construction geometry is a toggle. The constraint tools are horizontal, vertical, coincident, fix, distance, diameter, parallel, perpendicular, tangent, equal, angle, radius, symmetric, and midpoint. A rectangle adds a profile. It does not remove entities already on the sketch.
 - API keys stay in the user config named above. The project directory does not receive them.
 - A desktop package (for example Tauri) can wrap this server later. `aicad app` is the way to run the workspace now.
 

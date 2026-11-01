@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from aicad._version import __version__
 from aicad.document import Document
 from aicad.errors import AICADError
 from aicad.models import InspectReport
@@ -422,7 +423,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     mcp = MCPServer(
         "aicad",
         instructions=_INSTRUCTIONS,
-        version="0.9.0",
+        version=__version__,
     )
 
     def run(command: str, **arguments):

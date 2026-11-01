@@ -142,6 +142,8 @@ def test_http_command_and_mesh_share_the_document(tmp_path, monkeypatch):
         html = page.read().decode("utf-8")
         assert page.status == 200
         assert "aicad workspace" in html
+        assert "0.9.0" in html
+        assert "__AICAD_VERSION__" not in html
         connection.close()
 
         connection = HTTPConnection(host, port, timeout=30)
