@@ -843,8 +843,10 @@ def _color(value: Any) -> list[int | float] | None:
     """
     if value is None:
         return None
+    if isinstance(value, str):
+        return _hex_color(value)
     if not isinstance(value, (list, tuple)) or len(value) != 3:
-        raise GeometryError("An instance color is three ints from 0 to 255 or three floats from 0 to 1.")
+        raise GeometryError("An instance color is #rrggbb, three ints from 0 to 255, or three floats from 0 to 1.")
     from aicad.assembly import _byte_channels
 
     _byte_channels(value)
@@ -855,6 +857,18 @@ def _color(value: Any) -> list[int | float] | None:
         else:
             stored.append(float(component))
     return stored
+
+
+def _hex_color(value: str) -> list[int | float]:
+    text = value.strip()
+    if text.startswith("#"):
+        text = text[1:]
+    digits = "0123456789abcdefABCDEF"
+    if len(text) == 3 and all(ch in digits for ch in text):
+        text = "".join(ch * 2 for ch in text)
+    if len(text) != 6 or any(ch not in digits for ch in text):
+        raise GeometryError("An instance color is #rrggbb, three ints from 0 to 255, or three floats from 0 to 1.")
+    return [int(text[index : index + 2], 16) for index in (0, 2, 4)]
 
 
 def _optional_float(value: Any, default: float) -> float:
