@@ -365,7 +365,8 @@ class Document:
 
     def measure(self, name: str, material: str | None = None) -> Measurement:
         with self._lock:
-            return kernel.measure(self._get(name).shape, material)
+            part = self._get(name)
+            return _catalog_mass(part, kernel.measure(part.shape, material))
 
     def check_wall_thickness(
         self,
@@ -679,7 +680,7 @@ class Document:
         """
         with self._lock:
             part = self._get(name)
-            measurement = kernel.measure(part.shape, material)
+            measurement = _catalog_mass(part, kernel.measure(part.shape, material))
             wall = self.check_wall_thickness(name, min_wall_mm, samples)
             mesh = kernel.tessellate(part.shape)
             views = render_views(
@@ -3335,6 +3336,40 @@ def _copy_spec(spec: Sketch | dict) -> dict:
 
 def _identity_placement() -> dict[str, list[float]]:
     return {"position": [0.0, 0.0, 0.0], "rotation_deg": [0.0, 0.0, 0.0]}
+
+
+def _catalog_mass(part, measured: Measurement) -> Measurement:
+    """Use a published catalog mass, and do not invent one from an envelope.
+
+    The bill of materials already follows this rule. Inspect and measure use
+    the same one, so a motor envelope is not reported as volume times density.
+    """
+    spec = part.library_spec
+    if not isinstance(spec, dict) or not spec.get("kind"):
+        return measured
+    try:
+        meta = library.metadata(str(spec["kind"]), str(spec.get("size") or ""), spec.get("length"))
+    except GeometryError:
+        return measured
+    note = str(meta.get("mass_note") or "").strip()
+    if meta.get("mass_estimate_kg") is not None:
+        grams = round(float(meta["mass_estimate_kg"]) * 1000.0, 4)
+        return replace(
+            measured,
+            mass_g=grams,
+            material=None,
+            density_g_cm3=None,
+            mass_note=note or "Catalog mass.",
+        )
+    if meta.get("mass_from_volume", True):
+        return measured
+    return replace(
+        measured,
+        mass_g=None,
+        material=None,
+        density_g_cm3=None,
+        mass_note=note or "This solid is an envelope, so volume times density is not a mass.",
+    )
 
 
 def _vec3(value, label: str) -> tuple[float, float, float]:

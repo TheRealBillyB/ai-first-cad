@@ -519,6 +519,7 @@ function inspectHtml(report, stale) {
       <span>Surface area</span><b>${m.area_mm2 == null ? "" : `${m.area_mm2} mm²`}</b>
       <span>Center of mass</span><b>${com ? `${com.x}, ${com.y}, ${com.z}` : ""}</b>
       <span>Mass</span><b>${mass}</b>
+      ${m.mass_note ? `<span></span><b>${escapeHtml(m.mass_note)}</b>` : ""}
       <span>Size</span><b>${box ? `${box.x} × ${box.y} × ${box.z}` : ""}</b>
       <span>Watertight</span><b>${m.watertight ? "yes" : "no"}</b>
       <span>Wall</span><b>${wall.estimated_min_mm ?? "n/a"} mm ${wall.passed === false ? "(under the rule)" : ""}</b>

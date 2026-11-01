@@ -82,6 +82,7 @@ class Measurement:
     mass_g: float | None = None
     material: str | None = None
     density_g_cm3: float | None = None
+    mass_note: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         assumptions = [
@@ -89,12 +90,17 @@ class Measurement:
             "Volume, area, and the center of mass come from the geometry kernel.",
             "Watertight means the kernel reports a valid solid whose edges each belong to two faces.",
         ]
-        if self.mass_g is not None:
+        if self.mass_g is not None and self.density_g_cm3 is None and self.mass_note:
+            assumptions.append("Mass is the catalog figure for this part. It does not follow the chosen material.")
+            mass_limit = self.mass_note
+        elif self.mass_g is not None:
             assumptions.append("Mass is the model volume times the chosen material density.")
             mass_limit = (
                 "Mass is this volume times the chosen handbook density. "
                 "It is a rough estimate, not a weighed part."
             )
+        elif self.mass_note:
+            mass_limit = self.mass_note
         else:
             mass_limit = (
                 "Mass is not included. Mass is this volume times a handbook density, "
@@ -116,8 +122,12 @@ class Measurement:
         }
         if self.mass_g is not None:
             payload["mass_g"] = self.mass_g
-            payload["material"] = self.material
-            payload["density_g_cm3"] = self.density_g_cm3
+            if self.material is not None:
+                payload["material"] = self.material
+            if self.density_g_cm3 is not None:
+                payload["density_g_cm3"] = self.density_g_cm3
+        if self.mass_note:
+            payload["mass_note"] = self.mass_note
         return finish(
             payload,
             kind=VERIFIED_CHECK,
