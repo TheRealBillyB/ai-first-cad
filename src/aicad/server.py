@@ -726,6 +726,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         position: list[float] | None = None,
         rotation_deg: list[float] | None = None,
         fastener_type: str | None = None,
+        mount: dict[str, Any] | None = None,
     ) -> dict:
         """Insert a catalog part by designation and place it.
 
@@ -736,6 +737,12 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         head, in mm. position and rotation_deg are [x, y, z]. Rotation is
         degrees about X, Y, Z and is applied before the translation. Mate the
         part with parent_mate and child_mate on an assembly joint.
+
+        mount snaps a mate onto a face or an axis instead of a free position.
+        It has part, ref (a describe_faces reference), optional mate, optional
+        rotation_deg about that axis (steps of 15 degrees), and optional flip.
+        A bearing bore uses a cylinder. A motor flange uses a plane. An unknown
+        face is refused before the part is added.
         """
         return guard(
             lambda: run(
@@ -747,6 +754,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
                 position=position,
                 rotation_deg=rotation_deg,
                 fastener_type=fastener_type,
+                mount=mount,
             )
         )
 
@@ -801,15 +809,27 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     @mcp.tool()
     def place_part(
         name: str,
-        position: list[float],
+        position: list[float] | None = None,
         rotation_deg: list[float] | None = None,
+        mount: dict[str, Any] | None = None,
     ) -> dict:
         """Move a part, including an imported STEP solid. Replaces any previous placement.
 
         position is [x, y, z] in millimeters. rotation_deg is degrees about X, Y, and Z,
-        applied before the translation.
+        applied before the translation. Pass mount instead to snap a catalog mate onto
+        a face or an axis: part, ref, optional mate, rotation_deg about that axis in
+        steps of 15 degrees, and flip. An unknown face is refused before the part moves.
+        Parts mounted on this one keep that mount when it moves.
         """
-        return guard(lambda: run("place_part", name=name, position=position, rotation_deg=rotation_deg))
+        return guard(
+            lambda: run(
+                "place_part",
+                name=name,
+                position=position,
+                rotation_deg=rotation_deg,
+                mount=mount,
+            )
+        )
 
     @mcp.tool()
     def list_materials() -> dict:

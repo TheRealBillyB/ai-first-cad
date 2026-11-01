@@ -218,13 +218,23 @@ def build_parser() -> argparse.ArgumentParser:
     insert.add_argument("--length", type=float)
     insert.add_argument("--at", default="0,0,0", help="x,y,z position in mm")
     insert.add_argument("--rot", default="0,0,0", help="rotation degrees about X,Y,Z")
+    insert.add_argument("--on", help="Part to mount onto. Replaces --at.")
+    insert.add_argument("--face", help="Face or axis reference on that part.")
+    insert.add_argument("--mate", help="Mate frame on the catalog part.")
+    insert.add_argument("--spin", type=float, help="Degrees about the mount axis.")
+    insert.add_argument("--flip", action="store_true", help="Turn the mate around.")
 
     place = commands.add_parser(
         "place", parents=[common], help="Move a part. Replaces any previous placement."
     )
     place.add_argument("name")
-    place.add_argument("--at", required=True, help="x,y,z position in mm")
+    place.add_argument("--at", help="x,y,z position in mm")
     place.add_argument("--rot", default="0,0,0", help="rotation degrees about X,Y,Z")
+    place.add_argument("--on", help="Part to mount onto. Replaces --at.")
+    place.add_argument("--face", help="Face or axis reference on that part.")
+    place.add_argument("--mate", help="Mate frame on the catalog part.")
+    place.add_argument("--spin", type=float, help="Degrees about the mount axis.")
+    place.add_argument("--flip", action="store_true", help="Turn the mate around.")
 
     sketch = commands.add_parser(
         "sketch", parents=[common], help="Solve a sketch, or create one from a JSON spec."
@@ -797,14 +807,25 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "catalog":
         return emit(document.search_parts(args.query))
     if args.command == "insert":
-        info = document.insert_standard_part(
-            args.name,
-            args.kind,
-            args.size,
-            length=args.length,
-            position=_triple(args.at, "--at"),
-            rotation_deg=_triple(args.rot, "--rot"),
-        )
+        mount = _mount_from_args(args)
+        if mount is None:
+            info = document.insert_standard_part(
+                args.name,
+                args.kind,
+                args.size,
+                length=args.length,
+                position=_triple(args.at, "--at"),
+                rotation_deg=_triple(args.rot, "--rot"),
+            )
+        else:
+            info = document.insert_standard_part(
+                args.name,
+                args.kind,
+                args.size,
+                length=args.length,
+                fastener_type=None,
+                mount=mount,
+            )
         return emit(info.to_dict())
     if args.command == "gear":
         spec = _json_object(args.file) if args.file is not None else {}
@@ -869,7 +890,15 @@ def _dispatch(args: argparse.Namespace) -> int:
             drive = {"inputs": [{"shaft": args.shaft, "speed_rpm": args.speed, "torque_nm": args.torque}]}
         return emit(document.solve_gear_train(args.name, drive))
     if args.command == "place":
-        info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
+        mount = _mount_from_args(args)
+        if mount is not None and args.at is not None:
+            raise GeometryError("Pass --at or --on, not both.")
+        if mount is None:
+            if args.at is None:
+                raise GeometryError("place needs --at, or --on and --face.")
+            info = document.place_part(args.name, _triple(args.at, "--at"), _triple(args.rot, "--rot"))
+        else:
+            info = document.place_part(args.name, mount=mount)
         return emit(info.to_dict())
     if args.command == "sketch":
         if args.file is not None:
@@ -1156,6 +1185,29 @@ def _joints_argument(text: str | None) -> dict | None:
     if not isinstance(payload, dict):
         raise AICADError("--joints must be a JSON object of joint names and values.")
     return payload
+
+
+def _mount_from_args(args):
+    """A catalog mount from --on and --face, or None when those flags are absent."""
+    named = any(
+        (
+            getattr(args, "on", None),
+            getattr(args, "face", None),
+            getattr(args, "mate", None),
+            getattr(args, "spin", None) is not None,
+            getattr(args, "flip", False),
+        )
+    )
+    if not named:
+        return None
+    if not args.on or not args.face:
+        raise GeometryError("A mount needs --on and --face.")
+    mount = {"part": args.on, "ref": args.face, "flip": bool(args.flip)}
+    if args.mate:
+        mount["mate"] = args.mate
+    if args.spin is not None:
+        mount["rotation_deg"] = args.spin
+    return mount
 
 
 def _triple(text: str, label: str) -> list[float]:

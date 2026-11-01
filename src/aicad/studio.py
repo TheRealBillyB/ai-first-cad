@@ -13,7 +13,6 @@ import math
 import os
 from pathlib import Path
 
-from aicad import kernel, library
 from aicad.errors import GeometryError
 from aicad.models import round_mm
 
@@ -1196,6 +1195,10 @@ def _write_indexed(records: list, parameter: str, prefix: str, value: float) -> 
 
 
 def _restore_placement(workspace, name: str, placement: dict, info):
+    part = workspace.document._get(name)
+    mount = placement.get("mount") if isinstance(placement, dict) else None
+    if mount and part.library_spec:
+        return workspace.document.place_part(name, mount=mount)
     position = placement.get("position") or [0, 0, 0]
     rotation = placement.get("rotation_deg") or [0, 0, 0]
     if any(abs(float(component)) > 1e-12 for component in list(position) + list(rotation)):
@@ -1204,20 +1207,7 @@ def _restore_placement(workspace, name: str, placement: dict, info):
 
 
 def _set_library_length(document, name: str, length: float):
-    with document._lock:
-        part = document._get(name)
-        spec = dict(part.library_spec or {})
-        spec["length"] = float(length)
-        base = kernel.adopt(library.build(spec["kind"], spec["size"], spec["length"], spec.get("fastener_type")))
-        part.library_spec = spec
-        part.base = base
-        part.shape = kernel.place(
-            base,
-            tuple(part.placement["position"]),
-            tuple(part.placement["rotation_deg"]),
-        )
-        document._save()
-        return document._info(part)
+    return document._set_catalog_length(name, length)  # noqa: SLF001
 
 
 def _parts_from_sketch(workspace, sketch: str) -> list[dict]:
