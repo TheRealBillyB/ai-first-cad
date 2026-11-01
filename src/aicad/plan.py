@@ -444,10 +444,13 @@ class PlanStore:
         )
         _activity(revision, "user", "approve", "plan", note)
         self._touch(plan)
-        stored = self._load(name)
-        _record_approval(self.root, stored)
-        public = self._public(stored)
-        open_questions = _open_question_count(self.root, stored, _current(stored))
+        # The receipt is this object, the revision just approved. Reading the
+        # file again would record whatever replaced it in that gap.
+        _record_approval(self.root, plan)
+        self._touch(plan)
+        self._pinned = copy.deepcopy(plan)
+        public = self._public(plan)
+        open_questions = _open_question_count(self.root, plan, _current(plan))
         if open_questions == 1:
             leftover = " 1 question was still open."
         elif open_questions:
@@ -663,6 +666,17 @@ class PlanStore:
     def for_build(self, name: str) -> dict:
         """The stored plan, so a build can write progress back onto this object."""
         return self._load(name)
+
+    def take_pinned(self, name: str) -> dict | None:
+        """The revision just approved, if this store approved ``name``.
+
+        The build runs this object. A plan file replaced after the approval
+        is not read in its place.
+        """
+        pinned = self.__dict__.pop("_pinned", None)
+        if isinstance(pinned, dict) and pinned.get("id") == name:
+            return pinned
+        return None
 
     def build_is_saved(self, plan: dict) -> bool:
         built = plan.get("built")
