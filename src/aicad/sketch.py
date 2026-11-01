@@ -29,6 +29,31 @@ from aicad.models import SketchReport
 _SOLVER = "SolveSpace (python-solvespace)"
 _ID = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
+# The solver accepts these. The sketch toolbar and the assistant tools expose the same list.
+CONSTRAINT_TYPES = (
+    "fix",
+    "coincident",
+    "parallel",
+    "perpendicular",
+    "tangent",
+    "equal",
+    "horizontal",
+    "vertical",
+    "symmetric",
+    "midpoint",
+    "distance",
+    "angle",
+    "radius",
+    "diameter",
+    "pattern_on_circle",
+)
+
+
+def constraint_list() -> str:
+    """The constraint types, as one sentence fragment."""
+    names = CONSTRAINT_TYPES
+    return ", ".join(names[:-1]) + ", or " + names[-1]
+
 
 class Sketch:
     """Build a sketch spec. Initial coordinates are guesses, not the design."""
@@ -63,16 +88,36 @@ class Sketch:
         )
         return self
 
-    def circle(self, entity_id: str, center: str, radius: float) -> Sketch:
-        self.entities.append(
-            {"id": entity_id, "type": "circle", "center": center, "radius": float(radius)}
-        )
+    def circle(self, entity_id: str, center: str, radius: float, construction: bool = False) -> Sketch:
+        entity: dict[str, Any] = {
+            "id": entity_id,
+            "type": "circle",
+            "center": center,
+            "radius": float(radius),
+        }
+        if construction:
+            entity["construction"] = True
+        self.entities.append(entity)
         return self
 
-    def arc(self, entity_id: str, center: str, start: str, end: str) -> Sketch:
-        self.entities.append(
-            {"id": entity_id, "type": "arc", "center": center, "start": start, "end": end}
-        )
+    def arc(
+        self,
+        entity_id: str,
+        center: str,
+        start: str,
+        end: str,
+        construction: bool = False,
+    ) -> Sketch:
+        entity: dict[str, Any] = {
+            "id": entity_id,
+            "type": "arc",
+            "center": center,
+            "start": start,
+            "end": end,
+        }
+        if construction:
+            entity["construction"] = True
+        self.entities.append(entity)
         return self
 
     def spline(self, entity_id: str, points: list[str], closed: bool = False) -> Sketch:
@@ -715,9 +760,7 @@ class _Solver:
             self._pattern(raw, label)
             return
         raise GeometryError(
-            f"Unknown constraint type {kind!r}. Use fix, coincident, parallel, perpendicular, "
-            "tangent, equal, horizontal, vertical, symmetric, midpoint, distance, angle, "
-            "radius, diameter, or pattern_on_circle."
+            f"Unknown constraint type {kind!r}. Use {constraint_list()}."
         )
 
     def _tangent(self, raw: dict, label: str) -> None:
