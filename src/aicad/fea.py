@@ -29,6 +29,25 @@ _LOCK = threading.Lock()
 _FRD_NUMBER = re.compile(r"[+-]?\d+\.\d+E[+-]\d+")
 # Gmsh tet10 lists edge 2-3 before edge 1-3. CalculiX C3D10 wants the opposite.
 _TET10_TO_C3D10 = (0, 1, 2, 3, 4, 5, 6, 7, 9, 8)
+# The two corners of each C3D10 mid-edge node, in C3D10 order.
+_C3D10_EDGES = ((4, 0, 1), (5, 1, 2), (6, 2, 0), (7, 0, 3), (8, 1, 3), (9, 2, 3))
+STRAIGHT_EDGE_NOTE = (
+    "The quadratic mesh had folded elements on curved faces, so each mid-edge node was put on the straight "
+    "line between its corners. The elements are still quadratic. Curved faces are faceted at the mesh size."
+)
+
+
+def straight_sided(points: np.ndarray, elements: np.ndarray) -> np.ndarray:
+    """Points with every C3D10 mid-edge node at the middle of its edge.
+
+    A straight-sided quadratic tet has the same positive Jacobian as its corner tet, so this cannot fold
+    where the linear mesh does not, and it keeps the quadratic displacement field.
+    """
+    out = np.array(points, dtype=float, copy=True)
+    elements = np.asarray(elements)
+    for mid, a, b in _C3D10_EDGES:
+        out[elements[:, mid]] = 0.5 * (out[elements[:, a]] + out[elements[:, b]])
+    return out
 
 # Handbook ballparks, not certified allowables. Modulus and strength are MPa.
 # `printed` materials get the layer-direction caveat in every report.
@@ -421,6 +440,8 @@ def solve_part(
         )
 
     solved, disp, stress, solve_warning, order_used = _execute(mesh, fixed_nodes, forces, material, order)
+    if STRAIGHT_EDGE_NOTE in (mesh.get("mesh_notes") or []) and STRAIGHT_EDGE_NOTE not in warnings:
+        warnings.append(STRAIGHT_EDGE_NOTE)
     if order_used != order:
         warnings.append(
             "The quadratic mesh had folded elements, so the solve used linear tetrahedra instead. "
@@ -1017,6 +1038,14 @@ def _nodes_for(mesh: dict, face_indices: list[int]) -> np.ndarray:
 
 def _execute(mesh, fixed_nodes, forces, material, order: int):
     disp, stress, warning = _run_ccx(mesh, fixed_nodes, forces, material)
+    if warning and "nonpositive jacobian" in warning.lower() and order == 2:
+        straight = dict(mesh)
+        straight["points"] = straight_sided(mesh["points"], mesh["elements"])
+        disp, stress, warning = _run_ccx(straight, fixed_nodes, forces, material)
+        if warning is None:
+            mesh["points"] = straight["points"]
+            mesh.setdefault("mesh_notes", []).append(STRAIGHT_EDGE_NOTE)
+            return True, disp, stress, None, 2
     if warning and "nonpositive jacobian" in warning.lower() and order == 2:
         linear = dict(mesh)
         linear["elements"] = mesh["elements"][:, :4]
