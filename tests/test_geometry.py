@@ -367,3 +367,29 @@ def test_the_sandbox_child_sets_its_stack_before_geometry(tmp_path):
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+
+def test_point_beside_a_swept_tube_is_outside():
+    # The ray classifier calls this point, 3.45 mm from the tube, IN: its ray grazes a tangent seam.
+    from build123d import Circle, Line, Plane, ThreePointArc, Transition, Vector, Wire, sweep
+
+    from aicad import kernel
+
+    a, s1 = Vector(-184.8, 1.8, 26.75), Vector(-165, 1.8, 26.75)
+    m1, t1 = Vector(-154.9055, 1.6926, 26.0263), Vector(-145.022, 1.3727, 23.8701)
+    t2, m2 = Vector(-81.978, -1.3827, 5.2999), Vector(-72.0945, -1.7026, 3.1437)
+    e2, b = Vector(-62, -1.81, 2.42), Vector(-39.1, -1.81, 2.42)
+    path = Wire([Line(a, s1), ThreePointArc(s1, m1, t1), Line(t1, t2), ThreePointArc(t2, m2, e2), Line(e2, b)])
+    profile = Plane(origin=a, x_dir=(0, 1, 0), z_dir=(1, 0, 0)) * (Circle(2.0) - Circle(0.75))
+    tube = kernel.Shape(_impl=sweep(profile, path=path, transition=Transition.ROUND))
+
+    beside = kernel.distance_to_point(tube, (-101.319, 3.648, 14.701))
+    assert beside["inside"] is False
+    assert beside["distance_mm"] == pytest.approx(3.454, abs=0.01)
+
+    middle = (t1 + t2) * 0.5
+    across = (t2 - t1).cross(Vector(0, 0, 1)).normalized()
+    assert kernel.distance_to_point(tube, tuple(middle))["inside"] is False
+    assert kernel.distance_to_point(tube, tuple(middle + across * 1.4))["inside"] is True
+    assert kernel.distance_to_point(tube, tuple(middle + across * 2.5))["inside"] is False
