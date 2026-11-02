@@ -1,6 +1,6 @@
 # Contributing
 
-aicad is AGPL-3.0-or-later. Improvements stay shared. There is no paid license and no dual license. You keep the copyright in what you contribute. There is no contributor license agreement and no relicensing grant.
+aicad is AGPL-3.0-or-later. You keep the copyright in what you contribute. Contributions are accepted under the [Contributor License Agreement](CLA.md) and a Developer Certificate of Origin sign-off. The Contributor License Agreement lets the project relicense contributions.
 
 Business documents and personal planning notes do not belong in this repository. That includes notes written by people and notes written by AI agents. Keep them on your own computer under `private/` or `notes/`. Those folders are gitignored. This repository accepts software documentation and the roadmap only. `tools/check_docs.py` enforces that list.
 
@@ -17,7 +17,7 @@ That setting is optional. `.github/workflows/docs.yml` still runs the check on e
 1. Open an issue or a pull request against `main`.
 2. Keep the change focused. Add or update a test when the change has behavior to check.
 3. Run `pytest` from a virtualenv with the dev extra installed (`pip install -e ".[dev]"`).
-4. Sign off the commit, as below.
+4. Sign off the commit, as below. On your first pull request, sign the Contributor License Agreement, as below.
 
 Discussion and review follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
@@ -73,7 +73,19 @@ A push to `main` rebuilds the masters and opens or updates one pull request on t
 
 ## Plugins
 
-A plugin that is loaded into aicad, or that imports aicad, is combined with this program. Distributing that plugin means the AGPL-3.0-or-later obligations apply to it as well. You keep the copyright in the plugin. The guide is [docs/plugins.md](docs/plugins.md).
+A plugin that is loaded into aicad, or that imports aicad, is combined with this program. Distributing that plugin means the AGPL-3.0-or-later obligations apply to it as well. You keep the copyright in the plugin. A plugin you contribute to this repository is accepted under the Contributor License Agreement. The guide is [docs/plugins.md](docs/plugins.md).
+
+## Contributor License Agreement
+
+Your first pull request asks you to accept the [Contributor License Agreement](CLA.md). You keep the copyright in your contribution. The agreement grants a copyright license that lets the project relicense that contribution, and a patent license. You also confirm that the contribution is your original work, or that you have identified the parts that are not, and that you have the right to grant those licenses. A contribution made for an employer or another legal entity needs that entity's permission, or a separate corporate agreement.
+
+Comment on the pull request with this exact text and nothing else:
+
+```text
+I have read the CLA Document and I hereby sign the CLA
+```
+
+The check stores that signature in this repository on the `cla-signatures` branch, in `signatures/version1/cla.json`. A later pull request from the same account does not ask again. The repository owner and the other accounts named in `.github/workflows/cla.yml` pass without that comment. The workflow does not check out pull request code. Every commit still needs the Developer Certificate of Origin sign-off below.
 
 ## Developer Certificate of Origin
 
