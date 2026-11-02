@@ -73,7 +73,8 @@ and the pairs sent to the narrow phase. A pair whose relative pose is the
 same as on an earlier step has the same result, so that result is moved
 into place instead of being intersected again. ``narrow_phase_reused``
 counts those pairs. Two parts on one rigid body, or two parts that do not
-move, are intersected once for the whole study.
+move, are intersected once for the whole study. A joint seat whose pose
+repeats is measured once in the same way.
 """
 
 from __future__ import annotations
@@ -255,7 +256,7 @@ def run_study(
         collisions, step_rejected, step_narrow, step_reused = _collisions(
             solved, placed, spec.get("ignore_collisions") or [], chosen["clearance_mm"], seen
         )
-        seats = joint_seats(solved, placed)
+        seats = joint_seats(solved, placed, seen)
         rejected += step_rejected
         narrow += step_narrow
         reused += step_reused

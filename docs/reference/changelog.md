@@ -57,7 +57,7 @@ Version 0.9.0 is a public preview ahead of 1.0. The notes below describe what th
 ### Assemblies and robot export
 
 - Parts join with fixed, revolute, prismatic, and cylindrical joints. A gear relation, a planar linkage, and a cylinder relation drive joints in the tree. A cycle is refused.
-- Named poses and motions report collisions and joint-limit stops. A motion study drives joints by an expression or by keyframes. A pair whose relative pose repeats an earlier step reuses that result, so parts on one rigid body are intersected once per study. A motion, a camera orbit, or an exploded opening can be written as a GIF, and as MP4 or WebM when ffmpeg is on PATH.
+- Named poses and motions report collisions and joint-limit stops. A motion study drives joints by an expression or by keyframes. A pair or a joint seat whose relative pose repeats an earlier step reuses that result, so parts on one rigid body are intersected once per study. A motion, a camera orbit, or an exploded opening can be written as a GIF, and as MP4 or WebM when ffmpeg is on PATH.
 - A layout drawing is a third-angle PDF and DXF of a posed assembly. A bill of materials counts parts, catalog items, and routes. An exploded view pulls parts apart along their joints.
 - `aicad robot` writes URDF, MJCF, and STL meshes. Mass and inertia use the model volume and a handbook density. When MuJoCo or PyBullet is installed, the export loads the file and steps it.
 

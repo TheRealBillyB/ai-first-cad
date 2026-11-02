@@ -435,8 +435,10 @@ def test_clearance_uses_the_solid_gap_when_boxes_overlap(tmp_path: Path):
 
 def test_a_rigid_pair_is_intersected_once_and_moved_with_its_body(tmp_path: Path, monkeypatch):
     # Two 10 mm cubes ride on one link and overlap by 4 mm in x: 4 × 10 × 10 mm.
+    # They sit off the link in y so each fixed seat has one closest corner, not a face of equal points.
     # The link turns 0, 30, 60, 90 degrees, so only the first step needs the boolean.
-    from aicad import motion_study
+    # The two fixed seats are measured once. The hinge seat turns, so it is measured on every step.
+    from aicad import kernel, motion_study
 
     document = Document(tmp_path)
     _box(document, "base", [4, 4, 4], [0, 0, -20])
@@ -452,8 +454,8 @@ def test_a_rigid_pair_is_intersected_once_and_moved_with_its_body(tmp_path: Path
             ],
             "joints": [
                 {"name": "hinge", "type": "revolute", "parent": "base", "child": "arm", "axis": [0, 0, 1]},
-                {"name": "hold_l", "type": "fixed", "parent": "arm", "child": "left", "parent_anchor": [30, 0, 0]},
-                {"name": "hold_r", "type": "fixed", "parent": "arm", "child": "right", "parent_anchor": [36, 0, 0]},
+                {"name": "hold_l", "type": "fixed", "parent": "arm", "child": "left", "parent_anchor": [30, 20, 0]},
+                {"name": "hold_r", "type": "fixed", "parent": "arm", "child": "right", "parent_anchor": [36, 20, 0]},
             ],
             "studies": {
                 "swing": {"duration_s": 1, "steps": 4, "drivers": [{"joint": "hinge", "expression": "90 * t"}]}
@@ -461,15 +463,23 @@ def test_a_rigid_pair_is_intersected_once_and_moved_with_its_body(tmp_path: Path
         }
     )
     calls = []
+    measured = []
     real = motion_study._narrow
+    real_measure = kernel.clearance_between
 
     def counted(left, right, clearance):
         calls.append(1)
         return real(left, right, clearance)
 
+    def measure(left, right):
+        measured.append(1)
+        return real_measure(left, right)
+
     monkeypatch.setattr(motion_study, "_narrow", counted)
+    monkeypatch.setattr(kernel, "clearance_between", measure)
     report = document.run_motion_study("carry", sequence="swing")
     assert len(calls) == 1
+    assert len(measured) == 1 + 4 + 1 + 1
     assert report["narrow_phase_pairs"] == 4
     assert report["narrow_phase_reused"] == 3
     assert [step["narrow_phase_reused"] for step in report["steps"]] == [0, 1, 1, 1]
@@ -488,9 +498,11 @@ def test_a_rigid_pair_is_intersected_once_and_moved_with_its_body(tmp_path: Path
         assert hit["direction"] == pytest.approx(turn(first["direction"]), abs=1e-6)
 
     calls.clear()
+    measured.clear()
     monkeypatch.setattr(motion_study, "_pose_key", lambda *_args: None)
     fresh = document.run_motion_study("carry", sequence="swing")
     assert len(calls) == 4
+    assert len(measured) == 4 + 3 * 4
     assert fresh["narrow_phase_reused"] == 0
     for kept, computed in zip(report["steps"], fresh["steps"], strict=True):
         a, b = kept["collisions"][0], computed["collisions"][0]
@@ -498,6 +510,14 @@ def test_a_rigid_pair_is_intersected_once_and_moved_with_its_body(tmp_path: Path
         assert a["penetration_depth_mm"] == pytest.approx(b["penetration_depth_mm"], abs=1e-6)
         assert a["at_mm"] == pytest.approx(b["at_mm"], abs=1e-6)
         assert a["direction"] == pytest.approx(b["direction"], abs=1e-6)
+        for seat, again in zip(kept["joint_seats"], computed["joint_seats"], strict=True):
+            assert seat["joint"] == again["joint"]
+            assert seat["fused"] == again["fused"]
+            assert seat["gap_mm"] == pytest.approx(again["gap_mm"], abs=1e-6)
+            assert seat["overlap_mm3"] == pytest.approx(again["overlap_mm3"], abs=1e-6)
+            assert (seat["at_mm"] is None) == (again["at_mm"] is None)
+            if seat["at_mm"] is not None:
+                assert seat["at_mm"] == pytest.approx(again["at_mm"], abs=1e-6)
 
 
 def test_a_gear_pair_collision_sweep_of_thirteen_frames_finishes(tmp_path):
