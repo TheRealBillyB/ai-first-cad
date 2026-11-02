@@ -386,6 +386,76 @@ def test_cli_materials_and_fea(tmp_path):
     assert Path(payload["views"][0]["path"]).is_file()
 
 
+def _bulged_tet10():
+    from aicad.fea import _C3D10_EDGES
+
+    corners = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    mids = np.array([0.5 * (corners[a] + corners[b]) for _mid, a, b in _C3D10_EDGES])
+    mids[0] += [0.0, -0.4, 0.0]
+    mids[5] += [0.3, 0.3, 0.0]
+    return {"points": np.vstack([corners, mids]), "elements": np.array([list(range(10))]), "order": 2}
+
+
+def _is_straight(points, elements):
+    from aicad.fea import _C3D10_EDGES
+
+    return all(
+        np.allclose(points[elements[:, mid]], 0.5 * (points[elements[:, a]] + points[elements[:, b]]))
+        for mid, a, b in _C3D10_EDGES
+    )
+
+
+def test_straight_sided_moves_only_the_mid_edge_nodes():
+    from aicad.fea import straight_sided
+
+    mesh = _bulged_tet10()
+    out = straight_sided(mesh["points"], mesh["elements"])
+    assert _is_straight(out, mesh["elements"])
+    assert np.array_equal(out[:4], mesh["points"][:4])
+    assert not _is_straight(mesh["points"], mesh["elements"])
+
+
+def test_a_folded_quadratic_mesh_is_solved_straight_sided_before_linear(monkeypatch):
+    from aicad import fea
+
+    calls = []
+
+    def ccx(mesh, _fixed, _forces, _material):
+        calls.append(mesh["elements"].shape[1])
+        if mesh["elements"].shape[1] == 10 and not _is_straight(mesh["points"], mesh["elements"]):
+            return None, None, "nonpositive jacobian"
+        return np.zeros((len(mesh["points"]), 3)), np.zeros((len(mesh["points"]), 6)), None
+
+    monkeypatch.setattr(fea, "_run_ccx", ccx)
+    mesh = _bulged_tet10()
+    solved, _disp, _stress, warning, order = fea._execute(mesh, np.array([0]), np.zeros((10, 3)), {}, 2)
+    assert (solved, warning, order) == (True, None, 2)
+    assert calls == [10, 10]
+    assert mesh["elements"].shape[1] == 10
+    assert _is_straight(mesh["points"], mesh["elements"])
+    assert fea.STRAIGHT_EDGE_NOTE in mesh["mesh_notes"]
+
+
+def test_a_folded_quadratic_body_is_tried_straight_sided_in_a_modal_solve(monkeypatch):
+    from aicad import modal
+
+    calls = []
+
+    def once(bodies, _fixed, _equations, _nmodes, _timeout):
+        body = bodies[0]
+        calls.append(np.asarray(body["elements"]).shape[1])
+        if int(body["order"]) == 2 and not _is_straight(body["points"], np.asarray(body["elements"])):
+            return None, None, "nonpositive jacobian"
+        return [100.0], np.zeros((1, len(body["points"]), 3)), None
+
+    monkeypatch.setattr(modal, "_frequency_once", once)
+    body = _bulged_tet10()
+    frequencies, _vectors, detail = modal._run_frequency([body], np.array([0]), [], 1, 5)
+    assert frequencies == [100.0] and detail == ""
+    assert calls == [10, 10]
+    assert body["order"] == 2 and body["straight_sided"]
+
+
 def test_missing_solver_message_names_ccx(monkeypatch):
     monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: None)
     available, reason = fea_available()
@@ -529,76 +599,6 @@ def test_non_finite_mechanics_inputs_are_rejected():
                 ],
             },
         )
-
-
-def _bulged_tet10():
-    from aicad.fea import _C3D10_EDGES
-
-    corners = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-    mids = np.array([0.5 * (corners[a] + corners[b]) for _mid, a, b in _C3D10_EDGES])
-    mids[0] += [0.0, -0.4, 0.0]
-    mids[5] += [0.3, 0.3, 0.0]
-    return {"points": np.vstack([corners, mids]), "elements": np.array([list(range(10))]), "order": 2}
-
-
-def _is_straight(points, elements):
-    from aicad.fea import _C3D10_EDGES
-
-    return all(
-        np.allclose(points[elements[:, mid]], 0.5 * (points[elements[:, a]] + points[elements[:, b]]))
-        for mid, a, b in _C3D10_EDGES
-    )
-
-
-def test_straight_sided_moves_only_the_mid_edge_nodes():
-    from aicad.fea import straight_sided
-
-    mesh = _bulged_tet10()
-    out = straight_sided(mesh["points"], mesh["elements"])
-    assert _is_straight(out, mesh["elements"])
-    assert np.array_equal(out[:4], mesh["points"][:4])
-    assert not _is_straight(mesh["points"], mesh["elements"])
-
-
-def test_a_folded_quadratic_mesh_is_solved_straight_sided_before_linear(monkeypatch):
-    from aicad import fea
-
-    calls = []
-
-    def ccx(mesh, _fixed, _forces, _material):
-        calls.append(mesh["elements"].shape[1])
-        if mesh["elements"].shape[1] == 10 and not _is_straight(mesh["points"], mesh["elements"]):
-            return None, None, "nonpositive jacobian"
-        return np.zeros((len(mesh["points"]), 3)), np.zeros((len(mesh["points"]), 6)), None
-
-    monkeypatch.setattr(fea, "_run_ccx", ccx)
-    mesh = _bulged_tet10()
-    solved, _disp, _stress, warning, order = fea._execute(mesh, np.array([0]), np.zeros((10, 3)), {}, 2)
-    assert (solved, warning, order) == (True, None, 2)
-    assert calls == [10, 10]
-    assert mesh["elements"].shape[1] == 10
-    assert _is_straight(mesh["points"], mesh["elements"])
-    assert fea.STRAIGHT_EDGE_NOTE in mesh["mesh_notes"]
-
-
-def test_a_folded_quadratic_body_is_tried_straight_sided_in_a_modal_solve(monkeypatch):
-    from aicad import modal
-
-    calls = []
-
-    def once(bodies, _fixed, _equations, _nmodes, _timeout):
-        body = bodies[0]
-        calls.append(np.asarray(body["elements"]).shape[1])
-        if int(body["order"]) == 2 and not _is_straight(body["points"], np.asarray(body["elements"])):
-            return None, None, "nonpositive jacobian"
-        return [100.0], np.zeros((1, len(body["points"]), 3)), None
-
-    monkeypatch.setattr(modal, "_frequency_once", once)
-    body = _bulged_tet10()
-    frequencies, _vectors, detail = modal._run_frequency([body], np.array([0]), [], 1, 5)
-    assert frequencies == [100.0] and detail == ""
-    assert calls == [10, 10]
-    assert body["order"] == 2 and body["straight_sided"]
 
 
 def test_calculix_is_started_with_stdin_closed(monkeypatch):
