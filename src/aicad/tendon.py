@@ -776,6 +776,10 @@ def _indexed_wraps(nodes, wraps):
             index += 1
 
 
+# Box corners can sit on the surface to within the modeling tolerance.
+_BOX_MARGIN_MM = 1e-3
+
+
 def _collisions(route: dict, cable: dict, placed: dict) -> list[dict]:
     from aicad.cable import prefer_sample
 
@@ -783,10 +787,14 @@ def _collisions(route: dict, cable: dict, placed: dict) -> list[dict]:
     seat = max(step, cable["diameter_mm"])
     limit = cable["diameter_mm"] / 2.0 + cable["pinch_mm"]
     radius = cable["diameter_mm"] / 2.0
+    reach = limit + _BOX_MARGIN_MM
+    boxes = {instance: kernel.aabb_bounds(shape) for instance, shape in placed.items()}
     hits: dict[str, dict] = {}
     for point, owners in _samples(route, step, seat):
         for instance, shape in placed.items():
             if instance in owners:
+                continue
+            if kernel.box_point_gap(boxes[instance], point) >= reach:
                 continue
             gap = kernel.distance_to_point(shape, point)
             if not gap["inside"] and gap["distance_mm"] >= limit:
