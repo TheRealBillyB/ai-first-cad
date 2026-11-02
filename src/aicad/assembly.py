@@ -697,10 +697,15 @@ def _pinches(cable: dict, points: list[dict], placed: dict[str, kernel.Shape]) -
     seat = max(step, cable["diameter_mm"])
     radius = cable["diameter_mm"] / 2.0
     hits = []
+    reach = limit + 1e-3
     for instance, shape in placed.items():
         chosen = None
+        box = kernel.aabb_bounds(shape)
         for sample in samples:
             if _near_waypoint(sample, points, instance, seat):
+                continue
+            # Box corners can sit on the surface to within the modeling tolerance.
+            if kernel.box_point_gap(box, sample) >= reach:
                 continue
             gap = kernel.distance_to_point(shape, sample)
             if not gap["inside"] and gap["distance_mm"] >= limit:

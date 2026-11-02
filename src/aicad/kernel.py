@@ -808,6 +808,26 @@ def _aabb(shape: Shape) -> tuple[tuple[float, float, float], tuple[float, float,
     return (float(low.X), float(low.Y), float(low.Z)), (float(high.X), float(high.Y), float(high.Z))
 
 
+def aabb_bounds(shape: Shape) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """The shape's axis-aligned box as (low corner, high corner), in millimeters."""
+    return _aabb(shape)
+
+
+def box_point_gap(box: tuple[tuple[float, float, float], tuple[float, float, float]], point) -> float:
+    """Distance from a point to an axis-aligned box, in millimeters. Zero inside the box.
+
+    A solid lies inside its box, so its true distance to the point is never
+    smaller. A broad phase can skip the exact query when this is already too far.
+    """
+    low, high = box
+    total = 0.0
+    for index in range(3):
+        value = float(point[index])
+        over = max(low[index] - value, 0.0, value - high[index])
+        total += over * over
+    return math.sqrt(total)
+
+
 def clearance_between(a: Shape, b: Shape) -> tuple[float, float, Vec3 | None, Vec3 | None]:
     """Return intersection volume, surface gap, and the closest point on each solid.
 

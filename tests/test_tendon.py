@@ -548,6 +548,65 @@ def test_a_cable_collision_keeps_the_closest_sample(tmp_path: Path):
         assert hit["part"] == "wall"
 
 
+def test_a_cable_check_skips_parts_out_of_reach(tmp_path: Path, monkeypatch):
+    from aicad import kernel
+
+    document = Document(tmp_path)
+    _box(document, "block", [20, 20, 20], [0, 0, 0])
+    _box(document, "far_block", [10, 10, 10], [0, 0, 500])
+    line = [{"instance": "post", "at": [-40, 0, 0]}, {"instance": "post", "at": [40, 0, 0]}]
+    document.create_assembly(
+        {
+            "name": "reach",
+            "instances": [{"name": "post", "part": "block"}, {"name": "far", "part": "far_block"}],
+            "joints": [],
+            "cables": [
+                {
+                    "name": "tendon",
+                    "kind": "tendon",
+                    "diameter_mm": 4,
+                    "material": "steel",
+                    "min_bend_radius_mm": 1,
+                    "pinch_mm": 0.5,
+                    "points": [{"role": "anchor", **point} for point in line],
+                },
+                {
+                    "name": "harness",
+                    "kind": "cable",
+                    "diameter_mm": 4,
+                    "min_bend_radius_mm": 1,
+                    "pinch_mm": 0.5,
+                    "waypoints": [{**point, "clip": True} for point in line],
+                },
+            ],
+        }
+    )
+    exact = kernel.distance_to_point
+    queried = []
+
+    def counting(shape, point):
+        gap = exact(shape, point)
+        queried.append(gap["distance_mm"])
+        return gap
+
+    monkeypatch.setattr(kernel, "distance_to_point", counting)
+    cables = _by_name(document.check_cables("reach"))
+    assert queried
+    assert max(queried) < 100.0
+    for name in ("tendon", "harness"):
+        hit = _wall_hit_on(cables[name], "post")
+        assert hit["inside"] is True
+        frame = cables[name]["frames"][0]
+        hits = frame.get("collisions") or frame.get("pinches") or []
+        assert {h["part"] for h in hits} == {"post"}
+
+
+def _wall_hit_on(cable: dict, part: str) -> dict:
+    frame = cable["frames"][0]
+    hits = frame.get("collisions") or frame.get("pinches") or []
+    return next(hit for hit in hits if hit["part"] == part)
+
+
 def _wall_hit(cable: dict) -> dict:
     frame = cable["frames"][0]
     hits = frame.get("collisions") or frame.get("pinches") or []
