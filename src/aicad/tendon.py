@@ -77,6 +77,7 @@ def assumptions() -> list[str]:
         "radius_mm is the radius of the cable centerline, not the sheave metal. Bend radius for a pulley or a wrap is that number.",
         "A guide with no radius is a point. Its bend radius is the circumradius of the incoming point, the guide, and the outgoing point. A guide that sits on the incoming or outgoing point is not a corner, so that radius stays unlimited.",
         "Wrap is cw or ccw about the posed axis. When wrap is omitted, the solver keeps the combination with the smaller total arc.",
+        "turns applies to the first sample. Later samples keep the whole turns nearest the sample before, never below zero, so a line that unwinds or winds past a full turn stays continuous.",
         "Rest length is the authored value, or the length of the first sample. Slack is a path more than 0.01 mm shorter than that. Stretch is a path more than 0.01 mm longer.",
         "actuator_force_n is the tension in the span at actuator_end. Across a pulley, tension on the far side is the near tension times exp(-friction × wrap in radians). Friction of zero passes the tension through.",
         "A slack tendon carries no tension. Elastic elongation is force times length, divided by Young's modulus times the circular area, and it is not added to the path.",
@@ -171,10 +172,19 @@ def _line_material(cable: dict, name: str) -> dict:
     return {"id": label, "name": label, "youngs_modulus_mpa": modulus}
 
 
-def evaluate(cable: dict, solved: dict, placed: dict, rest_length: float | None) -> tuple[dict, float]:
-    """Path, tension, and collisions for one posed assembly."""
+def evaluate(
+    cable: dict, solved: dict, placed: dict, rest_length: float | None, previous: dict | None = None
+) -> tuple[dict, float]:
+    """Path, tension, and collisions for one posed assembly.
+
+    ``previous`` is the metrics of the sample before this one in a sequence. Each sheave keeps the whole
+    turns nearest its wrap there, so a line that unwinds through a full turn stays continuous.
+    """
     nodes = _place(cable, solved)
-    route = _solve(cable["name"], nodes)
+    before = None
+    if previous is not None:
+        before = [math.radians(wrap["wrap_deg"]) for wrap in previous["wraps"]]
+    route = _solve(cable["name"], nodes, before)
     if rest_length is None:
         rest_length = cable["rest_length_mm"] if cable["rest_length_mm"] is not None else route["length"]
     metrics = _metrics(cable, route, rest_length)
@@ -309,10 +319,10 @@ def _place(cable: dict, solved: dict) -> list[dict]:
     return nodes
 
 
-def _solve(name: str, nodes: list[dict]) -> dict:
+def _solve(name: str, nodes: list[dict], before: list[float] | None = None) -> dict:
     free = [index for index, node in enumerate(nodes) if node["kind"] == "sheave" and node["sense"] is None]
     if not free:
-        return _build(name, nodes)
+        return _build(name, nodes, before)
     if len(free) > _MAX_FREE_WRAPS:
         raise GeometryError(f"{name} needs wrap set to cw or ccw when more than {_MAX_FREE_WRAPS} pulleys omit it.")
     best = None
@@ -327,7 +337,7 @@ def _solve(name: str, nodes: list[dict]) -> dict:
                 item["sense"] = 1 if (mask >> bit) & 1 else -1
             trial.append(item)
         try:
-            route = _build(name, trial)
+            route = _build(name, trial, before)
         except GeometryError as exc:
             last_error = exc
             continue
@@ -344,7 +354,7 @@ def _solve(name: str, nodes: list[dict]) -> dict:
     return best
 
 
-def _build(name: str, nodes: list[dict]) -> dict:
+def _build(name: str, nodes: list[dict], before: list[float] | None = None) -> dict:
     spans = []
     arrivals: dict[int, list[float]] = {}
     departures: dict[int, list[float]] = {}
@@ -379,7 +389,10 @@ def _build(name: str, nodes: list[dict]) -> dict:
         landed = _rot(_unit(r_in, "radius"), node["axis"], node["sense"] * base)
         if _dist(landed, _unit(r_out, "radius")) > 1e-3:
             raise GeometryError(f"{name} {node['name']} wrap does not meet the leaving tangent.")
-        full = base + node["turns"] * 2.0 * math.pi
+        turns = node["turns"]
+        if before is not None and len(wraps) < len(before):
+            turns = max(0, round((before[len(wraps)] - base) / (2.0 * math.pi)))
+        full = base + turns * 2.0 * math.pi
         arrival_meta = metas.get(index, {}).get("arrival") or {}
         departure_meta = metas.get(index, {}).get("departure") or {}
         fleet = max(abs(arrival_meta.get("fleet_deg") or 0.0), abs(departure_meta.get("fleet_deg") or 0.0))
@@ -393,7 +406,7 @@ def _build(name: str, nodes: list[dict]) -> dict:
                 "radius": node["radius"],
                 "sense": node["sense"],
                 "friction": node["friction"],
-                "turns": node["turns"],
+                "turns": turns,
                 "wrap_rad": full,
                 "r_in": r_in,
                 "fleet_deg": fleet,

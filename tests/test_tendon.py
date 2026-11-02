@@ -369,6 +369,47 @@ def test_a_tendon_can_be_tied_off_on_its_own_drum(tmp_path: Path):
         document.check_cables("loose_end")
 
 
+def test_a_line_unwinding_past_a_full_turn_stays_continuous(tmp_path: Path):
+    document = Document(tmp_path)
+    _box(document, "base", [8, 8, 8], [-30, 0, 40])
+    _box(document, "drum", [8, 8, 8], [30, 0, 40])
+    document.create_assembly(
+        {
+            "name": "winch",
+            "instances": [{"name": "base", "part": "base"}, {"name": "drum", "part": "drum"}],
+            "joints": [{"name": "spin", "type": "revolute", "parent": "base", "child": "drum", "axis": [0, 0, 1]}],
+            "studies": {"unwind": {"duration_s": 1, "steps": 5, "drivers": [{"joint": "spin", "expression": "120 * t"}]}},
+            "cables": [
+                {
+                    "name": "wound",
+                    "kind": "tendon",
+                    "diameter_mm": 1,
+                    "material": "steel",
+                    "min_bend_radius_mm": 4,
+                    "points": [
+                        {"role": "anchor", "name": "lead", "instance": "base", "at": [-50, 10, 0]},
+                        {
+                            "role": "pulley",
+                            "name": "drum",
+                            "instance": "drum",
+                            "at": [0, 0, 0],
+                            "axis": [0, 0, 1],
+                            "radius_mm": 10,
+                            "wrap": "cw",
+                            "turns": 1,
+                        },
+                        {"role": "anchor", "name": "tie", "instance": "drum", "at": [10, 0, 0]},
+                    ],
+                }
+            ],
+        }
+    )
+    cable = document.check_cables("winch", sequence="unwind")["cables"][0]
+    # One turn and 90°, then 120° counter-clockwise unwinds through the full turn to 330°.
+    assert cable["wraps"][0]["wrap_deg"] == pytest.approx([450, 420, 390, 360, 330], abs=0.05)
+    assert cable["length_change_mm"] == pytest.approx([-10 * math.pi * k / 6 for k in range(5)], abs=0.01)
+
+
 def test_capstan_tension_ratio(tmp_path: Path):
     document = Document(tmp_path)
     _box(document, "block", [10, 10, 10], [0, 0, 40])

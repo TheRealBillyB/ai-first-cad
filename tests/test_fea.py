@@ -1,6 +1,7 @@
 """Linear static solves. The CalculiX binary is optional in CI; these skip without it."""
 
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -573,3 +574,45 @@ def test_calculix_is_started_with_stdin_closed(monkeypatch):
     modal._frequency_once([], [], [], 1, 5)
     assert len(seen) == 2
     assert all(item.get("stdin") is subprocess.DEVNULL for item in seen)
+
+
+@needs_solver
+def test_torque_twists_a_tube_like_the_closed_form(tmp_path):
+    from aicad.fea import solve_part
+
+    tube = kernel.make_from_ops(
+        [
+            {"op": "add", "shape": "cylinder", "radius": 10, "height": 20, "center": [0, 0, 10]},
+            {"op": "cut", "shape": "cylinder", "radius": 7, "height": 30, "center": [0, 0, 10]},
+        ]
+    )
+    setup = {
+        "material": "aluminum_6061",
+        "mesh_size_mm": 2,
+        "fixes": [{"name": "floor", "select": {"kind": "plane", "normal": [0, 0, -1]}}],
+        "loads": [
+            {
+                "name": "twist",
+                "type": "torque",
+                "torque_nm": 10,
+                "select": {"kind": "plane", "normal": [0, 0, 1]},
+                "axis": [0, 0, 1],
+            }
+        ],
+    }
+    report = solve_part(tube, setup, part_name="tube", probes_mm=[[10, 0, 20], [-10, 0, 20], [0, 10, 20]])
+    assert report.status == "solved"
+    east, west, north = (probe["displacement_mm"] for probe in report.probes)
+    # Right-handed about +Z: +X moves toward +Y, -X toward -Y, +Y toward -X.
+    assert east[1] > 0 and west[1] < 0 and north[0] < 0
+    # A couple has no net force, so opposite points move by the same amount.
+    assert abs(east[1] + west[1]) < 0.1 * abs(east[1])
+    shear_modulus = 68900.0 / (2 * (1 + 0.33))
+    polar = math.pi / 2 * (10**4 - 7**4)
+    expected = 10_000 * 20 / (shear_modulus * polar) * 10
+    assert 0.9 * expected < east[1] < 1.1 * expected
+    assert any("couple" in line for line in report.assumptions)
+
+    no_axis = dict(setup, loads=[dict(setup["loads"][0], axis=None)])
+    with pytest.raises(GeometryError, match="needs an axis"):
+        solve_part(tube, no_axis, part_name="tube")

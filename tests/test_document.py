@@ -1,5 +1,6 @@
 """Session persistence, export, and rendering."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,7 @@ from build123d import Axis, Box, Shell
 from PIL import Image
 
 from aicad import Document, kernel
-from aicad.errors import PartNotFound
+from aicad.errors import GeometryError, PartNotFound
 
 
 def _png_stddev(path: Path) -> float:
@@ -114,3 +115,43 @@ def test_part_names_skip_measuring_and_gear_replace_uses_them(tmp_path, monkeypa
     workspace.execute("create_gear", {"name": "pinion", "spec": {**spec, "teeth": 13}})
     assert "plate" not in measured
     assert workspace.document.get_source("pinion")["gear"]["teeth"] == 13
+
+
+def test_a_part_in_an_assembly_is_not_deleted(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_script("base", "part = Box(8, 8, 8)\n")
+    document.create_part_from_script("arm", "part = Box(4, 4, 20)\n")
+    document.create_assembly(
+        {
+            "name": "rig",
+            "instances": [{"name": "base", "part": "base"}, {"name": "arm", "part": "arm"}],
+            "joints": [{"name": "fix", "type": "fixed", "parent": "base", "child": "arm"}],
+        }
+    )
+    with pytest.raises(GeometryError, match="used by assembly rig"):
+        document.delete_part("arm")
+    assert Document(tmp_path).get_assembly("rig")["assembly"]["instances"][1]["part"] == "arm"
+
+    document.update_assembly({"name": "rig", "instances": [{"name": "base", "part": "base"}]})
+    document.delete_part("arm")
+    assert [part.name for part in Document(tmp_path).list_parts()] == ["base"]
+
+
+def test_a_project_with_an_assembly_missing_a_part_still_opens(tmp_path):
+    document = Document(tmp_path)
+    document.create_part_from_script("base", "part = Box(8, 8, 8)\n")
+    document.create_part_from_script("arm", "part = Box(4, 4, 20)\n")
+    document.create_assembly(
+        {"name": "rig", "instances": [{"name": "base", "part": "base"}, {"name": "arm", "part": "arm"}]}
+    )
+    # A project saved before deleting a part in use was refused.
+    session = tmp_path / "session.json"
+    payload = json.loads(session.read_text(encoding="utf-8"))
+    payload["parts"] = [record for record in payload["parts"] if record["name"] != "arm"]
+    session.write_text(json.dumps(payload), encoding="utf-8")
+
+    reopened = Document(tmp_path)
+    assert [part.name for part in reopened.list_parts()] == ["base"]
+    assert any("rig" in problem and "arm" in problem and "not opened" in problem for problem in reopened.problems)
+    reopened.create_assembly({"name": "rig", "instances": [{"name": "base", "part": "base"}]})
+    assert Document(tmp_path).problems == []
