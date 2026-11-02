@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-11-02
+
+| Decision | Rationale |
+| --- | --- |
+| Tendon wraps stay continuous through a study | `check_cables` solved each sample on its own, so a sheave's wrap was always the arc in its wrap direction plus the authored `turns`. A line that starts with one full turn and unwinds past it, such as a crossed loop on an idler as the joint flexes, jumped from just over one turn to almost two between neighbouring samples, and its length jumped by one circumference. `turns` now applies to the first sample. Each later sample keeps the whole turns nearest the wrap at the sample before, never below zero, so a line that unwinds or winds past a full turn stays continuous. |
+
 ## 2026-11-01
 
 | Decision | Rationale |
