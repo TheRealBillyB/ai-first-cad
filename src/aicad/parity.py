@@ -129,6 +129,7 @@ SCRIPT_METHODS = frozenset(
         "list_printers",
         "list_sketches",
         "measure",
+        "part_names",
         "place_part",
         "render",
         "render_animation",
