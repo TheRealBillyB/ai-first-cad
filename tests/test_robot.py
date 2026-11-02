@@ -245,6 +245,38 @@ def test_a_second_joint_keeps_the_span_between_pins(tmp_path):
     assert list(data.xpos[body]) == pytest.approx([0.0, 0.1, 0.01], abs=1e-4)
 
 
+def test_a_turned_fixed_child_keeps_its_turn_in_urdf(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "frame", [20, 10, 6], [0, 0, 0])
+    _box(document, "cup", [4, 6, 2], [0, 1, 0])
+    rotation = [0.0, 30.0, 90.0]
+    document.create_assembly(
+        {
+            "name": "turned",
+            "instances": [{"name": "frame", "part": "frame"}, {"name": "cup", "part": "cup"}],
+            "joints": [
+                {
+                    "name": "seat",
+                    "type": "fixed",
+                    "parent": "frame",
+                    "child": "cup",
+                    "parent_anchor": [5, 0, 3],
+                    "child_anchor": [0, 0, 0],
+                    "rotation_deg": rotation,
+                }
+            ],
+        }
+    )
+    report = document.export_robot("turned", tmp_path / "robot")
+    origin = ET.parse(report["urdf"]).getroot().find("joint[@name='seat']/origin")
+    rpy = [float(value) for value in origin.get("rpy").split()]
+    solved = solve(document.get_assembly("turned")["assembly"])
+    cup = next(item for item in solved["instances"] if item["name"] == "cup")
+    expected = [value for row in cup["matrix"][:3] for value in row[:3]]
+    exported = [value for row in _urdf_rotation(*rpy) for value in row]
+    assert exported == pytest.approx(expected, abs=1e-6)
+
+
 def test_a_cylindrical_joint_becomes_two_joints(tmp_path):
     document = Document(tmp_path)
     _box(document, "base", [10, 10, 10], [0, 0, 0])
