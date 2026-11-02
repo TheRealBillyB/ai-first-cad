@@ -348,3 +348,26 @@ def test_a_request_over_the_size_cap_is_refused(server):
     assert status == 400
     assert b"too large" in payload
     assert _parts(server) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["C:app.js", "C:/Windows/win.ini", "..%2Fapp.py", "app.py", "index.html", "favicon.png", "", "nope.js"],
+)
+def test_static_serves_only_the_files_the_app_ships(server, name):
+    status, payload, _headers = _exchange(server, "GET", f"/static/{name}", token=None, origin=None)
+    assert status == 404
+    assert b"X-Aicad-Token" not in payload
+
+
+def test_static_serves_every_shipped_style_and_script(server):
+    from aicad.app import _STATIC
+
+    shipped = sorted(entry.name for entry in _STATIC.iterdir() if entry.suffix in (".css", ".js"))
+    assert "app.js" in shipped and "app.css" in shipped
+    for name in shipped:
+        status, payload, headers = _exchange(server, "GET", f"/static/{name}", token=None, origin=None)
+        assert status == 200
+        assert payload == (_STATIC / name).read_bytes()
+        expected = "text/css" if name.endswith(".css") else "text/javascript"
+        assert headers["content-type"].startswith(expected)
