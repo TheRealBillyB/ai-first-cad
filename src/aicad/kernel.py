@@ -3265,15 +3265,79 @@ def transform_shape(shape: Shape, matrix: list[list[float]]) -> Shape:
 
 
 def distance_to_point(shape: Shape, point: tuple[float, float, float] | list[float]) -> dict:
-    """Gap from a point to the solid's boundary. Distance is 0 when the point is inside."""
+    """Gap from a point to the solid's boundary. Distance is 0 when the point is inside.
+
+    The ray classifier can call a point well outside a swept or lofted solid IN when its ray grazes a
+    tangent seam. For a single solid whose nearest boundary point lies inside a face, the side of that
+    face's outward normal decides instead; the classifier decides on edges, vertices, and compounds.
+    The gap is measured to the shells: given a bare solid, the extrema tool runs the same classifier
+    first and reports 0 for any point it calls IN.
+    """
     pnt = gp_Pnt(float(point[0]), float(point[1]), float(point[2]))
-    classifier = BRepClass3d_SolidClassifier(shape.impl.wrapped, pnt, 1e-6)
-    inside = classifier.State() in (TopAbs_IN, TopAbs_ON)
     vertex = BRepBuilderAPI_MakeVertex(pnt).Vertex()
-    tool = BRepExtrema_DistShapeShape(shape.impl.wrapped, vertex)
+    tool = BRepExtrema_DistShapeShape(_boundary_of(shape.impl.wrapped), vertex)
     tool.Perform()
+    side = _nearest_face_side(shape.impl.wrapped, tool, pnt) if tool.IsDone() else 0
+    if side:
+        inside = side < 0
+    else:
+        classifier = BRepClass3d_SolidClassifier(shape.impl.wrapped, pnt, 1e-6)
+        inside = classifier.State() in (TopAbs_IN, TopAbs_ON)
     gap = 0.0 if inside or not tool.IsDone() else float(tool.Value())
     return {"distance_mm": round_mm(gap), "inside": inside}
+
+
+def _boundary_of(wrapped):
+    """The shape's shells as one compound, or the shape itself when it has none."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopoDS import TopoDS_Compound
+
+    shells = TopExp_Explorer(wrapped, TopAbs_SHELL)
+    if not shells.More():
+        return wrapped
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    while shells.More():
+        builder.Add(compound, shells.Current())
+        shells.Next()
+    return compound
+
+
+def _nearest_face_side(wrapped, tool, pnt) -> int:
+    """+1 outside, -1 inside, 0 when the nearest boundary point does not settle it."""
+    from OCP.BRepExtrema import BRepExtrema_IsInFace
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.TopAbs import TopAbs_REVERSED, TopAbs_SOLID
+
+    solids = TopExp_Explorer(wrapped, TopAbs_SOLID)
+    count = 0
+    while solids.More() and count < 2:
+        count += 1
+        solids.Next()
+    if count != 1 or tool.Value() <= 1e-6:
+        return 0
+    sides = set()
+    for index in range(1, tool.NbSolution() + 1):
+        if tool.SupportTypeShape1(index) != BRepExtrema_IsInFace:
+            return 0
+        face = TopoDS.Face(tool.SupportOnShape1(index))
+        u, v = tool.ParOnFaceS1(index)
+        props = BRepLProp_SLProps(BRepAdaptor_Surface(face), u, v, 1, 1e-9)
+        if not props.IsNormalDefined():
+            return 0
+        normal = props.Normal()
+        if face.Orientation() == TopAbs_REVERSED:
+            normal.Reverse()
+        near = tool.PointOnShape1(index)
+        dot = (
+            (pnt.X() - near.X()) * normal.X()
+            + (pnt.Y() - near.Y()) * normal.Y()
+            + (pnt.Z() - near.Z()) * normal.Z()
+        )
+        sides.add(1 if dot > 0 else -1)
+    return sides.pop() if len(sides) == 1 else 0
 
 
 def solid_from_sketch(
