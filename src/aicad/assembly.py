@@ -295,19 +295,19 @@ def collisions(solved: dict, placed: dict[str, kernel.Shape], ignore: list[list[
     return hits
 
 
-def joint_seats(solved: dict, placed: dict[str, kernel.Shape]) -> list[dict]:
+def joint_seats(solved: dict, placed: dict[str, kernel.Shape], seen: dict | None = None) -> list[dict]:
     """Gap and overlap for each joint pair.
 
     Motion collisions skip these pairs, so a pin that fills its bore is not a
     collision. Overlap here means the two solids of the joint are one volume.
+    ``seen`` keeps each measurement against the child's pose relative to the
+    parent, so a pose that repeats is not measured again.
     """
+    frames = {instance["name"]: instance["matrix"] for instance in solved["instances"]}
     rows = []
     for joint in solved["joints"]:
-        overlap, distance, point_a, point_b = kernel.clearance_between(
-            placed[joint["parent"]], placed[joint["child"]]
-        )
+        overlap, distance, at = _seat_measure(joint["parent"], joint["child"], placed, frames, seen)
         fused = overlap > 1e-4
-        at = point_a or point_b
         rows.append(
             {
                 "joint": joint["name"],
@@ -317,10 +317,25 @@ def joint_seats(solved: dict, placed: dict[str, kernel.Shape]) -> list[dict]:
                 "gap_mm": 0.0 if fused else distance,
                 "overlap_mm3": overlap,
                 "fused": fused,
-                "at_mm": None if at is None else [at.x, at.y, at.z],
+                "at_mm": at,
             }
         )
     return rows
+
+
+def _seat_measure(parent: str, child: str, placed: dict, frames: dict, seen: dict | None):
+    from aicad.motion_study import _moved_hit, _pose_key, _rigid_inverse
+
+    key = None if seen is None else _pose_key(f"seat:{parent}", child, frames.get(parent), frames.get(child))
+    if key is not None and key in seen:
+        overlap, distance, local = seen[key]
+        return overlap, distance, _moved_hit({"at_mm": local}, frames[parent])["at_mm"]
+    overlap, distance, point_a, point_b = kernel.clearance_between(placed[parent], placed[child])
+    point = point_a or point_b
+    at = None if point is None else [point.x, point.y, point.z]
+    if key is not None:
+        seen[key] = (overlap, distance, _moved_hit({"at_mm": at}, _rigid_inverse(frames[parent]))["at_mm"])
+    return overlap, distance, at
 
 
 def run_motion(spec: dict, shapes: dict[str, kernel.Shape], motion: dict, out_dir: Path | None = None) -> dict:

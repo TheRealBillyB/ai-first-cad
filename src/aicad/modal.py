@@ -22,12 +22,14 @@ from aicad import kernel
 from aicad.errors import GeometryError
 from aicad.honesty import ROUGH_ESTIMATE, finish
 from aicad.fea import (
+    STRAIGHT_EDGE_NOTE,
     _ccx_error,
     _mesh_solid,
     _nodes_for,
     fea_available,
     lookup_material,
     select_faces,
+    straight_sided,
 )
 from aicad.render import render_scalar_views
 
@@ -97,6 +99,8 @@ def solve_modal(
         "offset": 0,
     }
     frequencies, vectors, log = _run_frequency([body], fixed, [], nmodes, _timeout(setup, 180))
+    if body.get("straight_sided"):
+        warnings.append(STRAIGHT_EDGE_NOTE)
     if int(body["order"]) != used_order:
         warnings.append(
             "Quadratic tetrahedra had a nonpositive Jacobian. Linear tetrahedra were solved instead. "
@@ -233,6 +237,8 @@ def solve_modal_assembly(spec: dict, shapes: dict, setup: dict | None, out_dir: 
             "No support nodes were found. Name a face on a grounded instance, or use a finer mesh so the bottom face has nodes."
         )
     frequencies, vectors, log = _run_frequency(bodies, np.array(sorted(set(fixed)), dtype=np.int32), equations, nmodes, _timeout(setup, 300))
+    if any(body.get("straight_sided") for body in bodies):
+        warnings.append(STRAIGHT_EDGE_NOTE)
     if int(bodies[0]["order"]) != order:
         warnings.append(
             "Quadratic tetrahedra had a nonpositive Jacobian. Linear tetrahedra were solved instead. "
@@ -703,6 +709,19 @@ def demote_if_simplified(resonance: dict, degraded: bool) -> dict:
 def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
     warning = _frequency_once(bodies, fixed_nodes, equations, nmodes, timeout)
     if warning[0] is None and warning[2] and "nonpositive jacobian" in warning[2].lower():
+        quadratic = [body for body in bodies if int(body["order"]) == 2]
+        if quadratic:
+            curved = {id(body): body["points"] for body in quadratic}
+            for body in quadratic:
+                body["points"] = straight_sided(body["points"], body["elements"])
+            warning = _frequency_once(bodies, fixed_nodes, equations, nmodes, timeout)
+            if warning[2] is None:
+                for body in quadratic:
+                    body["straight_sided"] = True
+            else:
+                for body in quadratic:
+                    body["points"] = curved[id(body)]
+    if warning[0] is None and warning[2] and "nonpositive jacobian" in warning[2].lower():
         if any(int(body["order"]) == 2 for body in bodies):
             for body in bodies:
                 body["elements"] = np.array(body["elements"])[:, :4]
@@ -733,14 +752,19 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
         solver = find_program("ccx")
         if solver is None:
             return None, None, "CalculiX (ccx) is not on PATH."
+        import subprocess
+
         from aicad.sandbox import program_environment, run_confined_helper
 
-        completed = run_confined_helper(
-            [solver, "-i", "job"],
-            env=program_environment(),
-            timeout=timeout,
-            **held_subprocess_kwargs(path),
-        )
+        try:
+            completed = run_confined_helper(
+                [solver, "-i", "job"],
+                env=program_environment(),
+                timeout=timeout,
+                **held_subprocess_kwargs(path),
+            )
+        except subprocess.TimeoutExpired:
+            return None, None, f"CalculiX did not finish in {timeout} s. Use a larger mesh_size_mm, or raise timeout_s."
         stdout = completed.stdout or ""
         if "nonpositive jacobian" in stdout.lower():
             return None, None, "nonpositive jacobian"

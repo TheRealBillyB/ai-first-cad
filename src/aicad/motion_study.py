@@ -69,7 +69,12 @@ convex polyhedra, ``convex_hull`` when the depth is taken on a hull,
 ``collision``, or ``collision_and_limit``.
 
 ``broad_phase_rejected`` and ``narrow_phase_pairs`` count the pairs skipped
-and the pairs sent to the boolean.
+and the pairs sent to the narrow phase. A pair whose relative pose is the
+same as on an earlier step has the same result, so that result is moved
+into place instead of being intersected again. ``narrow_phase_reused``
+counts those pairs. Two parts on one rigid body, or two parts that do not
+move, are intersected once for the whole study. A joint seat whose pose
+repeats is measured once in the same way.
 """
 
 from __future__ import annotations
@@ -241,17 +246,20 @@ def run_study(
     flat_limits = []
     rejected = 0
     narrow = 0
+    reused = 0
+    seen: dict = {}
     for index, time_s in enumerate(times):
         posed, commands = _study_pose(spec, chosen, time_s)
         solved, placed = posed_shapes(posed, shapes, commands)
         limits = [_limit_hit(joint) for joint in solved["joints"]]
         limits = [hit for hit in limits if hit is not None]
-        collisions, step_rejected, step_narrow = _collisions(
-            solved, placed, spec.get("ignore_collisions") or [], chosen["clearance_mm"]
+        collisions, step_rejected, step_narrow, step_reused = _collisions(
+            solved, placed, spec.get("ignore_collisions") or [], chosen["clearance_mm"], seen
         )
-        seats = joint_seats(solved, placed)
+        seats = joint_seats(solved, placed, seen)
         rejected += step_rejected
         narrow += step_narrow
+        reused += step_reused
         shown_time = round(time_s, 6)
         for hit in limits:
             flat_limits.append({"index": index, "time_s": shown_time, **hit})
@@ -275,6 +283,7 @@ def run_study(
                 "joint_seats": seats,
                 "broad_phase_rejected": step_rejected,
                 "narrow_phase_pairs": step_narrow,
+                "narrow_phase_reused": step_reused,
                 "warnings": list(solved["warnings"]),
             }
         )
@@ -317,6 +326,7 @@ def run_study(
         "fused_joints": _fused_summary(step_rows),
         "broad_phase_rejected": rejected,
         "narrow_phase_pairs": narrow,
+        "narrow_phase_reused": reused,
         "steps": step_rows,
         "note": _study_note(step_rows),
         "assumptions": [
@@ -325,6 +335,7 @@ def run_study(
             "A gear train turns the other shafts from the driven joint. A fixed member stays fixed. The starting angle is kept.",
             "A command past a joint limit is held at the stop.",
             "The broad phase is the axis-aligned box. The narrow phase is the boolean intersection of the solids.",
+            "A pair whose relative pose repeats an earlier step reuses that step's narrow-phase result, moved into place.",
             "Penetration depth for a convex solid is the minimum translation that separates it.",
             "Parts that share a joint are allowed to touch. Overlap of that pair is fused_joints, not a collision.",
             "This is not a contact force.",
@@ -707,7 +718,17 @@ def _interpolate(frames: list[dict], time_s: float, field: str) -> float:
     return float(frames[-1][field])
 
 
-def _collisions(solved: dict, placed: dict, ignore: list, clearance: float) -> tuple[list[dict], int, int]:
+def _collisions(
+    solved: dict, placed: dict, ignore: list, clearance: float, seen: dict | None = None
+) -> tuple[list[dict], int, int, int]:
+    """Hits of one posed step.
+
+    ``seen`` maps a pair and its relative pose to the narrow-phase result in the
+    frame of ``a``. It is shared across the steps of one study.
+    """
+    if seen is None:
+        seen = {}
+    frames = {instance["name"]: instance["matrix"] for instance in solved["instances"]}
     skip = set()
     for pair in ignore:
         skip.add(tuple(sorted((str(pair[0]), str(pair[1])))))
@@ -717,6 +738,7 @@ def _collisions(solved: dict, placed: dict, ignore: list, clearance: float) -> t
     hits = []
     rejected = 0
     narrow = 0
+    reused = 0
     for index, left in enumerate(names):
         for right in names[index + 1 :]:
             if (left, right) in skip:
@@ -726,12 +748,62 @@ def _collisions(solved: dict, placed: dict, ignore: list, clearance: float) -> t
                 rejected += 1
                 continue
             narrow += 1
-            hit = _narrow(placed[left], placed[right], clearance)
-            if hit is None:
-                continue
-            hits.append({"a": left, "b": right, **hit})
+            key = _pose_key(left, right, frames.get(left), frames.get(right))
+            if key is not None and key in seen:
+                reused += 1
+                local = seen[key]
+                hit = None if local is None else _moved_hit(local, frames[left])
+            else:
+                hit = _narrow(placed[left], placed[right], clearance)
+                if key is not None:
+                    seen[key] = None if hit is None else _moved_hit(hit, _rigid_inverse(frames[left]))
+            if hit is not None:
+                hits.append({"a": left, "b": right, **hit})
     hits.sort(key=lambda item: (item["a"], item["b"]))
-    return hits, rejected, narrow
+    return hits, rejected, narrow, reused
+
+
+def _pose_key(left: str, right: str, first, second) -> tuple | None:
+    """The pair and the pose of ``right`` in the frame of ``left``, or ``None`` when a frame is not rigid."""
+    if first is None or second is None:
+        return None
+    inverse = _rigid_inverse(first)
+    if inverse is None:
+        return None
+    relative = _matmul(inverse, second)
+    return (left, right, tuple(round(value, 9) for row in relative[:3] for value in row))
+
+
+def _rigid_inverse(matrix) -> list[list[float]] | None:
+    rotation = [[float(matrix[row][col]) for col in range(3)] for row in range(3)]
+    for row in range(3):
+        for col in range(3):
+            dot = sum(rotation[row][k] * rotation[col][k] for k in range(3))
+            if abs(dot - (1.0 if row == col else 0.0)) > 1e-9:
+                return None
+    shift = [float(matrix[row][3]) for row in range(3)]
+    inverse = [[rotation[col][row] for col in range(3)] for row in range(3)]
+    return [
+        [*inverse[row], -sum(inverse[row][k] * shift[k] for k in range(3))] for row in range(3)
+    ] + [[0.0, 0.0, 0.0, 1.0]]
+
+
+def _matmul(first, second) -> list[list[float]]:
+    return [[sum(float(first[row][k]) * float(second[k][col]) for k in range(4)) for col in range(4)] for row in range(4)]
+
+
+def _moved_hit(hit: dict, matrix) -> dict:
+    """``hit`` with its contact point and direction carried by the rigid ``matrix``."""
+    moved = dict(hit)
+    if hit.get("at_mm") is not None:
+        point = hit["at_mm"]
+        moved["at_mm"] = [
+            sum(float(matrix[row][k]) * point[k] for k in range(3)) + float(matrix[row][3]) for row in range(3)
+        ]
+    if hit.get("direction") is not None:
+        vector = hit["direction"]
+        moved["direction"] = [round(sum(float(matrix[row][k]) * vector[k] for k in range(3)), 6) for row in range(3)]
+    return moved
 
 
 def _narrow(left, right, clearance: float) -> dict | None:

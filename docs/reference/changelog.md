@@ -46,7 +46,9 @@ Version 0.9.0 is a public preview ahead of 1.0. The notes below describe what th
 - A linear static check meshes with Gmsh and solves with CalculiX. Materials are PLA, PETG, ABS, nylon, aluminum 6061-T6, mild steel, 42CrMo4, and 16MnCr5. Loads are a force, a pressure, a bolt load, or a torque. The result includes stress and displacement pictures, a safety factor, and the assumptions.
 - A frequency check covers one solid or a posed assembly. Harmonic response and a Miles estimate are closed-form. Fatigue is a Goodman check of a stated stress. A bolted joint reports preload, torque, clamp, slip, stripping, and yield.
 - A serial chain can be solved forward and inverse. The tip position error is the positional Jacobian times the stated joint bounds, plus link deflection when that is stated.
+- When CalculiX finds folded quadratic tetrahedra, a static or frequency solve first puts each mid-edge node back on its straight edge and solves the quadratic mesh again. Linear tetrahedra are the last resort, and only that result is marked degraded.
 - Cable, hose, and tendon routes report length, bend radius, tension, and pinch. A power estimate turns gravity, mass, and payload into actuator force, hydraulic pressure and flow, and motor current. The report states what it leaves out.
+- A static or frequency solve that runs past the CalculiX time limit is reported as not solved, with a hint to use a coarser mesh. It is not raised as an error.
 
 ### Print prep
 
@@ -57,7 +59,7 @@ Version 0.9.0 is a public preview ahead of 1.0. The notes below describe what th
 ### Assemblies and robot export
 
 - Parts join with fixed, revolute, prismatic, and cylindrical joints. A gear relation, a planar linkage, and a cylinder relation drive joints in the tree. A cycle is refused.
-- Named poses and motions report collisions and joint-limit stops. A motion study drives joints by an expression or by keyframes. A motion, a camera orbit, or an exploded opening can be written as a GIF, and as MP4 or WebM when ffmpeg is on PATH.
+- Named poses and motions report collisions and joint-limit stops. A motion study drives joints by an expression or by keyframes. A pair or a joint seat whose relative pose repeats an earlier step reuses that result, so parts on one rigid body are intersected once per study. A motion, a camera orbit, or an exploded opening can be written as a GIF, and as MP4 or WebM when ffmpeg is on PATH.
 - A layout drawing is a third-angle PDF and DXF of a posed assembly. A bill of materials counts parts, catalog items, and routes. An exploded view pulls parts apart along their joints.
 - `aicad robot` writes URDF, MJCF, and STL meshes. Mass and inertia use the model volume and a handbook density. When MuJoCo or PyBullet is installed, the export loads the file and steps it.
 
