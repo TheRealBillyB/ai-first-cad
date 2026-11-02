@@ -1457,6 +1457,28 @@ def test_a_reversed_gear_chain_reaches_the_last_shaft():
     assert solved["warnings"] == []
 
 
+def test_a_placement_on_a_joint_child_is_reported_as_unused():
+    spec = {
+        "name": "arm",
+        "instances": [
+            {"name": "ground", "part": "ground", "placement": {"position": [5, 0, 0]}},
+            {"name": "link", "part": "part", "placement": {"position": [0, 30, 0], "rotation_deg": [0, 0, 45]}},
+            {"name": "tip", "part": "part", "placement": {"position": [0, 0, 0]}},
+        ],
+        "joints": [
+            {"name": "hinge", "type": "revolute", "parent": "ground", "child": "link", "axis": [0, 0, 1]},
+            {"name": "wrist", "type": "revolute", "parent": "link", "child": "tip", "axis": [0, 0, 1]},
+        ],
+    }
+    solved = solve(spec)
+    link = next(item for item in solved["instances"] if item["name"] == "link")
+    assert link["origin_mm"] == pytest.approx([5.0, 0.0, 0.0])
+    assert len(solved["warnings"]) == 1
+    assert "link" in solved["warnings"][0]
+    assert "hinge" in solved["warnings"][0]
+    assert "not used" in solved["warnings"][0]
+
+
 def test_a_clamped_idler_limits_the_next_gear():
     spec = _gear_chain(2, True)
     for joint in spec["joints"]:

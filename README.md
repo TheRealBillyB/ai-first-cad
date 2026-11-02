@@ -657,7 +657,7 @@ The walkthrough is [Write your first plugin](docs/plugins.md). The example is `e
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE).
 
-Decided on 2026-10-21. aicad is meant as a service for humanity, so an improvement from anyone, including a company, stays shared. There is no paid license and no dual license. You keep the copyright in what you write. Contributions use a Developer Certificate of Origin (`git commit -s`), not a contributor license agreement, and no relicensing grant is required. See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+The project license stays AGPL-3.0-or-later. You keep the copyright in what you write. Contributions are accepted under the [Contributor License Agreement](CLA.md) and a Developer Certificate of Origin (`git commit -s`). The Contributor License Agreement lets the project relicense contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 A plugin that is loaded into aicad, or that imports it, is combined with this program. Distributing that plugin carries the same AGPL-3.0-or-later obligations. You keep the copyright in the plugin.
 

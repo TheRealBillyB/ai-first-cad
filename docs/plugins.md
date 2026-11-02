@@ -174,7 +174,7 @@ The host methods are `add_analysis(name, summary, run)`, `add_part(kind, summary
 
 ## License
 
-aicad is AGPL-3.0-or-later. A plugin that is loaded into aicad, or that imports aicad, is combined with this program. If you distribute that plugin, the AGPL-3.0-or-later obligations apply to it as well. You keep your copyright. There is no contributor license agreement and no relicensing grant. The example plugin is AGPL-3.0-or-later for that reason.
+aicad is AGPL-3.0-or-later. A plugin that is loaded into aicad, or that imports aicad, is combined with this program. If you distribute that plugin, the AGPL-3.0-or-later obligations apply to it as well. You keep your copyright. A plugin you contribute to this repository is accepted under the [Contributor License Agreement](../CLA.md), which lets the project relicense contributions. The example plugin is AGPL-3.0-or-later for that reason.
 
 A plugin that never imports aicad is still loaded into the aicad process when you run it. Treat that as linking the core.
 
