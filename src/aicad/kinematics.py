@@ -123,6 +123,10 @@ def normalize(spec: dict) -> dict:
             "value": _optional_float(joint.get("value"), 0.0),
             "slide": _optional_float(joint.get("slide"), 0.0),
         }
+        if joint.get("rotation_deg") is not None:
+            if kind != "fixed":
+                raise GeometryError(f"Joint {jname!r} is {kind}. rotation_deg turns the child of a fixed joint only.")
+            record["rotation_deg"] = _point(joint.get("rotation_deg"), f"{jname} rotation_deg")
         if joint.get("min") is not None:
             record["min"] = float(joint["min"])
         if joint.get("max") is not None:
@@ -444,6 +448,12 @@ def apply_pose(spec: dict, pose: str) -> dict:
     return updated
 
 
+def fixed_rotation(joint: dict) -> list[list[float]]:
+    """The turn a fixed joint gives its child about the child anchor."""
+    rotation = joint.get("rotation_deg") or [0.0, 0.0, 0.0]
+    return _matrix(_euler(rotation[0], rotation[1], rotation[2]), [0.0, 0.0, 0.0])
+
+
 def matrix_from_placement(placement: dict) -> list[list[float]]:
     rotation = placement.get("rotation_deg") or [0.0, 0.0, 0.0]
     translation = placement.get("position") or [0.0, 0.0, 0.0]
@@ -718,6 +728,8 @@ def _joint_matrix(joint: dict, value: float, slide: float) -> list[list[float]]:
         travel = value
     if joint["type"] == "cylindrical":
         travel = slide
+    if joint["type"] == "fixed" and joint.get("rotation_deg"):
+        rotation = _euler(*joint["rotation_deg"])
     anchor_c = joint["child_anchor"]
     rotated_anchor = _matvec(rotation, anchor_c)
     anchor_p = joint["parent_anchor"]

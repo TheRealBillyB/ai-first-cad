@@ -19,7 +19,7 @@ from xml.sax.saxutils import escape
 from aicad import fea, kernel
 from aicad.errors import GeometryError
 from aicad.honesty import ROUGH_ESTIMATE, finish
-from aicad.kinematics import matrix_from_placement
+from aicad.kinematics import fixed_rotation, matrix_from_placement
 
 _EFFORT = 10.0
 _VELOCITY = 1.0
@@ -207,9 +207,8 @@ def _one_joint(joint: dict, parent_offset: list[float] | None = None) -> list[di
     child_anchor = [float(value) / 1000.0 for value in joint["child_anchor"]]
     kind = joint["type"]
     if kind == "fixed":
-        return [
-            _row(joint["name"], "fixed", joint["parent"], joint["child"], anchor, [0.0, 0.0, 0.0], axis, None, None, False, "fixed")
-        ]
+        _xyz, rpy = _origin(fixed_rotation(joint))
+        return [_row(joint["name"], "fixed", joint["parent"], joint["child"], anchor, rpy, axis, None, None, False, "fixed")]
     if kind == "revolute":
         lower, upper, assumed = _angle_limits(joint)
         return [

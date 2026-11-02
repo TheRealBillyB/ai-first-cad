@@ -963,7 +963,8 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         a fraction of full scale. A float above 1 is a byte already on that scale.
         joints are {name, type, parent, child, parent_anchor, child_anchor, axis, value, min, max}.
         type is fixed, revolute (degrees), prismatic (millimeters), or cylindrical
-        (degrees in value, millimeters in slide). relations are gear {driver, driven, ratio, offset},
+        (degrees in value, millimeters in slide). A fixed joint also takes
+        rotation_deg [x, y, z], which turns the child about its child anchor. relations are gear {driver, driven, ratio, offset},
         linkage {driver, driven, ground_mm, crank_mm, coupler_mm, rocker_mm, branch},
         or cylinder {driver, driven, stroke, moving_anchor, retracted_mm}.
         A linkage is a planar four-bar map between revolute or cylindrical joints, not a closed spatial loop.
