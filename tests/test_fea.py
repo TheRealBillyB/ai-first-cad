@@ -531,50 +531,6 @@ def test_non_finite_mechanics_inputs_are_rejected():
         )
 
 
-def test_calculix_is_started_with_stdin_closed(monkeypatch):
-    import sys
-
-    from aicad import fea, modal
-
-    seen: list[dict] = []
-
-    def run(_command, **kwargs):
-        seen.append(kwargs)
-
-        class Done:
-            returncode = 1
-            stdout = ""
-            stderr = ""
-
-        return Done()
-
-    if sys.platform == "win32":
-        def spawn(_command, **_kwargs):
-            seen.append({"stdin": subprocess.DEVNULL})
-            return (1, "", "", False, False, "appcontainer")
-
-        monkeypatch.setattr("aicad.sandbox_windows.spawn", spawn)
-        from aicad.sandbox_windows import _launch
-        import inspect
-
-        assert ' "NUL"' in inspect.getsource(_launch) or '"NUL"' in inspect.getsource(_launch)
-    else:
-        monkeypatch.setattr("subprocess.run", run)
-    monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "ccx")
-    mesh = {
-        "points": np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
-        "elements": np.array([[0, 1, 2, 3]]),
-        "order": 1,
-    }
-    forces = np.zeros((4, 3))
-    forces[1, 0] = 1.0
-    fea._run_ccx(mesh, np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3})
-    monkeypatch.setattr(modal, "_frequency_deck", lambda *_args: "*HEADING\n")
-    modal._frequency_once([], [], [], 1, 5)
-    assert len(seen) == 2
-    assert all(item.get("stdin") is subprocess.DEVNULL for item in seen)
-
-
 def _bulged_tet10():
     from aicad.fea import _C3D10_EDGES
 
@@ -643,3 +599,47 @@ def test_a_folded_quadratic_body_is_tried_straight_sided_in_a_modal_solve(monkey
     assert frequencies == [100.0] and detail == ""
     assert calls == [10, 10]
     assert body["order"] == 2 and body["straight_sided"]
+
+
+def test_calculix_is_started_with_stdin_closed(monkeypatch):
+    import sys
+
+    from aicad import fea, modal
+
+    seen: list[dict] = []
+
+    def run(_command, **kwargs):
+        seen.append(kwargs)
+
+        class Done:
+            returncode = 1
+            stdout = ""
+            stderr = ""
+
+        return Done()
+
+    if sys.platform == "win32":
+        def spawn(_command, **_kwargs):
+            seen.append({"stdin": subprocess.DEVNULL})
+            return (1, "", "", False, False, "appcontainer")
+
+        monkeypatch.setattr("aicad.sandbox_windows.spawn", spawn)
+        from aicad.sandbox_windows import _launch
+        import inspect
+
+        assert ' "NUL"' in inspect.getsource(_launch) or '"NUL"' in inspect.getsource(_launch)
+    else:
+        monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "ccx")
+    mesh = {
+        "points": np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        "elements": np.array([[0, 1, 2, 3]]),
+        "order": 1,
+    }
+    forces = np.zeros((4, 3))
+    forces[1, 0] = 1.0
+    fea._run_ccx(mesh, np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3})
+    monkeypatch.setattr(modal, "_frequency_deck", lambda *_args: "*HEADING\n")
+    modal._frequency_once([], [], [], 1, 5)
+    assert len(seen) == 2
+    assert all(item.get("stdin") is subprocess.DEVNULL for item in seen)
