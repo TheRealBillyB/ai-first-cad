@@ -433,6 +433,73 @@ def test_clearance_uses_the_solid_gap_when_boxes_overlap(tmp_path: Path):
     assert tight["collision_count"] == 2
 
 
+def test_a_rigid_pair_is_intersected_once_and_moved_with_its_body(tmp_path: Path, monkeypatch):
+    # Two 10 mm cubes ride on one link and overlap by 4 mm in x: 4 × 10 × 10 mm.
+    # The link turns 0, 30, 60, 90 degrees, so only the first step needs the boolean.
+    from aicad import motion_study
+
+    document = Document(tmp_path)
+    _box(document, "base", [4, 4, 4], [0, 0, -20])
+    _box(document, "cube", [10, 10, 10], [0, 0, 0])
+    document.create_assembly(
+        {
+            "name": "carry",
+            "instances": [
+                {"name": "base", "part": "base"},
+                {"name": "arm", "part": "base"},
+                {"name": "left", "part": "cube"},
+                {"name": "right", "part": "cube"},
+            ],
+            "joints": [
+                {"name": "hinge", "type": "revolute", "parent": "base", "child": "arm", "axis": [0, 0, 1]},
+                {"name": "hold_l", "type": "fixed", "parent": "arm", "child": "left", "parent_anchor": [30, 0, 0]},
+                {"name": "hold_r", "type": "fixed", "parent": "arm", "child": "right", "parent_anchor": [36, 0, 0]},
+            ],
+            "studies": {
+                "swing": {"duration_s": 1, "steps": 4, "drivers": [{"joint": "hinge", "expression": "90 * t"}]}
+            },
+        }
+    )
+    calls = []
+    real = motion_study._narrow
+
+    def counted(left, right, clearance):
+        calls.append(1)
+        return real(left, right, clearance)
+
+    monkeypatch.setattr(motion_study, "_narrow", counted)
+    report = document.run_motion_study("carry", sequence="swing")
+    assert len(calls) == 1
+    assert report["narrow_phase_pairs"] == 4
+    assert report["narrow_phase_reused"] == 3
+    assert [step["narrow_phase_reused"] for step in report["steps"]] == [0, 1, 1, 1]
+    assert report["colliding_steps"] == [0, 1, 2, 3]
+    first = report["steps"][0]["collisions"][0]
+    assert {first["a"], first["b"]} == {"left", "right"}
+    assert first["interference_volume_mm3"] == pytest.approx(400, abs=1e-2)
+    assert first["penetration_depth_mm"] == pytest.approx(4, abs=1e-4)
+    for step in report["steps"]:
+        hit = step["collisions"][0]
+        angle = math.radians(step["joints"][0]["value"])
+        turn = lambda v: [v[0] * math.cos(angle) - v[1] * math.sin(angle), v[0] * math.sin(angle) + v[1] * math.cos(angle), v[2]]
+        assert hit["interference_volume_mm3"] == pytest.approx(first["interference_volume_mm3"])
+        assert hit["penetration_depth_mm"] == pytest.approx(first["penetration_depth_mm"])
+        assert hit["at_mm"] == pytest.approx(turn(first["at_mm"]), abs=1e-9)
+        assert hit["direction"] == pytest.approx(turn(first["direction"]), abs=1e-6)
+
+    calls.clear()
+    monkeypatch.setattr(motion_study, "_pose_key", lambda *_args: None)
+    fresh = document.run_motion_study("carry", sequence="swing")
+    assert len(calls) == 4
+    assert fresh["narrow_phase_reused"] == 0
+    for kept, computed in zip(report["steps"], fresh["steps"], strict=True):
+        a, b = kept["collisions"][0], computed["collisions"][0]
+        assert a["interference_volume_mm3"] == pytest.approx(b["interference_volume_mm3"], abs=1e-6)
+        assert a["penetration_depth_mm"] == pytest.approx(b["penetration_depth_mm"], abs=1e-6)
+        assert a["at_mm"] == pytest.approx(b["at_mm"], abs=1e-6)
+        assert a["direction"] == pytest.approx(b["direction"], abs=1e-6)
+
+
 def test_a_gear_pair_collision_sweep_of_thirteen_frames_finishes(tmp_path):
     """Meshing teeth still report interference. The sweep has to finish."""
     document = Document(tmp_path)
