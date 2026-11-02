@@ -338,19 +338,34 @@ def _record(kind: str, size: str, length: float | None) -> dict[str, object]:
         if row is None:
             raise GeometryError(f"No deep-groove bearing {size!r}.")
         legacy = catalog_data.legacy_bearing_code(row)
-        text = _base(
-            kind,
-            row.designation,
-            "ISO 15",
-            f"ISO 15 deep-groove ball bearing {row.designation}, {row.bore_mm:g} x {row.outside_mm:g} x {row.width_mm:g} mm",
-            {
-                "bore_mm": row.bore_mm,
-                "outside_mm": row.outside_mm,
-                "width_mm": row.width_mm,
-                "chamfer_mm": row.chamfer_mm,
-            },
-            "Bore, outside diameter, width, and minimum chamfer are ISO 15. The ball and ring shoulders are a construction that keeps that boundary.",
-        )
+        dimensions = {
+            "bore_mm": row.bore_mm,
+            "outside_mm": row.outside_mm,
+            "width_mm": row.width_mm,
+            "chamfer_mm": row.chamfer_mm,
+        }
+        if row.flange_mm is None:
+            text = _base(
+                kind,
+                row.designation,
+                "ISO 15",
+                f"ISO 15 deep-groove ball bearing {row.designation}, {row.bore_mm:g} x {row.outside_mm:g} x {row.width_mm:g} mm",
+                dimensions,
+                "Bore, outside diameter, width, and minimum chamfer are ISO 15. The ball and ring shoulders are a construction that keeps that boundary.",
+            )
+        else:
+            dimensions["flange_outside_mm"] = row.flange_mm
+            dimensions["flange_width_mm"] = row.flange_width_mm
+            text = _base(
+                kind,
+                row.designation,
+                "Maker catalog",
+                f"Flanged shielded ball bearing {row.designation}, {row.bore_mm:g} x {row.outside_mm:g} x {row.width_mm:g} mm, "
+                f"flange {row.flange_mm:g} x {row.flange_width_mm:g} mm",
+                dimensions,
+                "Bore, outside diameter, shielded width, and flange are the miniature and flanged bearing tables of the "
+                "NMB and NSK catalogs. The flange is on z = 0 and its seating face is at the flange width.",
+            )
         text["aliases"] = [legacy] if legacy else []
         _ratings(text, row.dynamic_n, row.static_n, "SKF")
         _catalog_mass(text, row.mass_g, "SKF")
@@ -550,6 +565,8 @@ def _mate_list(kind: str, size: str, length: float | None) -> list[dict[str, obj
             ("bore", [0, 0, row.width_mm / 2], "Bore centerline at mid-width."),
             ("seat", [0, 0, 0], "Face on z = 0."),
         ]
+        if row.flange_mm is not None:
+            frames.append(("flange", [0, 0, row.flange_width_mm], "Flange face that seats on the housing."))
     elif kind == "tapered_roller_bearing":
         row = catalog_data.tapered(size)
         if row is None:
@@ -731,7 +748,7 @@ def _sizes(kind: str) -> list[str]:
     if kind == "plain_washer":
         return _merged_fastener_sizes(kind, catalog_build.known_fastener_sizes()[kind], _bd_sizes(kind))
     if kind == "ball_bearing":
-        return [row.designation for row in catalog_data.DEEP_GROOVE]
+        return [row.designation for row in (*catalog_data.DEEP_GROOVE, *catalog_data.FLANGED)]
     if kind == "tapered_roller_bearing":
         return [row.designation for row in catalog_data.TAPERED]
     if kind == "radial_shaft_seal":

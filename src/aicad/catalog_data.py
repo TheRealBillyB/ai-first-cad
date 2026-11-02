@@ -60,6 +60,8 @@ class DeepGroove:
     dynamic_n: int | None
     static_n: int | None
     mass_g: float | None
+    flange_mm: float | None = None
+    flange_width_mm: float | None = None
 
 
 @dataclass(frozen=True)
@@ -238,6 +240,26 @@ DEEP_GROOVE: tuple[DeepGroove, ...] = _deep(
     ("6308", 40, 90, 23, 1.5, 41000, 24000, None),
     ("6309", 45, 100, 25, 1.5, 52700, 31500, None),
     ("6310", 50, 110, 27, 2.0, 61800, 38000, None),
+)
+
+# designation, bore, outside, width, chamfer, flange outside, flange width
+# Flanged bearings are sold shielded, so the width is the ZZ width.
+FLANGED: tuple[DeepGroove, ...] = tuple(
+    DeepGroove(name, bore, outside, width, chamfer, None, None, None, flange, flange_width)
+    for name, bore, outside, width, chamfer, flange, flange_width in (
+        ("MF63ZZ", 3, 6, 2.5, 0.1, 7.2, 0.6),
+        ("MF74ZZ", 4, 7, 2.5, 0.1, 8.2, 0.6),
+        ("MF84ZZ", 4, 8, 3, 0.1, 9.2, 0.6),
+        ("MF85ZZ", 5, 8, 2.5, 0.1, 9.2, 0.6),
+        ("MF95ZZ", 5, 9, 3, 0.15, 10.2, 0.6),
+        ("MF104ZZ", 4, 10, 4, 0.15, 11.2, 0.8),
+        ("MF105ZZ", 5, 10, 4, 0.15, 11.2, 0.8),
+        ("F623ZZ", 3, 10, 4, 0.15, 11.5, 1.0),
+        ("F694ZZ", 4, 11, 4, 0.15, 12.5, 1.0),
+        ("F624ZZ", 4, 13, 5, 0.2, 15, 1.0),
+        ("F625ZZ", 5, 16, 5, 0.3, 18, 1.0),
+        ("F608ZZ", 8, 22, 7, 0.3, 25, 1.5),
+    )
 )
 
 # Old bd_warehouse size code, bore-outside-width, kept so a saved session still opens.
@@ -526,7 +548,7 @@ def _key(text: str) -> str:
 def deep_groove(size: str) -> DeepGroove | None:
     token = _key(size)
     token = _DEEP_GROOVE_LEGACY.get(token, token)
-    for row in DEEP_GROOVE:
+    for row in (*DEEP_GROOVE, *FLANGED):
         if row.designation == token:
             return row
     return None

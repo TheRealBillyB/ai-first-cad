@@ -9,7 +9,9 @@ is ISO 6194-1 Table 1. NEMA 17 face numbers are ICS 16 inches times 25.4.
 ISO 4762 M5 head is 8.5 × 5 mm. ISO 4032 M5 is 8 mm across flats and 4.7 mm
 high. ISO 7089 M5 is 5.3 × 10 × 1 mm. The small sizes are in the same tables:
 ISO 4762 M2 head is 3.8 × 2 mm, ISO 4032 M2 is 4 mm across flats and 1.6 mm
-high, and ISO 7089 M2 is 2.2 × 5 × 0.3 mm.
+high, and ISO 7089 M2 is 2.2 × 5 × 0.3 mm. Flanged MF63ZZ is 3 × 6 × 2.5 mm
+with a 7.2 × 0.6 mm flange, MF84ZZ is 4 × 8 × 3 mm with 9.2 × 0.6, and
+F623ZZ is 3 × 10 × 4 mm with 11.5 × 1.
 """
 
 import math
@@ -279,6 +281,43 @@ def test_miniature_bearings_are_listed_and_build(tmp_path, designation, bore, ou
     assert document.check_clearance("small", "shaft").intersecting is False
     _pin(document, "oversize", bore / 2 + 0.05, width + 2, (0, 0, -1))
     assert document.check_clearance("small", "oversize").intersecting is True
+
+
+@pytest.mark.parametrize(
+    ("designation", "bore", "outside", "width", "flange", "flange_width"),
+    [
+        ("MF63ZZ", 3, 6, 2.5, 7.2, 0.6),
+        ("MF84ZZ", 4, 8, 3, 9.2, 0.6),
+        ("F623ZZ", 3, 10, 4, 11.5, 1),
+    ],
+)
+def test_flanged_bearings_are_listed_and_build(tmp_path, designation, bore, outside, width, flange, flange_width):
+    document = Document(tmp_path)
+    match = _match(document, designation, "ball_bearing")
+    assert match["size"] == designation
+    assert match["dimensions"]["outside_mm"] == outside
+    assert match["dimensions"]["flange_outside_mm"] == flange
+    assert match["dimensions"]["flange_width_mm"] == flange_width
+    assert "flange" in match["mates"]
+
+    document.insert_standard_part("small", "ball_bearing", designation.lower())
+    measured = document.measure("small")
+    assert measured.valid and measured.watertight
+    box = measured.bounding_box
+    assert box.size.z == pytest.approx(width, abs=0.02)
+    assert box.size.x == pytest.approx(flange, abs=0.05)
+    _pin(document, "shaft", bore / 2 - 0.05, width + 2, (0, 0, -1))
+    assert document.check_clearance("small", "shaft").intersecting is False
+    document.create_part_from_script(
+        "housing",
+        f"part = Pos(0, 0, {flange_width} + 2) * (Cylinder({flange}, 4) - Cylinder({outside / 2 + 0.05}, 4))\n",
+    )
+    assert document.check_clearance("small", "housing").intersecting is False
+    document.create_part_from_script(
+        "tight",
+        f"part = Pos(0, 0, {flange_width} + 2) * (Cylinder({flange}, 4) - Cylinder({outside / 2 - 0.05}, 4))\n",
+    )
+    assert document.check_clearance("small", "tight").intersecting is True
 
 
 def test_a_size_outside_the_local_table_still_builds(tmp_path):
