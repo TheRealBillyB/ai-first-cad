@@ -42,6 +42,25 @@ from aicad.studio import remember_project
 from aicad.workspace import Workspace
 
 _STATIC = Path(__file__).resolve().parent / "app_static"
+
+
+def _static_files() -> dict[str, Path]:
+    """The style sheets and scripts the app ships, by file name.
+
+    Built from the folder listing, so a request can only pick one of these.
+    A name such as ``C:x.js`` on Windows is not in the list.
+    """
+    global _STATIC_FILES
+    if _STATIC_FILES is None:
+        _STATIC_FILES = {
+            entry.name: entry
+            for entry in _STATIC.iterdir()
+            if entry.suffix in (".css", ".js") and entry.is_file() and not entry.is_symlink()
+        }
+    return _STATIC_FILES
+
+
+_STATIC_FILES: dict[str, Path] | None = None
 _FILE_SUFFIXES = {".png", ".gif", ".svg", ".json", ".md", ".txt"}
 # A project file shown in the workspace is read on the host. Past this it is refused.
 _MAX_SERVED_BYTES = 32 * 1024 * 1024
@@ -651,14 +670,13 @@ def _handler(session: Workspace):
             self.wfile.write(data)
 
         def _static(self, name: str) -> None:
-            if not name or "/" in name or ".." in name:
+            # Only a file the app ships is served. The request names it, but the
+            # path comes from the app's own list, so no name can reach another file.
+            path = _static_files().get(name)
+            if path is None:
                 self._error(404, "Not found.")
                 return
-            path = _STATIC / name
-            if not path.is_file():
-                self._error(404, "Not found.")
-                return
-            mime = "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8"
+            mime = "text/css; charset=utf-8" if path.suffix == ".css" else "text/javascript; charset=utf-8"
             self._bytes(path, mime)
 
         def _bytes(self, path: Path, mime: str, *, cache: str = "no-cache") -> None:
