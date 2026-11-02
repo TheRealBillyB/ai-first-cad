@@ -342,6 +342,11 @@ class Document:
         with self._lock:
             return [self._info(part) for part in self._parts.values()]
 
+    def part_names(self) -> list[str]:
+        """Part names in document order. Nothing is measured, so this stays cheap in a large project."""
+        with self._lock:
+            return list(self._parts)
+
     def get_source(self, name: str) -> dict[str, object]:
         with self._lock:
             part = self._get(name)

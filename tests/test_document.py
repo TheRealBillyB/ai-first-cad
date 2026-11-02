@@ -92,3 +92,25 @@ def test_render_writes_distinct_views(tmp_path):
         assert _png_stddev(path) > 8, name
     assert by_name["front"].read_bytes() != by_name["top"].read_bytes()
     assert by_name["front"].read_bytes() != by_name["iso"].read_bytes()
+
+
+def test_part_names_skip_measuring_and_gear_replace_uses_them(tmp_path, monkeypatch):
+    from aicad.workspace import Workspace
+
+    workspace = Workspace(tmp_path)
+    workspace.execute("create_part_from_ops", {"name": "plate", "ops": [{"op": "add", "shape": "box", "size": [4, 4, 1]}]})
+    spec = {"type": "spur", "module_mm": 1, "teeth": 12, "pressure_angle_deg": 20, "face_width_mm": 2}
+    workspace.execute("create_gear", {"name": "pinion", "spec": spec})
+    measured = []
+    original = Document._info
+
+    def counting(self, part):
+        measured.append(part.name)
+        return original(self, part)
+
+    monkeypatch.setattr(Document, "_info", counting)
+    assert workspace.document.part_names() == ["plate", "pinion"]
+    assert measured == []
+    workspace.execute("create_gear", {"name": "pinion", "spec": {**spec, "teeth": 13}})
+    assert "plate" not in measured
+    assert workspace.document.get_source("pinion")["gear"]["teeth"] == 13
