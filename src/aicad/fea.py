@@ -24,6 +24,7 @@ from aicad.models import FeaReport, Vec3, round_mm
 from aicad.render import render_scalar_views
 
 _SOLVER = "CalculiX (ccx) + Gmsh"
+_CCX_TIMEOUT_S = 180
 _LOCK = threading.Lock()
 _FRD_NUMBER = re.compile(r"[+-]?\d+\.\d+E[+-]\d+")
 # Gmsh tet10 lists edge 2-3 before edge 1-3. CalculiX C3D10 wants the opposite.
@@ -1100,14 +1101,22 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
         solver = find_program("ccx")
         if solver is None:
             return None, None, "CalculiX (ccx) is not on PATH."
+        import subprocess
+
         from aicad.sandbox import program_environment, run_confined_helper
 
-        completed = run_confined_helper(
-            [solver, "-i", "job"],
-            env=program_environment(),
-            timeout=180,
-            **held_subprocess_kwargs(path),
-        )
+        try:
+            completed = run_confined_helper(
+                [solver, "-i", "job"],
+                env=program_environment(),
+                timeout=_CCX_TIMEOUT_S,
+                **held_subprocess_kwargs(path),
+            )
+        except subprocess.TimeoutExpired:
+            return None, None, (
+                f"CalculiX did not finish in {_CCX_TIMEOUT_S} s on {len(elements)} elements. "
+                "Use a larger mesh_size_mm."
+            )
         if completed.returncode != 0 or not held_entry_is_file(path, "job.frd"):
             detail = _ccx_error(completed.stdout)
             return None, None, detail or "CalculiX stopped without a result file."
