@@ -345,8 +345,10 @@ CalculiX solves them. A setup looks like this:
 
 `type` is `force` (a total force in newtons, shared by the nodes), `pressure`
 (MPa, positive pushes into the face), or `bolt` (`axial` newtons along the
-hole, positive in the axis direction). `each: true` applies that force or bolt
-load once per selected face.
+hole, positive in the axis direction), or `torque` (`torque_nm` newton-metres,
+right-handed about `axis`; the axis may be omitted when a cylindrical face is
+selected). A torque is a couple with no net force. `each: true` applies that
+force or bolt load once per selected face.
 
 The result has the peak von Mises stress, the peak displacement, the minimum
 safety factor and where it occurs, and colored pictures from the front, the
@@ -865,9 +867,10 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
         setup needs material (a name from list_materials), fixes, and loads.
         Optional mesh_size_mm and target_safety_factor (default 2). A fix is
-        {"name", "select"}. A load adds "type" of force, pressure, or bolt:
+        {"name", "select"}. A load adds "type" of force, pressure, bolt, or torque:
         force has vector [x, y, z] in newtons, pressure has magnitude in MPa
-        (positive pushes into the face), bolt has axial newtons along the hole.
+        (positive pushes into the face), bolt has axial newtons along the hole,
+        torque has torque_nm about axis [x, y, z] as a couple with no net force.
         select is the same geometry selector describe_faces is for.
 
         Read status, min_safety_factor, review, assumptions, and warnings.

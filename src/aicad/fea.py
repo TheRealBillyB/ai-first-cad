@@ -279,7 +279,7 @@ def solve_part(
     ``setup`` keys: ``material``, ``fixes``, ``loads``, optional
     ``mesh_size_mm`` and ``target_safety_factor`` (default 2). A fix or a load
     has ``name``, ``select``, and, for a load, ``type`` of ``force``,
-    ``pressure``, or ``bolt``.
+    ``pressure``, ``bolt``, or ``torque``.
 
     ``probes_mm`` is one point, or three points, in the part frame. Each probe
     reports the displacement of the nearest mesh node. Three points are enough
@@ -559,8 +559,8 @@ def _bind_load(item: dict, catalog: list[dict], index: int) -> dict:
         raise GeometryError(f"Load {index} must be an object with type, select, and a magnitude.")
     kind = item.get("type")
     name = item.get("name") or f"load_{index + 1}"
-    if kind not in ("force", "pressure", "bolt"):
-        raise GeometryError(f"Load {name!r} has type {kind!r}. Use force, pressure, or bolt.")
+    if kind not in ("force", "pressure", "bolt", "torque"):
+        raise GeometryError(f"Load {name!r} has type {kind!r}. Use force, pressure, bolt, or torque.")
     faces = select_faces(catalog, item.get("select") or {})
     zero = False
     if kind == "force":
@@ -573,6 +573,21 @@ def _bind_load(item: dict, catalog: list[dict], index: int) -> dict:
                 f"Pressure {name!r} needs a finite magnitude, in MPa. Positive pressure pushes into the face."
             )
         zero = abs(magnitude) < 1e-15
+    elif kind == "torque":
+        torque = _optional_float(item.get("torque_nm"), None)
+        if torque is None or not math.isfinite(torque):
+            raise GeometryError(
+                f"Torque {name!r} needs a finite torque_nm, in newton-metres, right-handed about the axis."
+            )
+        if item.get("axis") is not None:
+            axis = _vec(item.get("axis"), f"{name} axis")
+            if _distance(axis, (0, 0, 0)) < 1e-12:
+                raise GeometryError(f"Torque {name!r} has a zero axis.")
+        elif not any(face.get("axis_direction") for face in faces):
+            raise GeometryError(
+                f"Torque {name!r} needs an axis, or a cylindrical face in its select so the axis is known."
+            )
+        zero = abs(torque) < 1e-15
     else:
         axial = _optional_float(item.get("axial"), None)
         if axial is None or not math.isfinite(axial):
@@ -1164,6 +1179,8 @@ def _apply_load(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
             else:
                 touched.update(_apply_curved_pressure(mesh, face, magnitude, forces))
         return touched
+    if load["kind"] == "torque":
+        return _apply_torque(mesh, load, forces)
     if load["kind"] == "force":
         vector = np.array(_vec(spec["vector"], load["name"]), dtype=np.float64)
     else:
@@ -1178,6 +1195,36 @@ def _apply_load(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
         forces[nodes] += vector / len(nodes)
         touched.update(int(node) for node in nodes)
     return touched
+
+
+def _apply_torque(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
+    """Spread a couple over the selected nodes.
+
+    Each node gets a force square to the axis and to its arm from the centroid of
+    the loaded nodes, in proportion to that arm, like a rigid twist. The arms sum
+    to zero, so the net force is zero and the moment is the same about every
+    parallel axis.
+    """
+    spec = load["spec"]
+    nodes = _nodes_for(mesh, [face["index"] for face in load["faces"]])
+    if len(nodes) == 0:
+        return set()
+    if spec.get("axis") is not None:
+        axis = np.array(_vec(spec["axis"], load["name"]), dtype=np.float64)
+        axis /= float(np.linalg.norm(axis))
+    else:
+        axis = _mean_axis(load["faces"], "A torque")
+    points = mesh["points"][nodes].astype(np.float64)
+    arms = points - points.mean(axis=0)
+    arms -= np.outer(arms @ axis, axis)
+    second_moment = float(np.einsum("ij,ij->", arms, arms))
+    if second_moment < 1e-12:
+        raise GeometryError(
+            f"Torque {load['name']!r} landed on nodes that lie on its axis, so it has no lever arm."
+        )
+    scale = float(spec["torque_nm"]) * 1000.0 / second_moment
+    forces[nodes] += scale * np.cross(axis, arms)
+    return {int(node) for node in nodes}
 
 
 def _apply_curved_pressure(mesh: dict, face: dict, magnitude: float, forces: np.ndarray) -> set[int]:
@@ -1210,14 +1257,16 @@ def _apply_curved_pressure(mesh: dict, face: dict, magnitude: float, forces: np.
     return touched
 
 
-def _mean_axis(faces: list[dict]) -> np.ndarray:
+def _mean_axis(faces: list[dict], what: str = "A bolt load") -> np.ndarray:
     axes = [np.array(face["axis_direction"], dtype=np.float64) for face in faces if face.get("axis_direction")]
     if not axes:
-        raise GeometryError("A bolt load needs a cylindrical face, so the hole axis is known.")
+        raise GeometryError(f"{what} needs a cylindrical face, so the hole axis is known.")
     axis = np.mean(axes, axis=0)
     length = float(np.linalg.norm(axis))
     if length < 1e-9:
-        raise GeometryError("The selected holes do not share an axis, so one bolt direction is ambiguous.")
+        if what == "A bolt load":
+            raise GeometryError("The selected holes do not share an axis, so one bolt direction is ambiguous.")
+        raise GeometryError("The selected faces do not share an axis, so the torque axis is ambiguous. Give axis.")
     return axis / length
 
 
@@ -1453,7 +1502,9 @@ def _assumptions(material, mesh, fixes, loads, target, mesh_size) -> list[str]:
         "Positive pressure pushes into the face, opposite the outward normal. "
         "On a curved face that normal is local to each triangle, so pressure on a round hole "
         "does not become one sideways force. "
-        "A bolt load is an axial force along the hole, not a thread or a contact patch.",
+        "A bolt load is an axial force along the hole, not a thread or a contact patch. "
+        "A torque is a couple: forces square to the axis, in proportion to each node's arm from the centroid "
+        "of the loaded nodes, so the net force is zero.",
     ]
     if material["printed"]:
         lines.append(
