@@ -327,6 +327,16 @@ class Document:
                 raise MountError(
                     f"{name!r} is the mount for {', '.join(holders)}. Move those parts before deleting it."
                 )
+            users = [
+                spec["name"]
+                for spec in self._assemblies.values()
+                if any(instance["part"] == name for instance in spec["instances"])
+            ]
+            if users:
+                raise GeometryError(
+                    f"{name!r} is used by assembly {', '.join(users)}. "
+                    "Remove its instances from the assembly before deleting it."
+                )
             renders = self.workspace / "renders" / name
             if renders.exists() or renders.is_symlink():
                 _project_resolved(self.workspace, renders, "Render")
@@ -3194,9 +3204,12 @@ class Document:
                 cleaned = normalize_assembly(self._with_resolved_mates(record))
                 self._require_assembly_parts(cleaned)
             except GeometryError as exc:
-                if "one line" not in str(exc):
+                message = str(exc)
+                if "one line" not in message and "not in the document" not in message:
                     raise
-                self.problems.append(str(exc))
+                if "not in the document" in message:
+                    message = f"{message} It was not opened."
+                self.problems.append(message)
                 continue
             stored_assemblies.append(cleaned)
         self._assemblies.clear()
