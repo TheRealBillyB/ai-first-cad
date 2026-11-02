@@ -46,6 +46,7 @@ Version 0.9.0 is a public preview ahead of 1.0. The notes below describe what th
 - A linear static check meshes with Gmsh and solves with CalculiX. Materials are PLA, PETG, ABS, nylon, aluminum 6061-T6, mild steel, 42CrMo4, and 16MnCr5. The result includes stress and displacement pictures, a safety factor, and the assumptions.
 - A frequency check covers one solid or a posed assembly. Harmonic response and a Miles estimate are closed-form. Fatigue is a Goodman check of a stated stress. A bolted joint reports preload, torque, clamp, slip, stripping, and yield.
 - A serial chain can be solved forward and inverse. The tip position error is the positional Jacobian times the stated joint bounds, plus link deflection when that is stated.
+- When CalculiX finds folded quadratic tetrahedra, a static or frequency solve first puts each mid-edge node back on its straight edge and solves the quadratic mesh again. Linear tetrahedra are the last resort, and only that result is marked degraded.
 - Cable, hose, and tendon routes report length, bend radius, tension, and pinch. A power estimate turns gravity, mass, and payload into actuator force, hydraulic pressure and flow, and motor current. The report states what it leaves out.
 
 ### Print prep
