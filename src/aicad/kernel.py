@@ -3954,20 +3954,26 @@ def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | Non
                 side = side.normalized()
                 inward = None
                 probe = None
+                interior = False
                 for candidate in _WALL_PROBES_MM:
+                    ahead = _strictly_on_face(face, point + side * candidate)
+                    behind = _strictly_on_face(face, point - side * candidate)
+                    if ahead and behind:
+                        # Material on both sides: the slice only touches a surface here,
+                        # such as the tangent line of a hole. This edge is not a wall.
+                        interior = True
+                        break
                     # A step that only reaches the opposite edge is not inside the section.
-                    if _strictly_on_face(face, point + side * candidate) and not _strictly_on_face(
-                        face, point - side * candidate
-                    ):
+                    if ahead:
                         inward = side
                         probe = candidate
                         break
-                    if _strictly_on_face(face, point - side * candidate) and not _strictly_on_face(
-                        face, point + side * candidate
-                    ):
+                    if behind:
                         inward = -side
                         probe = candidate
                         break
+                if interior:
+                    continue
                 if inward is None or probe is None:
                     missed.append(_WALL_PROBES_MM[-1])
                     continue

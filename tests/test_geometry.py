@@ -130,6 +130,19 @@ def test_a_wall_the_same_size_as_the_first_probe_is_measured(tmp_path):
     assert wall.method == "ray+section"
 
 
+def test_a_slice_tangent_to_a_blind_hole_is_not_a_thin_wall(tmp_path):
+    """The 50% slice along Z touches the side of the hole without crossing it."""
+    document = Document(tmp_path)
+    document.create_part_from_script(
+        "plate",
+        "part = Box(100, 8, 76) - Pos(41, -1.25, 2) * Rot(90, 0, 0) * Cylinder(2.0, 6.5)\n",
+    )
+    wall = document.check_wall_thickness("plate", min_wall_mm=1.2, samples=4)
+    assert wall.section_estimate_mm > 1.2
+    assert wall.estimated_min_mm == pytest.approx(2.0, abs=0.05)
+    assert wall.passed is True
+
+
 def test_round_and_rotated_solids_report_normal_thickness(tmp_path):
     """An off-center slice is a chord. It is not a thinner wall."""
     document = Document(tmp_path)

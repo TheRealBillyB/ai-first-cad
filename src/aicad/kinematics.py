@@ -312,6 +312,7 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
                 f"{joint['name']} commanded {value:.3f} {_unit_name(joint)} and was held at its {which} of {clamped:.3f}."
             )
     warnings.extend(limit_notes)
+    warnings.extend(_ignored_placements(spec))
     worlds = _worlds(spec, limited, slides)
     joint_rows = []
     for joint in spec["joints"]:
@@ -690,6 +691,21 @@ def _worlds(spec: dict, values: dict[str, float], slides: dict[str, float]) -> d
     for instance in spec["instances"]:
         visit(instance["name"], set())
     return worlds
+
+
+def _ignored_placements(spec: dict) -> list[str]:
+    children = {joint["child"]: joint["name"] for joint in spec["joints"]}
+    notes = []
+    for instance in spec["instances"]:
+        joint_name = children.get(instance["name"])
+        placement = instance.get("placement") or {}
+        values = list(placement.get("position") or []) + list(placement.get("rotation_deg") or [])
+        if joint_name is not None and any(abs(value) > 1e-9 for value in values):
+            notes.append(
+                f"{instance['name']} has a placement, but it is the child of {joint_name}, "
+                "so its pose comes from that joint. The placement is not used."
+            )
+    return notes
 
 
 def _joint_matrix(joint: dict, value: float, slide: float) -> list[list[float]]:
