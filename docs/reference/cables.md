@@ -38,7 +38,7 @@ A route is either a clip polyline or a tendon. The report says which. Neither on
 }
 ```
 
-`radius_mm` is the radius of the cable centerline. `axis` is a direction in the part frame. `wrap` is `cw` or `ccw` by the right-hand rule about that axis after the part is posed. When `wrap` is omitted, the check keeps the combination of directions with the smaller total arc. `turns` adds whole extra revolutions on that sheave. A guide with no radius is a point the cable must pass through. A guide with `radius_mm` is a small sheave. A wrap is a post the cable bends around; the geometry is the same as a pulley.
+`radius_mm` is the radius of the cable centerline. `axis` is a direction in the part frame. `wrap` is `cw` or `ccw` by the right-hand rule about that axis after the part is posed. When `wrap` is omitted, the check keeps the combination of directions with the smaller total arc. `turns` adds whole extra revolutions on that sheave at the first sample. Later samples in a study keep the whole turns nearest the sample before, never below zero, so a line that unwinds past a full turn stays continuous. A guide with no radius is a point the cable must pass through. A guide with `radius_mm` is a small sheave. A wrap is a post the cable bends around; the geometry is the same as a pulley.
 
 Length is the straight spans plus `radius_mm` times the wrap angle in radians on each sheave. Rest length is `rest_length_mm`, or the length of the first sample when that field is omitted. A path more than 0.01 mm shorter than the rest length is slack. A path more than 0.01 mm longer is stretch. Strain uses the same change. The default strain limit is 0.02.
 
