@@ -733,14 +733,19 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
         solver = find_program("ccx")
         if solver is None:
             return None, None, "CalculiX (ccx) is not on PATH."
+        import subprocess
+
         from aicad.sandbox import program_environment, run_confined_helper
 
-        completed = run_confined_helper(
-            [solver, "-i", "job"],
-            env=program_environment(),
-            timeout=timeout,
-            **held_subprocess_kwargs(path),
-        )
+        try:
+            completed = run_confined_helper(
+                [solver, "-i", "job"],
+                env=program_environment(),
+                timeout=timeout,
+                **held_subprocess_kwargs(path),
+            )
+        except subprocess.TimeoutExpired:
+            return None, None, f"CalculiX did not finish in {timeout} s. Use a larger mesh_size_mm, or raise timeout_s."
         stdout = completed.stdout or ""
         if "nonpositive jacobian" in stdout.lower():
             return None, None, "nonpositive jacobian"

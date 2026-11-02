@@ -531,6 +531,35 @@ def test_non_finite_mechanics_inputs_are_rejected():
         )
 
 
+def test_a_calculix_timeout_is_reported_not_raised(monkeypatch):
+    from aicad import fea, modal
+
+    def slow(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr("aicad.sandbox.run_confined_helper", slow)
+    monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "ccx")
+    mesh = {
+        "points": np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        "elements": np.array([[0, 1, 2, 3]]),
+        "order": 1,
+    }
+    forces = np.zeros((4, 3))
+    forces[1, 0] = 1.0
+    disp, stress, warning = fea._run_ccx(
+        mesh, np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3}
+    )
+    assert disp is None and stress is None
+    assert "did not finish" in warning and "mesh_size_mm" in warning
+
+    monkeypatch.setattr(modal, "_frequency_deck", lambda *_args: "*HEADING\n")
+    frequencies, vectors, warning = modal._frequency_once([], [], [], 1, 5)
+    assert frequencies is None and vectors is None
+    assert "did not finish in 5 s" in warning
+    with pytest.raises(GeometryError, match="did not finish"):
+        modal._run_frequency([], [], [], 1, 5)
+
+
 def test_calculix_is_started_with_stdin_closed(monkeypatch):
     import sys
 
