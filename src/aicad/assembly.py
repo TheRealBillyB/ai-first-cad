@@ -417,7 +417,8 @@ def check_cables(
         placed = sample["placed"]
         for cable in cables:
             if cable["route"] == "pulley":
-                metrics, used = tendon_mod.evaluate(cable, solved, placed, rest.get(cable["name"]))
+                before = per_cable[cable["name"]][-1] if per_cable[cable["name"]] else None
+                metrics, used = tendon_mod.evaluate(cable, solved, placed, rest.get(cable["name"]), before)
                 rest.setdefault(cable["name"], used)
             else:
                 points = cable_mod.world_waypoints(cable, solved)
