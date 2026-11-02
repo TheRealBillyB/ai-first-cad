@@ -10,6 +10,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| A part in an assembly is not deleted | `delete_part` removed a part that a stored assembly still used and saved the project. Opening that project again failed, because loading checks that every assembly's parts exist, so the project could not be opened to fix it. `delete_part` now refuses a part that any assembly uses and names the assembly, the same way it refuses a part that something is mounted on. A project already saved in that state opens without the assembly and lists it under problems, so it can be rebuilt. |
 | Tendon wraps stay continuous through a study | `check_cables` solved each sample on its own, so a sheave's wrap was always the arc in its wrap direction plus the authored `turns`. A line that starts with one full turn and unwinds past it, such as a crossed loop on an idler as the joint flexes, jumped from just over one turn to almost two between neighbouring samples, and its length jumped by one circumference. `turns` now applies to the first sample. Each later sample keeps the whole turns nearest the wrap at the sample before, never below zero, so a line that unwinds or winds past a full turn stays continuous. |
 
 ## 2026-11-01
