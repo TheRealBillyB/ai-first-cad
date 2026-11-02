@@ -382,14 +382,16 @@ def test_point_beside_a_swept_tube_is_outside():
     e2, b = Vector(-62, -1.81, 2.42), Vector(-39.1, -1.81, 2.42)
     path = Wire([Line(a, s1), ThreePointArc(s1, m1, t1), Line(t1, t2), ThreePointArc(t2, m2, e2), Line(e2, b)])
     profile = Plane(origin=a, x_dir=(0, 1, 0), z_dir=(1, 0, 0)) * (Circle(2.0) - Circle(0.75))
-    tube = kernel.Shape(_impl=sweep(profile, path=path, transition=Transition.ROUND))
-
-    beside = kernel.distance_to_point(tube, (-101.319, 3.648, 14.701))
-    assert beside["inside"] is False
-    assert beside["distance_mm"] == pytest.approx(3.454, abs=0.01)
+    swept = sweep(profile, path=path, transition=Transition.ROUND)
+    tube = kernel.Shape(_impl=swept)
 
     middle = (t1 + t2) * 0.5
     across = (t2 - t1).cross(Vector(0, 0, 1)).normalized()
-    assert kernel.distance_to_point(tube, tuple(middle))["inside"] is False
-    assert kernel.distance_to_point(tube, tuple(middle + across * 1.4))["inside"] is True
-    assert kernel.distance_to_point(tube, tuple(middle + across * 2.5))["inside"] is False
+    # A bare solid as well: the extrema tool classifies those itself before measuring.
+    for shape in (tube, kernel.Shape(_impl=swept.solids()[0])):
+        beside = kernel.distance_to_point(shape, (-101.319, 3.648, 14.701))
+        assert beside["inside"] is False
+        assert beside["distance_mm"] == pytest.approx(3.454, abs=0.01)
+        assert kernel.distance_to_point(shape, tuple(middle))["inside"] is False
+        assert kernel.distance_to_point(shape, tuple(middle + across * 1.4))["inside"] is True
+        assert kernel.distance_to_point(shape, tuple(middle + across * 2.5))["inside"] is False

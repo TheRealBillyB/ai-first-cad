@@ -3270,10 +3270,12 @@ def distance_to_point(shape: Shape, point: tuple[float, float, float] | list[flo
     The ray classifier can call a point well outside a swept or lofted solid IN when its ray grazes a
     tangent seam. For a single solid whose nearest boundary point lies inside a face, the side of that
     face's outward normal decides instead; the classifier decides on edges, vertices, and compounds.
+    The gap is measured to the shells: given a bare solid, the extrema tool runs the same classifier
+    first and reports 0 for any point it calls IN.
     """
     pnt = gp_Pnt(float(point[0]), float(point[1]), float(point[2]))
     vertex = BRepBuilderAPI_MakeVertex(pnt).Vertex()
-    tool = BRepExtrema_DistShapeShape(shape.impl.wrapped, vertex)
+    tool = BRepExtrema_DistShapeShape(_boundary_of(shape.impl.wrapped), vertex)
     tool.Perform()
     side = _nearest_face_side(shape.impl.wrapped, tool, pnt) if tool.IsDone() else 0
     if side:
@@ -3283,6 +3285,24 @@ def distance_to_point(shape: Shape, point: tuple[float, float, float] | list[flo
         inside = classifier.State() in (TopAbs_IN, TopAbs_ON)
     gap = 0.0 if inside or not tool.IsDone() else float(tool.Value())
     return {"distance_mm": round_mm(gap), "inside": inside}
+
+
+def _boundary_of(wrapped):
+    """The shape's shells as one compound, or the shape itself when it has none."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopoDS import TopoDS_Compound
+
+    shells = TopExp_Explorer(wrapped, TopAbs_SHELL)
+    if not shells.More():
+        return wrapped
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    while shells.More():
+        builder.Add(compound, shells.Current())
+        shells.Next()
+    return compound
 
 
 def _nearest_face_side(wrapped, tool, pnt) -> int:
