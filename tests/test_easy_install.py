@@ -52,6 +52,25 @@ def _load_launch():
     return module
 
 
+def _answers(url: str) -> bool:
+    """Ask a fresh interpreter. The suite can patch urllib in this process."""
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, urllib.request\n"
+            "urllib.request.urlopen(sys.argv[1], timeout=2).read(64)\n",
+            url,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=8,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -318,8 +337,9 @@ def test_launcher_waits_until_the_server_answers_then_stops_it(tmp_path: Path):
                     return
 
             from pathlib import Path
-            Path("ready.txt").write_text("ready\\n", encoding="utf-8")
-            ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+            httpd = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+            Path("ready.txt").write_text(f"ready {httpd.server_address}\\n", encoding="utf-8")
+            httpd.serve_forever()
             """
         ),
         encoding="utf-8",
@@ -329,11 +349,12 @@ def test_launcher_waits_until_the_server_answers_then_stops_it(tmp_path: Path):
     process = module.start_app([sys.executable, str(server), str(port)], cwd=tmp_path)
     url = f"http://127.0.0.1:{port}/"
     try:
-        ready = module.wait_until_ready(process, url, 20)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and process.poll() is None and not _answers(url):
+            time.sleep(0.2)
         detail = trace.read_text(encoding="utf-8") if trace.is_file() else "no trace"
         ready_note = (tmp_path / "ready.txt").read_text(encoding="utf-8") if (tmp_path / "ready.txt").is_file() else "no ready"
-        assert ready, f"poll={process.poll()} trace={detail!r} ready={ready_note!r}"
-        assert module.http_ok(url)
+        assert _answers(url), f"poll={process.poll()} trace={detail!r} ready={ready_note!r}"
     finally:
         os.environ.pop("AICAD_LAUNCH_TRACE", None)
         module.stop_app(process)
@@ -428,8 +449,9 @@ def test_launch_sh_opens_a_server_and_stopping_it_closes_the_port(tmp_path: Path
                     return
 
             from pathlib import Path
-            Path("ready.txt").write_text("ready\\n", encoding="utf-8")
-            ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+            httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            Path("ready.txt").write_text("ready {{httpd.server_address}}\\n", encoding="utf-8")
+            httpd.serve_forever()
             """
         ),
         encoding="utf-8",
@@ -453,7 +475,7 @@ def test_launch_sh_opens_a_server_and_stopping_it_closes_the_port(tmp_path: Path
     try:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            if module.http_ok(url):
+            if _answers(url):
                 break
             if proc.poll() is not None:
                 break
@@ -464,7 +486,7 @@ def test_launch_sh_opens_a_server_and_stopping_it_closes_the_port(tmp_path: Path
         detail = trace_path.read_text(encoding="utf-8") if trace_path.is_file() else "no trace"
         ready_path = tmp_path / "ready.txt"
         ready_note = ready_path.read_text(encoding="utf-8") if ready_path.is_file() else "no ready"
-        assert module.http_ok(url), f"{text}\ntrace={detail!r} ready={ready_note!r} poll={proc.poll()}"
+        assert _answers(url), f"{text}\ntrace={detail!r} ready={ready_note!r} poll={proc.poll()}"
         assert "Ctrl+C" in text
         os.killpg(proc.pid, signal.SIGTERM)
         closed = time.monotonic() + 10
