@@ -108,20 +108,43 @@ def start_app(command: list[str], *, cwd: Path) -> subprocess.Popen:
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
-    kwargs: dict = {"cwd": cwd, "env": env}
     if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
     else:
-        # A new session so this window can stop the app and the app's children
-        # together. Doing that with start_new_session forks, and a fork from a
-        # process that already has threads can hang the child before it starts.
-        command = [
-            sys.executable,
-            "-c",
-            "import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])",
-            *command,
-        ]
-    process = subprocess.Popen(command, **kwargs)
+        # macOS hangs a child created with fork when the parent already has
+        # another thread. pytest keeps a timeout thread, so the server never
+        # reached listen. posix_spawn is used only when close_fds is false and
+        # cwd is unset; the spawned interpreter then closes extra descriptors,
+        # moves to the project folder, and becomes a session leader.
+        code = (
+            "import os, sys\n"
+            "os.chdir(sys.argv[1])\n"
+            "try:\n"
+            "    os.setsid()\n"
+            "except OSError:\n"
+            "    pass\n"
+            "limit = 256\n"
+            "try:\n"
+            "    limit = min(int(os.sysconf('SC_OPEN_MAX')), 1024)\n"
+            "except (OSError, ValueError):\n"
+            "    pass\n"
+            "for fd in range(3, limit):\n"
+            "    try:\n"
+            "        os.close(fd)\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "os.execv(sys.argv[2], sys.argv[2:])\n"
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-c", code, str(cwd), *command],
+            env=env,
+            close_fds=False,
+        )
     _attach_kill_on_close(process)
     return process
 
