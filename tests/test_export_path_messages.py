@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -48,8 +49,17 @@ def test_a_lookalike_path_names_the_characters(tmp_path):
 
 
 def test_a_backslash_escape_names_the_windows_form(tmp_path):
-    message = _refusal(tmp_path / "proj", "folder\\..\\..\\part.step")
-    assert "Windows drive, share, or backslash path" in message
+    root = tmp_path / "proj"
+    root.mkdir()
+    message = _refusal(root, "folder\\..\\..\\part.step")
+    if os.name == "nt":
+        # Backslash is the native separator here, so the path is an ordinary
+        # parent escape and the message names where it lands.
+        assert f"resolves to {(tmp_path / 'part.step').resolve()}" in message
+        assert f"outside the project folder {root.resolve()}" in message
+    else:
+        # Elsewhere the backslashes only matter once Windows reads the path.
+        assert "Windows drive, share, or backslash path" in message
     assert "such as exports/part.step" in message
 
 
