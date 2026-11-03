@@ -52,25 +52,32 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/.apt-archives"
           printf 'Dir::Cache::Archives "%s";\n' "${GITHUB_WORKSPACE}/.apt-archives" | sudo tee /etc/apt/apt.conf.d/99-aicad-archive-cache >/dev/null
 
+      # Windows runs the installer in cmd. Git Bash rewrites arguments that
+      # start with a slash, so `cmd.exe /d /c install.bat` starts an empty
+      # prompt and returns success without installing.
       - name: Install with the double-click installer
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: install.bat
+
+      - name: Install with the double-click installer
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            cmd.exe /d /c install.bat
-          else
-            ./install.sh
-          fi
+          ./install.sh
 
       - name: Install again
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: install.bat
+
+      - name: Install again
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            cmd.exe /d /c install.bat
-          else
-            ./install.sh
-          fi
+          ./install.sh
 
       - name: Make the apt archive cache readable
         if: runner.os == 'Linux' && always()

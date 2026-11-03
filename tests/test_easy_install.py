@@ -130,6 +130,16 @@ def test_windows_scripts_are_crlf():
         assert "https://www.python.org/downloads/" in text or "desktop_launch.py" in text
 
 
+def test_windows_ci_runs_the_installer_in_cmd():
+    """Git Bash would swallow /d and /c, so the workflow uses the cmd shell."""
+
+    text = (ROOT / ".github/workflows/easy-install-suite.yml").read_text(encoding="utf-8")
+    commands = [line.strip() for line in text.splitlines() if not line.strip().startswith("#")]
+    assert all("cmd.exe /d /c" not in line for line in commands)
+    assert "shell: cmd" in text
+    assert text.count("run: install.bat") == 2
+
+
 def test_install_bat_offers_winget_and_points_at_python():
     text = (ROOT / "install.bat").read_text(encoding="utf-8")
     assert "winget" in text
