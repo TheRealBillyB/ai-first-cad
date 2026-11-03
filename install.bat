@@ -191,10 +191,10 @@ if not defined AICAD_CANDIDATE exit /b 1
 if not exist "%AICAD_CANDIDATE%" exit /b 1
 echo "%AICAD_CANDIDATE%" | findstr /I /C:"\WindowsApps\" >nul
 if not errorlevel 1 exit /b 1
-"%AICAD_CANDIDATE%" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
+call "%AICAD_CANDIDATE%" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
 if errorlevel 1 exit /b 1
 if defined AICAD_EXPLICIT goto take_python
-"%AICAD_CANDIDATE%" -c "import ensurepip" >nul 2>&1
+call "%AICAD_CANDIDATE%" -c "import ensurepip" >nul 2>&1
 if not errorlevel 1 goto take_python
 if not defined AICAD_FALLBACK set "AICAD_FALLBACK=%AICAD_CANDIDATE%"
 exit /b 1

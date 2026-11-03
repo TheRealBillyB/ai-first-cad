@@ -112,9 +112,15 @@ def start_app(command: list[str], *, cwd: Path) -> subprocess.Popen:
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
-        # A new session so stopping this launcher does not require Ctrl+C
-        # to reach the app, and so the app's own children stop with it.
-        kwargs["start_new_session"] = True
+        # A new session so this window can stop the app and the app's children
+        # together. Doing that with start_new_session forks, and a fork from a
+        # process that already has threads can hang the child before it starts.
+        command = [
+            sys.executable,
+            "-c",
+            "import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])",
+            *command,
+        ]
     process = subprocess.Popen(command, **kwargs)
     _attach_kill_on_close(process)
     return process

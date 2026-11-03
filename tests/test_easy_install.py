@@ -8,6 +8,7 @@ installer, then checks that the app answers and stops.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -15,6 +16,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -222,6 +224,19 @@ def test_install_sh_rejects_an_old_requested_python(tmp_path: Path):
     assert "Install finished." not in output
 
 
+def _posix_executable() -> str:
+    """Path Git Bash can execute. A Windows path in a shell script is not one."""
+
+    path = Path(sys.executable)
+    if os.name != "nt":
+        return str(path)
+    drive = path.drive.rstrip(":").lower()
+    rest = path.as_posix().split(":", 1)[-1]
+    if drive and rest.startswith("/"):
+        return f"/{drive}{rest}"
+    return str(path)
+
+
 def test_install_sh_prefers_a_python_that_can_create_a_venv(tmp_path: Path):
     script = _install_tree(tmp_path)
     (tmp_path / "install.py").write_text(
@@ -243,8 +258,9 @@ def test_install_sh_prefers_a_python_that_can_create_a_venv(tmp_path: Path):
     old.chmod(0o755)
     newer = bindir / "python3.12"
     newer.write_text(
-        f"#!/bin/sh\nexec {sys.executable} \"$@\"\n",
+        "#!/bin/sh\nexec " + shlex.quote(_posix_executable()) + ' "$@"\n',
         encoding="utf-8",
+        newline="\n",
     )
     newer.chmod(0o755)
     env = _base_env()
@@ -278,6 +294,9 @@ def test_install_sh_tells_you_where_to_get_python_when_it_is_missing(tmp_path: P
 
 
 def test_launcher_waits_until_the_server_answers_then_stops_it(tmp_path: Path):
+    # The suite keeps a timeout thread. A fork from that process can hang the
+    # child, which is what macOS did. The launcher has to start anyway.
+    threading.Thread(target=time.sleep, args=(60,), daemon=True).start()
     module = _load_launch()
     port = _free_port()
     server = tmp_path / "server.py"
