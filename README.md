@@ -46,7 +46,7 @@ Units are millimeters. Forces are newtons, so a stress from the solver is in meg
 
 ## Install
 
-You need Python 3.11 or newer. On Windows and Mac, use 3.11 if you can: the sketch solver has a ready-made package for 3.11, and 3.12 needs a C++ compiler. The OpenCascade wheel that build123d depends on is large. From the project folder, one command creates a virtual environment and installs aicad, including the robot extra:
+You need Python 3.11 or newer. On Windows and Mac, use 3.11 if you can: the sketch solver has a ready-made package for 3.11, and 3.12 or newer needs a C++ compiler. On Linux the solver has no ready-made package for any Python version, so every Linux install needs a C++ compiler and the Python headers (`g++` and `python3-dev` on Debian or Ubuntu). The OpenCascade wheel that build123d depends on is large. From the project folder, one command creates a virtual environment and installs aicad, including the robot extra:
 
 ```bash
 python install.py
@@ -56,7 +56,7 @@ On Ubuntu or Debian, `python -m venv` needs the `python3-venv` package (`sudo ap
 
 On Windows, if `python` is not found, use `py install.py`. On a Mac, if `python` is not 3.11 or newer, use `python3 install.py`. The command prints how to turn the environment on. Then `pytest` runs the tests from that environment.
 
-The sketch solver is [python-solvespace](https://github.com/KmolYuan/solvespace), a wrapper around the SolveSpace geometric constraint solver. That solver is GPL-3.0-or-later. aicad is AGPL-3.0-or-later, and that GPL solver can be combined with it. If pip has no wheel for your Python, it compiles the solver and needs a C++ compiler plus Python headers (`python3-dev` and `g++` on Debian or Ubuntu; `python install.py` installs those when `sudo` works without a password).
+The sketch solver is [python-solvespace](https://github.com/KmolYuan/solvespace), a wrapper around the SolveSpace geometric constraint solver. That solver is GPL-3.0-or-later. aicad is AGPL-3.0-or-later, and that GPL solver can be combined with it. If pip has no wheel for your Python, it compiles the solver and needs a C++ compiler plus Python headers. That is every Linux install, and Windows or Mac on Python 3.12 or newer. On Debian or Ubuntu the packages are `g++` and `python3-dev`; `python install.py` installs them when `sudo` works without a password, and otherwise says which ones are missing. Gmsh, which meshes parts for the stress check, also needs libGLU on Linux (`libglu1-mesa` on Debian or Ubuntu).
 
 The mechanics solver is [CalculiX](https://www.calculix.de/) (`ccx`), which is GPL-2.0-only and runs as a separate program. Meshing uses [Gmsh](https://gmsh.info/), GPL-2.0-or-later, through the `gmsh` Python module that pip installs with aicad. aicad does not download CalculiX. `python install.py` looks for `ccx` and, if it is missing, prints the command for this operating system:
 
