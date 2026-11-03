@@ -72,7 +72,7 @@ def evaluate(
 def _one(document, item: dict, cache: dict[str, dict], run: bool) -> dict:
     part = item["part"]
     kind = item["kind"]
-    if part not in {info.name for info in document.list_parts()}:
+    if part not in set(document.part_names()):
         return _row(item, "error", None, None, f"No part named {part!r}.")
     measured = document.measure(part)
     token = _token(measured)
