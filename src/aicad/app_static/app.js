@@ -372,12 +372,14 @@ function renderPanel() {
   }
   if (ui.tab === "fea") {
     const report = state.panels.fea;
-    const materials = (state.materials.materials || []).map((item) => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+    const choices = state.materials.materials || [];
+    const form = feaFormValues(feaForm, report, choices.map((item) => item.id));
+    const materials = choices.map((item) => `<option value="${escapeAttr(item.id)}"${item.id === form.material ? " selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
     root.innerHTML = `
       <h3>Strength</h3>
       <div class="row"><select id="fea-material">${materials}</select>
-        <label>mesh <input id="fea-mesh" type="number" value="1.5" step="0.1" style="width:64px" /></label>
-        <label>SF <input id="fea-sf" type="number" value="2" step="0.5" style="width:56px" /></label></div>
+        <label>mesh <input id="fea-mesh" type="number" value="${escapeAttr(form.mesh)}" step="0.1" style="width:64px" /></label>
+        <label>SF <input id="fea-sf" type="number" value="${escapeAttr(form.sf)}" step="0.5" style="width:56px" /></label></div>
       <div class="row">
         <button type="button" id="fea-fix">Fix selection</button>
         <button type="button" id="fea-load">Load selection</button>
@@ -388,6 +390,9 @@ function renderPanel() {
     $("fea-fix").onclick = () => rememberLoad("fix");
     $("fea-load").onclick = () => rememberLoad("force");
     $("fea-run").onclick = () => runFea();
+    $("fea-material").onchange = () => { feaForm.material = $("fea-material").value; };
+    $("fea-mesh").onchange = () => { feaForm.mesh = $("fea-mesh").value; };
+    $("fea-sf").onchange = () => { feaForm.sf = $("fea-sf").value; };
     renderFeaSetup();
     return;
   }
@@ -569,6 +574,39 @@ function checkHtml(item) {
 }
 
 const feaPlan = { fixes: [], loads: [] };
+// Values the person typed in the Strength form. They outlast a redraw.
+const feaForm = { material: null, mesh: null, sf: null };
+
+// The Strength form shows what the person typed, else the last solve, else the defaults.
+function feaFormValues(typed, report, materialIds) {
+  const last = report || {};
+  const material = last.material && last.material.id;
+  const mesh = last.mesh && (last.mesh.requested_size_mm ?? last.mesh.size_mm);
+  const sf = last.review && last.review.target_safety_factor;
+  const known = (id) => id != null && (materialIds || []).includes(id);
+  return {
+    material: known(typed.material) ? typed.material : known(material) ? material : (materialIds || [])[0] || "",
+    mesh: String(typed.mesh ?? mesh ?? 1.5),
+    sf: String(typed.sf ?? sf ?? 2),
+  };
+}
+
+// The faces being set up, else the faces the last solve held and loaded.
+function feaSetupLines(plan, report) {
+  const lines = [
+    ...plan.fixes.map((item) => `fix ${item.select.ref}`),
+    ...plan.loads.map((item) => `force ${item.vector.join(",")} on ${item.select.ref}`),
+  ];
+  if (lines.length || !report) return lines;
+  const faces = (item) => `${item.name} (${item.face_count ?? 0} face${item.face_count === 1 ? "" : "s"})`;
+  const held = (report.fixes || []).map(faces);
+  const loaded = (report.loads || []).map(faces);
+  if (!held.length && !loaded.length) return lines;
+  return [
+    `Last solve: fixed ${held.join(", ") || "none"}; loaded ${loaded.join(", ") || "none"}.`,
+    "Select faces to set up a new solve.",
+  ];
+}
 const modalPlan = { fixes: [] };
 
 function rememberModalFix() {
@@ -706,10 +744,8 @@ function rememberLoad(kind) {
 function renderFeaSetup() {
   const node = $("fea-setup");
   if (!node) return;
-  const lines = [
-    ...feaPlan.fixes.map((item) => `fix ${item.select.ref}`),
-    ...feaPlan.loads.map((item) => `force ${item.vector.join(",")} on ${item.select.ref}`),
-  ];
+  const report = ui.state && ui.state.panels ? ui.state.panels.fea : null;
+  const lines = feaSetupLines(feaPlan, report);
   node.textContent = lines.join("\n") || "No supports or loads yet.";
 }
 
