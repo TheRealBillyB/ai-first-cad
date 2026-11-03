@@ -139,7 +139,12 @@ def start_app(command: list[str], *, cwd: Path) -> subprocess.Popen:
             "    mark('setsid\\n')\n"
             "except OSError as exc:\n"
             "    mark('setsid-failed %s\\n' % exc)\n"
-            "os.execv(sys.argv[2], sys.argv[2:])\n"
+            "mark('exec %s\\n' % (sys.argv[2:],))\n"
+            "try:\n"
+            "    os.execv(sys.argv[2], sys.argv[2:])\n"
+            "except OSError as exc:\n"
+            "    mark('exec-failed %s\\n' % exc)\n"
+            "    raise SystemExit(1)\n"
         )
         process = subprocess.Popen(
             [sys.executable, "-c", code, str(cwd), *command],

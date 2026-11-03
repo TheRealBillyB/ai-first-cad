@@ -322,24 +322,27 @@ def test_launcher_waits_until_the_server_answers_then_stops_it(tmp_path: Path):
     server.write_text(
         textwrap.dedent(
             """
-            import sys
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-            class Handler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    body = b"aicad workspace"
-                    self.send_response(200)
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-
-                def log_message(self, fmt, *args):
-                    return
-
             from pathlib import Path
-            httpd = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
-            Path("ready.txt").write_text(f"ready {httpd.server_address}\\n", encoding="utf-8")
-            httpd.serve_forever()
+            Path("ready.txt").write_text("script\\n", encoding="utf-8")
+            import socket
+            import sys
+            server = socket.socket()
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", int(sys.argv[1])))
+            server.listen(8)
+            Path("ready.txt").write_text("bound %s\\n" % (server.getsockname(),), encoding="utf-8")
+            while True:
+                conn, _addr = server.accept()
+                data = b""
+                while b"\\r\\n\\r\\n" not in data and len(data) < 8192:
+                    chunk = conn.recv(1024)
+                    if not chunk:
+                        break
+                    data += chunk
+                body = b"aicad workspace"
+                head = b"HTTP/1.1 200 OK\\r\\nContent-Length: %d\\r\\nConnection: close\\r\\n\\r\\n" % len(body)
+                conn.sendall(head + body)
+                conn.close()
             """
         ),
         encoding="utf-8",
@@ -427,31 +430,33 @@ def test_launch_sh_opens_a_server_and_stopping_it_closes_the_port(tmp_path: Path
     port = _free_port()
     aicad = bindir / "aicad"
     aicad.write_text(
-        textwrap.dedent(
-            f"""\
-            #!{sys.executable}
+        "#!" + sys.executable + "\n"
+        + textwrap.dedent(
+            """\
+            from pathlib import Path
+            Path("ready.txt").write_text("script\\n", encoding="utf-8")
+            import socket
             import sys
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
             port = 8765
             if "--port" in sys.argv:
                 port = int(sys.argv[sys.argv.index("--port") + 1])
-
-            class Handler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    body = b"aicad workspace"
-                    self.send_response(200)
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-
-                def log_message(self, fmt, *args):
-                    return
-
-            from pathlib import Path
-            httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-            Path("ready.txt").write_text("ready {{httpd.server_address}}\\n", encoding="utf-8")
-            httpd.serve_forever()
+            server = socket.socket()
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", port))
+            server.listen(8)
+            Path("ready.txt").write_text("bound %s\\n" % (server.getsockname(),), encoding="utf-8")
+            while True:
+                conn, _addr = server.accept()
+                data = b""
+                while b"\\r\\n\\r\\n" not in data and len(data) < 8192:
+                    chunk = conn.recv(1024)
+                    if not chunk:
+                        break
+                    data += chunk
+                body = b"aicad workspace"
+                head = b"HTTP/1.1 200 OK\\r\\nContent-Length: %d\\r\\nConnection: close\\r\\n\\r\\n" % len(body)
+                conn.sendall(head + body)
+                conn.close()
             """
         ),
         encoding="utf-8",
