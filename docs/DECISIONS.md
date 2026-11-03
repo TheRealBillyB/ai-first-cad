@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-11-03
+
+| Decision | Rationale |
+| --- | --- |
+| Grey cast iron joins the material library | Grey cast iron uses the ASTM A48 Class 30 minimum tensile strength, 207 MPa, as a rupture strength because the brittle iron has no yield point. |
+
 ## 2026-11-02
 
 | Decision | Rationale |
