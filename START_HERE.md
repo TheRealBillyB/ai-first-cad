@@ -19,6 +19,8 @@ If you want the full command list, it is in [README.md](README.md).
 
 ## Install on your own computer
 
+You can install without typing commands. Download this project as a ZIP, extract it, and double-click `install.bat` on Windows, `Install AI-First CAD.command` on a Mac, or `install.sh` on Linux. When it finishes, double-click `Launch AI-First CAD.bat`, `Launch AI-First CAD.command`, or `launch.sh`. The same steps are at the top of the Install section in [README.md](README.md).
+
 You need Python 3.11 or newer. On Windows, install 3.11 from [python.org](https://www.python.org/downloads/) and turn on **Add python.exe to PATH**. On a Mac, `python3 --version` should say 3.11 or newer. Use 3.11 on Windows and Mac when you can: the sketch solver has a ready-made package for 3.11, and 3.12 needs a C++ compiler. The geometry library is large (a few hundred megabytes).
 
 Download this project and open a terminal in that folder. One command installs aicad:
