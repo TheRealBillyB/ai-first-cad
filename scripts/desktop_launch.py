@@ -119,25 +119,26 @@ def start_app(command: list[str], *, cwd: Path) -> subprocess.Popen:
         # macOS hangs a child created with fork when the parent already has
         # another thread. pytest keeps a timeout thread, so the server never
         # reached listen. posix_spawn is used only when close_fds is false and
-        # cwd is unset; the spawned interpreter then closes extra descriptors,
-        # moves to the project folder, and becomes a session leader.
+        # cwd is unset; the spawned interpreter then moves to the project
+        # folder and becomes a session leader. Do not close inherited
+        # descriptors here: under pytest one of them can block close().
         code = (
             "import os, sys\n"
+            "trace = os.environ.get('AICAD_LAUNCH_TRACE')\n"
+            "def mark(text):\n"
+            "    if not trace:\n"
+            "        return\n"
+            "    fd = os.open(trace, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)\n"
+            "    os.write(fd, text.encode())\n"
+            "    os.close(fd)\n"
+            "mark('spawned\\n')\n"
             "os.chdir(sys.argv[1])\n"
+            "mark('chdir\\n')\n"
             "try:\n"
             "    os.setsid()\n"
-            "except OSError:\n"
-            "    pass\n"
-            "limit = 256\n"
-            "try:\n"
-            "    limit = min(int(os.sysconf('SC_OPEN_MAX')), 1024)\n"
-            "except (OSError, ValueError):\n"
-            "    pass\n"
-            "for fd in range(3, limit):\n"
-            "    try:\n"
-            "        os.close(fd)\n"
-            "    except OSError:\n"
-            "        pass\n"
+            "    mark('setsid\\n')\n"
+            "except OSError as exc:\n"
+            "    mark('setsid-failed %s\\n' % exc)\n"
             "os.execv(sys.argv[2], sys.argv[2:])\n"
         )
         process = subprocess.Popen(

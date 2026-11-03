@@ -317,17 +317,25 @@ def test_launcher_waits_until_the_server_answers_then_stops_it(tmp_path: Path):
                 def log_message(self, fmt, *args):
                     return
 
+            from pathlib import Path
+            Path("ready.txt").write_text("ready\\n", encoding="utf-8")
             ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
             """
         ),
         encoding="utf-8",
     )
+    trace = tmp_path / "trace.txt"
+    os.environ["AICAD_LAUNCH_TRACE"] = str(trace)
     process = module.start_app([sys.executable, str(server), str(port)], cwd=tmp_path)
     url = f"http://127.0.0.1:{port}/"
     try:
-        assert module.wait_until_ready(process, url, 20)
+        ready = module.wait_until_ready(process, url, 20)
+        detail = trace.read_text(encoding="utf-8") if trace.is_file() else "no trace"
+        ready_note = (tmp_path / "ready.txt").read_text(encoding="utf-8") if (tmp_path / "ready.txt").is_file() else "no ready"
+        assert ready, f"poll={process.poll()} trace={detail!r} ready={ready_note!r}"
         assert module.http_ok(url)
     finally:
+        os.environ.pop("AICAD_LAUNCH_TRACE", None)
         module.stop_app(process)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and module.listening("127.0.0.1", port):
@@ -419,6 +427,8 @@ def test_launch_sh_opens_a_server_and_stopping_it_closes_the_port(tmp_path: Path
                 def log_message(self, fmt, *args):
                     return
 
+            from pathlib import Path
+            Path("ready.txt").write_text("ready\\n", encoding="utf-8")
             ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             """
         ),
@@ -429,6 +439,7 @@ def test_launch_sh_opens_a_server_and_stopping_it_closes_the_port(tmp_path: Path
     env = _base_env()
     env["AICAD_NO_BROWSER"] = "1"
     env["AICAD_LAUNCH_PORT"] = str(port)
+    env["AICAD_LAUNCH_TRACE"] = str(tmp_path / "trace.txt")
     log = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
         [str(tmp_path / "launch.sh")],
@@ -449,7 +460,11 @@ def test_launch_sh_opens_a_server_and_stopping_it_closes_the_port(tmp_path: Path
             time.sleep(0.2)
         log.flush()
         text = log_path.read_text(encoding="utf-8")
-        assert module.http_ok(url), text
+        trace_path = tmp_path / "trace.txt"
+        detail = trace_path.read_text(encoding="utf-8") if trace_path.is_file() else "no trace"
+        ready_path = tmp_path / "ready.txt"
+        ready_note = ready_path.read_text(encoding="utf-8") if ready_path.is_file() else "no ready"
+        assert module.http_ok(url), f"{text}\ntrace={detail!r} ready={ready_note!r} poll={proc.poll()}"
         assert "Ctrl+C" in text
         os.killpg(proc.pid, signal.SIGTERM)
         closed = time.monotonic() + 10
