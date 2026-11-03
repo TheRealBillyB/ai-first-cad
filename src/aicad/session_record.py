@@ -373,7 +373,7 @@ def _blank(width: int, height: int, overlay: str, paper: tuple[int, int, int]) -
 
 
 def _capture_state(document, revision: int | None) -> dict:
-    parts = [info.name for info in document.list_parts() if isinstance(getattr(info, "name", None), str)]
+    parts = [name for name in document.part_names() if isinstance(name, str)]
     assemblies = []
     for item in document.list_assemblies():
         if isinstance(item, dict) and isinstance(item.get("name"), str):

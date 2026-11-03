@@ -856,7 +856,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 spec[key] = value
         position = _triple(args.at, "--at") if args.at else None
         rotation = _triple(args.rot, "--rot") if args.rot else None
-        names = {part.name for part in document.list_parts()}
+        names = set(document.part_names())
         if args.name in names:
             report = document.update_gear(args.name, spec, position, rotation)
         else:
@@ -1135,21 +1135,21 @@ def _dispatch(args: argparse.Namespace) -> int:
 
 
 def _create_or_update_script(document, name: str, script: str):
-    names = {part.name for part in document.list_parts()}
+    names = set(document.part_names())
     if name in names:
         return document.update_part_script(name, script)
     return document.create_part_from_script(name, script)
 
 
 def _create_or_update_sketch_part(document, name: str, sketch: str, steps: list[dict]):
-    names = {part.name for part in document.list_parts()}
+    names = set(document.part_names())
     if name in names:
         return document.update_part_from_sketch(name, sketch, steps)
     return document.create_part_from_sketch(name, sketch, steps)
 
 
 def _create_or_update_ops(document, name: str, ops: list[dict]):
-    names = {part.name for part in document.list_parts()}
+    names = set(document.part_names())
     if name in names:
         return document.update_part_ops(name, ops)
     return document.create_part_from_ops(name, ops)

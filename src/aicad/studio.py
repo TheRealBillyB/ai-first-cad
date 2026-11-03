@@ -330,7 +330,7 @@ def open_example(workspace, name: str | None = None) -> dict:
     chosen = name or "motor_mount"
     if not isinstance(chosen, str) or chosen.strip() != "motor_mount":
         raise GeometryError("The worked example is motor_mount.")
-    parts = {part.name for part in workspace.document.list_parts()}
+    parts = set(workspace.document.part_names())
     sketches = set(workspace.document.list_sketches())
     if "motor_mount" in parts and "bracket_base" in sketches:
         return {

@@ -802,7 +802,7 @@ def _cmd_search(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_create_gear(workspace: Workspace, arguments: dict) -> dict:
-    names = {part.name for part in workspace.document.list_parts()}
+    names = set(workspace.document.part_names())
     method = workspace.document.update_gear if arguments["name"] in names else workspace.document.create_gear
     return method(
         arguments["name"],
