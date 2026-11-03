@@ -1,0 +1,53 @@
+name: easy install
+
+# Ubuntu runs on every push and pull request. Windows and macOS run on every
+# pull request, on every push to main, and when the workflow is started manually.
+# The job runs the double-click installer into a fresh virtual environment,
+# starts the launcher, checks that the app answers, and then stops it.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a pull request cancels the run it replaced. Push and manual
+# runs each keep their own id, so they do not cancel each other or a pull request.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  easy-install:
+    name: easy install (ubuntu-latest)
+    uses: ./.github/workflows/easy-install-suite.yml
+    with:
+      os: ubuntu-latest
+      python-version: "3.12"
+      job-timeout: 40
+
+  easy-install-cross:
+    name: easy install (${{ matrix.os }})
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event_name == 'pull_request'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows and macOS use 3.11 because the sketch solver publishes wheels
+          # for 3.11 and not for 3.12. 3.12 on those systems would have to compile it.
+          - os: windows-latest
+            python: "3.11"
+            job-timeout: 40
+          - os: macos-latest
+            python: "3.11"
+            job-timeout: 40
+    uses: ./.github/workflows/easy-install-suite.yml
+    with:
+      os: ${{ matrix.os }}
+      python-version: ${{ matrix.python }}
+      job-timeout: ${{ matrix.job-timeout }}

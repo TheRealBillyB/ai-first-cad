@@ -46,6 +46,25 @@ Units are millimeters. Forces are newtons, so a stress from the solver is in meg
 
 ## Install
 
+### Easy install (no command line)
+
+Download this project as a ZIP and extract it. You do not need to type commands.
+
+1. Double-click the installer and wait until it says it finished. The first run can take several minutes.
+   - Windows: `install.bat`
+   - Mac: `Install AI-First CAD.command`
+   - Linux: `install.sh`
+2. Double-click the launcher.
+   - Windows: `Launch AI-First CAD.bat`
+   - Mac: `Launch AI-First CAD.command`
+   - Linux: `launch.sh`
+
+The app opens in your browser. Leave that window open while you use the app. Close the window, or press Ctrl+C, to stop it.
+
+You need Python 3.11 or newer. If it is missing, the installer tells you where to get it. On Windows, when winget is available, the installer can install Python after you agree. On a Mac, if the computer says the file cannot be opened, right-click it and choose Open. On Linux, if a double-click opens the file as text, right-click it, allow executing it, and open it again. Running the installer again is safe, including after you download a newer copy of this folder.
+
+### From a terminal
+
 You need Python 3.11 or newer. On Windows and Mac, use 3.11 if you can: the sketch solver has a ready-made package for 3.11, and 3.12 needs a C++ compiler. The OpenCascade wheel that build123d depends on is large. From the project folder, one command creates a virtual environment and installs aicad, including the robot extra:
 
 ```bash
@@ -601,6 +620,8 @@ python examples/print_and_robot.py  # overhang map, printer fit, URDF, and MJCF
 ```
 
 GitHub Actions runs `pytest` on Ubuntu on every push and pull request (`.github/workflows/tests.yml`). Windows and macOS run on every pull request, on every push to main, and when someone starts the workflow manually. The job is `python install.py`, then the test suite. Ubuntu installs CalculiX that way. macOS and Windows install the pinned CalculiX 2.23 packages in `.github/calculix.lock.json` (conda-forge, checksum-checked) and put that separate `ccx` on `PATH`, so the strength checks run there too. The job fails if `ccx` did not start. Gmsh is the `gmsh` wheel pip installs with aicad. Each operating system runs its own script-sandbox tests. A slicer is optional: the print tests cover the skip path, and a machine with PrusaSlicer exercises the gcode comments.
+
+`.github/workflows/easy-install.yml` runs `install.bat` or `install.sh` on Ubuntu, Windows, and macOS, starts the launcher, checks that the server answers, and stops it. Ubuntu runs on every push and pull request. Windows and macOS run on every pull request, on every push to main, and when someone starts the workflow manually.
 
 `src/aicad/kernel.py` imports build123d and OpenCascade. `src/aicad/catalog_build.py` imports build123d for the catalog tables. `src/aicad/library.py` imports bd_warehouse for fastener sizes outside those tables. `src/aicad/sketch.py` imports the SolveSpace solver. `src/aicad/fea.py` imports Gmsh and runs the `ccx` binary. The rest of aicad talks to plain records.
 

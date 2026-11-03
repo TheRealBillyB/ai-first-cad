@@ -1,0 +1,85 @@
+name: easy install suite
+
+# Called from easy-install.yml. This workflow does not start on its own.
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: Runner image
+        required: true
+        type: string
+      python-version:
+        description: Python version to install
+        required: true
+        type: string
+      job-timeout:
+        description: Whole-job timeout passed to timeout-minutes
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  easy-install:
+    name: easy install (${{ inputs.os }})
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: ${{ inputs.job-timeout }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # install.py still installs the same apt packages. This only keeps the
+      # downloaded archives so a later run does not download them again.
+      - name: Cache apt package archives
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.apt-archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('install.py') }}
+          restore-keys: |
+            apt-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Point apt at the archive cache
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/.apt-archives"
+          printf 'Dir::Cache::Archives "%s";\n' "${GITHUB_WORKSPACE}/.apt-archives" | sudo tee /etc/apt/apt.conf.d/99-aicad-archive-cache >/dev/null
+
+      - name: Install with the double-click installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            cmd.exe /d /c install.bat
+          else
+            ./install.sh
+          fi
+
+      - name: Install again
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            cmd.exe /d /c install.bat
+          else
+            ./install.sh
+          fi
+
+      - name: Make the apt archive cache readable
+        if: runner.os == 'Linux' && always()
+        run: |
+          if [ -d "${GITHUB_WORKSPACE}/.apt-archives" ]; then
+            sudo chmod -R a+rX "${GITHUB_WORKSPACE}/.apt-archives"
+          fi
+
+      - name: Launch, check the server, and stop it
+        shell: bash
+        timeout-minutes: 10
+        run: python .github/scripts/check_easy_launch.py

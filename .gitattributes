@@ -4,3 +4,8 @@ docs/*.md text eol=lf
 docs/**/*.md text eol=lf
 README.md text eol=lf
 SECURITY.md text eol=lf
+
+# Windows double-click scripts need CRLF. The shell scripts stay LF.
+*.bat text eol=crlf
+*.sh text eol=lf
+*.command text eol=lf
