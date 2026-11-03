@@ -86,8 +86,9 @@ def main(argv: list[str] | None = None) -> int:
             f"This one is {sys.version.split()[0]}."
         )
         return 1
+    system_ok = True
     if not args.no_system:
-        _install_linux_packages()
+        system_ok = _install_linux_packages()
     python = _ensure_venv()
     for problem in _missing_prerequisites():
         print(problem)
@@ -97,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
     print(_ccx_message(hints))
     print()
     print(_ready_message(python))
+    if not system_ok:
+        print()
+        print(
+            "The system packages were not installed (see the apt-get message above). "
+            "Some features, such as meshing and the stress check, may not work until they are."
+        )
     return 0
 
 
@@ -231,32 +238,71 @@ def _pip_install(python: Path) -> None:
     )
 
 
-def _install_linux_packages() -> None:
+def _install_linux_packages() -> bool:
+    """Install the Debian or Ubuntu system packages when sudo allows it.
+
+    Returns False when apt-get ran and failed. A failure is reported with the
+    command to run by hand; it does not stop the Python install.
+    """
+
     if not sys.platform.startswith("linux"):
-        return
+        return True
     if shutil.which("apt-get") is None:
         print("This Linux does not use apt. Install CalculiX yourself if the check below asks for it.")
-        return
+        return True
     if not _passwordless_sudo():
         print("Skipping system packages because sudo needs a password. The command is:")
         print("    sudo apt-get update && sudo apt-get install -y " + " ".join(APT_PACKAGES))
-        return
+        return True
     print("Installing system libraries and CalculiX (sudo apt-get).")
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
-    subprocess.run(
+    commands = (
         ["sudo", "-n", "apt-get", "update"],
-        cwd=ROOT,
-        check=True,
-        env=env,
-        timeout=_INSTALL_TIMEOUT_SECONDS,
-    )
-    subprocess.run(
         ["sudo", "-n", "apt-get", "install", "-y", "--no-install-recommends", *APT_PACKAGES],
-        cwd=ROOT,
-        check=True,
-        env=env,
-        timeout=_INSTALL_TIMEOUT_SECONDS,
+    )
+    for command in commands:
+        try:
+            subprocess.run(
+                command,
+                cwd=ROOT,
+                check=True,
+                env=env,
+                timeout=_INSTALL_TIMEOUT_SECONDS,
+            )
+        except subprocess.CalledProcessError as error:
+            print(_apt_failed_message(command, f"exited with status {error.returncode}"))
+            return False
+        except subprocess.TimeoutExpired:
+            print(
+                _apt_failed_message(
+                    command, f"did not finish within {_INSTALL_TIMEOUT_SECONDS // 60} minutes"
+                )
+            )
+            return False
+        except OSError as error:
+            print(_apt_failed_message(command, f"could not start ({error})"))
+            return False
+    return True
+
+
+def _apt_failed_message(command: list[str], reason: str) -> str:
+    """What to do when apt-get fails. aicad itself can still be installed."""
+
+    return "\n".join(
+        (
+            "",
+            f"The system package step failed: `{' '.join(command)}` {reason}.",
+            "The apt output above says why. Common causes are a broken or unreachable",
+            "package source in /etc/apt/sources.list.d, no network, or another program",
+            "holding the apt lock.",
+            "The installer continues with the Python packages. To finish the system step,",
+            "fix the apt problem and run:",
+            "    sudo apt-get update && sudo apt-get install -y " + " ".join(APT_PACKAGES),
+            "Then run `python install.py --check`. To skip this step next time, run",
+            "`python install.py --no-system`.",
+            "",
+        )
     )
 
 
