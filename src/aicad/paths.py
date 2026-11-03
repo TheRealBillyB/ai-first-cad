@@ -378,21 +378,35 @@ def require_export_path(root: Path, raw: str | Path, label: str, error: type[Exc
     text = raw if isinstance(raw, str) else os.fspath(raw)
     root_resolved = Path(root).resolve()
     if not isinstance(text, str) or not text.strip() or "\x00" in text:
-        raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+        raise error(
+            _export_refusal(label, raw, f"{label} is empty or not a usable path", root_resolved)
+        )
     from aicad.labels import misleading_path
 
     if misleading_path(text):
-        raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+        raise error(
+            _export_refusal(
+                label,
+                raw,
+                f"{label} {raw} has hidden or lookalike characters, so it is treated as outside"
+                f" the project folder {root_resolved}",
+                root_resolved,
+            )
+        )
     expanded = str(Path(text.strip()).expanduser())
     trimmed = _path_after_windows_trim(expanded)
     # Win32 drops trailing dots and spaces before it creates the file.
     # ``.. .`` is ``..`` after that, so the check uses the trimmed text.
+    windows_form = (
+        f"{label} {raw} is a Windows drive, share, or backslash path that leads outside"
+        f" the project folder {root_resolved}"
+    )
     if trimmed != expanded.replace("\\", "/") and (
         session_path_escapes(trimmed) or _export_blocked(trimmed, root_resolved)
     ):
-        raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+        raise error(_export_refusal(label, raw, windows_form, root_resolved))
     if _export_blocked(expanded, root_resolved):
-        raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+        raise error(_export_refusal(label, raw, windows_form, root_resolved))
     refuse_short_name_components(text, label, error)
     if not Path(text).is_absolute():
         refuse_windows_aliases(root_resolved, text, label, error)
@@ -401,8 +415,28 @@ def require_export_path(root: Path, raw: str | Path, label: str, error: type[Exc
         candidate = root_resolved / candidate
     resolved = candidate.resolve()
     if not _is_inside(resolved, root_resolved):
-        raise error(f"{label} {raw} is outside the project folder {root_resolved}.")
+        where = "is" if os.fspath(resolved) == text.strip() else f"resolves to {resolved}, which is"
+        raise error(
+            _export_refusal(
+                label,
+                raw,
+                f"{label} {raw} {where} outside the project folder {root_resolved}",
+                root_resolved,
+            )
+        )
     return resolved
+
+
+def _export_refusal(label: str, raw: object, problem: str, root: Path) -> str:
+    """``problem`` and a next step that names a path inside ``root``."""
+    name = ""
+    if isinstance(raw, (str, os.PathLike)):
+        name = PureWindowsPath(os.fspath(raw)).name.strip()
+    from aicad.labels import misleading_path
+
+    if not name or name in (".", "..") or misleading_path(name):
+        name = "<file name>"
+    return f"{problem}. Use a path inside the project folder, such as exports/{name}."
 
 
 def _windows_trimmed_part(part: str) -> str:
