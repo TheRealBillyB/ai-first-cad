@@ -251,3 +251,73 @@ def test_install_script_help_runs_without_installing():
     assert completed.returncode == 0
     assert "virtual environment" in completed.stdout
     assert "CalculiX" in completed.stdout
+
+
+def _apt_fails_on(module, monkeypatch, failing_word, error):
+    """Run _install_linux_packages with apt-get failing on one subcommand."""
+
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(list(command))
+        if failing_word in command:
+            raise error
+
+        class Done:
+            returncode = 0
+
+        return Done()
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.setattr(module, "_passwordless_sudo", lambda: True)
+    return calls
+
+
+def test_a_failed_apt_update_prints_next_steps_instead_of_a_traceback(monkeypatch, capsys):
+    module = _load_install()
+    error = subprocess.CalledProcessError(100, ["sudo", "-n", "apt-get", "update"])
+    calls = _apt_fails_on(module, monkeypatch, "update", error)
+    assert module._install_linux_packages() is False
+    out = capsys.readouterr().out
+    assert "apt-get update` exited with status 100" in out
+    assert "sudo apt-get update && sudo apt-get install -y calculix-ccx" in out
+    assert "--no-system" in out
+    assert "Traceback" not in out
+    # The install step is not attempted after update failed.
+    assert not any("install" in call for call in calls)
+
+
+def test_a_failed_apt_install_prints_next_steps(monkeypatch, capsys):
+    module = _load_install()
+    error = subprocess.CalledProcessError(100, ["sudo", "-n", "apt-get", "install"])
+    _apt_fails_on(module, monkeypatch, "install", error)
+    assert module._install_linux_packages() is False
+    assert "exited with status 100" in capsys.readouterr().out
+
+
+def test_a_hung_apt_command_is_reported(monkeypatch, capsys):
+    module = _load_install()
+    error = subprocess.TimeoutExpired(["sudo"], module._INSTALL_TIMEOUT_SECONDS)
+    _apt_fails_on(module, monkeypatch, "update", error)
+    assert module._install_linux_packages() is False
+    assert "did not finish within 30 minutes" in capsys.readouterr().out
+
+
+def test_the_python_install_continues_after_apt_fails(monkeypatch, capsys):
+    module = _load_install()
+    monkeypatch.setattr(module, "_install_linux_packages", lambda: False)
+    monkeypatch.setattr(module, "_ensure_venv", lambda: module._venv_python())
+    installed: list[bool] = []
+    monkeypatch.setattr(module, "_pip_install", lambda _python: installed.append(True))
+    assert module.main([]) == 0
+    assert installed == [True]
+    assert "system packages were not installed" in capsys.readouterr().out
+
+
+def test_a_working_apt_returns_true(monkeypatch):
+    module = _load_install()
+    calls = _apt_fails_on(module, monkeypatch, "never-matches", RuntimeError())
+    assert module._install_linux_packages() is True
+    assert [call[3] for call in calls] == ["update", "install"]

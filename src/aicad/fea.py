@@ -162,6 +162,31 @@ _MATERIALS: dict[str, dict[str, object]] = {
             "figures in this library. The safety factor is against the core proof strength."
         ),
     },
+    "grey_cast_iron": {
+        "name": "grey cast iron, ASTM A48 Class 30",
+        "youngs_modulus_mpa": 100000.0,
+        "poisson": 0.26,
+        "strength_mpa": 207.0,
+        "strength_kind": "tensile",
+        "density_g_cm3": 7.15,
+        "printed": False,
+        # Sources: ASTM A48/A48M-22 Table 1 sets Class 30 by a minimum tensile
+        # strength of 30 ksi (207 MPa) in separately cast test bars. Modulus
+        # 14.5 Msi (100 GPa), Poisson's ratio 0.26, density 0.258 lb/in3
+        # (7.15 g/cm3), and compressive strength 109 ksi (752 MPa) are the typical
+        # Class 30 figures in the AFS gray iron property comparison and foundry
+        # data sheets. Grey iron's modulus falls with stress, so 100 GPa is the
+        # low end of the published 100-117 GPa range.
+        "note": (
+            "Grey (gray) cast iron, ASTM A48 Class 30, close to EN-GJL-200 (EN 1561). "
+            "207 MPa is the ASTM A48 minimum tensile strength of a separately cast test bar; a thick "
+            "casting section can be weaker. Grey iron is brittle and has no yield point, so the safety "
+            "factor is against tensile rupture. The check compares von Mises stress with the tensile "
+            "strength, which is conservative where the part is in compression (about 750 MPa) but does "
+            "not model crack growth from graphite flakes. Modulus 100 GPa, Poisson's ratio 0.26, and "
+            "density 7.15 g/cm³ are typical Class 30 values; the modulus falls as stress rises."
+        ),
+    },
 }
 _ALIASES = {
     "aluminum": "aluminum_6061",
@@ -175,6 +200,13 @@ _ALIASES = {
     "mild_steel": "steel",
     "42crmo4": "steel_42crmo4",
     "16mncr5": "steel_16mncr5",
+    "cast_iron": "grey_cast_iron",
+    "grey_iron": "grey_cast_iron",
+    "gray_iron": "grey_cast_iron",
+    "gray_cast_iron": "grey_cast_iron",
+    "astm_a48_class_30": "grey_cast_iron",
+    "a48_class_30": "grey_cast_iron",
+    "en_gjl_200": "grey_cast_iron",
 }
 
 
