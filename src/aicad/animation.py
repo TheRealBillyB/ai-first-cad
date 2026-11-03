@@ -64,6 +64,7 @@ _MATERIAL_COLOR = {
     "steel": (110.0, 116.0, 124.0),
     "steel_42crmo4": (96.0, 102.0, 110.0),
     "steel_16mncr5": (128.0, 132.0, 138.0),
+    "grey_cast_iron": (84.0, 86.0, 90.0),
 }
 _FFMPEG_MISSING = (
     "ffmpeg was not found on PATH, so no MP4 or WebM was written. "
