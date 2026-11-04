@@ -1270,8 +1270,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
         spec needs size (M8 or M8-1.25), grip_mm (the clamped thickness), and the
         loads axial_n and shear_n. grade defaults to 8.8. condition is dry, zinc, lubricated, or threadlocker.
-        vibration is mild, moderate, or intense. part names a library screw whose
-        size and length fill in what you omit. Slip of the plates is what lets a
+        vibration is mild, moderate, or intense. part names a library screw: its size
+        fills an omitted size, and its length fills grip_mm when length is omitted.
+        Otherwise grip_mm is required. Slip of the plates is what lets a
         nut walk under vibration. Read assumptions and the countermeasures.
         """
         return guard(lambda: run("check_bolts", spec=spec))
