@@ -28,7 +28,10 @@ import mimetypes
 import os
 import queue
 import secrets
+import socket
+import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -149,6 +152,52 @@ def read_agent_token(port: int) -> str:
     return token
 
 
+_OPEN_RECHECK_SECONDS = 5.0
+
+
+def _open_project_path(port: int) -> Path:
+    return _token_dir() / f"{int(port)}.project"
+
+
+def _record_open_project(port: int, root: Path) -> None:
+    path = _open_project_path(port)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from aicad.paths import publish_text
+
+    publish_text(path, str(root), root=path.parent, private=True)
+
+
+def _app_is_listening(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def other_app_on_project(root: Path, own_port: int) -> int | None:
+    """The port of another running app with this project open. A record left by a crash is removed."""
+    from aicad.file_access import read_text
+
+    wanted = os.path.normcase(str(root))
+    try:
+        records = sorted(_token_dir().glob("*.project"))
+    except OSError:
+        return None
+    for record in records:
+        if not record.stem.isdigit() or int(record.stem) == int(own_port):
+            continue
+        try:
+            if os.path.normcase(read_text(record, maximum=65536).strip()) != wanted:
+                continue
+        except OSError:
+            continue
+        if _app_is_listening(int(record.stem)):
+            return int(record.stem)
+        record.unlink(missing_ok=True)
+    return None
+
+
 def remove_agent_token(port: int) -> None:
     try:
         _token_path(port).unlink()
@@ -223,6 +272,28 @@ def _origin_is_local(origin: str, port: int) -> bool:
 class _WorkspaceServer(ThreadingHTTPServer):
     page_token: str
     agent_token: str
+    _open_root: Path | None = None
+    _other_app_port: int | None = None
+    _open_lock = threading.Lock()
+    _open_checked_at = 0.0
+
+    def project_also_open_at(self, root: Path) -> int | None:
+        """The port of another app on this project.
+
+        Read again at most every few seconds, so the first app learns of a second
+        one and the warning goes when that app closes. The page sees it on its next refresh.
+        """
+        with self._open_lock:
+            now = time.monotonic()
+            changed = root != self._open_root
+            if changed or now - self._open_checked_at >= _OPEN_RECHECK_SECONDS:
+                port = int(self.server_address[1])
+                self._open_root = root
+                self._other_app_port = other_app_on_project(root, port)
+                self._open_checked_at = now
+                if changed:
+                    _record_open_project(port, root)
+            return self._other_app_port
 
     def process_request(self, request, client_address) -> None:
         # This request's geometry runs on the thread started below.
@@ -235,6 +306,7 @@ class _WorkspaceServer(ThreadingHTTPServer):
         port = int(self.server_address[1])
         super().server_close()
         remove_agent_token(port)
+        _open_project_path(port).unlink(missing_ok=True)
 
 
 class HttpCommandClient:
@@ -320,6 +392,13 @@ def _bounded_body(response, maximum: int) -> bytes:
     return data
 
 
+def _second_app_warning(port: int) -> str:
+    return (
+        f"This project is also open in another aicad app at http://127.0.0.1:{port}/. "
+        "Each app keeps its own copy, so one can overwrite what the other saved. Close one of them."
+    )
+
+
 def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
     from aicad.sandbox import warn_design_scripts
 
@@ -327,6 +406,9 @@ def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, 
     server = make_server(workspace, host, port)
     url = f"http://{host}:{port}/"
     print(f"aicad workspace at {url}", flush=True)
+    other = server.project_also_open_at(server.workspace.root)
+    if other is not None:
+        print(_second_app_warning(other), file=sys.stderr, flush=True)
     print("An external assistant can attach with: aicad serve --connect " + url.rstrip("/"), flush=True)
     if open_browser:
         webbrowser.open(url)
@@ -354,6 +436,7 @@ def make_server(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765
     server.page_token = secrets.token_urlsafe(32)
     server.agent_token = secrets.token_urlsafe(32)
     write_agent_token(int(server.server_address[1]), server.agent_token)
+    server.project_also_open_at(session.root)
     return server
 
 
@@ -377,7 +460,10 @@ def _handler(session: Workspace):
                 elif path.startswith("/static/"):
                     self._static(path[len("/static/") :])
                 elif path == "/api/state":
-                    self._json({"ok": True, "result": self.workspace.state()})
+                    state = self.workspace.state()
+                    other = self.server.project_also_open_at(self.workspace.root)
+                    state["project_warning"] = _second_app_warning(other) if other is not None else ""
+                    self._json({"ok": True, "result": state})
                 elif path == "/api/commands":
                     self._json({"ok": True, "result": self.workspace.commands()})
                 elif path == "/api/mesh":

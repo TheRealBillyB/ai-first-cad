@@ -134,6 +134,7 @@ async function applyRefresh(options = {}) {
   renderDocs();
   renderAssemblies();
   renderDimensions();
+  renderProjectWarning();
   renderScriptWarning();
   renderActivity();
   $("undo").disabled = !ui.state.can_undo;
@@ -154,6 +155,13 @@ async function applyRefresh(options = {}) {
     drawSolid();
   }
   await renderShape();
+}
+
+function renderProjectWarning() {
+  const box = $("project-warning");
+  const warning = (ui.state && ui.state.project_warning) || "";
+  box.textContent = warning;
+  box.hidden = !warning;
 }
 
 function renderScriptWarning() {
