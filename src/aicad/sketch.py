@@ -368,6 +368,7 @@ def set_spec_dimension(spec: dict, dimension: str, value: float) -> dict:
         item = dict(constraint)
         if item.get("name") == dimension:
             found = True
+            _refuse_impossible_length(spec, item, dimension, value)
             if "value" in item:
                 item["value"] = float(value)
             elif "diameter" in item:
@@ -385,6 +386,24 @@ def set_spec_dimension(spec: dict, dimension: str, value: float) -> dict:
         known = ", ".join(names) or "(none)"
         raise GeometryError(f"No dimension named {dimension!r}. Named dimensions: {known}.")
     return {**spec, "constraints": constraints}
+
+
+def _refuse_impossible_length(spec: dict, item: dict, dimension: str, value: float) -> None:
+    """Name a length that cannot exist. The solver would only report that it did not converge.
+
+    A point-to-line distance is signed, so a negative one is a side of the line.
+    """
+    kind = item.get("type")
+    if kind in ("diameter", "radius", "pattern_on_circle"):
+        if value <= 0:
+            raise GeometryError(f"Dimension {dimension!r} must be greater than 0, not {value:g}. The sketch was not changed.")
+    elif kind == "distance" and value < 0:
+        points = {entity.get("id") for entity in spec.get("entities", []) if entity.get("type") == "point"}
+        if item.get("a") in points and item.get("b") in points:
+            raise GeometryError(
+                f"Dimension {dimension!r} is the distance between two points, so it cannot be {value:g}. "
+                "The sketch was not changed."
+            )
 
 
 class _Solver:
