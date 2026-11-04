@@ -1031,28 +1031,34 @@ def _assign_surface_faces(
     nodes actually touch when a boundary node is shared with a neighbor.
     """
     tolerance = max(1.0, mesh_size * 0.75)
+    sampled: list[tuple[dict, int, int]] = []
+    samples: list[tuple[float, float, float]] = []
     for surface in surfaces:
         indices = sorted(surface.get("point_indices") or [])
         if not indices:
             surface["face_index"] = None
             continue
         step = max(1, len(indices) // 6)
-        samples = [points[index] for index in indices[::step][:6]]
+        start = len(samples)
+        for index in indices[::step][:6]:
+            sample = points[index]
+            samples.append((float(sample[0]), float(sample[1]), float(sample[2])))
+        sampled.append((surface, start, len(samples)))
+    if not sampled:
+        return
+    face_indices = [face["index"] for face in catalog]
+    # One pass over the part's faces for every sample: the face list is not
+    # rebuilt for each distance.
+    table = kernel.distances_points_to_faces(shape, face_indices, samples) if face_indices else []
+    for surface, start, end in sampled:
         best_face = None
         best_distance = None
-        for face in catalog:
-            distances = [
-                kernel.distance_point_to_face(
-                    shape,
-                    face["index"],
-                    (float(sample[0]), float(sample[1]), float(sample[2])),
-                )
-                for sample in samples
-            ]
+        for face_index, row in zip(face_indices, table):
+            distances = row[start:end]
             mean = sum(distances) / len(distances)
             if best_distance is None or mean < best_distance:
                 best_distance = mean
-                best_face = face["index"]
+                best_face = face_index
         surface["face_index"] = best_face if best_distance is not None and best_distance <= tolerance else None
 
 

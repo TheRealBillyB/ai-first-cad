@@ -209,7 +209,7 @@ class Document:
             require_in_project(path, self.workspace, writing=False)
             source = _step_import_source(self.workspace, path)
             if not source.is_file():
-                raise GeometryError(f"STEP file not found: {source}")
+                raise GeometryError(f"STEP file not found: {_project_relative(self.workspace, source)}")
             data = kernel.read_step_bytes(source)
             shape = kernel.import_step_bytes(source, data)
             relative = f"imports/{name}.step"
@@ -3543,6 +3543,14 @@ def _step_import_source(root: Path, raw: str | Path, label: str = "STEP file") -
         if shared_file(source):
             raise DocumentError(f"{label} {raw} has another name and was not opened.")
     return source
+
+
+def _project_relative(root: Path, path: Path) -> str:
+    """``path`` relative to the project when it is inside, else as it is."""
+    try:
+        return Path(path).relative_to(Path(root).resolve()).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _project_file(root: Path, raw: object, label: str, *, allow_absolute_outside: bool = False) -> Path:
