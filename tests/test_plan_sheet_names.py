@@ -16,6 +16,11 @@ from aicad.errors import PlanError
 _RESERVED = ["con", "nul", "aux", "prn", "com1", "lpt1", "com9"]
 
 
+def _written_con_png(project):
+    # Walk the names. Windows 10 reports con.png as existing, so a literal rglob finds the device.
+    return [path for path in project.rglob("*") if path.name.lower() == "con.png"]
+
+
 def test_a_reserved_sheet_id_is_refused(tmp_path):
     project = tmp_path / "proj"
     document = Document(project)
@@ -43,11 +48,11 @@ def test_a_reserved_sheet_id_is_refused(tmp_path):
     sheet = stored["revisions"][0]["sheets"][0]
     assert sheet["id"] == "s1"
     assert (project / sheet["path"]).resolve().is_relative_to(project.resolve())
-    assert list(project.rglob("con.png")) == []
+    assert not _written_con_png(project)
     assert not (tmp_path / "outside").exists()
 
     sheet["id"] = "con"
     (project / "plans" / "bench.json").write_text(json.dumps(stored), encoding="utf-8")
     with pytest.raises(PlanError, match="reserved"):
         document.get_plan("bench")
-    assert list(project.rglob("con.png")) == []
+    assert not _written_con_png(project)
