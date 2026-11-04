@@ -2462,6 +2462,11 @@ def _run_firewall_script(script: str) -> None:
         raise OSError(f"Could not set the script network block. {exc}") from exc
     if completed.returncode != 0:
         detail = ((completed.stderr or "") + (completed.stdout or "")).strip()
+        if "Access is denied" in detail or "PermissionDenied" in detail:
+            raise OSError(
+                "Windows refused the firewall rule that keeps a script off the network, "
+                "because this process is not running as administrator"
+            )
         raise OSError(
             "Could not set the script network block "
             f"(code {completed.returncode}). {detail}"
@@ -3039,11 +3044,16 @@ def ensure_mode(read_paths: Sequence[Path]) -> str:
     if app_error is None:
         _mode = "appcontainer"
         return _mode
+    if lpac_error == app_error:
+        failures = f"Both AppContainer modes failed ({lpac_error})."
+    else:
+        failures = (
+            f"The stricter AppContainer failed ({lpac_error}). "
+            f"A normal AppContainer failed ({app_error})."
+        )
     _mode_error = (
-        "Windows could not start a confined Python. "
-        f"The stricter AppContainer failed ({lpac_error}). "
-        f"A normal AppContainer failed ({app_error}). "
-        "The script was not run."
+        f"Windows could not start a confined Python. {failures} "
+        "The script was not run. Shape, sketch, gear, and catalog parts do not run a script."
     )
     raise OSError(_mode_error)
 
