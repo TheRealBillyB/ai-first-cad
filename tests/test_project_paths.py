@@ -89,3 +89,15 @@ def test_a_resource_error_hides_the_project_folder(tmp_path, monkeypatch):
         asyncio.run(server.read_resource("aicad://parts"))
     assert type(raised.value) is ResourceError
     assert str(project.resolve()) not in str(raised.value)
+
+
+def test_a_hidden_folder_reads_as_a_sentence(tmp_path):
+    project = str(tmp_path.resolve())
+    assert hide_project_path(f"Path x.step is outside the project folder {project}.", tmp_path) == (
+        "Path x.step is outside the project folder."
+    )
+    assert hide_project_path(f"It is outside the project folder {project}. Use exports/x.step.", tmp_path) == (
+        "It is outside the project folder. Use exports/x.step."
+    )
+    assert hide_project_path(f"{project}", tmp_path) == "."
+    assert hide_project_path(f"aicad allow-scripts --workspace {project}", tmp_path).endswith("--workspace .")

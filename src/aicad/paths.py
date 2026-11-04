@@ -2842,6 +2842,10 @@ def publish_text(path: Path, text: str, *, root: Path | None = None, private: bo
     return publish_bytes(path, text.encode("utf-8"), root=root, private=private)
 
 
+# In a sentence, a hidden project folder is the words alone, not "the project folder ..".
+_HIDDEN_FOLDER_IN_SENTENCE = re.compile(r"\bthe project folder \.(?=[\s.,;:)]|$)")
+
+
 def hide_project_path(text: str, root: str | Path) -> str:
     """Replace an absolute project path with a relative one.
 
@@ -2859,7 +2863,7 @@ def hide_project_path(text: str, root: str | Path) -> str:
     cleaned = text
     for variant in sorted((item for item in variants if item), key=len, reverse=True):
         cleaned = _replace_path_prefix(cleaned, variant)
-    return cleaned
+    return _HIDDEN_FOLDER_IN_SENTENCE.sub("the project folder", cleaned)
 
 
 def _replace_path_prefix(text: str, variant: str) -> str:
