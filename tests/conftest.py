@@ -32,6 +32,33 @@ _WINDOWS_SANDBOX_FILES = frozenset(
 )
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--shard",
+        default=None,
+        metavar="I/N",
+        help="Run part I of N of the suite. The split is by file. See tests/shards.py.",
+    )
+
+
+def _keep_this_shard(config: pytest.Config, items: list[pytest.Item]) -> None:
+    text = config.getoption("--shard")
+    if not text:
+        return
+    from shards import assign, measured_seconds, parse, shard_of
+
+    index, count = parse(text)
+    placed = assign(measured_seconds(), count)
+    kept: list[pytest.Item] = []
+    dropped: list[pytest.Item] = []
+    for item in items:
+        path = item.nodeid.replace("\\", "/").split("::", 1)[0]
+        (kept if shard_of(path, count, placed) == index else dropped).append(item)
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = kept
+
+
 def pytest_configure(config: pytest.Config) -> None:
     if config.pluginmanager.hasplugin("xdist"):
         return
@@ -43,6 +70,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    _keep_this_shard(config, items)
     if sys.platform != "win32":
         return
     for item in items:
