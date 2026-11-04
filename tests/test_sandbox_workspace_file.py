@@ -146,6 +146,8 @@ def test_a_workspace_file_swapped_for_a_link_is_not_shown(project, tmp_path, mon
     try:
         probe.symlink_to(canary)
     except OSError:
+        if os.environ.get("CI"):
+            raise
         pytest.skip("this machine cannot create a symlink")
     probe.unlink()
 
