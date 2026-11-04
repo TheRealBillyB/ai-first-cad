@@ -41,8 +41,8 @@ Strength and vibration checks need the CalculiX program `ccx`. Modeling, the app
 
 - Ubuntu or Debian: `sudo apt-get install -y calculix-ccx`
 - Mac: `brew install costerwi/homebrew-calculix/calculix-ccx`
-- Windows, Mac, or Linux, if you use conda: `conda install conda-forge::calculix`
-- Windows without conda: install a build from the [CalculiX-Windows releases](https://github.com/calculix/CalculiX-Windows/releases) and add the folder that contains `ccx.exe` to PATH
+- Mac or Linux, if you use conda: `conda install conda-forge::calculix`
+- Windows, or an Apple Silicon Mac: `python install.py --with-calculix` downloads a pinned, checksummed build into `.venv`
 
 Open a new terminal after installing it and run `ccx`. Until that command is found, those two checks say the solver is missing.
 

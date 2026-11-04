@@ -72,12 +72,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Do not try to install Ubuntu or Debian system packages.",
     )
     parser.add_argument(
+        "--with-calculix",
+        action="store_true",
+        help=(
+            "On Windows or a Mac, download the pinned CalculiX build, check each sha256, "
+            "and put it in .venv. CalculiX is GPL-2.0-only and stays a separate program."
+        ),
+    )
+    parser.add_argument(
         "--require-ccx",
         action="store_true",
         help="With --check, exit 1 when CalculiX is missing.",
     )
     args = parser.parse_args(argv)
     hints = _hints()
+    _find_installed_calculix()
     if args.check:
         return _check(hints, require_ccx=args.require_ccx)
     if sys.version_info < MIN_PYTHON:
@@ -94,10 +103,13 @@ def main(argv: list[str] | None = None) -> int:
         print(problem)
         print()
     _pip_install(python)
+    solver_ok = _install_calculix() if args.with_calculix else True
     print()
     print(_ccx_message(hints))
     print()
     print(_ready_message(python))
+    if not solver_ok:
+        return 1
     if not system_ok:
         print()
         print(
@@ -105,6 +117,44 @@ def main(argv: list[str] | None = None) -> int:
             "Some features, such as meshing and the stress check, may not work until they are."
         )
     return 0
+
+
+def _calculix_folder() -> Path:
+    return _venv_python().parent.parent / "calculix"
+
+
+def _find_installed_calculix() -> None:
+    """This installer runs outside .venv, so its own search would not look there."""
+
+    prefix = _calculix_folder() / "prefix"
+    for folder in (prefix / "solver-bin", prefix / "bin"):
+        if folder.is_dir():
+            os.environ["PATH"] = str(folder) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _install_calculix() -> bool:
+    """Download the pinned solver into .venv. Only runs when asked with --with-calculix."""
+
+    if sys.platform.startswith("linux"):
+        print("On Linux, CalculiX comes from the system packages. See the message below.")
+        return True
+    script = ROOT / ".github" / "scripts" / "install_calculix.py"
+    if not script.is_file():
+        print(f"{script} is missing, so CalculiX was not downloaded.")
+        return False
+    folder = _calculix_folder()
+    work = folder / "work"
+    print("Downloading CalculiX 2.23 from conda-forge. It is GPL-2.0-only and stays a separate program.")
+    done = subprocess.run(
+        [sys.executable, str(script), "--work", str(work), "--prefix", str(folder / "prefix")],
+        check=False,
+    )
+    shutil.rmtree(work, ignore_errors=True)
+    if done.returncode:
+        print("CalculiX was not installed. Modeling, the app, print prep, and assemblies still work.")
+        return False
+    _find_installed_calculix()
+    return True
 
 
 def _hints():

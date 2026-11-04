@@ -16,8 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_windows_hint_names_a_windows_install():
     text = ccx_hint("win32")
     assert "ccx" in text
-    assert "conda" in text
-    assert "CalculiX-Windows" in text
+    assert "--with-calculix" in text
+    assert "Library\\bin" in text
+    assert "CalculiX-Windows" not in text
+    assert "conda install" not in text
     assert "calculix-ccx" not in text
 
 
