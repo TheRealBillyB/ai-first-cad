@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -1370,6 +1371,10 @@ def _cmd_design_script_status(workspace: Workspace, _arguments: dict) -> dict:
     status = {**workspace.script_status(), "can_run": can_run}
     if not can_run:
         status["cannot_run"] = hide_project_path(reason, workspace.root)
+    elif sys.platform == "win32":
+        from aicad.sandbox_windows import mode_report
+
+        status["windows_container"] = mode_report()
     return status
 
 

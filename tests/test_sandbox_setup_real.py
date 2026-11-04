@@ -13,7 +13,8 @@ import sys
 import pytest
 
 from aicad import sandbox_setup_windows as setup
-from aicad import sandbox_windows
+from aicad.errors import ScriptError
+from aicad.sandbox import allow_design_scripts, run_design_script
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32" or not os.environ.get("AICAD_SANDBOX_SETUP_REAL"),
@@ -47,8 +48,61 @@ def test_setup_is_complete_can_run_twice_and_removal_clears_it(capsys):
     assert setup.run_setup(remove=True) == 0
 
 
-def test_todays_read_back_accepts_the_rules_setup_creates():
+SEND = """
+import socket
+
+def send(connected):
+    packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        if connected:
+            packet.connect(("1.1.1.1", 53))
+            packet.send(b"aicad-setup-check")
+        else:
+            packet.bind(("0.0.0.0", 0))
+            packet.sendto(b"aicad-setup-check", ("1.1.1.1", 53))
+        return "sent"
+    except OSError as exc:
+        return f"refused {exc.winerror}"
+    finally:
+        packet.close()
+
+print("connected", send(True))
+print("unconnected", send(False))
+"""
+
+
+def test_a_network_on_run_leaves_the_block_in_place(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
+    project = tmp_path / "project"
+    project.mkdir()
+    allow_design_scripts(project)
     assert setup.run_setup() == 0
-    sandbox_windows._bind()
-    sid = setup.package_sid()
-    assert sandbox_windows._firewall_block_is_present(sid) is True
+
+    blocked = run_design_script(project, SEND)
+    assert blocked["ok"] is True, blocked.get("error")
+    assert "sent" not in blocked["stdout"]
+    assert blocked["mechanism"] in ("appcontainer+job", "lpac+job")
+    print("network-off run used", blocked["mechanism"])
+
+    opened = run_design_script(project, SEND, network=True)
+    assert opened["ok"] is True, opened.get("error")
+    assert opened["stdout"].count("sent") == 2
+
+    # The bug this fixes: a network-on run used to take the rules down.
+    assert setup.is_installed() is True
+    again = run_design_script(project, SEND)
+    assert again["ok"] is True, again.get("error")
+    assert "sent" not in again["stdout"]
+
+
+def test_a_run_without_setup_is_refused_and_names_the_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
+    project = tmp_path / "project"
+    project.mkdir()
+    allow_design_scripts(project)
+    assert setup.run_setup(remove=True) == 0
+    with pytest.raises(ScriptError, match="aicad sandbox-setup"):
+        run_design_script(project, "print('no')\n")
+    # Refusing a run changes nothing on the machine.
+    assert setup.filters_present() == 0
+    assert setup.rules_present() is False

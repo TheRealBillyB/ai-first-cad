@@ -1,30 +1,8 @@
-"""A refused firewall rule says why. The script still does not start."""
-
-import subprocess
+"""A container that will not start says why. The script still does not start."""
 
 import pytest
 
 from aicad import sandbox_windows
-
-
-def _firewall_answers(monkeypatch, output):
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(args, 1, stdout=output, stderr="")
-
-    monkeypatch.setattr(sandbox_windows.subprocess, "run", fake_run)
-
-
-def test_access_denied_names_the_administrator_step(monkeypatch):
-    _firewall_answers(monkeypatch, "New-NetFirewallRule : Access is denied.\n+ CategoryInfo : PermissionDenied")
-    with pytest.raises(OSError, match="administrator") as caught:
-        sandbox_windows._run_firewall_script("exit 1")
-    assert "CategoryInfo" not in str(caught.value)
-
-
-def test_another_firewall_failure_keeps_its_detail(monkeypatch):
-    _firewall_answers(monkeypatch, "the network block name is still registered")
-    with pytest.raises(OSError, match="still registered"):
-        sandbox_windows._run_firewall_script("exit 1")
 
 
 @pytest.mark.parametrize(

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 # These files start a sandboxed script. On Windows every such script uses the
-# same firewall rules, so the runs stay on one worker when the suite is split.
+# same container profile, so the runs stay on one worker when the suite is split.
 _WINDOWS_SANDBOX_FILES = frozenset(
     {
         "tests/test_assembly.py",
@@ -91,9 +91,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def _windows_sandbox_lock() -> Iterator[None]:
     """Hold the machine lock for one sandboxed script.
 
-    The firewall rules are one pair for the whole machine. A second process
-    installing or removing them can open the network for a script that must
-    stay blocked. The script still runs in the real sandbox.
+    Every script shares one container profile, and starting one can replace
+    that profile. The script still runs in the real sandbox.
     """
 
     import msvcrt

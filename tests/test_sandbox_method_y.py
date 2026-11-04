@@ -145,7 +145,7 @@ def test_a_child_keeps_the_windows_system_variables(monkeypatch, tmp_path):
 
 
 def test_the_network_block_uses_system_powershell(monkeypatch, tmp_path):
-    from aicad import sandbox_windows as win
+    from aicad import sandbox_setup_windows as setup
 
     outside = tmp_path / "outside-bin"
     outside.mkdir()
@@ -165,8 +165,10 @@ def test_the_network_block_uses_system_powershell(monkeypatch, tmp_path):
 
         return Done()
 
-    monkeypatch.setattr(win.subprocess, "run", run)
-    win._run_firewall_script("exit 0\n")
+    monkeypatch.setattr(setup.subprocess, "run", run)
+    monkeypatch.setattr(setup, "_system_directory", lambda: Path(r"C:\Windows") / "System32")
+    monkeypatch.setattr(setup, "_CREATE_NO_WINDOW", 0)
+    setup._run_powershell("exit 0\n")
     expected = str(Path(r"C:\Windows") / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
     assert seen["command"][0] == expected
     assert str(outside) not in seen["command"][0]
