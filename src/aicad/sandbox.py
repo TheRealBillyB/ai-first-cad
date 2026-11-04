@@ -597,6 +597,10 @@ def allow_design_scripts(workspace: str | Path) -> dict:
     }
 
 
+# The command names the project as ".", so it only means this project from inside it.
+ENABLE_FROM = "Run that from the project folder, or click Allow design scripts in the app."
+
+
 def warn_design_scripts(workspace: str | Path) -> None:
     """Print the design-script warning on stderr. MCP stdout stays a clean protocol stream."""
     status = design_script_status(workspace)
@@ -607,7 +611,7 @@ def warn_design_scripts(workspace: str | Path) -> None:
             file=sys.stderr,
         )
     else:
-        print(f"Design scripts are off. Turn them on with: {status['enable']}", file=sys.stderr)
+        print(f"Design scripts are off. Turn them on with: {status['enable']}. {ENABLE_FROM}", file=sys.stderr)
 
 
 def require_in_project(path: str | Path, workspace: str | Path, *, writing: bool) -> None:
@@ -657,6 +661,7 @@ def design_script_status(workspace: str | Path, network_once: bool = False, netw
         "enabled": design_scripts_enabled(root),
         "warning": WARNING,
         "enable": hide_project_path(f"aicad allow-scripts --workspace {root}", root),
+        "enable_from": ENABLE_FROM,
         "network": network,
         "wall_seconds": wall_seconds(root),
         "log": hide_project_path(str(root / ".aicad" / "script_log.jsonl"), root),
