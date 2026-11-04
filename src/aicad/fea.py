@@ -10,9 +10,12 @@ Units stay millimeters and newtons, so stress comes out in megapascals.
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import math
 import re
 import signal
+import sys
 import threading
 from pathlib import Path
 
@@ -653,24 +656,50 @@ def _bind_load(item: dict, catalog: list[dict], index: int) -> dict:
     return {"kind": kind, "name": name, "faces": faces, "zero": zero, "spec": item}
 
 
-def _allow_gmsh_from_worker() -> None:
-    """Gmsh installs a signal handler, which Python allows only on the main thread.
+def _signal_numbers() -> list[int]:
+    """The signals whose action can be read and set, without the real-time ones."""
+    skip = {getattr(signal, "SIGKILL", None), getattr(signal, "SIGSTOP", None)}
+    return [int(number) for number in signal.Signals if number not in skip and not number.name.startswith("SIGRT")]
 
-    The workspace server runs each command on a worker thread. Swallow that one
-    restriction so a modal or static solve from the browser can still mesh.
+
+@contextlib.contextmanager
+def _signal_actions_kept():
+    """Put back every signal action that the Gmsh library changes.
+
+    ``gmshInitialize`` sets SIGPIPE back to the default action. Python
+    ignores SIGPIPE, so a write to a closed pipe raises BrokenPipeError. With
+    the default action that same write ends the whole server with status 141
+    and no message, which is what happened after the first stress check when
+    the client went away. Python's own ``signal.signal`` cannot repair this:
+    it can be called only on the main thread, and the workspace server meshes
+    on a worker thread. So the process-wide action of each signal is read with
+    ``sigaction`` before Gmsh runs and written back after it starts and after
+    it finishes. The saved structure is copied as raw bytes, so its layout
+    does not matter. Windows has no SIGPIPE and no ``sigaction``, so nothing
+    is done there.
     """
-    if threading.current_thread() is threading.main_thread() or getattr(signal, "_aicad_worker", False):
+    if sys.platform == "win32":
+        yield lambda: None
         return
-    original = signal.signal
+    libc = ctypes.CDLL(None, use_errno=True)
+    action = libc.sigaction
+    action.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+    action.restype = ctypes.c_int
+    saved: dict[int, ctypes.Array] = {}
+    for number in _signal_numbers():
+        # Larger than struct sigaction on every supported system.
+        buffer = ctypes.create_string_buffer(512)
+        if action(number, None, buffer) == 0:
+            saved[number] = buffer
 
-    def _install(number, handler):
-        try:
-            return original(number, handler)
-        except ValueError:
-            return None
+    def restore() -> None:
+        for number, buffer in saved.items():
+            action(number, buffer, None)
 
-    signal.signal = _install  # type: ignore[method-assign]
-    signal._aicad_worker = True  # type: ignore[attr-defined]
+    try:
+        yield restore
+    finally:
+        restore()
 
 
 def _refuse_dense_mesh(shape: kernel.Shape, mesh_size: float) -> None:
@@ -719,7 +748,6 @@ def _mesh_ladder(shape: kernel.Shape, mesh_size: float, order: int):
     """
     from aicad.mesh import defeature, face_count, heal, volume_mm3
 
-    _allow_gmsh_from_worker()
     attempts = _mesh_attempts(shape, mesh_size, order)
     notes: list[str] = []
     tried: set[tuple] = set()
@@ -926,37 +954,41 @@ def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorith
         from aicad.sandbox import scrub_library_environment
 
         scrub_library_environment()
-        gmsh.initialize(readConfigFiles=False)
-        try:
-            _gmsh_option(gmsh, "General.Terminal", 0)
-            _gmsh_option(gmsh, "General.Verbosity", 0)
-            gmsh.model.add("part")
-            with use_held_thread(directory):
-                gmsh.model.occ.importShapes(str(guest_path(directory, "part.step")))
-            gmsh.model.occ.synchronize()
-            gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
-            _gmsh_option(gmsh, "Mesh.ElementOrder", order)
-            _gmsh_option(gmsh, "Mesh.Optimize", optimize)
-            _gmsh_option(gmsh, "Mesh.Algorithm3D", algorithm)
-            if occ_fix:
-                for name in (
-                    "Geometry.OCCFixDegenerated",
-                    "Geometry.OCCSewFaces",
-                    "Geometry.OCCFixSmallEdges",
-                    "Geometry.OCCFixSmallFaces",
-                ):
-                    _gmsh_option(gmsh, name, 1)
+        with _signal_actions_kept() as restore_signals:
+            # interruptible=False keeps the Python wrapper from replacing the
+            # SIGINT handler, which it can do only on the main thread.
+            gmsh.initialize(readConfigFiles=False, interruptible=False)
+            restore_signals()
             try:
-                gmsh.model.mesh.generate(3)
-            except Exception as exc:
-                raise GeometryError(_gmsh_failure(exc)) from exc
-            surfaces = _surface_centroids(gmsh)
-            points, elements, gmsh_order, tag_to_index = _volume_elements(gmsh)
-        finally:
-            try:
-                gmsh.finalize()
-            except Exception:
-                pass
+                _gmsh_option(gmsh, "General.Terminal", 0)
+                _gmsh_option(gmsh, "General.Verbosity", 0)
+                gmsh.model.add("part")
+                with use_held_thread(directory):
+                    gmsh.model.occ.importShapes(str(guest_path(directory, "part.step")))
+                gmsh.model.occ.synchronize()
+                gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
+                _gmsh_option(gmsh, "Mesh.ElementOrder", order)
+                _gmsh_option(gmsh, "Mesh.Optimize", optimize)
+                _gmsh_option(gmsh, "Mesh.Algorithm3D", algorithm)
+                if occ_fix:
+                    for name in (
+                        "Geometry.OCCFixDegenerated",
+                        "Geometry.OCCSewFaces",
+                        "Geometry.OCCFixSmallEdges",
+                        "Geometry.OCCFixSmallFaces",
+                    ):
+                        _gmsh_option(gmsh, name, 1)
+                try:
+                    gmsh.model.mesh.generate(3)
+                except Exception as exc:
+                    raise GeometryError(_gmsh_failure(exc)) from exc
+                surfaces = _surface_centroids(gmsh)
+                points, elements, gmsh_order, tag_to_index = _volume_elements(gmsh)
+            finally:
+                try:
+                    gmsh.finalize()
+                except Exception:
+                    pass
     if len(elements) == 0:
         raise GeometryError("Gmsh produced no volume elements. The solid may be too thin for this mesh size.")
     for surface in surfaces:
