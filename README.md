@@ -82,8 +82,8 @@ The mechanics solver is [CalculiX](https://www.calculix.de/) (`ccx`), which is G
 - Ubuntu or Debian: `sudo apt-get install -y calculix-ccx` (the installer runs this itself when `sudo` does not need a password)
 - Fedora: `sudo dnf install -y calculix`
 - Mac: `brew install costerwi/homebrew-calculix/calculix-ccx`
-- Windows, Mac, or Linux with conda: `conda install conda-forge::calculix`
-- Windows without conda: a build from the [CalculiX-Windows releases](https://github.com/calculix/CalculiX-Windows/releases), with the folder that contains `ccx.exe` on PATH
+- Mac or Linux with conda: `conda install conda-forge::calculix`
+- Windows, or an Apple Silicon Mac: `python install.py --with-calculix` downloads a pinned, checksummed build into `.venv`. On Windows, do not put conda's `Library\\bin` on PATH: `powershell.exe` stops starting.
 
 `aicad fea` reports a clear error when `ccx` is missing. The tests skip in that case.
 

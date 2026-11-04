@@ -30,20 +30,19 @@ def ccx_hint(platform_name: str | None = None) -> str:
         "CalculiX (`ccx`) is not on your PATH. Strength and vibration checks need it. "
         "Modeling, the app, print prep, and assemblies work without it.\n"
     )
-    conda = "If you use conda, this works on Windows, Mac, and Linux:\n    conda install conda-forge::calculix\n"
+    conda = "If you use conda, this works on Mac and Linux:\n    conda install conda-forge::calculix\n"
+    pinned = "From your aicad folder, this downloads a pinned, checksummed build into .venv:\n    python install.py --with-calculix\n"
     if system == "win32":
         return (
             shared
-            + "On Windows, either use conda or a Windows build of CalculiX.\n"
-            + conda
-            + "Without conda, download a release from\n"
-            + "    https://github.com/calculix/CalculiX-Windows/releases\n"
-            + "and add the folder that contains ccx.exe to your PATH. Open a new terminal and run `ccx`."
+            + pinned
+            + "Do not put conda's Library\\bin folder on your PATH. powershell.exe stops starting, and aicad needs it."
         )
     if system == "darwin":
         return (
             shared
-            + "On a Mac, Homebrew can install it:\n"
+            + pinned
+            + "Homebrew can also install it:\n"
             + "    brew install costerwi/homebrew-calculix/calculix-ccx\n"
             + conda
             + "Open a new terminal and run `ccx`."
@@ -94,7 +93,7 @@ def find_program(name: str, *, project: Path | None = None) -> str | None:
 
 
 def ccx_status() -> SolverStatus:
-    """Look for the CalculiX solver on PATH, outside any open project."""
+    """Look for the CalculiX solver, outside any open project."""
 
     found = find_program("ccx")
     if found:
@@ -133,6 +132,10 @@ def _path_directories():
         if entry == "" or entry == os.curdir:
             continue
         yield Path(entry)
+    # Where `install.py --with-calculix` puts the solver. PATH comes first.
+    prefix = Path(sys.prefix) / "calculix" / "prefix"
+    yield prefix / "solver-bin"
+    yield prefix / "bin"
 
 
 def _candidate_names(name: str) -> list[str]:
