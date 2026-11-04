@@ -141,6 +141,15 @@ def test_a_workspace_file_swapped_for_a_link_is_not_shown(project, tmp_path, mon
     outside.mkdir()
     canary = outside / "SANDBOX_CANARY.txt"
     canary.write_bytes(_CANARY)
+    # A skip inside the request thread would only drop the connection.
+    probe = tmp_path / "link_probe"
+    try:
+        probe.symlink_to(canary)
+    except OSError:
+        if os.environ.get("CI"):
+            raise
+        pytest.skip("this machine cannot create a symlink")
+    probe.unlink()
 
     def swap(root, relative) -> None:
         if Path(relative).name != "note.txt":
