@@ -128,6 +128,14 @@ class _Part:
         self.gear_spec = gear_spec
         self.edge_ops = edge_ops
         self.step_errors = step_errors
+        self._measured: tuple[kernel.Shape, kernel.Measurement] | None = None
+
+    def measured(self) -> kernel.Measurement:
+        """This solid's measurement. A validity check on a toothed gear takes seconds, so it runs once per solid."""
+        shape = self.shape
+        if self._measured is None or self._measured[0] is not shape:
+            self._measured = (shape, kernel.measure(shape))
+        return self._measured[1]
 
     @property
     def shape(self) -> kernel.Shape:
@@ -1317,7 +1325,7 @@ class Document:
                 bounding_box=BoundingBox(zero, zero, zero),
                 built=False,
             )
-        measured = kernel.measure(part.shape)
+        measured = part.measured()
         return PartInfo(
             name=part.name,
             source=part.source,
