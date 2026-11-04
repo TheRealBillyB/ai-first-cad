@@ -147,6 +147,8 @@ def main() -> int:
     (WORK / "out").mkdir(parents=True)
     (WORK / "source").mkdir()
     shutil.copytree(SOURCE, WORK / "source" / "aicad", ignore=shutil.ignore_patterns("__pycache__"))
+    # The real package start imports numpy and the geometry libraries. The container code needs neither.
+    (WORK / "source" / "aicad" / "__init__.py").write_text("", encoding="utf-8")
     (WORK / "account.py").write_text(AS_THE_ACCOUNT, encoding="utf-8")
     (WORK / "sends.py").write_text(SENDS, encoding="utf-8")
     run("icacls", str(WORK), "/grant", "Users:(OI)(CI)RX", "/T", "/Q")
