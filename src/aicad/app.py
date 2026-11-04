@@ -31,6 +31,7 @@ import secrets
 import socket
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -149,6 +150,9 @@ def read_agent_token(port: int) -> str:
     if not token:
         raise GeometryError("The workspace session for that app is empty. Start aicad app again.")
     return token
+
+
+_OPEN_RECHECK_SECONDS = 5.0
 
 
 def _open_project_path(port: int) -> Path:
@@ -271,15 +275,24 @@ class _WorkspaceServer(ThreadingHTTPServer):
     _open_root: Path | None = None
     _other_app_port: int | None = None
     _open_lock = threading.Lock()
+    _open_checked_at = 0.0
 
     def project_also_open_at(self, root: Path) -> int | None:
-        """The port of another app on this project. Checked once each time the project changes."""
+        """The port of another app on this project.
+
+        Read again at most every few seconds, so the first app learns of a second
+        one and the warning goes when that app closes. The page sees it on its next refresh.
+        """
         with self._open_lock:
-            if root != self._open_root:
+            now = time.monotonic()
+            changed = root != self._open_root
+            if changed or now - self._open_checked_at >= _OPEN_RECHECK_SECONDS:
                 port = int(self.server_address[1])
                 self._open_root = root
                 self._other_app_port = other_app_on_project(root, port)
-                _record_open_project(port, root)
+                self._open_checked_at = now
+                if changed:
+                    _record_open_project(port, root)
             return self._other_app_port
 
     def process_request(self, request, client_address) -> None:

@@ -20,10 +20,37 @@ def test_the_second_app_on_a_project_names_the_first(tmp_path):
     first = _server(tmp_path / "project")
     second = _server(tmp_path / "project")
     try:
-        assert first.project_also_open_at(first.workspace.root) is None
         assert second.project_also_open_at(second.workspace.root) == first.server_address[1]
     finally:
         second.server_close()
+        first.server_close()
+
+
+def test_the_first_app_learns_of_the_second_and_the_warning_clears(tmp_path, monkeypatch):
+    monkeypatch.setattr("aicad.app._OPEN_RECHECK_SECONDS", 0.0)
+    first = _server(tmp_path / "project")
+    root = first.workspace.root
+    try:
+        assert first.project_also_open_at(root) is None
+        second = _server(tmp_path / "project")
+        assert first.project_also_open_at(root) == second.server_address[1]
+        second.server_close()
+        assert first.project_also_open_at(root) is None
+    finally:
+        first.server_close()
+
+
+def test_the_check_is_not_repeated_on_every_read(tmp_path, monkeypatch):
+    first = _server(tmp_path / "project")
+    root = first.workspace.root
+    calls = []
+    monkeypatch.setattr("aicad.app.other_app_on_project", lambda *args: calls.append(args))
+    monkeypatch.setattr("aicad.app._OPEN_RECHECK_SECONDS", 3600.0)
+    try:
+        for _ in range(3):
+            first.project_also_open_at(root)
+        assert calls == []
+    finally:
         first.server_close()
 
 
