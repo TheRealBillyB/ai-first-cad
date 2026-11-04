@@ -9,4 +9,6 @@ def test_the_enable_command_says_where_to_run_it(tmp_path, capsys):
     assert "project folder" in status["enable_from"]
     assert str(tmp_path.resolve()) not in status["enable_from"]
     warn_design_scripts(tmp_path)
-    assert status["enable_from"] in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert status["enable_from"] in err
+    assert ".." not in err

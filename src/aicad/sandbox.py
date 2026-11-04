@@ -611,7 +611,8 @@ def warn_design_scripts(workspace: str | Path) -> None:
             file=sys.stderr,
         )
     else:
-        print(f"Design scripts are off. Turn them on with: {status['enable']}. {ENABLE_FROM}", file=sys.stderr)
+        print(f"Design scripts are off. Turn them on with: {status['enable']}", file=sys.stderr)
+        print(ENABLE_FROM, file=sys.stderr)
 
 
 def require_in_project(path: str | Path, workspace: str | Path, *, writing: bool) -> None:
