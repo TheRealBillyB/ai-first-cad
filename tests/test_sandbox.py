@@ -850,7 +850,7 @@ def test_windows_stale_profile_is_replaced_before_the_script_starts():
 
         calls.clear()
 
-        def refuse_profile():
+        def refuse_profile(_profile):
             calls.append("prove")
             raise OSError(
                 "The Windows script profile has capabilities, so the script was not started."
