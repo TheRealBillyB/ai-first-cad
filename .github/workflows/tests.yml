@@ -30,7 +30,7 @@ jobs:
       job-timeout: 40
 
   pytest-cross:
-    name: pytest (${{ matrix.os }})
+    name: pytest (${{ matrix.os }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     if: >-
       github.event_name == 'workflow_dispatch'
       || github.event_name == 'pull_request'
@@ -43,9 +43,20 @@ jobs:
           # for 3.11 and not for 3.12. 3.12 on those systems would have to compile it.
           # The job clock is a backstop. A single test is stopped sooner by pytest-timeout.
           # The macOS suite already uses most of 25 minutes, so it gets the same clock as Windows.
+          # Windows runs sandboxed tests one at a time, and that took 33 to 35 minutes
+          # of the 40-minute clock. Each shard is its own runner. See tests/shards.py.
           - os: windows-latest
             python: "3.11"
             job-timeout: 40
+            shard: 1/3
+          - os: windows-latest
+            python: "3.11"
+            job-timeout: 40
+            shard: 2/3
+          - os: windows-latest
+            python: "3.11"
+            job-timeout: 40
+            shard: 3/3
           - os: macos-latest
             python: "3.11"
             job-timeout: 40
@@ -54,3 +65,4 @@ jobs:
       os: ${{ matrix.os }}
       python-version: ${{ matrix.python }}
       job-timeout: ${{ matrix.job-timeout }}
+      shard: ${{ matrix.shard || '' }}
