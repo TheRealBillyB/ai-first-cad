@@ -1363,7 +1363,14 @@ def _cmd_open_project(workspace: Workspace, arguments: dict) -> dict:
 
 
 def _cmd_design_script_status(workspace: Workspace, _arguments: dict) -> dict:
-    return workspace.script_status()
+    from aicad.paths import hide_project_path
+    from aicad.sandbox import sandbox_supported
+
+    can_run, reason = sandbox_supported()
+    status = {**workspace.script_status(), "can_run": can_run}
+    if not can_run:
+        status["cannot_run"] = hide_project_path(reason, workspace.root)
+    return status
 
 
 def _cmd_run_design_script(workspace: Workspace, arguments: dict) -> dict:
