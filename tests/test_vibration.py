@@ -11,6 +11,7 @@ import pytest
 from aicad import kernel
 from aicad.bolts import check_joint
 from aicad.document import Document
+from aicad.errors import GeometryError
 from aicad.fea import fea_available
 from aicad.kinematics import normalize
 from aicad.modal import (
@@ -326,3 +327,8 @@ def test_document_modal_command_uses_a_library_screw_size(tmp_path):
     assert report["size"] == "M8"
     assert report["grip_mm"] == 20
     assert report["loosening"]["rating"] == "high"
+
+
+def test_a_joint_without_a_grip_is_refused_by_name():
+    with pytest.raises(GeometryError, match="grip_mm"):
+        check_joint({"size": "M8", "axial_n": 1000, "shear_n": 200})

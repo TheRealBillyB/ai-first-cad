@@ -114,8 +114,6 @@ def _one(spec: dict) -> dict:
     shear = abs(_number(spec.get("shear_n"), 0.0, "shear_n"))
     area = _tensile_area(diameter, pitch)
     grip = _number(spec.get("grip_mm"), None, "grip_mm")
-    if grip is None:
-        grip = _number(spec.get("length"), 2.5 * diameter, "grip_mm")
     if grip <= 0:
         raise GeometryError("grip_mm is the clamped thickness and must be positive.")
     engagement = _number(spec.get("engagement_mm"), 0.8 * diameter, "engagement_mm")
