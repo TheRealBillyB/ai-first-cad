@@ -115,8 +115,8 @@ def annotation(text: str) -> str:
 
 
 def check_account(account: str) -> list[str]:
+    # Never printed, and gone with the runner. A failed command reports only its first two words.
     password = "Aa1!" + secrets.token_urlsafe(18)
-    print(f"::add-mask::{password}")
     run("net", "user", account, password, "/add", "/y")
     # The batch logon right only. This group is not an administrator.
     run("net", "localgroup", "Performance Log Users", account, "/add")
