@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Install the pinned CalculiX solver on the macOS and Windows CI runners.
+"""Install the pinned CalculiX solver on macOS and Windows.
 
-Linux keeps using the apt package from install.py. This script does not run
-on Linux. It downloads the conda-forge files named in .github/calculix.lock.json,
+The CI runners use this, and so does `install.py --with-calculix`. Linux keeps
+using the apt package from install.py. This script does not run on Linux. It downloads the conda-forge files named in .github/calculix.lock.json,
 checks each sha256, and links them with a pinned micromamba. ccx stays a
 separate program. A runner this lock does not cover stops the job.
 """
