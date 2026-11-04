@@ -2344,6 +2344,8 @@ class Document:
         tolerances. ``scale`` is a ratio such as ``1:2``. ``exploded`` draws
         the isometric view with the parts pulled apart.
         """
+        if scale:
+            drawing_mod.parse_scale(scale)
         with self._lock:
             spec = self._get_assembly(name)
             shapes = self._assembly_shapes(spec)
