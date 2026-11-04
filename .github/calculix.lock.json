@@ -1,6 +1,6 @@
 {
   "calculix_version": "2.23",
-  "note": "Pinned conda-forge packages for the CI runners. aicad does not download CalculiX for a person installing it. Each file is checked against sha256 before it is linked. ccx stays a separate program.",
+  "note": "Pinned conda-forge packages for the CI runners and for `install.py --with-calculix`. aicad downloads CalculiX for a person installing it only when they pass that flag. Each file is checked against sha256 before it is linked. ccx stays a separate program.",
   "micromamba": {
     "version": "2.3.3",
     "osx-arm64": {
