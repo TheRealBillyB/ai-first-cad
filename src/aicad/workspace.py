@@ -708,11 +708,31 @@ def _cmd_inspect(workspace: Workspace, arguments: dict) -> dict:
 
 def _cmd_export(workspace: Workspace, arguments: dict) -> dict:
     destination = arguments.get("path")
-    if not destination:
+    if destination is None:
         destination = str(workspace.root / "exports" / f"{arguments['name']}.{arguments['format']}")
+    # An empty path is refused with the empty-path message. It is not read as
+    # "use the default", because the caller did name a path.
     destination = _path_inside_project(workspace.root, destination, "Export path")
     written = workspace.document.export(arguments["name"], destination, arguments["format"])
-    return {"format": arguments["format"], "path": str(written), "bytes": written.stat().st_size}
+    return {
+        "format": arguments["format"],
+        "path": _project_relative(workspace.root, written),
+        "bytes": written.stat().st_size,
+    }
+
+
+def _project_relative(root: Path, path: Path) -> str:
+    """``path`` under the project folder, with forward slashes.
+
+    A result names a file the way a person would type it in this project, and
+    does not show the full folder path.
+    """
+    try:
+        return path.relative_to(Path(root).resolve()).as_posix()
+    except ValueError:
+        from aicad.paths import hide_project_path
+
+        return hide_project_path(str(path), root)
 
 
 def _cmd_features(workspace: Workspace, arguments: dict) -> dict:

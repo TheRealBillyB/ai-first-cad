@@ -207,15 +207,16 @@ def test_export_rejects_windows_escapes_and_keeps_paths_inside(tmp_path):
         "export_part",
         {"name": "box", "format": "step", "path": "exports/kept.step"},
     )
-    assert Path(relative["path"]).is_file()
-    assert Path(relative["path"]).resolve().is_relative_to(tmp_path.resolve())
+    assert relative["path"] == "exports/kept.step"
+    assert (tmp_path / relative["path"]).is_file()
 
     inside = tmp_path / "exports" / "absolute.step"
     written = workspace.execute(
         "export_part",
         {"name": "box", "format": "step", "path": str(inside)},
     )
-    assert Path(written["path"]).is_file()
+    assert written["path"] == "exports/absolute.step"
+    assert inside.is_file()
     home = os.path.expanduser("~/aicad-not-in-the-project.step")
     with pytest.raises(AICADError, match="outside"):
         workspace.execute("export_part", {"name": "box", "format": "step", "path": "~/aicad-not-in-the-project.step"})

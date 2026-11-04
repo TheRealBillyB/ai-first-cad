@@ -161,7 +161,9 @@ async def _mcp_example(tmp_path: Path) -> None:
                 {"name": "motor_mount", "format": "step"},
             )
             assert exported.is_error is False, _text(exported)
-            path = Path(json.loads(_text(exported))["path"])
+            relative = json.loads(_text(exported))["path"]
+            assert relative == "exports/motor_mount.step"
+            path = tmp_path / relative
             assert path.is_file()
             assert "ISO-10303-21" in path.read_text(encoding="utf-8", errors="replace")
 
