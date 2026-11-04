@@ -11,6 +11,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 | Decision | Rationale |
 | --- | --- |
 | Grey cast iron joins the material library | Grey cast iron uses the ASTM A48 Class 30 minimum tensile strength, 207 MPa, as a rupture strength because the brittle iron has no yield point. |
+| The installer downloads CalculiX only when asked | Windows had no working install: the linked release page has no releases, and conda's Library folder on PATH stops powershell.exe. `install.py --with-calculix` reuses the pinned, checksummed CI build, which stays an unmodified, separate GPL-2.0-only program. |
 | The Windows suite runs in three shards | Sandboxed tests run one at a time because a machine has one set of firewall rules, which took about 33 of the job's 40 minutes. Each shard is its own runner with its own rules, so the limit stays and no test is skipped. |
 
 ## 2026-11-02
