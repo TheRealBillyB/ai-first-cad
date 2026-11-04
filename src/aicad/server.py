@@ -702,7 +702,8 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
     def create_part_from_sketch(name: str, sketch: str, steps: list[dict[str, Any]]) -> list[str | Image]:
         """Extrude, revolve, or cut a solved sketch into a solid.
 
-        steps is a list. An extrude or cut uses `points` (ids, in order) or
+        steps is a list. Each step names its kind in `op`: extrude, cut, revolve,
+        cut_box, or gusset. An extrude or cut uses `points` (ids, in order) or
         `circle` (a circle id), plus `height` and optional `z` (the bottom).
         revolve uses `points`, `axis` (`x` or `y`), and optional `angle`.
         cut_box uses `center` and `size`. gusset uses `angle`, `outer`,
@@ -872,7 +873,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         force has vector [x, y, z] in newtons, pressure has magnitude in MPa
         (positive pushes into the face), bolt has axial newtons along the hole,
         torque has torque_nm about axis [x, y, z] as a couple with no net force.
-        select is the same geometry selector describe_faces is for.
+        select is {"kind": "plane", "normal": [x, y, z]},
+        {"kind": "cylinder", "radius": r, "axis": [x, y, z]},
+        {"kind": "nearest", "at": [x, y, z]}, {"kind": "index", "index": n}, or
+        {"ref": r} with a ref from describe_faces. A plane or cylinder takes every
+        match unless `at` names a point, which takes the closest one.
 
         Read status, min_safety_factor, review, assumptions, and warnings.
         The stress contact sheet is the first image. Each picture is scaled to
