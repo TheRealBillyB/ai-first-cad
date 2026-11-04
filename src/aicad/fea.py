@@ -657,14 +657,19 @@ def _bind_load(item: dict, catalog: list[dict], index: int) -> dict:
 
 
 def _signal_numbers() -> list[int]:
-    """The signals whose action can be read and set, without the real-time ones."""
-    skip = {getattr(signal, "SIGKILL", None), getattr(signal, "SIGSTOP", None)}
-    return [int(number) for number in signal.Signals if number not in skip and not number.name.startswith("SIGRT")]
+    """The signals whose action Gmsh changes and this module puts back.
+
+    Only SIGPIPE. Gmsh and the OpenCascade inside it may install their own
+    handlers for faults while they run, and those must stay in place, so the
+    other signals are left alone.
+    """
+    number = getattr(signal, "SIGPIPE", None)
+    return [] if number is None else [int(number)]
 
 
 @contextlib.contextmanager
 def _signal_actions_kept():
-    """Put back every signal action that the Gmsh library changes.
+    """Put back the SIGPIPE action that the Gmsh library changes.
 
     ``gmshInitialize`` sets SIGPIPE back to the default action. Python
     ignores SIGPIPE, so a write to a closed pipe raises BrokenPipeError. With
@@ -672,13 +677,15 @@ def _signal_actions_kept():
     and no message, which is what happened after the first stress check when
     the client went away. Python's own ``signal.signal`` cannot repair this:
     it can be called only on the main thread, and the workspace server meshes
-    on a worker thread. So the process-wide action of each signal is read with
-    ``sigaction`` before Gmsh runs and written back after it starts and after
-    it finishes. The saved structure is copied as raw bytes, so its layout
-    does not matter. Windows has no SIGPIPE and no ``sigaction``, so nothing
-    is done there.
+    on a worker thread. So the process-wide action is read with ``sigaction``
+    before Gmsh runs and written back after it starts and after it finishes.
+    The saved structure is copied as raw bytes, so its layout does not
+    matter. Other signals are not touched: putting back a fault handler while
+    Gmsh is running would take away the one OpenCascade relies on. Windows
+    has no SIGPIPE and no ``sigaction``, so nothing is done there.
     """
-    if sys.platform == "win32":
+    numbers = _signal_numbers()
+    if sys.platform == "win32" or not numbers:
         yield lambda: None
         return
     libc = ctypes.CDLL(None, use_errno=True)
@@ -686,7 +693,7 @@ def _signal_actions_kept():
     action.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
     action.restype = ctypes.c_int
     saved: dict[int, ctypes.Array] = {}
-    for number in _signal_numbers():
+    for number in numbers:
         # Larger than struct sigaction on every supported system.
         buffer = ctypes.create_string_buffer(512)
         if action(number, None, buffer) == 0:

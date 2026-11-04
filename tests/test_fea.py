@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -752,6 +753,9 @@ def test_a_mesh_on_a_worker_thread_leaves_sigpipe_ignored():
         "except BrokenPipeError:\n"
         "    print('broken pipe raised')\n"
     )
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
-    assert proc.returncode == 0, (proc.returncode, proc.stderr[-2000:])
+    env = dict(os.environ, PYTHONFAULTHANDLER="1")
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, env=env)
+    # A crash report ends with a long list of extension modules, so keep the
+    # start of stderr, where the thread stacks are.
+    assert proc.returncode == 0, (proc.returncode, proc.stderr[:3000])
     assert "broken pipe raised" in proc.stdout
