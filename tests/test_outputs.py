@@ -475,9 +475,11 @@ def test_a_reserved_windows_name_is_refused(tmp_path):
     _box(document, "base", [10, 10, 4], [0, 0, 2])
     with pytest.raises(GeometryError, match="reserved"):
         document.create_assembly({"name": "con", "instances": [{"name": "base", "part": "base"}], "joints": []})
-    assert list(tmp_path.rglob("con.pdf")) == []
-    assert list(tmp_path.rglob("con.csv")) == []
-    assert list(tmp_path.rglob("con_file*")) == []
+    # Walk the names. Windows 10 reports con.pdf as existing, so a literal rglob finds the device.
+    written = [path.name.lower() for path in tmp_path.rglob("*")]
+    assert "con.pdf" not in written
+    assert "con.csv" not in written
+    assert not [name for name in written if name.startswith("con_file")]
     root = Path(__file__).resolve().parents[1]
     assert "con_file" not in (root / "README.md").read_text(encoding="utf-8")
     assert "con_file" not in (root / "docs" / "DECISIONS.md").read_text(encoding="utf-8")
