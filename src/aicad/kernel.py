@@ -2700,13 +2700,36 @@ def face_pressure_triangles(
 
 def distance_point_to_face(shape: Shape, face_index: int, point: tuple[float, float, float]) -> float:
     """Shortest distance from a point to a face, in millimeters."""
+    return distances_points_to_faces(shape, [face_index], [point])[0][0]
+
+
+def distances_points_to_faces(
+    shape: Shape, face_indices: list[int], points: list[tuple[float, float, float]]
+) -> list[list[float]]:
+    """Shortest distance from each point to each face, in millimeters.
+
+    Row ``i`` is face ``face_indices[i]`` and column ``j`` is ``points[j]``.
+    The face list and the point vertices are built once, so many lookups
+    on one part do not walk its topology again for every distance.
+    """
     faces = list(shape.impl.faces())
-    if face_index < 0 or face_index >= len(faces):
-        raise GeometryError(f"Face index {face_index} is outside this part.")
-    vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(float(point[0]), float(point[1]), float(point[2]))).Shape()
-    extrema = BRepExtrema_DistShapeShape(faces[face_index].wrapped, vertex)
-    extrema.Perform()
-    return float(extrema.Value())
+    for face_index in face_indices:
+        if face_index < 0 or face_index >= len(faces):
+            raise GeometryError(f"Face index {face_index} is outside this part.")
+    vertices = [
+        BRepBuilderAPI_MakeVertex(gp_Pnt(float(point[0]), float(point[1]), float(point[2]))).Shape()
+        for point in points
+    ]
+    table: list[list[float]] = []
+    for face_index in face_indices:
+        face = faces[face_index].wrapped
+        row = []
+        for vertex in vertices:
+            extrema = BRepExtrema_DistShapeShape(face, vertex)
+            extrema.Perform()
+            row.append(float(extrema.Value()))
+        table.append(row)
+    return table
 
 
 def _outward_normal(face, center) -> list[float] | None:
