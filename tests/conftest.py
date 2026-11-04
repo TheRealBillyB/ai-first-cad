@@ -167,6 +167,10 @@ def pytest_runtest_logreport(report) -> None:
         return
     text = getattr(report, "longreprtext", None) or str(report.longrepr)
     sys.stderr.write(f"\n=== FAIL {report.nodeid} ({report.when}) ===\n{text}\n")
+    if os.environ.get("GITHUB_ACTIONS"):
+        # An annotation can be read without signing in to see the log.
+        escaped = text[-700:].replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        sys.stderr.write(f"::error title={report.nodeid}::{escaped}\n")
     sys.stderr.flush()
 
 
