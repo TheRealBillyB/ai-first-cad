@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -715,3 +716,46 @@ def test_torque_twists_a_tube_like_the_closed_form(tmp_path):
     no_axis = dict(setup, loads=[dict(setup["loads"][0], axis=None)])
     with pytest.raises(GeometryError, match="needs an axis"):
         solve_part(tube, no_axis, part_name="tube")
+
+
+def test_a_mesh_on_a_worker_thread_leaves_sigpipe_ignored():
+    """Gmsh resets SIGPIPE to its default, which ends the server with status 141.
+
+    The server meshes on a worker thread, then writes to its client. A write
+    to a client that has gone away must raise BrokenPipeError, not stop the
+    process. The SIGINT handler must also stay the one Python installed.
+    """
+    pytest.importorskip("gmsh")
+    if sys.platform == "win32":
+        pytest.skip("SIGPIPE is a Unix signal")
+    code = (
+        "import os, signal, threading\n"
+        "from aicad import kernel\n"
+        "from aicad.fea import _mesh_solid\n"
+        "before = signal.getsignal(signal.SIGINT)\n"
+        "cube = kernel.make_from_ops([{'op': 'add', 'shape': 'box', 'size': [10, 10, 10], 'center': [0, 0, 5]}])\n"
+        "errors = []\n"
+        "def mesh():\n"
+        "    try:\n"
+        "        _mesh_solid(cube, 2.5, 1)\n"
+        "    except BaseException as exc:\n"
+        "        errors.append(repr(exc))\n"
+        "for _ in range(2):\n"
+        "    worker = threading.Thread(target=mesh)\n"
+        "    worker.start()\n"
+        "    worker.join()\n"
+        "assert not errors, errors\n"
+        "assert signal.getsignal(signal.SIGINT) is before\n"
+        "read_end, write_end = os.pipe()\n"
+        "os.close(read_end)\n"
+        "try:\n"
+        "    os.write(write_end, b'x')\n"
+        "except BrokenPipeError:\n"
+        "    print('broken pipe raised')\n"
+    )
+    env = dict(os.environ, PYTHONFAULTHANDLER="1")
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, env=env)
+    # A crash report ends with a long list of extension modules, so keep the
+    # start of stderr, where the thread stacks are.
+    assert proc.returncode == 0, (proc.returncode, proc.stderr[:3000])
+    assert "broken pipe raised" in proc.stdout
