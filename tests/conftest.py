@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -139,3 +141,35 @@ def pytest_runtest_logreport(report) -> None:
     text = getattr(report, "longreprtext", None) or str(report.longrepr)
     sys.stderr.write(f"\n=== FAIL {report.nodeid} ({report.when}) ===\n{text}\n")
     sys.stderr.flush()
+
+
+_NO_SYMLINK_PRIVILEGE = 1314
+
+
+@pytest.fixture(autouse=True)
+def _link_without_the_symlink_privilege(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the link tests running on a Windows account that cannot make a symlink.
+
+    A folder link becomes a junction, which the program has to refuse as well.
+    A file link has no such stand-in, so that test skips. CI has the privilege,
+    and there a failure stays a failure, so a link test cannot quietly stop running.
+    """
+    if sys.platform != "win32" or os.environ.get("CI"):
+        return
+    import _winapi
+
+    real = os.symlink
+
+    def symlink(src, dst, target_is_directory=False, *, dir_fd=None):
+        try:
+            return real(src, dst, target_is_directory, dir_fd=dir_fd)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != _NO_SYMLINK_PRIVILEGE:
+                raise
+        target = Path(dst).parent / os.fspath(src)
+        if target_is_directory or target.is_dir():
+            _winapi.CreateJunction(str(target.resolve()), str(dst))
+            return None
+        pytest.skip("this Windows account cannot create a file symlink")
+
+    monkeypatch.setattr(os, "symlink", symlink)
