@@ -16,12 +16,14 @@ missing, the command prints how to install it on this operating system.
 from __future__ import annotations
 
 import argparse
+import ctypes.util
 import importlib.util
 import os
 import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -88,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_system:
         system_ok = _install_linux_packages()
     python = _ensure_venv()
+    for problem in _missing_prerequisites():
+        print(problem)
+        print()
     _pip_install(python)
     print()
     print(_ccx_message(hints))
@@ -359,11 +364,107 @@ def _check(hints, *, require_ccx: bool) -> int:
         print("aicad did not import from the virtual environment.")
         return 1
     print(imported.stdout.strip())
+    for problem in _missing_prerequisites(build=False):
+        print(problem)
     status = hints.ccx_status()
     print(status.message)
     if require_ccx and not status.found:
         return 1
     return 0
+
+
+# python-solvespace publishes wheels for Windows and macOS up to Python 3.11
+# and none for Linux. Everywhere else pip compiles it from source.
+_SOLVER_WHEEL_PLATFORMS = ("win32", "darwin")
+_SOLVER_LAST_WHEEL_PYTHON = (3, 11)
+
+
+def _solver_needs_compiler(platform: str | None = None, version=None) -> bool:
+    """True when pip will build python-solvespace from source on this machine."""
+
+    platform = sys.platform if platform is None else platform
+    version = sys.version_info if version is None else version
+    if platform in _SOLVER_WHEEL_PLATFORMS:
+        return tuple(version[:2]) > _SOLVER_LAST_WHEEL_PYTHON
+    return True
+
+
+def _find_cxx_compiler() -> str | None:
+    """The C++ compiler pip would use, or None when none is on PATH."""
+
+    configured = os.environ.get("CXX", "").split()
+    names = ([configured[0]] if configured else []) + ["c++", "g++", "clang++"]
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _python_headers_found() -> bool:
+    include = sysconfig.get_paths().get("include")
+    return bool(include) and (Path(include) / "Python.h").is_file()
+
+
+def _glu_found() -> bool:
+    return ctypes.util.find_library("GLU") is not None
+
+
+def _linux_package_hint(apt: str, dnf: str, pacman: str) -> str:
+    return "\n".join(
+        (
+            f"    Debian or Ubuntu: sudo apt-get install -y {apt}",
+            f"    Fedora:           sudo dnf install -y {dnf}",
+            f"    Arch:             sudo pacman -S {pacman}",
+        )
+    )
+
+
+def _missing_prerequisites(*, build: bool = True) -> list[str]:
+    """Plain-language notes for system pieces this install needs and lacks.
+
+    ``build`` adds the compiler checks for the pip step. The libGLU check is a
+    runtime need: Gmsh, which meshes parts for the stress check, loads it.
+    """
+
+    problems: list[str] = []
+    if sys.platform.startswith("linux") and not _glu_found():
+        problems.append(
+            "libGLU was not found. Gmsh needs it to mesh parts for the stress check. "
+            "Install it with:\n" + _linux_package_hint("libglu1-mesa", "mesa-libGLU", "glu")
+        )
+    if not build or not _solver_needs_compiler():
+        return problems
+    version = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    if sys.platform == "win32":
+        problems.append(
+            f"The sketch solver (python-solvespace) has no ready-made package for Python {version} "
+            "on Windows, so pip compiles it. That needs the Microsoft C++ Build Tools "
+            "(https://visualstudio.microsoft.com/visual-cpp-build-tools/, workload "
+            '"Desktop development with C++"). Python 3.11 avoids the compile.'
+        )
+        return problems
+    if sys.platform == "darwin":
+        if _find_cxx_compiler() is None:
+            problems.append(
+                f"The sketch solver (python-solvespace) has no ready-made package for Python "
+                f"{version} on macOS, so pip compiles it, and no C++ compiler was found. "
+                "Install one with `xcode-select --install`, or use Python 3.11."
+            )
+        return problems
+    if _find_cxx_compiler() is None:
+        problems.append(
+            "No C++ compiler was found. The sketch solver (python-solvespace) has no "
+            "ready-made package for Linux, so pip compiles it on every Python version. "
+            "Install a compiler with:\n" + _linux_package_hint("g++", "gcc-c++", "gcc")
+        )
+    if not _python_headers_found():
+        problems.append(
+            f"The Python {version} headers (Python.h) were not found. pip needs them to "
+            "compile the sketch solver. Install them with:\n"
+            + _linux_package_hint("python3-dev", "python3-devel", "python")
+        )
+    return problems
 
 
 if __name__ == "__main__":
