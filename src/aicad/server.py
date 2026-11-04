@@ -1657,7 +1657,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """Whether the person has allowed design scripts, and whether the network is off.
 
         You cannot turn design scripts on. The person uses aicad allow-scripts
-        or the button in the app.
+        or the button in the app. enabled is that permission. can_run is whether
+        this computer can confine a script at all, and cannot_run says why not.
+        A part script needs can_run too. The first call can take several seconds.
         """
         return guard(lambda: run("design_script_status"))
 

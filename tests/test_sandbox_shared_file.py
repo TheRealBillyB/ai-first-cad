@@ -847,7 +847,11 @@ def test_tool_runner_refuses_shell_network_and_outside_writes(tmp_path, config_h
             {"script": _writer(canary) + "\n"},
             source="agent",
         )
-    assert workspace.script_status() == workspace.execute("design_script_status", {}, source="chat")
+    reported = workspace.execute("design_script_status", {}, source="chat")
+    # The tool adds whether this computer can confine a script; the permission part matches.
+    assert isinstance(reported.pop("can_run"), bool)
+    reported.pop("cannot_run", None)
+    assert workspace.script_status() == reported
     assert workspace.script_status()["enabled"] is False
     assert workspace.script_status()["network"] == "off"
 
