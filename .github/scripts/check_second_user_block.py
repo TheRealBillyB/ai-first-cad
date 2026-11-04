@@ -88,8 +88,8 @@ def run(*command: str, check: bool = True) -> subprocess.CompletedProcess:
     return done
 
 
-def as_account(account: str, password: str, line: str, label: str) -> str:
-    """Run one command line as this account through a scheduled task. Returns its stdout."""
+def as_account(account: str, password: str, line: str, label: str) -> tuple[str, str]:
+    """Run one command line as this account through a scheduled task. Returns stdout and stderr."""
     out, err, finished = (WORK / "out" / f"{label}.{suffix}" for suffix in ("txt", "err", "done"))
     batch = WORK / "out" / f"{label}.bat"
     batch.write_text(f'@echo off\r\n{line} > "{out}" 2> "{err}"\r\necho x > "{finished}"\r\n', encoding="ascii")
@@ -105,9 +105,13 @@ def as_account(account: str, password: str, line: str, label: str) -> str:
     run("schtasks", "/delete", "/tn", task, "/f", check=False)
     if not finished.exists():
         raise SystemExit(f"{label} did not finish in {TASK_SECONDS} seconds.")
-    if err.exists() and err.stat().st_size:
-        print(f"{label} stderr: {err.read_text(encoding='utf-8', errors='replace')[-500:]}")
-    return out.read_text(encoding="utf-8", errors="replace")
+    text = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
+    return text, err.read_text(encoding="utf-8", errors="replace")[-700:] if err.exists() else ""
+
+
+def annotation(text: str) -> str:
+    """Workflow commands take one line. An annotation can be read without opening the log."""
+    return text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
 
 
 def check_account(account: str) -> list[str]:
@@ -119,9 +123,12 @@ def check_account(account: str) -> list[str]:
     copied = rf"C:\Users\{account}\py"
     as_account(account, password, f'robocopy "{sys.base_prefix}" "{copied}" /E /NFL /NDL /NJH /NJS /NP', f"{account}-copy")
     line = f'"{copied}\\python.exe" "{WORK / "account.py"}" "{WORK / "source"}" "{WORK / "sends.py"}"'
-    text = as_account(account, password, line, f"{account}-probe")
-    print(f"::notice title={account}::" + text.strip().replace("%", "%25"))
-    report = json.loads(text.strip().splitlines()[-1])
+    text, stderr = as_account(account, password, line, f"{account}-probe")
+    print(f"::notice title={account}::" + annotation(text.strip()))
+    try:
+        report = json.loads(text.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return [f"{account}: the probe gave no report. stdout: {text[-300:]} stderr: {stderr}"]
     problems = []
     if report["is_admin"]:
         problems.append("the account is an administrator")
@@ -150,9 +157,14 @@ def main() -> int:
         problems += check_account(account)
     print(f"::notice title=Second account check::Checked {len(ACCOUNTS)} accounts in {time.time() - started:.0f} seconds.")
     for problem in problems:
-        print(f"::error::{problem}")
+        print(f"::error::{annotation(problem)}")
     return 1 if problems else 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        code = main()
+    except (Exception, SystemExit) as exc:
+        print(f"::error title=Second account check::{annotation(repr(exc))}")
+        code = 1
+    raise SystemExit(code)

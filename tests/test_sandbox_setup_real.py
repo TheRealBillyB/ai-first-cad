@@ -14,7 +14,7 @@ import pytest
 
 from aicad import sandbox_setup_windows as setup
 from aicad.errors import ScriptError
-from aicad.sandbox import allow_design_scripts, run_design_script
+from aicad.sandbox import _drop_job, _spawn, allow_design_scripts, run_design_script, script_log_path
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32" or not os.environ.get("AICAD_SANDBOX_SETUP_REAL"),
@@ -48,51 +48,48 @@ def test_setup_is_complete_can_run_twice_and_removal_clears_it(capsys):
     assert setup.run_setup(remove=True) == 0
 
 
-SEND = """
-import socket
+def _sends(project, network: bool) -> dict:
+    """A real confined process tries the network. A design script may not import socket."""
+    payload = _spawn(project, "probe", None, network=network)
+    _drop_job(payload)
+    assert isinstance(payload.get("probe"), dict), payload.get("error")
+    return payload["probe"]
 
-def send(connected):
-    packet = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        if connected:
-            packet.connect(("1.1.1.1", 53))
-            packet.send(b"aicad-setup-check")
-        else:
-            packet.bind(("0.0.0.0", 0))
-            packet.sendto(b"aicad-setup-check", ("1.1.1.1", 53))
-        return "sent"
-    except OSError as exc:
-        return f"refused {exc.winerror}"
-    finally:
-        packet.close()
 
-print("connected", send(True))
-print("unconnected", send(False))
-"""
+def _assert_refused(probe: dict) -> None:
+    for name in ("tcp", "udp", "udp_connected"):
+        assert probe[name].startswith("denied:"), probe
 
 
 def test_a_network_on_run_leaves_the_block_in_place(tmp_path, monkeypatch):
     monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
     project = tmp_path / "project"
     project.mkdir()
-    allow_design_scripts(project)
     assert setup.run_setup() == 0
 
-    blocked = run_design_script(project, SEND)
-    assert blocked["ok"] is True, blocked.get("error")
-    assert "sent" not in blocked["stdout"]
+    blocked = _sends(project, False)
+    _assert_refused(blocked)
     assert blocked["mechanism"] in ("appcontainer+job", "lpac+job")
-    print("network-off run used", blocked["mechanism"])
 
-    opened = run_design_script(project, SEND, network=True)
-    assert opened["ok"] is True, opened.get("error")
-    assert opened["stdout"].count("sent") == 2
+    opened = _sends(project, True)
+    assert opened["udp"] == "sent", opened
+    assert opened["udp_connected"] == "sent", opened
 
     # The bug this fixes: a network-on run used to take the rules down.
     assert setup.is_installed() is True
-    again = run_design_script(project, SEND)
-    assert again["ok"] is True, again.get("error")
-    assert "sent" not in again["stdout"]
+    _assert_refused(_sends(project, False))
+
+
+def test_a_design_script_records_which_container_ran(tmp_path, monkeypatch):
+    monkeypatch.setenv("AICAD_CONFIG", str(tmp_path / "config"))
+    project = tmp_path / "project"
+    project.mkdir()
+    allow_design_scripts(project)
+    assert setup.run_setup() == 0
+    payload = run_design_script(project, "print('hello')\n")
+    assert payload["ok"] is True, payload.get("error")
+    assert payload["mechanism"] in ("appcontainer+job", "lpac+job")
+    assert payload["mechanism"] in script_log_path(project).read_text(encoding="utf-8")
 
 
 def test_a_run_without_setup_is_refused_and_names_the_command(tmp_path, monkeypatch):
