@@ -66,16 +66,25 @@ def test_a_failure_in_the_elevated_step_is_its_own_exit_code(monkeypatch, capsys
     assert "sublayer" in capsys.readouterr().err
 
 
-def test_the_block_names_match_what_a_run_uses_today():
+def test_a_failed_step_returns_the_exit_code_that_names_it(monkeypatch, capsys):
+    def fails():
+        raise setup._StepFailed(setup.EXIT_RULES, "Adding the firewall rules failed. Access is denied.")
+
+    monkeypatch.setattr(setup, "is_admin", lambda: True)
+    monkeypatch.setattr(setup, "_install", fails)
+    assert setup._elevated_main(["install"]) == setup.EXIT_RULES
+    assert "Access is denied" in capsys.readouterr().err
+
+
+def test_the_block_names_the_profile_network_off_runs_use():
     assert setup.PROFILE_NAME == sandbox_windows._PROFILE_NAME
-    assert tuple(rule[0] for rule in setup.FIREWALL_RULES) == sandbox_windows._NETWORK_OFF_RULES
-    assert setup._STALE_FIREWALL_RULES == sandbox_windows._NETWORK_OFF_STALE_RULES
-    assert setup.BLOCK_LAYERS == sandbox_windows._WFP_BLOCK_LAYERS
-    assert setup._ALE_PACKAGE_ID == sandbox_windows._WFP_ALE_PACKAGE_ID
+    assert setup.PROFILE_NAME != sandbox_windows._NETWORK_PROFILE_NAME
+    assert [rule[0] for rule in setup.FIREWALL_RULES] == ["aicad-script-network-off-out", "aicad-script-network-off-in"]
+    assert setup._STALE_FIREWALL_RULES == ("aicad-script-network-off-udp",)
+    assert len(setup.BLOCK_LAYERS) == 8
 
 
 def test_the_filter_layout_matches_the_windows_structure():
-    assert ctypes_size(setup._Filter) == ctypes_size(sandbox_windows._WfpFilter)
     if sys.maxsize > 2**32:
         assert ctypes_size(setup._Filter) == 200
 
@@ -115,8 +124,34 @@ def test_a_signed_in_user_may_read_a_filter_and_nothing_more():
 def test_removal_clears_the_old_rule_name_too():
     script = setup.firewall_remove_script()
     assert "New-NetFirewallRule" not in script
-    for name in sandbox_windows._NETWORK_OFF_RULES + sandbox_windows._NETWORK_OFF_STALE_RULES:
+    for name in [rule[0] for rule in setup.FIREWALL_RULES] + list(setup._STALE_FIREWALL_RULES):
         assert name in script
+
+
+def test_the_read_back_checks_the_rule_belongs_to_this_container():
+    script = setup.firewall_read_script(SID)
+    assert "Get-NetFirewallApplicationFilter" in script
+    assert SID.upper() in script
+    assert "Get-NetFirewallPortFilter" in script
+    for _name, _display, direction in setup.FIREWALL_RULES:
+        assert f"'{direction}'" in script
+    assert "New-NetFirewallRule" not in script
+    assert "Remove-NetFirewallRule" not in script
+    with pytest.raises(ValueError):
+        setup.firewall_read_script("S-1-15-2-1'; Remove-Item C:\\ #")
+
+
+def test_rules_present_reads_for_the_real_container(monkeypatch):
+    seen = []
+    monkeypatch.setattr(setup, "package_sid", lambda: SID)
+
+    def answer(script):
+        seen.append(script)
+        return subprocess.CompletedProcess([], 2)
+
+    monkeypatch.setattr(setup, "_run_powershell", answer)
+    assert setup.rules_present() is False
+    assert SID.upper() in seen[0]
 
 
 def test_the_assistant_has_no_tool_for_this(tmp_path):
@@ -193,7 +228,25 @@ def test_a_failed_elevated_step_is_a_failed_command(monkeypatch, capsys):
     _windows(monkeypatch, admin=False)
     monkeypatch.setattr(setup, "_run_with_uac_prompt", lambda _action: setup.EXIT_FAILED)
     assert setup.run_setup() == 1
-    assert "failed" in capsys.readouterr().out
+    assert "unexpected Windows error" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        (5, "network filters"),
+        (6, "firewall rules"),
+        (7, "read it back"),
+        (8, "remove the network filters"),
+        (9, "remove the firewall rules"),
+        (0xC0000022, "0xc0000022"),
+    ],
+)
+def test_a_failed_elevated_step_says_why(monkeypatch, capsys, code, expected):
+    _windows(monkeypatch, admin=False)
+    monkeypatch.setattr(setup, "_run_with_uac_prompt", lambda _action: code)
+    assert setup.run_setup() == 1
+    assert expected in capsys.readouterr().out
 
 
 def test_a_removal_that_left_filters_is_reported(monkeypatch, capsys):
@@ -214,6 +267,66 @@ def test_a_failed_firewall_step_leaves_no_half_block(monkeypatch):
         "_run_powershell",
         lambda _script: subprocess.CompletedProcess([], 1, stdout="Access is denied.", stderr=""),
     )
-    with pytest.raises(OSError, match="firewall rules"):
+    with pytest.raises(OSError, match="firewall rules") as caught:
         setup._install()
+    assert caught.value.code == setup.EXIT_RULES
     assert removed == [True]
+
+
+def test_a_firewall_step_that_times_out_leaves_no_half_block(monkeypatch):
+    removed = []
+
+    def slow(script):
+        if "New-NetFirewallRule" in script:
+            raise subprocess.TimeoutExpired("powershell", 120)
+        removed.append("rules")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup, "package_sid", lambda: SID)
+    monkeypatch.setattr(setup, "_install_wfp", lambda _sid: None)
+    monkeypatch.setattr(setup, "_remove_wfp", lambda: removed.append("filters"))
+    monkeypatch.setattr(setup, "_run_powershell", slow)
+    with pytest.raises(OSError) as caught:
+        setup._install()
+    assert caught.value.code == setup.EXIT_RULES
+    assert removed == ["filters", "rules"]
+
+
+def test_a_block_that_cannot_be_read_back_is_removed(monkeypatch):
+    removed = []
+    monkeypatch.setattr(setup, "package_sid", lambda: SID)
+    monkeypatch.setattr(setup, "_install_wfp", lambda _sid: None)
+    monkeypatch.setattr(setup, "_remove_wfp", lambda: removed.append(True))
+    monkeypatch.setattr(setup, "_run_powershell", lambda _script: subprocess.CompletedProcess([], 0, stdout="", stderr=""))
+    monkeypatch.setattr(setup, "is_installed", lambda: False)
+    with pytest.raises(OSError) as caught:
+        setup._install()
+    assert caught.value.code == setup.EXIT_NOT_CONFIRMED
+    assert removed == [True]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows SID conversion")
+def test_a_failed_access_list_conversion_frees_the_sid(monkeypatch):
+    real = setup.ctypes.WinDLL
+
+    class Function:
+        def __init__(self, answer):
+            self.answer = answer
+
+        def __call__(self, *args):
+            if self.answer == "sid":
+                # The real call fills this pointer in, so the test can see it freed.
+                args[1]._obj.value = 1234
+                return 1
+            return 0
+
+    class Advapi:
+        ConvertStringSidToSidW = Function("sid")
+        ConvertStringSecurityDescriptorToSecurityDescriptorW = Function("fail")
+
+    freed = []
+    monkeypatch.setattr(setup.ctypes, "WinDLL", lambda name, **kw: Advapi() if name == "advapi32" else real(name, **kw))
+    monkeypatch.setattr(setup, "_free_local", lambda pointer: freed.append(pointer.value))
+    with pytest.raises(OSError, match="access list"):
+        setup._install_wfp(SID)
+    assert 1234 in freed

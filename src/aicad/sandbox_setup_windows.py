@@ -8,7 +8,8 @@ the standard library. Nothing from aicad, ``.venv``, or a project is imported
 while elevated. It takes no path and no id from its caller. Every value it
 writes is a constant in this file or is derived from one.
 
-Scripts do not use this block yet. Each run still installs its own.
+A script run installs nothing. It reads the filters by key and checks from
+inside the container that the network is refused.
 """
 
 from __future__ import annotations
@@ -49,6 +50,23 @@ EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_NOT_ADMIN = 3
 EXIT_FAILED = 4
+EXIT_FILTERS = 5
+EXIT_RULES = 6
+EXIT_NOT_CONFIRMED = 7
+EXIT_REMOVE_FILTERS = 8
+EXIT_REMOVE_RULES = 9
+# A Windows prompt cannot pass text back, and an elevated process does not write
+# a file a normal account could redirect. The exit code carries the reason.
+_FAILURE_REASONS = {
+    EXIT_USAGE: "The setup step was started the wrong way.",
+    EXIT_NOT_ADMIN: "The setup step did not get administrator rights.",
+    EXIT_FAILED: "The setup step stopped on an unexpected Windows error.",
+    EXIT_FILTERS: "Windows refused the network filters. The Base Filtering Engine service may be stopped.",
+    EXIT_RULES: "Windows refused the firewall rules. A policy or another firewall product may be managing them.",
+    EXIT_NOT_CONFIRMED: "The block was created, but Windows could not read it back.",
+    EXIT_REMOVE_FILTERS: "Windows refused to remove the network filters.",
+    EXIT_REMOVE_RULES: "Windows refused to remove the firewall rules.",
+}
 _ERROR_CANCELLED = 1223
 _FWP_E_FILTER_NOT_FOUND = 0x80320003
 _FWP_E_SUBLAYER_NOT_FOUND = 0x80320007
@@ -68,6 +86,14 @@ _SEE_MASK_NOCLOSEPROCESS = 0x00000040
 _SW_HIDE = 0
 _INFINITE = 0xFFFFFFFF
 _CREATE_NO_WINDOW = 0x08000000
+
+
+class _StepFailed(OSError):
+    """One step of the elevated process failed. ``code`` is its exit code."""
+
+    def __init__(self, code: int, detail: object = "") -> None:
+        super().__init__(str(detail) or _FAILURE_REASONS[code])
+        self.code = code
 
 
 class _Guid(ctypes.Structure):
@@ -263,14 +289,46 @@ def _firewall_script_around(body: str) -> str:
     return "$ErrorActionPreference = 'Stop'\ntry {\n" + body + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
 
 
-def firewall_read_script() -> str:
-    """Exit 0 when both rules exist and are on. Exit 2 when one is missing or off."""
+def firewall_read_script(sid: str) -> str:
+    """Exit 0 when both rules block every protocol for this container. Otherwise exit 2."""
+    if _PACKAGE_SID.fullmatch(sid) is None:
+        raise ValueError("Not a package SID.")
+    package = sid.upper()
     checks = "".join(
-        f"  $rule = @(Get-NetFirewallRule -Name '{name}' -ErrorAction Stop)\n"
-        "  if ($rule.Count -ne 1 -or [string]$rule[0].Enabled -ne 'True' -or [string]$rule[0].Action -ne 'Block') { exit 2 }\n"
-        for name, _display, _direction in FIREWALL_RULES
+        f"  if (-not (Test-AicadBlock '{name}' '{direction}' '{package}')) {{ exit 2 }}\n"
+        for name, _display, direction in FIREWALL_RULES
     )
-    return "$ErrorActionPreference = 'Stop'\ntry {\n" + checks + "} catch {\n  exit 2\n}\nexit 0\n"
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        "function Test-AicadBlock([string]$Name, [string]$Direction, [string]$Package) {\n"
+        "  $rules = @(Get-NetFirewallRule -Name $Name -ErrorAction Ignore)\n"
+        "  if ($rules.Count -ne 1) { return $false }\n"
+        "  $rule = $rules[0]\n"
+        "  if ([string]$rule.Enabled -ne 'True') { return $false }\n"
+        "  if ([string]$rule.Action -ne 'Block') { return $false }\n"
+        "  if ([string]$rule.Direction -ne $Direction) { return $false }\n"
+        "  $ports = @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule)\n"
+        "  if ($ports.Count -ne 1) { return $false }\n"
+        "  $protocol = [string]$ports[0].Protocol\n"
+        "  if ($protocol -ne 'Any' -and $protocol -ne '256') { return $false }\n"
+        "  foreach ($value in @($ports[0].LocalPort) + @($ports[0].RemotePort)) {\n"
+        "    foreach ($item in @($value)) {\n"
+        "      $text = [string]$item\n"
+        "      if ($text -and $text -ne 'Any') { return $false }\n"
+        "    }\n"
+        "  }\n"
+        "  $apps = @(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule)\n"
+        "  if ($apps.Count -ne 1) { return $false }\n"
+        "  if ([string]$apps[0].Package.Trim().ToUpperInvariant() -ne $Package) { return $false }\n"
+        "  return $true\n"
+        "}\n"
+        "try {\n"
+        f"{checks}"
+        "  exit 0\n"
+        "} catch {\n"
+        "  exit 2\n"
+        "}\n"
+    )
 
 
 def _run_powershell(script: str) -> subprocess.CompletedProcess:
@@ -368,6 +426,11 @@ def _block_filter(layer_name: str, layer: str, sid_pointer: int) -> _Filter:
     return block
 
 
+def _free_local(pointer: ctypes.c_void_p) -> None:
+    if pointer:
+        ctypes.windll.kernel32.LocalFree(pointer)
+
+
 def _install_wfp(sid: str) -> None:
     """Replace the sublayer and the filters in one transaction, so a failure leaves neither."""
     client = _wfp()
@@ -381,34 +444,36 @@ def _install_wfp(sid: str) -> None:
     ]
     sid_pointer = ctypes.c_void_p()
     descriptor = ctypes.c_void_p()
-    if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(sid_pointer)):
-        raise OSError("Could not read the script container id.")
-    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(FILTER_DESCRIPTOR, 1, ctypes.byref(descriptor), None):
-        raise OSError("Could not build the filter's access list.")
-    engine = _open_engine(client)
     try:
-        _checked("Starting the filter transaction", client.FwpmTransactionBegin0(engine, 0))
+        if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(sid_pointer)):
+            raise OSError("Could not read the script container id.")
+        if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(FILTER_DESCRIPTOR, 1, ctypes.byref(descriptor), None):
+            raise OSError("Could not build the filter's access list.")
+        engine = _open_engine(client)
         try:
-            _delete_wfp_objects(client, engine)
-            sublayer = _SubLayer()
-            sublayer.subLayerKey = _guid(SUBLAYER_KEY)
-            name = ctypes.create_unicode_buffer("aicad script network")
-            sublayer.displayData.name = ctypes.cast(name, ctypes.c_wchar_p)
-            sublayer.flags = _FWPM_SUBLAYER_FLAG_PERSISTENT
-            sublayer.weight = 0xFFFF
-            _checked("Adding the sublayer", client.FwpmSubLayerAdd0(engine, ctypes.byref(sublayer), None))
-            for layer_name, layer in BLOCK_LAYERS:
-                block = _block_filter(layer_name, layer, int(sid_pointer.value))
-                added = ctypes.c_uint64()
-                _checked(f"Adding the {layer_name} filter", client.FwpmFilterAdd0(engine, ctypes.byref(block), descriptor, ctypes.byref(added)))
-            _checked("Committing the filters", client.FwpmTransactionCommit0(engine))
-        except BaseException:
-            client.FwpmTransactionAbort0(engine)
-            raise
+            _checked("Starting the filter transaction", client.FwpmTransactionBegin0(engine, 0))
+            try:
+                _delete_wfp_objects(client, engine)
+                sublayer = _SubLayer()
+                sublayer.subLayerKey = _guid(SUBLAYER_KEY)
+                name = ctypes.create_unicode_buffer("aicad script network")
+                sublayer.displayData.name = ctypes.cast(name, ctypes.c_wchar_p)
+                sublayer.flags = _FWPM_SUBLAYER_FLAG_PERSISTENT
+                sublayer.weight = 0xFFFF
+                _checked("Adding the sublayer", client.FwpmSubLayerAdd0(engine, ctypes.byref(sublayer), None))
+                for layer_name, layer in BLOCK_LAYERS:
+                    block = _block_filter(layer_name, layer, int(sid_pointer.value))
+                    added = ctypes.c_uint64()
+                    _checked(f"Adding the {layer_name} filter", client.FwpmFilterAdd0(engine, ctypes.byref(block), descriptor, ctypes.byref(added)))
+                _checked("Committing the filters", client.FwpmTransactionCommit0(engine))
+            except BaseException:
+                client.FwpmTransactionAbort0(engine)
+                raise
+        finally:
+            client.FwpmEngineClose0(engine)
     finally:
-        client.FwpmEngineClose0(engine)
-        ctypes.windll.kernel32.LocalFree(descriptor)
-        ctypes.windll.kernel32.LocalFree(sid_pointer)
+        _free_local(descriptor)
+        _free_local(sid_pointer)
 
 
 def _remove_wfp() -> None:
@@ -444,31 +509,59 @@ def filters_present() -> int:
 
 
 def rules_present() -> bool:
-    return _run_powershell(firewall_read_script()).returncode == 0
+    return _run_powershell(firewall_read_script(package_sid())).returncode == 0
 
 
 def is_installed() -> bool:
     return filters_present() == len(BLOCK_LAYERS) and rules_present()
 
 
+def _powershell_failure(script: str) -> str | None:
+    """What went wrong running this script, or None when it finished cleanly."""
+    try:
+        done = _run_powershell(script)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)
+    if not done.returncode:
+        return None
+    return (done.stdout + done.stderr).strip() or "PowerShell failed."
+
+
 def _install() -> None:
-    sid = package_sid()
-    _install_wfp(sid)
-    done = _run_powershell(firewall_install_script(sid))
-    if done.returncode:
-        # Half a block looks like a block, so a failed install leaves none of it.
-        _remove_wfp()
-        raise OSError(f"Adding the firewall rules failed. {(done.stdout + done.stderr).strip()}")
-    if not is_installed():
+    try:
+        sid = package_sid()
+        _install_wfp(sid)
+    except OSError as exc:
+        raise _StepFailed(EXIT_FILTERS, exc) from exc
+    # Half a block looks like a block, so a failed install leaves none of it.
+    failure = _powershell_failure(firewall_install_script(sid))
+    if failure is not None:
+        _remove_after_failure()
+        raise _StepFailed(EXIT_RULES, f"Adding the firewall rules failed. {failure}")
+    try:
+        installed = is_installed()
+    except (OSError, subprocess.SubprocessError):
+        installed = False
+    if not installed:
+        _remove_after_failure()
+        raise _StepFailed(EXIT_NOT_CONFIRMED)
+
+
+def _remove_after_failure() -> None:
+    try:
         _remove()
-        raise OSError("The block was not in place after setup.")
+    except OSError as exc:
+        print(f"The partial block could not be removed. {exc}", file=sys.stderr)
 
 
 def _remove() -> None:
-    _remove_wfp()
-    done = _run_powershell(firewall_remove_script())
-    if done.returncode:
-        raise OSError(f"Removing the firewall rules failed. {(done.stdout + done.stderr).strip()}")
+    try:
+        _remove_wfp()
+    except OSError as exc:
+        raise _StepFailed(EXIT_REMOVE_FILTERS, exc) from exc
+    failure = _powershell_failure(firewall_remove_script())
+    if failure is not None:
+        raise _StepFailed(EXIT_REMOVE_RULES, f"Removing the firewall rules failed. {failure}")
 
 
 def is_admin() -> bool:
@@ -485,6 +578,9 @@ def _elevated_main(argv: list[str]) -> int:
         return EXIT_NOT_ADMIN
     try:
         _install() if argv[0] == "install" else _remove()
+    except _StepFailed as exc:
+        print(exc, file=sys.stderr)
+        return exc.code
     except (OSError, subprocess.SubprocessError) as exc:
         print(exc, file=sys.stderr)
         return EXIT_FAILED
@@ -530,6 +626,11 @@ def _run_with_uac_prompt(action: str) -> int:
         kernel32.CloseHandle(info.hProcess)
 
 
+def failure_reason(code: int) -> str:
+    """What an exit code from the elevated step means."""
+    return _FAILURE_REASONS.get(code) or f"The setup step exited with code {code & 0xFFFFFFFF:#x}."
+
+
 def run_setup(*, remove: bool = False) -> int:
     """``aicad sandbox-setup``. Asks for approval, runs the elevated step, then checks the result."""
     if sys.platform != "win32":
@@ -549,7 +650,8 @@ def run_setup(*, remove: bool = False) -> int:
         print(f"Windows could not start the setup step: {exc}")
         return 1
     if code:
-        print(f"The setup step failed (code {code}), so the block was left as it was or removed.")
+        print(failure_reason(code))
+        print("The block was left as it was or removed. From an administrator prompt, this command also prints the Windows message.")
         return 1
     if remove:
         if filters_present():
