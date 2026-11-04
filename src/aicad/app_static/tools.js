@@ -1268,7 +1268,8 @@ function renderStepPanel() {
   const stlDraft = ui.reports.stlDraft || { name: "mesh", path: "" };
   const report = ui.reports.step;
   const stlReport = ui.reports.stl;
-  const project = ui.state && ui.state.project ? ui.state.project.path : "";
+  // The folder name, not its full path: the full path is in the title bar tooltip.
+  const project = ui.state && ui.state.project ? ui.state.project.name || "" : "";
   root.innerHTML = `<h3>STEP</h3>
     <form id="step-form" class="tool-form">
       <p class="muted">Copy a STEP file in as a part. This calls import_step. The file is read as itself. A name inside it that points outside its folder is refused, and a web address is not fetched.</p>
@@ -1276,7 +1277,7 @@ function renderStepPanel() {
         <label>Part name <input id="step-name" value="${escapeAttr(draft.name)}" /></label>
         <label>Path <input id="step-path" value="${escapeAttr(draft.path)}" /></label>
       </div>
-      <p class="muted">${project ? `A file in ${escapeHtml(project)} can use a relative path. An absolute path is a file you chose.` : "An absolute path is a file you chose. A relative path stays in this project."}</p>
+      <p class="muted">${project ? `A relative path such as models/part.step is read from the project folder ${escapeHtml(project)}. An absolute path is a file you chose.` : "An absolute path is a file you chose. A relative path stays in this project."}</p>
       <p data-tool-progress class="muted" role="status"></p>
       <p data-tool-error class="warn" hidden></p>
       <button type="submit" id="step-import" class="primary">Import STEP</button>
