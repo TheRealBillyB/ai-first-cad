@@ -151,7 +151,7 @@ The power estimate, the hose checks, and the robot export are already in the tre
 
 ### Workspace app interface
 
-The interface ideas for the app, with their order, estimates, and pull request splits, are in [the interface list](roadmap/post-1.0-ui.md).
+The interface ideas for the app, with their order, estimates, and pull request splits, are in [the interface list](roadmap/post-1.0-ui.md). That list is 1.0.x polish for the app, and it does not replace CAM and manufacturing checks as the first track after v1.0.
 
 ## Later
 
