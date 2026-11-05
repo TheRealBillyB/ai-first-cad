@@ -166,8 +166,8 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs/Zensical documentation
-/site
+# mkdocs/Zensical local builds use a different output path. The committed
+# GitHub Pages source lives in site/ and must stay tracked.
 
 # mypy
 .mypy_cache/
