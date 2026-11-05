@@ -11,8 +11,9 @@ from __future__ import annotations
 # person agreeing that design scripts may run in one project. `script-wall`
 # is that person setting how long those scripts may run. `plugins` is the
 # plugin door: list, show, allow, and run. It is not a modeling command.
+# `sandbox-setup` is the person approving a firewall change for the computer.
 # Parity does not need an MCP tool for these consent switches.
-CLI_EXEMPT = frozenset({"serve", "app", "allow-scripts", "script-wall", "plugins"})
+CLI_EXEMPT = frozenset({"serve", "app", "allow-scripts", "sandbox-setup", "script-wall", "plugins"})
 
 # CLI subcommand -> MCP tool that does the same work.
 CLI_TOOLS = {

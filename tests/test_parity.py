@@ -59,6 +59,7 @@ def test_mcp_covers_the_cli_the_app_and_the_document(tmp_path: Path):
 
     assert "allow-scripts" not in names
     assert "script-wall" not in names
+    assert "sandbox-setup" not in names
     assert "allow_design_scripts" not in names
     assert "plugins" not in names
     assert "plugins" in CLI_EXEMPT

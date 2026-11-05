@@ -78,6 +78,18 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Allow design scripts in this project. The assistant cannot do this.",
     )
+    setup_cmd = commands.add_parser(
+        "sandbox-setup",
+        help="Windows only. Once per computer, block the design-script container from the network. "
+        "Windows asks you to approve it. The assistant cannot do this.",
+    )
+    setup_action = setup_cmd.add_mutually_exclusive_group()
+    setup_action.add_argument("--remove", action="store_true", help="Remove the block from this computer.")
+    setup_action.add_argument(
+        "--status",
+        action="store_true",
+        help="Say whether setup is done and what is missing. Changes nothing. Exits 0 when ready and 1 when not.",
+    )
     wall_cmd = commands.add_parser(
         "script-wall",
         parents=[common],
@@ -718,6 +730,10 @@ def _dispatch(args: argparse.Namespace) -> int:
         from aicad.sandbox import allow_design_scripts
 
         return _emit(allow_design_scripts(args.workspace))
+    if args.command == "sandbox-setup":
+        from aicad.sandbox_setup_windows import run_setup, run_status
+
+        return run_status() if args.status else run_setup(remove=args.remove)
     if args.command == "script-wall":
         from aicad.sandbox import set_project_wall_seconds
 

@@ -22,7 +22,7 @@ if os.environ.get("AICAD_TEST_APP_WORKER"):
     _app.make_server = _make_server_with_worker
 
 # These files start a sandboxed script. On Windows every such script uses the
-# same firewall rules, so the runs stay on one worker when the suite is split.
+# same container profile, so the runs stay on one worker when the suite is split.
 _WINDOWS_SANDBOX_FILES = frozenset(
     {
         "tests/test_app_worker_security.py",
@@ -103,9 +103,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def _windows_sandbox_lock() -> Iterator[None]:
     """Hold the machine lock for one sandboxed script.
 
-    The firewall rules are one pair for the whole machine. A second process
-    installing or removing them can open the network for a script that must
-    stay blocked. The script still runs in the real sandbox.
+    Every script shares one container profile, and starting one can replace
+    that profile. The script still runs in the real sandbox.
     """
 
     import msvcrt
@@ -180,6 +179,10 @@ def pytest_runtest_logreport(report) -> None:
         return
     text = getattr(report, "longreprtext", None) or str(report.longrepr)
     sys.stderr.write(f"\n=== FAIL {report.nodeid} ({report.when}) ===\n{text}\n")
+    if os.environ.get("GITHUB_ACTIONS"):
+        # An annotation can be read without signing in to see the log.
+        escaped = text[-700:].replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        sys.stderr.write(f"::error title={report.nodeid}::{escaped}\n")
     sys.stderr.flush()
 
 

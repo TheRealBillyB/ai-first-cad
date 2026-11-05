@@ -58,7 +58,7 @@ jobs:
           printf 'Dir::Cache::Archives "%s";\n' "${GITHUB_WORKSPACE}/.apt-archives" | sudo tee /etc/apt/apt.conf.d/99-aicad-archive-cache >/dev/null
 
       - name: Install aicad
-        run: python install.py
+        run: python install.py --no-sandbox-setup
 
       # macOS and Windows have no CalculiX package on the runner image.
       # The lock names every conda-forge file, and the script checks sha256
@@ -77,6 +77,29 @@ jobs:
 
       - name: Check the install and CalculiX
         run: python install.py --check --require-ccx
+
+      # Before the sandbox tests, and on its own, because it moves the firewall
+      # rules those tests share. Only a disposable runner may run this.
+      - name: Check the Windows sandbox setup and removal
+        # One shard is enough to prove this.
+        if: inputs.os == 'windows-latest' && (inputs.shard == '' || startsWith(inputs.shard, '1/'))
+        shell: bash
+        env:
+          AICAD_SANDBOX_SETUP_REAL: "1"
+          PYTHONUNBUFFERED: "1"
+        run: .venv/Scripts/pytest.exe -ra -s --tb=short tests/test_sandbox_setup_real.py
+
+      # Each shard is its own machine, and no script runs until this is done.
+      - name: Set up the Windows sandbox once
+        if: runner.os == 'Windows'
+        shell: bash
+        run: .venv/Scripts/aicad.exe sandbox-setup
+
+      - name: Check the network block for other accounts
+        if: inputs.os == 'windows-latest' && (inputs.shard == '' || startsWith(inputs.shard, '1/'))
+        timeout-minutes: 10
+        shell: bash
+        run: .venv/Scripts/python.exe .github/scripts/check_second_user_block.py
 
       - name: Check that Gmsh imports
         shell: bash
@@ -144,11 +167,11 @@ jobs:
             PY=.venv/Scripts/pytest.exe
           fi
           # One core was running the suite. The rest of the runner waited.
-          # Windows sandboxed scripts share one firewall rule pair, so those
+          # Windows sandboxed scripts share one container profile, so those
           # tests stay on one worker. The step above still runs the network
           # probe on its own, and it still stops the job when confinement fails.
-          # Each shard is its own runner with its own firewall rules, so the
-          # one-at-a-time rule only applies inside a shard.
+          # Each shard is its own runner, so the one-at-a-time rule only
+          # applies inside a shard.
           if [ "${{ inputs.os }}" = "windows-latest" ]; then
             exec "$PY" -ra --tb=short --durations=50 -n auto --dist loadgroup \
               ${SHARD:+--shard "$SHARD"} \

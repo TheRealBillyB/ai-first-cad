@@ -84,6 +84,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="With --check, exit 1 when CalculiX is missing.",
     )
+    sandbox = parser.add_mutually_exclusive_group()
+    sandbox.add_argument(
+        "--sandbox-setup",
+        dest="sandbox_setup",
+        action="store_true",
+        default=None,
+        help="On Windows, run the one-time sandbox setup at the end without asking. Windows still asks you to approve it.",
+    )
+    sandbox.add_argument(
+        "--no-sandbox-setup",
+        dest="sandbox_setup",
+        action="store_false",
+        help="On Windows, do not offer the sandbox setup. The install prints the command to run later.",
+    )
     args = parser.parse_args(argv)
     hints = _hints()
     _find_installed_calculix()
@@ -116,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             "The system packages were not installed (see the apt-get message above). "
             "Some features, such as meshing and the stress check, may not work until they are."
         )
+    _offer_sandbox_setup(python, args.sandbox_setup)
     return 0
 
 
@@ -384,6 +399,52 @@ def _ready_message(python: Path) -> str:
             "Do not run `python -m aicad` from a project folder. For development, use `python -P -m aicad`.",
         )
     )
+
+
+def _offer_sandbox_setup(python: Path, wanted: bool | None) -> None:
+    """Offer the Windows one-time setup. No answer here can fail the install."""
+
+    if sys.platform != "win32":
+        return
+    command = python.with_name("aicad.exe")
+    print()
+    print(
+        "Design scripts and strength and vibration solves run in a sandbox that keeps them off the network. "
+        "On Windows it needs one administrator approval, once per computer."
+    )
+    later = f'To set it up later, run: "{command}" sandbox-setup'
+    if wanted is None:
+        wanted = _ask_for_sandbox_setup()
+    if not wanted:
+        print("Until then, scripts and solves will not run. Shape, sketch, gear, and catalog parts still work.")
+        print(later)
+        return
+    try:
+        status = subprocess.run([str(command), "sandbox-setup", "--status"], check=False, capture_output=True, timeout=180)
+        if status.returncode == 0:
+            print("It is already set up.")
+            return
+        done = subprocess.run([str(command), "sandbox-setup"], check=False).returncode
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"The setup could not start: {exc}")
+        done = 1
+    if done:
+        print("The sandbox was not set up, but aicad is installed.")
+        print("Until then, scripts and solves will not run. Shape, sketch, gear, and catalog parts still work.")
+        print(later)
+
+
+def _ask_for_sandbox_setup() -> bool:
+    """A scripted install never waits here. It answers no and prints the command."""
+
+    if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS") or not sys.stdin or not sys.stdin.isatty():
+        return False
+    try:
+        answer = input("Set it up now? [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in ("y", "yes")
 
 
 def _ccx_message(hints) -> str:

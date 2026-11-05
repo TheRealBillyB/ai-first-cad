@@ -658,7 +658,7 @@ def design_script_status(workspace: str | Path, network_once: bool = False, netw
         network = "off"
     from aicad.paths import hide_project_path
 
-    return {
+    status = {
         "enabled": design_scripts_enabled(root),
         "warning": WARNING,
         "enable": hide_project_path(f"aicad allow-scripts --workspace {root}", root),
@@ -667,6 +667,19 @@ def design_script_status(workspace: str | Path, network_once: bool = False, netw
         "wall_seconds": wall_seconds(root),
         "log": hide_project_path(str(root / ".aicad" / "script_log.jsonl"), root),
     }
+    setup_needed = windows_setup_needed()
+    if setup_needed:
+        status["setup_needed"] = setup_needed
+    return status
+
+
+def windows_setup_needed() -> str | None:
+    """What to tell the person when the Windows one-time setup has not run. None otherwise."""
+    if sys.platform != "win32":
+        return None
+    from aicad.sandbox_windows import network_block_error
+
+    return network_block_error()
 
 
 def script_log_path(workspace: Path) -> Path:
@@ -684,7 +697,7 @@ def _read_log_tail(path: Path, maximum: int) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> None:
+def _append_log(workspace: Path, script: str, ok: bool, error: str | None, mechanism: str | None = None) -> None:
     """Append one design-script row. A log path that leaves the project is skipped.
 
     A symlink, junction, or file with another name is left as it is. Reading
@@ -703,6 +716,8 @@ def _append_log(workspace: Path, script: str, ok: bool, error: str | None) -> No
 
     shown = hide_project_path(error, root) if isinstance(error, str) else error
     row = {"time": _now(), "kind": "design", "ok": ok, "error": shown, "script": script}
+    if mechanism:
+        row["mechanism"] = mechanism
     line = json.dumps(row) + "\n"
     try:
         existing = _read_log_tail(path, _MAX_SCRIPT_LOG_BYTES) if path.is_file() else ""
@@ -1691,6 +1706,7 @@ def windows_network_failure_text(
 ) -> str:
     return (
         "Windows did not turn the network off, so the script was not run. "
+        "The block is set up, but the network was not refused. "
         + windows_network_detail(attempts=attempts, package=package, capabilities=capabilities)
     )
 
@@ -1829,8 +1845,9 @@ def apply_sandbox(
                 attempts=attempts, package=package, capabilities=capabilities
             ):
                 raise ScriptError(
-                    "Windows did not turn the network off, so the script was not run. "
-                    + _windows_net_probe_text
+                    windows_network_failure_text(
+                        attempts=attempts, package=package, capabilities=capabilities
+                    )
                 )
         return roots
     if sys.platform == "darwin":
@@ -5782,7 +5799,7 @@ def _spawn(
             disk.arm()
             from aicad.sandbox_windows import spawn as windows_spawn
 
-            code, stdout, stderr, timed_out, memory_killed, _mechanism = windows_spawn(
+            code, stdout, stderr, timed_out, memory_killed, mechanism = windows_spawn(
                     command,
                     cwd=str(workspace),
                     env=_child_env(workspace, job, network, tmp=tmp_dir, cache=cache_dir),
@@ -5795,6 +5812,7 @@ def _spawn(
                     stdout_path=job / "stdout.txt",
                     stderr_path=job / "stderr.txt",
                     disk=disk,
+                    child_checks_network=True,
                 )
             if timed_out:
                 detail = design_record.failure_detail() if design_record is not None else ""
@@ -5812,6 +5830,9 @@ def _spawn(
             payload = _payload_from_result(job, code, stdout, stderr, memory_killed=memory_killed)
             if design_record is not None:
                 payload = design_record.merge(payload)
+            payload["mechanism"] = mechanism
+            if isinstance(payload.get("probe"), dict):
+                payload["probe"]["mechanism"] = mechanism
             keep_job = True
             return payload
         if sys.platform.startswith("linux"):
@@ -6197,7 +6218,13 @@ def run_design_script(workspace: str | Path, code: str, network: bool = False) -
     _drop_job(payload)
     _hide_script_report(payload, root)
     error = payload.get("error")
-    _append_log(root, code, bool(payload.get("ok")), error if isinstance(error, str) else None)
+    _append_log(
+        root,
+        code,
+        bool(payload.get("ok")),
+        error if isinstance(error, str) else None,
+        mechanism=payload.get("mechanism"),
+    )
     return payload
 
 

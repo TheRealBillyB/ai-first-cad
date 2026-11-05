@@ -1661,6 +1661,10 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         or the button in the app. enabled is that permission. can_run is whether
         this computer can confine a script at all, and cannot_run says why not.
         A part script needs can_run too. The first call can take several seconds.
+        On Windows, windows_container says which container scripts use. A run's
+        mechanism field and the script log record it too. setup_needed means this
+        computer needs a one-time step only the person can approve. Relay that
+        message to them word for word. You cannot run it for them.
         """
         return guard(lambda: run("design_script_status"))
 

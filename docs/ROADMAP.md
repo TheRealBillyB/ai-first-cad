@@ -132,6 +132,7 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 
 Left for 1.0, and not in the tree:
 
+- **Windows sandbox setup survives a reboot.** A manual check in Windows Sandbox: run `aicad sandbox-setup`, restart, and confirm the filters and rules are still in place and a script's network is still refused. A CI runner cannot restart inside its job.
 - **Joint-sized reducers.** A reducer sized from the joint it drives.
 - **Catalog mounting orientation.** A catalog row does not store the orientation of its mount. A mount can snap a catalog mate onto a face or an axis and turn in steps of 15 degrees.
 
