@@ -66,3 +66,43 @@ jobs:
       python-version: ${{ matrix.python }}
       job-timeout: ${{ matrix.job-timeout }}
       shard: ${{ matrix.shard || '' }}
+
+  windows-current-python:
+    name: standard accounts run scripts (windows-latest, current Python)
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event_name == 'pull_request'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # setup-python's 3.11 is 3.11.9, the last release with a Windows installer.
+      # A person's Python is newer, and 3.11.10 and later make os.mkdir(path, 0o700)
+      # an owner-only folder. uv publishes those releases. The folder is outside the
+      # runner's profile, so the accounts can copy it.
+      - name: Install a current Python 3.11 with aicad, as a person's install has
+        shell: bash
+        env:
+          UV_PYTHON_INSTALL_DIR: C:/aicad-python
+        run: |
+          python -m pip install --disable-pip-version-check "uv==0.12.10"
+          uv python install 3.11
+          PY="$(uv python find 3.11 --managed-python)"
+          "$PY" -c "import sys; print(sys.version); assert sys.version_info >= (3, 11, 10), sys.version"
+          uv pip install --python "$PY" --system --break-system-packages .
+          echo "ACCOUNT_PYTHON=$PY" >> "$GITHUB_ENV"
+
+      - name: Set up the Windows sandbox once
+        shell: bash
+        run: '"$(dirname "$ACCOUNT_PYTHON")/Scripts/aicad.exe" sandbox-setup'
+
+      - name: Run design scripts as standard accounts
+        timeout-minutes: 25
+        shell: bash
+        run: '"$ACCOUNT_PYTHON" .github/scripts/check_account_runs_scripts.py'
