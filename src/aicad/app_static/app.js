@@ -84,6 +84,7 @@ async function applyRefresh(options = {}) {
   const response = await apiFetch("/api/state");
   const body = await response.json();
   if (!body.ok) throw new Error(body.error);
+  if (renderOpening(body.result.opening)) return;
   ui.state = body.result;
   if (options.solid) {
     ui.viewAssembly = null;
@@ -166,6 +167,39 @@ function renderProjectWarning() {
 }
 
 let busyCheck = null;
+
+let openingCheck = null;
+
+// The app answers before the project has opened. Until then the page says so
+// and asks again, and the rest of the page waits for the real state.
+function renderOpening(opening) {
+  const box = $("busy-note");
+  if (!opening) {
+    if (box.dataset.opening) {
+      delete box.dataset.opening;
+      box.classList.add("quiet");
+      box.textContent = "";
+      box.hidden = true;
+    }
+    return false;
+  }
+  box.dataset.opening = "1";
+  box.classList.toggle("quiet", !opening.error);
+  box.textContent = opening.error
+    ? `The project did not open. ${opening.error}`
+    : `Opening the project… ${opening.seconds} s so far. This page fills in when it is ready.`;
+  box.hidden = false;
+  // The empty view would otherwise offer the example project while this one opens.
+  showEmpty(opening.error ? "The project did not open." : "Opening the project. The parts show up here when it is ready.");
+  $("open-example").hidden = true;
+  if (!opening.error && !openingCheck) {
+    openingCheck = setTimeout(() => {
+      openingCheck = null;
+      refresh().catch(showError);
+    }, 1000);
+  }
+  return true;
+}
 
 function renderBusyNote() {
   const box = $("busy-note");
