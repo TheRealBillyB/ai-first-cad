@@ -305,6 +305,9 @@ class _WorkspaceServer(ThreadingHTTPServer):
     def server_close(self) -> None:
         port = int(self.server_address[1])
         super().server_close()
+        close = getattr(self.workspace, "close", None)
+        if close is not None:
+            close()
         remove_agent_token(port)
         _open_project_path(port).unlink(missing_ok=True)
 
@@ -403,7 +406,7 @@ def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, 
     from aicad.sandbox import warn_design_scripts
 
     warn_design_scripts(workspace)
-    server = make_server(workspace, host, port)
+    server = make_server(workspace, host, port, worker=True)
     url = f"http://{host}:{port}/"
     print(f"aicad workspace at {url}", flush=True)
     other = server.project_also_open_at(server.workspace.root)
@@ -420,7 +423,14 @@ def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, 
         server.server_close()
 
 
-def make_server(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765) -> _WorkspaceServer:
+def make_server(
+    workspace: str | Path,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    *,
+    worker: bool = False,
+) -> _WorkspaceServer:
+    """The app's server. With ``worker``, geometry runs in its own process. See app_worker."""
     if not _bind_host_is_loopback(host):
         raise GeometryError(
             "The workspace app only listens on this computer. Use 127.0.0.1, localhost, or ::1."
@@ -428,7 +438,12 @@ def make_server(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765
     from aicad.thread_stack import prepare_geometry_thread_stack
 
     prepare_geometry_thread_stack()
-    session = Workspace(workspace)
+    if worker:
+        from aicad.app_worker import GeometryWorker
+
+        session = GeometryWorker(workspace)
+    else:
+        session = Workspace(workspace)
     remember_project(session.root)
     handler = _handler(session)
     server = _WorkspaceServer((host, port), handler)
