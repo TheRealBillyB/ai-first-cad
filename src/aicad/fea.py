@@ -952,6 +952,46 @@ def _mesh_attempts(shape: kernel.Shape, mesh_size: float, order: int) -> list[di
     return attempts
 
 
+_GMSH_THREAD_LOCK = threading.Lock()
+_GMSH_EXECUTOR = None
+_GMSH_THREAD_IDENT = None
+
+
+def _on_the_gmsh_thread(func):
+    """Run ``func`` on the one long-lived thread that owns Gmsh.
+
+    Gmsh and the OpenCascade code inside it keep per-thread state. On macOS a
+    ``gmsh.initialize`` on a new thread crashes the process (SIGSEGV) once an
+    earlier thread that initialised and finalised Gmsh has exited. A server
+    that answers each request on its own thread hits that on its second
+    request. A single thread that never exits keeps the state valid, so every
+    mesh runs there and the caller waits for the result. A call made from that
+    thread runs directly.
+    """
+
+    global _GMSH_EXECUTOR, _GMSH_THREAD_IDENT
+    if threading.get_ident() == _GMSH_THREAD_IDENT:
+        return func()
+    with _GMSH_THREAD_LOCK:
+        if _GMSH_EXECUTOR is None:
+            from concurrent.futures import ThreadPoolExecutor
+
+            from aicad.thread_stack import prepare_geometry_thread_stack
+
+            prepare_geometry_thread_stack()
+            _GMSH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aicad-gmsh")
+    import contextvars
+
+    context = contextvars.copy_context()
+
+    def run():
+        global _GMSH_THREAD_IDENT
+        _GMSH_THREAD_IDENT = threading.get_ident()
+        return context.run(func)
+
+    return _GMSH_EXECUTOR.submit(run).result()
+
+
 def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorithm: int, optimize: int, occ_fix: bool) -> dict:
     import gmsh
     from aicad.paths import guest_path, held_tool_directory, use_held_thread
@@ -961,41 +1001,46 @@ def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorith
         from aicad.sandbox import scrub_library_environment
 
         scrub_library_environment()
-        with _signal_actions_kept() as restore_signals:
-            # interruptible=False keeps the Python wrapper from replacing the
-            # SIGINT handler, which it can do only on the main thread.
-            gmsh.initialize(readConfigFiles=False, interruptible=False)
-            restore_signals()
-            try:
-                _gmsh_option(gmsh, "General.Terminal", 0)
-                _gmsh_option(gmsh, "General.Verbosity", 0)
-                gmsh.model.add("part")
-                with use_held_thread(directory):
-                    gmsh.model.occ.importShapes(str(guest_path(directory, "part.step")))
-                gmsh.model.occ.synchronize()
-                gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
-                _gmsh_option(gmsh, "Mesh.ElementOrder", order)
-                _gmsh_option(gmsh, "Mesh.Optimize", optimize)
-                _gmsh_option(gmsh, "Mesh.Algorithm3D", algorithm)
-                if occ_fix:
-                    for name in (
-                        "Geometry.OCCFixDegenerated",
-                        "Geometry.OCCSewFaces",
-                        "Geometry.OCCFixSmallEdges",
-                        "Geometry.OCCFixSmallFaces",
-                    ):
-                        _gmsh_option(gmsh, name, 1)
+
+        def mesh_on_the_gmsh_thread():
+            with _signal_actions_kept() as restore_signals:
+                # interruptible=False keeps the Python wrapper from replacing the
+                # SIGINT handler, which it can do only on the main thread.
+                gmsh.initialize(readConfigFiles=False, interruptible=False)
+                restore_signals()
                 try:
-                    gmsh.model.mesh.generate(3)
-                except Exception as exc:
-                    raise GeometryError(_gmsh_failure(exc)) from exc
-                surfaces = _surface_centroids(gmsh)
-                points, elements, gmsh_order, tag_to_index = _volume_elements(gmsh)
-            finally:
-                try:
-                    gmsh.finalize()
-                except Exception:
-                    pass
+                    _gmsh_option(gmsh, "General.Terminal", 0)
+                    _gmsh_option(gmsh, "General.Verbosity", 0)
+                    gmsh.model.add("part")
+                    with use_held_thread(directory):
+                        gmsh.model.occ.importShapes(str(guest_path(directory, "part.step")))
+                    gmsh.model.occ.synchronize()
+                    gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
+                    _gmsh_option(gmsh, "Mesh.ElementOrder", order)
+                    _gmsh_option(gmsh, "Mesh.Optimize", optimize)
+                    _gmsh_option(gmsh, "Mesh.Algorithm3D", algorithm)
+                    if occ_fix:
+                        for name in (
+                            "Geometry.OCCFixDegenerated",
+                            "Geometry.OCCSewFaces",
+                            "Geometry.OCCFixSmallEdges",
+                            "Geometry.OCCFixSmallFaces",
+                        ):
+                            _gmsh_option(gmsh, name, 1)
+                    try:
+                        gmsh.model.mesh.generate(3)
+                    except Exception as exc:
+                        raise GeometryError(_gmsh_failure(exc)) from exc
+                    surfaces = _surface_centroids(gmsh)
+                    points, elements, gmsh_order, tag_to_index = _volume_elements(gmsh)
+                finally:
+                    try:
+                        gmsh.finalize()
+                    except Exception:
+                        pass
+            return surfaces, points, elements, gmsh_order, tag_to_index
+
+        surfaces, points, elements, gmsh_order, tag_to_index = _on_the_gmsh_thread(mesh_on_the_gmsh_thread)
     if len(elements) == 0:
         raise GeometryError("Gmsh produced no volume elements. The solid may be too thin for this mesh size.")
     for surface in surfaces:
