@@ -3,6 +3,9 @@
 CI only. The runner's administrator has already run `aicad sandbox-setup`. This
 makes normal accounts and starts a real container under each one. All three
 sends have to be refused, and the account has to be able to read every filter.
+The account must also see the setup as complete, the way `aicad sandbox-setup
+--status`, the installer, and a run see it, because this runner's own checks run
+as an administrator.
 
 Each account uses its own copy of Python, as a per-user install does, because
 a normal account cannot grant a container access to folders it does not own.
@@ -52,9 +55,16 @@ AS_THE_ACCOUNT = r"""import ctypes, json, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from aicad import sandbox_windows as win
-from aicad.sandbox_setup_windows import filters_present
+from aicad.sandbox_setup_windows import filters_present, is_installed, status_report
 
-report = {"is_admin": bool(ctypes.windll.shell32.IsUserAnAdmin()), "filters": filters_present()}
+status = status_report()
+report = {
+    "is_admin": bool(ctypes.windll.shell32.IsUserAnAdmin()),
+    "filters": filters_present(),
+    "status": {key: status[key] for key in ("ready", "rules_found", "rules_missing", "filters_missing", "errors")},
+    "is_installed": is_installed(),
+    "run_gate": win.network_block_error(),
+}
 win._bind()
 # The stricter container does not start Python on these runners. The run logs that.
 win._mode = "appcontainer"
@@ -134,6 +144,13 @@ def check_account(account: str) -> list[str]:
         problems.append("the account is an administrator")
     if report["filters"] != 8:
         problems.append(f"it read {report['filters']} of 8 filters")
+    status = report["status"]
+    if not status["ready"] or status["rules_missing"] or status["errors"]:
+        problems.append(f"--status says the setup is not complete: {status}")
+    if not report["is_installed"]:
+        problems.append("the check after setup says the block is not in place")
+    if report["run_gate"] is not None:
+        problems.append(f"a run would be refused: {report['run_gate']}")
     if report["exit"] != 0 or report["timed_out"]:
         problems.append(f"the container exited {report['exit']}: {report['stderr']}")
     sends = report["sends"] or {}

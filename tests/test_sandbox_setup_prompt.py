@@ -198,8 +198,11 @@ def _status_on_windows(monkeypatch, *, filters, rules):
     monkeypatch.setattr(setup, "package_sid", lambda: SID)
     monkeypatch.setattr(setup, "readable_filters", lambda: filters)
 
+    # The read-back names a rule by its display name, which is how the firewall's COM interface lists it.
+    displays = [display for name, display, _direction in setup.FIREWALL_RULES if name in rules]
+
     def read(script):
-        passed = any(f"'{name}'" in script for name in rules)
+        passed = any(f"'{display}'" in script for display in displays)
         return subprocess.CompletedProcess([], 0 if passed else 2, stdout="", stderr="")
 
     monkeypatch.setattr(setup, "_run_powershell", read)
