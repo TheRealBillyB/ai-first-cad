@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -96,6 +97,87 @@ def test_every_mesh_in_the_worker_starts_gmsh_on_one_thread(tmp_path, monkeypatc
     assert len(rows) >= 3
     assert len({row[0] for row in rows}) == 1
     assert rows[0][0] != rows[0][1]
+
+
+# Like the app: Gmsh is imported at the first solve, after the worker already
+# watches its stdin. A computer without CalculiX stops after the mesh.
+_IMPORT_GMSH_AT_THE_FIRST_SOLVE = """
+import sys
+from aicad import fea
+
+def available():
+    import gmsh  # noqa: F401
+    return True, ""
+
+fea.fea_available = available
+from aicad.app_worker import _main
+raise SystemExit(_main())
+"""
+
+
+def test_the_first_solve_imports_gmsh_while_the_worker_watches_stdin(tmp_path, monkeypatch):
+    """On Windows, a read waiting on stdin stopped Gmsh's DLL from loading, so the first solve hung."""
+    pytest.importorskip("gmsh")
+    monkeypatch.setattr(
+        "aicad.app_worker._worker_command",
+        lambda: [sys.executable, "-P", "-c", _IMPORT_GMSH_AT_THE_FIRST_SOLVE],
+    )
+    running = GeometryWorker(tmp_path / "project")
+    try:
+        running.execute("create_part_from_ops", {"name": "beam", "ops": [{"op": "add", "shape": "box", "size": [20, 4, 4]}]}, "ui")
+        finished = threading.Event()
+
+        def solve() -> None:
+            try:
+                running.execute("solve_mechanics", {"name": "beam", "setup": _beam_setup(3.0)}, "ui")
+            except AICADError:
+                pass  # Without a solver, or a sandbox on this computer, it stops after the mesh.
+            finished.set()
+
+        threading.Thread(target=solve, daemon=True).start()
+        assert finished.wait(180), "the solve did not get past importing Gmsh"
+    finally:
+        running.close()
+
+
+_WATCH_THEN_IMPORT = """
+import sys, threading, time
+from aicad.app_worker import _wait_until_the_app_closes_stdin
+
+closed = threading.Event()
+
+def watch():
+    _wait_until_the_app_closes_stdin()
+    closed.set()
+
+threading.Thread(target=watch, daemon=True).start()
+time.sleep(0.5)
+import gmsh  # noqa: F401
+print("imported", flush=True)
+print("closed" if closed.wait(60) else "still watching", flush=True)
+"""
+
+
+def test_watching_stdin_lets_a_library_load_and_still_sees_the_app_close():
+    pytest.importorskip("gmsh")
+    child = subprocess.Popen(
+        [sys.executable, "-P", "-c", _WATCH_THEN_IMPORT],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        lines = []
+        reader = threading.Thread(target=lambda: lines.append(child.stdout.readline().strip()), daemon=True)
+        reader.start()
+        reader.join(120)
+        assert lines == ["imported"], "importing Gmsh waited on the stdin watcher"
+        child.stdin.close()
+        assert child.stdout.readline().strip() == "closed"
+        assert child.wait(30) == 0
+    finally:
+        if child.poll() is None:
+            child.kill()
 
 
 def test_a_failure_comes_back_as_the_same_error():
