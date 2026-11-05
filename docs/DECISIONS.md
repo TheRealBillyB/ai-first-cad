@@ -6,11 +6,20 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-11-05
+
+| Decision | Rationale |
+| --- | --- |
+| The Windows installer offers the sandbox setup | Without the setup, no design script or solve runs on Windows, so the installer explains that and asks at the end. The default is no. No answer fails the install, because modeling works without it, and an install with no one at the keyboard does not ask. `aicad sandbox-setup --status` is the one read-only check that the installer, the docs, and a person can all use. The elevated step's reason travels in its exit code, so a failure can be named without an elevated process writing a file. |
+
 ## 2026-11-04
 
 | Decision | Rationale |
 | --- | --- |
+| A Windows run installs nothing and proves the block | A run reads the permanent filters by key, then checks from inside the container that the network is refused. A missing filter stops the run before a datagram can leave, and the check inside the container still decides. A solver or other helper cannot check for itself, so a small Python process does it first in the same container. Administrators and CI take this same path, so CI tests what people get. This replaces the firewall timeouts and the recorded-rules file from the 2026-10-23 entries. |
 | The app runs geometry in a second process | OpenCascade holds Python's lock through a long operation, so threads could not keep the page answering. On one measured boolean, a state read waited 4.8 s in one process and at most 0.03 s with the worker. One worker owns the real workspace, and one request runs at a time, as the workspace lock already required. A worker that dies is replaced from the saved project, so a kernel crash no longer ends the app, but that session's undo history and selection are lost. Stopping a running command is not part of this. |
+| The Windows network block is set up once by an administrator | A normal account cannot add firewall rules or WFP filters, so script parts and solves could not run without administrator rights. `aicad sandbox-setup` makes the block permanent for one fixed container, from one standard-library file run with `-I -S`, and the assistant has no tool for it. |
+| Windows network-on scripts have their own container | Network-on scripts run in a second profile, `aicadscriptnet`, which the block does not name. Taking the block down for one run needed administrator rights, and an administrator's run left the computer half blocked. Folder grants are per container, so the first network-on run in a process walks the Python folders again. A script of either kind still needs setup to have run, so there is one rule to explain. |
 
 ## 2026-11-03
 
