@@ -85,6 +85,7 @@ async function applyRefresh(options = {}) {
   const response = await apiFetch("/api/state");
   const body = await response.json();
   if (!body.ok) throw new Error(body.error);
+  if (renderOpening(body.result.opening)) return;
   ui.state = body.result;
   if (options.solid) {
     ui.viewAssembly = null;
@@ -167,6 +168,39 @@ function renderProjectWarning() {
 }
 
 let busyCheck = null;
+
+let openingCheck = null;
+
+// The app answers before the project has opened. Until then the page says so
+// and asks again, and the rest of the page waits for the real state.
+function renderOpening(opening) {
+  const box = $("busy-note");
+  if (!opening) {
+    if (box.dataset.opening) {
+      delete box.dataset.opening;
+      box.classList.add("quiet");
+      box.textContent = "";
+      box.hidden = true;
+    }
+    return false;
+  }
+  box.dataset.opening = "1";
+  box.classList.toggle("quiet", !opening.error);
+  box.textContent = opening.error
+    ? `The project did not open. ${opening.error}`
+    : `Opening the project… ${opening.seconds} s so far. This page fills in when it is ready.`;
+  box.hidden = false;
+  // The empty view would otherwise offer the example project while this one opens.
+  showEmpty(opening.error ? "The project did not open." : "Opening the project. The parts show up here when it is ready.");
+  $("open-example").hidden = true;
+  if (!opening.error && !openingCheck) {
+    openingCheck = setTimeout(() => {
+      openingCheck = null;
+      refresh().catch(showError);
+    }, 1000);
+  }
+  return true;
+}
 
 function renderBusyNote() {
   const box = $("busy-note");
@@ -419,6 +453,7 @@ function renderPanel() {
         <button type="button" id="fea-load">Load selection</button>
         <button type="button" id="fea-run" class="primary">Solve</button>
       </div>
+      <p id="fea-status" role="status" hidden></p>
       <div id="fea-setup" class="muted"></div>
       ${report ? feaHtml(report, state.panel_revision.fea !== state.revision) : `<p class="muted">Strength is this linear static check. Hold faces, apply a force, and read the safety factor.</p>`}`;
     $("fea-fix").onclick = () => rememberLoad("fix");
@@ -428,6 +463,7 @@ function renderPanel() {
     $("fea-mesh").onchange = () => { feaForm.mesh = $("fea-mesh").value; };
     $("fea-sf").onchange = () => { feaForm.sf = $("fea-sf").value; };
     renderFeaSetup();
+    renderFeaStatus();
     return;
   }
   if (ui.tab === "vibration") {
@@ -801,20 +837,59 @@ async function runSection() {
   await refresh();
 }
 
+// A solve can take minutes. The panel is drawn again on every refresh, so
+// what it shows while one runs, or after one fails, is kept here.
+const feaRun = { started: null, error: null, timer: null };
+
+function renderFeaStatus() {
+  const button = $("fea-run");
+  const running = feaRun.started !== null;
+  if (button) button.disabled = running;
+  const node = $("fea-status");
+  if (!node) return;
+  if (running) {
+    const seconds = Math.floor((performance.now() - feaRun.started) / 1000);
+    node.className = "muted";
+    node.textContent = `Solving… ${seconds} s. Meshing and the solve can take a few minutes.`;
+  } else if (feaRun.error) {
+    node.className = "warn";
+    node.textContent = `The solve failed. ${feaRun.error}`;
+  } else {
+    node.className = "";
+    node.textContent = "";
+  }
+  node.hidden = !node.textContent;
+}
+
 async function runFea() {
   if (!ui.part) return;
   if (!feaPlan.fixes.length || !feaPlan.loads.length) return alert("Add a fixed face and a load from the selection.");
-  await command("solve_mechanics", {
-    name: ui.part,
-    setup: {
-      material: $("fea-material").value,
-      mesh_size_mm: Number($("fea-mesh").value),
-      target_safety_factor: Number($("fea-sf").value),
-      fixes: feaPlan.fixes,
-      loads: feaPlan.loads,
-    },
-  });
-  await refresh();
+  if (feaRun.started !== null) return;
+  feaRun.started = performance.now();
+  feaRun.error = null;
+  feaRun.timer = setInterval(renderFeaStatus, 1000);
+  renderFeaStatus();
+  try {
+    await command("solve_mechanics", {
+      name: ui.part,
+      setup: {
+        material: $("fea-material").value,
+        mesh_size_mm: Number($("fea-mesh").value),
+        target_safety_factor: Number($("fea-sf").value),
+        fixes: feaPlan.fixes,
+        loads: feaPlan.loads,
+      },
+    });
+  } catch (error) {
+    feaRun.error = error && error.message ? error.message : String(error);
+    showError(error);
+  } finally {
+    clearInterval(feaRun.timer);
+    feaRun.timer = null;
+    feaRun.started = null;
+    renderFeaStatus();
+  }
+  if (!feaRun.error) await refresh();
 }
 
 async function runChecks() {

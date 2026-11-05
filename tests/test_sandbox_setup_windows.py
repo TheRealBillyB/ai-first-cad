@@ -130,15 +130,83 @@ def test_removal_clears_the_old_rule_name_too():
 
 def test_the_read_back_checks_the_rule_belongs_to_this_container():
     script = setup.firewall_read_script(SID)
-    assert "Get-NetFirewallApplicationFilter" in script
     assert SID.upper() in script
-    assert "Get-NetFirewallPortFilter" in script
-    for _name, _display, direction in setup.FIREWALL_RULES:
-        assert f"'{direction}'" in script
+    for _name, display, direction in setup.FIREWALL_RULES:
+        assert f"'{display}' {setup._COM_DIRECTIONS[direction]} " in script
     assert "New-NetFirewallRule" not in script
     assert "Remove-NetFirewallRule" not in script
     with pytest.raises(ValueError):
         setup.firewall_read_script("S-1-15-2-1'; Remove-Item C:\\ #")
+
+
+def test_the_read_back_needs_no_administrator_rights():
+    """A standard account gets "Access is denied" from every NetSecurity cmdlet, so it was told the rules were missing."""
+    script = setup.firewall_read_script(SID)
+    assert "HNetCfg.FwPolicy2" in script
+    assert "Get-NetFirewall" not in script
+
+
+# What the firewall's COM interface reports for the rules the setup adds,
+# read on Windows 10 from an account without administrator rights.
+_REAL_RULE = {
+    "Name": "aicad script network off outbound",
+    "Enabled": "$true",
+    "Action": "0",
+    "Direction": "2",
+    "Protocol": "256",
+    "LocalPorts": "''",
+    "RemotePorts": "''",
+    "LocalAddresses": "'*'",
+    "RemoteAddresses": "'*'",
+    "Profiles": "2147483647",
+    "InterfaceTypes": "'All'",
+    "Interfaces": "$null",
+    "ApplicationName": "''",
+    "serviceName": "''",
+    "LocalAppPackageId": f"'{SID}'",
+}
+
+
+def _judged(changes: dict) -> bool:
+    """Run the script's own check on one stand-in rule. The real policy is not read."""
+    script = setup.firewall_read_script(SID, (setup.FIREWALL_RULES[0],))
+    functions = script[: script.index("try {")]
+    rule = {**_REAL_RULE, **changes}
+    fields = "; ".join(
+        f"{key} = '{value}'" if key == "Name" else f"{key} = {value}" for key, value in rule.items()
+    )
+    probe = (
+        functions
+        + f"$rule = [pscustomobject]@{{ {fields} }}\n"
+        + f"if (Test-AicadBlock @($rule) 'aicad script network off outbound' 2 '{SID.upper()}') {{ exit 0 }} else {{ exit 2 }}\n"
+    )
+    return setup._run_powershell(probe).returncode == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell")
+@pytest.mark.parametrize(
+    ("changes", "blocks"),
+    [
+        ({}, True),
+        ({"LocalPorts": "'*'", "RemotePorts": "'*'"}, True),
+        ({"LocalAppPackageId": f"'{SID.lower()}'"}, True),
+        ({"Enabled": "$false"}, False),
+        ({"Action": "1"}, False),
+        ({"Direction": "1"}, False),
+        ({"Protocol": "6"}, False),
+        ({"RemotePorts": "'53'"}, False),
+        ({"RemoteAddresses": "'10.0.0.0/8'"}, False),
+        ({"Profiles": "4"}, False),
+        ({"InterfaceTypes": "'Wireless'"}, False),
+        ({"Interfaces": "@('Ethernet')"}, False),
+        ({"ApplicationName": "'C:\\\\other.exe'"}, False),
+        ({"serviceName": "'dnscache'"}, False),
+        ({"LocalAppPackageId": "'S-1-15-2-1-2-3'"}, False),
+        ({"Name": "aicad script network off inbound"}, False),
+    ],
+)
+def test_only_a_rule_that_blocks_everything_for_the_container_counts(changes, blocks):
+    assert _judged(changes) is blocks
 
 
 def test_rules_present_reads_for_the_real_container(monkeypatch):

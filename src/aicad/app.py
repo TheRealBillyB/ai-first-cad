@@ -425,12 +425,16 @@ def _second_app_warning(port: int) -> str:
 
 
 def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+    # Plain ASCII, because a Windows console code page may not have an ellipsis.
+    print("Opening the project, this can take a minute...", flush=True)
     from aicad.sandbox import warn_design_scripts
 
     warn_design_scripts(workspace)
-    server = make_server(workspace, host, port, worker=True, log_commands=True)
+    # The page answers while the project opens, and fills in when it is ready.
+    server = make_server(workspace, host, port, worker=True, open_in_background=True, log_commands=True)
     url = f"http://{host}:{port}/"
     print(f"aicad workspace at {url}", flush=True)
+    threading.Thread(target=_say_when_open, args=(server.workspace,), name="aicad-open-note", daemon=True).start()
     other = server.project_also_open_at(server.workspace.root)
     if other is not None:
         print(_second_app_warning(other), file=sys.stderr, flush=True)
@@ -445,15 +449,27 @@ def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, 
         server.server_close()
 
 
+def _say_when_open(session) -> None:
+    problem = session.wait_open()
+    if problem is None:
+        print("The project is open.", flush=True)
+    else:
+        print(f"The project did not open. {problem}", file=sys.stderr, flush=True)
+
+
 def make_server(
     workspace: str | Path,
     host: str = "127.0.0.1",
     port: int = 8765,
     *,
     worker: bool = False,
+    open_in_background: bool = False,
     log_commands: bool = False,
 ) -> _WorkspaceServer:
     """The app's server. With ``worker``, geometry runs in its own process. See app_worker.
+
+    With ``open_in_background`` as well, this returns before the project has
+    opened, so the page can say that it is opening.
 
     With ``log_commands``, each command prints a line when it starts and when it ends.
     """
@@ -467,7 +483,7 @@ def make_server(
     if worker:
         from aicad.app_worker import GeometryWorker
 
-        session = GeometryWorker(workspace)
+        session = GeometryWorker(workspace, wait=not open_in_background)
     else:
         session = Workspace(workspace)
     remember_project(session.root)

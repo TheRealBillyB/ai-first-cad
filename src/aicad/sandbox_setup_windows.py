@@ -28,6 +28,8 @@ FIREWALL_RULES = (
     ("aicad-script-network-off-in", "aicad script network off inbound", "Inbound"),
 )
 _STALE_FIREWALL_RULES = ("aicad-script-network-off-udp",)
+# NET_FW_RULE_DIR_IN and NET_FW_RULE_DIR_OUT in the firewall's COM interface.
+_COM_DIRECTIONS = {"Inbound": 1, "Outbound": 2}
 BLOCK_LAYERS = (
     ("ALE_AUTH_CONNECT_V4", "c38d57d1-05a7-4c33-904f-7fbceee60e82"),
     ("ALE_AUTH_CONNECT_V6", "4a72393b-319f-44bc-84c3-ba54dcb3b6b4"),
@@ -290,39 +292,48 @@ def _firewall_script_around(body: str) -> str:
 
 
 def firewall_read_script(sid: str, rules: tuple = FIREWALL_RULES) -> str:
-    """Exit 0 when these rules block every protocol for this container. Otherwise exit 2."""
+    """Exit 0 when these rules block every protocol for this container. Otherwise exit 2.
+
+    It reads through the firewall's COM interface, which a standard account may
+    read. ``Get-NetFirewallRule`` answers "Access is denied" without
+    administrator rights, so a standard account was told the block was missing.
+    That interface names a rule by its display name, so every field that could
+    narrow the block is checked instead.
+    """
     if _PACKAGE_SID.fullmatch(sid) is None:
         raise ValueError("Not a package SID.")
     package = sid.upper()
     checks = "".join(
-        f"  if (-not (Test-AicadBlock '{name}' '{direction}' '{package}')) {{ exit 2 }}\n"
-        for name, _display, direction in rules
+        f"  if (-not (Test-AicadBlock $rules '{display}' {_COM_DIRECTIONS[direction]} '{package}')) {{ exit 2 }}\n"
+        for _name, display, direction in rules
     )
     return (
         "$ErrorActionPreference = 'Stop'\n"
-        "function Test-AicadBlock([string]$Name, [string]$Direction, [string]$Package) {\n"
-        "  $rules = @(Get-NetFirewallRule -Name $Name -ErrorAction Ignore)\n"
-        "  if ($rules.Count -ne 1) { return $false }\n"
-        "  $rule = $rules[0]\n"
-        "  if ([string]$rule.Enabled -ne 'True') { return $false }\n"
-        "  if ([string]$rule.Action -ne 'Block') { return $false }\n"
-        "  if ([string]$rule.Direction -ne $Direction) { return $false }\n"
-        "  $ports = @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule)\n"
-        "  if ($ports.Count -ne 1) { return $false }\n"
-        "  $protocol = [string]$ports[0].Protocol\n"
-        "  if ($protocol -ne 'Any' -and $protocol -ne '256') { return $false }\n"
-        "  foreach ($value in @($ports[0].LocalPort) + @($ports[0].RemotePort)) {\n"
-        "    foreach ($item in @($value)) {\n"
-        "      $text = [string]$item\n"
-        "      if ($text -and $text -ne 'Any') { return $false }\n"
-        "    }\n"
+        "function Test-AicadAny($Value) {\n"
+        "  $text = [string]$Value\n"
+        "  return (-not $text) -or $text -eq '*'\n"
+        "}\n"
+        "function Test-AicadBlock($Rules, [string]$Display, [int]$Direction, [string]$Package) {\n"
+        "  foreach ($rule in $Rules) {\n"
+        "    if ([string]$rule.Name -ne $Display) { continue }\n"
+        "    if (-not $rule.Enabled) { continue }\n"
+        # NET_FW_ACTION_BLOCK, and NET_FW_IP_PROTOCOL_ANY.
+        "    if ([int]$rule.Action -ne 0) { continue }\n"
+        "    if ([int]$rule.Direction -ne $Direction) { continue }\n"
+        "    if ([int]$rule.Protocol -ne 256) { continue }\n"
+        "    if (-not (Test-AicadAny $rule.LocalPorts) -or -not (Test-AicadAny $rule.RemotePorts)) { continue }\n"
+        "    if (-not (Test-AicadAny $rule.LocalAddresses) -or -not (Test-AicadAny $rule.RemoteAddresses)) { continue }\n"
+        # Domain, private, and public.
+        "    if (([int]$rule.Profiles -band 7) -ne 7) { continue }\n"
+        "    if ([string]$rule.InterfaceTypes -ne 'All' -or $rule.Interfaces) { continue }\n"
+        "    if ($rule.ApplicationName -or $rule.serviceName) { continue }\n"
+        "    if (([string]$rule.LocalAppPackageId).Trim().ToUpperInvariant() -ne $Package) { continue }\n"
+        "    return $true\n"
         "  }\n"
-        "  $apps = @(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule)\n"
-        "  if ($apps.Count -ne 1) { return $false }\n"
-        "  if ([string]$apps[0].Package.Trim().ToUpperInvariant() -ne $Package) { return $false }\n"
-        "  return $true\n"
+        "  return $false\n"
         "}\n"
         "try {\n"
+        "  $rules = @((New-Object -ComObject HNetCfg.FwPolicy2).Rules)\n"
         f"{checks}"
         "  exit 0\n"
         "} catch {\n"

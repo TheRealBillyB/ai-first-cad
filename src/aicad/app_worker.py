@@ -14,6 +14,10 @@ request waits on its own connection and holds up nothing else.
 If the worker dies, that request fails with a clear message and a new worker
 opens the saved project. Undo history and the selection were in the old one.
 
+``aicad app`` does not wait for the first worker. The page answers at once and
+``state`` says the project is opening. Any other request is refused with a
+message that says so, and nothing is changed.
+
 The pipe carries JSON, and it opens only with a key sent over the worker's
 stdin. The worker stops when that stdin closes, so it cannot outlive the app.
 """
@@ -78,10 +82,23 @@ def _rebuilt_error(payload: dict) -> Exception:
     return RuntimeError(message)
 
 
-class GeometryWorker:
-    """What the app needs from a ``Workspace``, answered by the worker process."""
+class ProjectStillOpening(GeometryError):
+    """The worker has not finished opening the project."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, seconds: float) -> None:
+        super().__init__(
+            f"aicad is still opening the project ({seconds:.0f} s so far). Nothing was changed. "
+            "Send the same request again in a few seconds."
+        )
+
+
+class GeometryWorker:
+    """What the app needs from a ``Workspace``, answered by the worker process.
+
+    With ``wait`` false, the first worker opens the project in the background.
+    """
+
+    def __init__(self, path: str | Path, *, wait: bool = True) -> None:
         self._request_lock = threading.Lock()
         self._listeners_lock = threading.Lock()
         self._mesh_lock = threading.Lock()
@@ -96,9 +113,22 @@ class GeometryWorker:
         self._event_id = 0
         self._state: dict = {}
         self._commands: list[dict] = []
-        self._start()
+        self._open = threading.Event()
+        self._open_error: str | None = None
+        self._opening_since = time.monotonic()
+        if wait:
+            self._start()
+            self._open.set()
+        else:
+            threading.Thread(target=self._open_in_background, name="aicad-worker-open", daemon=True).start()
 
     # What the app calls.
+
+    def wait_open(self, timeout: float | None = None) -> str | None:
+        """Wait for the first worker. None means the project is open, and text is why it did not open."""
+        if not self._open.wait(timeout):
+            return f"It is still opening after {timeout:.0f} seconds."
+        return self._open_error
 
     def listen(self, callback: Callable[[dict], None]) -> Callable[[], None]:
         with self._listeners_lock:
@@ -115,6 +145,14 @@ class GeometryWorker:
         return self._call(name or "command", "execute", name, arguments, source)
 
     def state(self) -> dict:
+        if not self._open.is_set() or self._open_error is not None:
+            return {
+                "opening": {
+                    "seconds": round(time.monotonic() - self._opening_since),
+                    "error": self._open_error,
+                },
+                "project": {"path": str(self.root), "name": self.root.name},
+            }
         if self._request_lock.acquire(blocking=False):
             try:
                 self._state = self._exchange("state", "state", ())
@@ -128,6 +166,7 @@ class GeometryWorker:
         return state
 
     def commands(self) -> list[dict]:
+        self._require_open()
         return self._commands
 
     def mesh(self, name: str) -> dict:
@@ -151,7 +190,14 @@ class GeometryWorker:
 
     # How a request reaches the worker.
 
+    def _require_open(self) -> None:
+        if not self._open.is_set():
+            raise ProjectStillOpening(time.monotonic() - self._opening_since)
+        if self._open_error is not None:
+            raise GeometryError(f"The project did not open, so nothing was changed. {self._open_error}")
+
     def _mesh(self, method: str, *args: str) -> dict:
+        self._require_open()
         key = (method, *args)
         with self._mesh_lock:
             kept = self._meshes.get(key)
@@ -170,6 +216,7 @@ class GeometryWorker:
         return result
 
     def _call(self, label: str, method: str, *args) -> dict:
+        self._require_open()
         with self._request_lock:
             return self._exchange(label, method, args)
 
@@ -215,6 +262,19 @@ class GeometryWorker:
         self._dispatch({"event": self._event_id, "revision": self.geometry_revision, "command": label, "source": "app"})
 
     # Starting, stopping, and replacing the process.
+
+    def _open_in_background(self) -> None:
+        try:
+            self._start()
+        except Exception as exc:  # The page and every request show this text.
+            self._open_error = str(exc) or type(exc).__name__
+        if self._closed:
+            # The app closed while this one was starting.
+            self._stop_process()
+        self._open.set()
+        if self._open_error is None and not self._closed:
+            # The page refreshes on any event, so it fills in now.
+            self._dispatch({"event": self._event_id, "revision": self.geometry_revision, "command": "open", "source": "app"})
 
     def _start(self) -> None:
         key = secrets.token_bytes(32)
@@ -376,13 +436,53 @@ def _serve(start: dict) -> None:
             return
 
 
+_ERROR_BROKEN_PIPE = 109
+
+
+def _wait_until_the_app_closes_stdin() -> None:
+    """Return when the app closes this process's stdin, which it also does by exiting."""
+    if sys.platform != "win32":
+        sys.stdin.buffer.read()
+        return
+    # On Windows, a read that waits on a pipe makes every other use of that
+    # handle wait behind it. A DLL that looks at the standard handles while it
+    # loads, as Gmsh's does, then never finishes loading, and the first strength
+    # solve hung. Peeking returns at once, so nothing is left waiting on stdin.
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    peek = kernel32.PeekNamedPipe
+    peek.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    peek.restype = wintypes.BOOL
+    descriptor = sys.stdin.fileno()
+    handle = msvcrt.get_osfhandle(descriptor)
+    waiting = wintypes.DWORD()
+    while peek(handle, None, 0, None, ctypes.byref(waiting), None):
+        if waiting.value:
+            # The app sends nothing after the start line. Anything else is dropped.
+            os.read(descriptor, waiting.value)
+        time.sleep(0.2)
+    if ctypes.get_last_error() != _ERROR_BROKEN_PIPE:
+        # Not a pipe. Only a person starting the worker by hand gets here.
+        sys.stdin.buffer.read()
+
+
 def _main() -> int:
     start = json.loads(sys.stdin.buffer.readline().decode("utf-8"))
     # Ctrl-C reaches both processes. The app decides when this one stops.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     def stop_with_the_app() -> None:
-        sys.stdin.buffer.read()
+        _wait_until_the_app_closes_stdin()
         os._exit(0)
 
     threading.Thread(target=stop_with_the_app, name="aicad-worker-parent", daemon=True).start()
