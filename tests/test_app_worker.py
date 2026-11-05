@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 import urllib.request
@@ -12,7 +13,7 @@ import pytest
 
 from aicad.app import make_server
 from aicad.app_worker import GeometryWorker, _error_payload, _rebuilt_error
-from aicad.errors import EdgeOpError, GeometryError, PartNotFound, ScriptError
+from aicad.errors import AICADError, EdgeOpError, GeometryError, PartNotFound, ScriptError
 
 _MANY_CUTS = [{"op": "add", "shape": "box", "size": [400, 400, 10]}] + [
     {"op": "cut", "shape": "cylinder", "radius": 3, "height": 30, "center": [(i % 15) * 25 - 180, (i // 15) * 25 - 120, 0]}
@@ -25,6 +26,73 @@ def worker(tmp_path):
     running = GeometryWorker(tmp_path / "project")
     yield running
     running.close()
+
+
+_RECORD_GMSH_STARTS = """
+import os, threading
+import gmsh
+
+real_initialize = gmsh.initialize
+
+def initialize(*args, **kwargs):
+    with open(os.environ["AICAD_TEST_GMSH_STARTS"], "a", encoding="utf-8") as log:
+        log.write(f"{threading.get_ident()} {threading.main_thread().ident}\\n")
+    return real_initialize(*args, **kwargs)
+
+gmsh.initialize = initialize
+# The mesh comes before the solve, so a computer without CalculiX still records it.
+from aicad import fea
+fea.fea_available = lambda: (True, "")
+from aicad.app_worker import _main
+raise SystemExit(_main())
+"""
+
+
+def _beam_setup(mesh_mm: float) -> dict:
+    return {
+        "material": "steel",
+        "mesh_size_mm": mesh_mm,
+        "target_safety_factor": 1.0,
+        "fixes": [{"name": "root", "select": {"kind": "plane", "normal": [-1, 0, 0]}}],
+        "loads": [
+            {"name": "tip", "type": "force", "vector": [0, 0, -100], "select": {"kind": "plane", "normal": [1, 0, 0]}}
+        ],
+    }
+
+
+def test_every_mesh_in_the_worker_starts_gmsh_on_one_thread(tmp_path, monkeypatch):
+    """Gmsh crashes on macOS when a new thread starts it. Each page request has its own thread."""
+    pytest.importorskip("gmsh")
+    starts = tmp_path / "gmsh-starts.txt"
+    monkeypatch.setenv("AICAD_TEST_GMSH_STARTS", str(starts))
+    monkeypatch.setattr(
+        "aicad.app_worker._worker_command",
+        lambda: [sys.executable, "-P", "-c", _RECORD_GMSH_STARTS],
+    )
+    running = GeometryWorker(tmp_path / "project")
+    try:
+        running.execute("create_part_from_ops", {"name": "beam", "ops": [{"op": "add", "shape": "box", "size": [20, 4, 4]}]}, "ui")
+        process = running._process
+
+        def solve(mesh_mm: float) -> None:
+            try:
+                running.execute("solve_mechanics", {"name": "beam", "setup": _beam_setup(mesh_mm)}, "ui")
+            except AICADError:
+                pass  # Without a solver the solve stops after the mesh, which is the part measured here.
+
+        # A new thread for each request, the way the page's server calls the worker.
+        for mesh_mm in (2.0, 2.5, 3.0):
+            caller = threading.Thread(target=solve, args=(mesh_mm,))
+            caller.start()
+            caller.join(180)
+            assert not caller.is_alive()
+        assert running._process is process, "the worker was replaced during the solves"
+    finally:
+        running.close()
+    rows = [line.split() for line in starts.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) >= 3
+    assert len({row[0] for row in rows}) == 1
+    assert rows[0][0] != rows[0][1]
 
 
 def test_a_failure_comes_back_as_the_same_error():

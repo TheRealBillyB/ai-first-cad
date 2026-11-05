@@ -43,6 +43,10 @@ _KEPT_MESHES = 8
 _FAMILY = "AF_PIPE" if sys.platform == "win32" else "AF_UNIX"
 
 
+def _worker_command() -> list[str]:
+    return [sys.executable, "-P", "-m", "aicad.app_worker"]
+
+
 def _error_payload(exc: BaseException) -> dict:
     fields = {}
     for key, value in vars(exc).items():
@@ -203,7 +207,7 @@ class GeometryWorker:
         listener = Listener(family=_FAMILY, authkey=key)
         try:
             self._process = subprocess.Popen(
-                [sys.executable, "-P", "-m", "aicad.app_worker"],
+                _worker_command(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
             )
