@@ -27,15 +27,29 @@ PRE = textwrap.dedent('''
         mark("aicad meshing"); _mesh_solid(cube, 2.5, 1); mark("aicad meshed")
 ''')
 
+RS = """
+import ctypes
+def sp_keep(fn):
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+    old = ctypes.create_string_buffer(512)
+    libc.sigaction(signal.SIGPIPE, None, old)
+    fn()
+    libc.sigaction(signal.SIGPIPE, old, None)
+"""
 VARIANTS = {
- "gmsh main": "gm()",
- "gmsh worker default stack": "run_in_thread(gm)",
- "gmsh worker 16MB": "run_in_thread(gm, 16*1024*1024)",
- "gmsh worker 64MB": "run_in_thread(gm, 64*1024*1024)",
- "aicad main": "aic()",
- "aicad worker (as test)": "from aicad import kernel\nrun_in_thread(aic)",
- "aicad worker 64MB": "from aicad import kernel\nrun_in_thread(aic, 64*1024*1024)",
- "aicad worker, twice": "from aicad import kernel\nrun_in_thread(aic)\nrun_in_thread(aic)",
+ "gmsh main twice": "gm(); gm()",
+ "gmsh worker twice (2 threads)": "run_in_thread(gm); run_in_thread(gm)",
+ "gmsh main then worker": "gm(); run_in_thread(gm)",
+ "gmsh worker then main": "run_in_thread(gm); gm()",
+ "gmsh one worker, two meshes": "run_in_thread(lambda: (gm(), gm()))",
+ "gmsh worker twice, sigpipe kept": RS + "run_in_thread(lambda: sp_keep(gm)); run_in_thread(lambda: sp_keep(gm))",
+ "gmsh worker twice, init only no mesh": "def i():\n    import gmsh\n    gmsh.initialize(readConfigFiles=False, interruptible=False); mark('i'); gmsh.finalize(); mark('f')\nrun_in_thread(i); run_in_thread(i)",
+ "gmsh worker then worker, no finalize 1st": "def g1():\n    import gmsh\n    gmsh.initialize(readConfigFiles=False, interruptible=False); gmsh.model.add('p'); gmsh.model.occ.addBox(0,0,0,1,1,1); gmsh.model.occ.synchronize(); gmsh.model.mesh.generate(3); mark('g1 meshed')\nrun_in_thread(g1); run_in_thread(gm)",
+ "aicad main twice": "from aicad import kernel\naic(); aic()",
+ "aicad one worker twice": "from aicad import kernel\nrun_in_thread(lambda: (aic(), aic()))",
+ "aicad main then worker": "from aicad import kernel\naic(); run_in_thread(aic)",
+ "aicad worker then main": "from aicad import kernel\nrun_in_thread(aic); aic()",
 }
 
 def test_diag():
