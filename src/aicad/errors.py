@@ -14,6 +14,13 @@ class ScriptError(AICADError):
     """A part script did not produce a usable solid."""
 
 
+class SandboxNotReady(ScriptError, OSError):
+    """This computer cannot keep a script or solve off the network yet. Nothing was started.
+
+    It is an OSError too, so a caller that falls back when a helper cannot start still does.
+    """
+
+
 class GeometryError(AICADError):
     """Geometry could not be built, measured, or checked."""
 

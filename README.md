@@ -63,6 +63,22 @@ The app opens in your browser. Leave that window open while you use the app. Clo
 
 You need Python 3.11 or newer. If it is missing, the installer tells you where to get it. On Windows, when winget is available, the installer can install Python after you agree. On a Mac, if the computer says the file cannot be opened, right-click it and choose Open. On Linux, if a double-click opens the file as text, right-click it, allow executing it, and open it again. Running the installer again is safe, including after you download a newer copy of this folder.
 
+### Windows sandbox setup
+
+On Windows, design scripts and strength and vibration solves run in a sandbox. Its network block needs one administrator approval per computer. The installer offers to do this at the end. You can also run it yourself:
+
+```bash
+aicad sandbox-setup
+```
+
+- **What it does.** It adds two firewall rules and eight network filters that block one fixed script container on every protocol. Nothing else on the computer changes.
+- **Why it needs an administrator once.** A normal account cannot add these rules, and it cannot remove them either, so a script cannot take the block down. No later run needs administrator rights.
+- **How to check it.** `aicad sandbox-setup --status` lists what is in place and what is missing. It changes nothing. It exits 0 when ready and 1 when not.
+- **How to undo it.** `aicad sandbox-setup --remove` deletes the rules and filters. It also asks for an administrator's approval.
+- **If you skip it.** Shape, sketch, gear, and catalog parts still work. Design scripts and solves do not run, and the app and any connected assistant say why and name this command.
+
+An assistant cannot run this step, and a Mac or Linux computer does not need it. For a scripted install, pass `--sandbox-setup` or `--no-sandbox-setup` to `install.py` or `install.bat`. Without a flag, an install with no one at the keyboard does not ask and prints the command to run later.
+
 ### From a terminal
 
 You need Python 3.11 or newer. On Windows and Mac, use 3.11 if you can: the sketch solver has a ready-made package for 3.11, and 3.12 or newer needs a C++ compiler. On Linux the solver has no ready-made package for any Python version, so every Linux install needs a C++ compiler and the Python headers (`g++` and `python3-dev` on Debian or Ubuntu). The OpenCascade wheel that build123d depends on is large. From the project folder, one command creates a virtual environment and installs aicad, including the robot extra:

@@ -18,12 +18,16 @@ starts a second process in a job of its own, so the script would not stay
 in the sandbox job. The new process stays suspended until that job holds
 it and its token is an AppContainer.
 
-When the script was not given the network, Windows Firewall and a filter
-block that container's inbound and outbound traffic for every protocol
-before the process runs. The block is not limited to TCP or to a port.
+A network-off script runs in the one container ``aicad sandbox-setup``
+blocked. An administrator approves that once per computer, and no run installs
+anything. The block covers inbound and outbound traffic for every protocol.
 The script still checks the token. It runs only when a TCP connection and
 both a connected and an unconnected UDP send are refused. A successful
-send is not a refusal. A timeout is not a refusal.
+send is not a refusal. A timeout is not a refusal. A helper that cannot check
+for itself gets the same check first, in the same container.
+
+A network-on script runs in a second container the block does not name, so
+allowing the network never takes the block down.
 """
 
 from __future__ import annotations
@@ -40,7 +44,20 @@ from collections.abc import Sequence
 from ctypes import wintypes
 from pathlib import Path
 
-_PROFILE_NAME = "aicadscript"
+from aicad import sandbox_setup_windows as setup
+from aicad.errors import SandboxNotReady
+
+_PROFILE_NAME = setup.PROFILE_NAME
+# Network-on scripts run here. The permanent block names only the other profile,
+# so a person allowing the network never has to take that block down.
+_NETWORK_PROFILE_NAME = "aicadscriptnet"
+_SETUP_NEEDED = (
+    "Design scripts and strength and vibration solves need one setup step on this computer. "
+    "Run `aicad sandbox-setup` and approve the Windows administrator prompt. It is needed once, "
+    "and it keeps those scripts and solves off the network, so code an assistant wrote cannot "
+    "send anything out. On a managed computer, ask an administrator to run it. "
+    "Shape, sketch, gear, and catalog parts still work."
+)
 _PROFILE_DISPLAY = "aicad design script"
 _PROFILE_DESCRIPTION = "Limits an aicad design script to one project folder."
 
@@ -102,20 +119,10 @@ _advapi32_lib: ctypes.WinDLL | None = None
 _bound = False
 # The availability probe starts a container. Later tests in this process reuse it.
 _probe_done = False
+_lpac_fallback_reason: str | None = None
 _probe_result: str | None = None
 # Parents already checked for this container, so a later script does not open them again.
 _granted_traverse: set[tuple[str, str, str]] = set()
-# One firewall block for this container, shared by overlapping network-off children.
-_network_off_lock = threading.Lock()
-_network_off_holders = 0
-_network_off_sid: str | None = None
-# Rules left in place after the last network-off child. The next child with
-# the same package reuses them. A network-on script removes them first.
-_network_off_rules_sid: str | None = None
-# The next process has no memory of that. The record is only the package id.
-# It is not proof the rules still exist. It lives in the real local profile,
-# which is not the project and is not a folder the script is allowed to write.
-_network_off_marker_path: Path | None = None
 # Held from profile creation until the confined process has exited, so another
 # start does not delete the profile that process is using.
 _profile_lock_handle = None
@@ -123,13 +130,6 @@ _profile_local_app_data_known = False
 _profile_local_app_data_path: Path | None = None
 _FOLDERID_LOCAL_APPDATA = "{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}"
 _PACKAGE_SID_TEXT = re.compile(r"^S-1-15-2(?:-\d+)+$", re.IGNORECASE)
-# Inbound and outbound, every protocol. The old UDP-only name is removed
-# when present and is not installed again.
-_NETWORK_OFF_RULES = (
-    "aicad-script-network-off-out",
-    "aicad-script-network-off-in",
-)
-_NETWORK_OFF_STALE_RULES = ("aicad-script-network-off-udp",)
 
 # One directory finishes immediately. A tree walk of the Python install can
 # take longer. Either one that does not finish is waiting, not working.
@@ -504,14 +504,14 @@ def _sid_to_string(sid: ctypes.c_void_p) -> str:
         _kernel32().LocalFree(out)
 
 
-def _create_appcontainer_profile() -> tuple[int, ctypes.c_void_p]:
+def _create_appcontainer_profile(profile: str = _PROFILE_NAME) -> tuple[int, ctypes.c_void_p]:
     """Create the script profile with no stored capabilities."""
 
     userenv = _userenv()
     sid = ctypes.c_void_p()
     result = int(
         userenv.CreateAppContainerProfile(
-            _PROFILE_NAME,
+            profile,
             _PROFILE_DISPLAY,
             _PROFILE_DESCRIPTION,
             None,
@@ -522,10 +522,10 @@ def _create_appcontainer_profile() -> tuple[int, ctypes.c_void_p]:
     return result & 0xFFFFFFFF, sid
 
 
-def _delete_appcontainer_profile() -> int:
+def _delete_appcontainer_profile(profile: str = _PROFILE_NAME) -> int:
     """Delete the named script profile. A missing profile is not an error."""
 
-    return int(_userenv().DeleteAppContainerProfile(_PROFILE_NAME)) & 0xFFFFFFFF
+    return int(_userenv().DeleteAppContainerProfile(profile)) & 0xFFFFFFFF
 
 
 def _free_partial_sid(sid: ctypes.c_void_p | None) -> None:
@@ -602,8 +602,8 @@ def _release_profile_lock() -> None:
         handle.close()
 
 
-def _profile_use_path() -> Path:
-    return _profile_lock_path().with_name("script-profile-use")
+def _profile_use_path(profile: str = _PROFILE_NAME) -> Path:
+    return _profile_lock_path().with_name(f"{profile}-use")
 
 
 class _PROCESSENTRY32W(ctypes.Structure):
@@ -706,12 +706,12 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _load_profile_use() -> dict[int, int]:
+def _load_profile_use(profile: str = _PROFILE_NAME) -> dict[int, int]:
     """Live processes that are using the script profile. A dead pid is dropped."""
 
     found: dict[int, int] = {}
     try:
-        text = _profile_use_path().read_text(encoding="utf-8")
+        text = _profile_use_path(profile).read_text(encoding="utf-8")
     except OSError:
         return found
     for line in text.splitlines():
@@ -728,50 +728,50 @@ def _load_profile_use() -> dict[int, int]:
     return found
 
 
-def _store_profile_use(found: dict[int, int]) -> None:
-    path = _profile_use_path()
+def _store_profile_use(found: dict[int, int], profile: str = _PROFILE_NAME) -> None:
+    path = _profile_use_path(profile)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = "".join(f"{pid} {count}\n" for pid, count in sorted(found.items()))
     path.write_text(data, encoding="utf-8")
 
 
-def _profile_is_in_use() -> bool:
+def _profile_is_in_use(profile: str = _PROFILE_NAME) -> bool:
     """True when a live process is already running in the script profile."""
 
-    found = _load_profile_use()
+    found = _load_profile_use(profile)
     try:
-        _store_profile_use(found)
+        _store_profile_use(found, profile)
     except OSError:
         pass
     return bool(found)
 
 
-def _change_profile_use(delta: int) -> None:
-    found = _load_profile_use()
+def _change_profile_use(delta: int, profile: str = _PROFILE_NAME) -> None:
+    found = _load_profile_use(profile)
     pid = os.getpid()
     count = found.get(pid, 0) + delta
     if count > 0:
         found[pid] = count
     else:
         found.pop(pid, None)
-    _store_profile_use(found)
+    _store_profile_use(found, profile)
 
 
-def _release_profile_use() -> None:
+def _release_profile_use(profile: str = _PROFILE_NAME) -> None:
     """Drop this process's use of the profile. The caller does not hold the lock."""
 
     _acquire_profile_lock()
     try:
-        _change_profile_use(-1)
+        _change_profile_use(-1, profile)
     finally:
         _release_profile_lock()
 
 
-def _derive_profile_sid() -> tuple[int, ctypes.c_void_p]:
+def _derive_profile_sid(profile: str = _PROFILE_NAME) -> tuple[int, ctypes.c_void_p]:
     sid = ctypes.c_void_p()
     result = int(
         _userenv().DeriveAppContainerSidFromAppContainerName(
-            _PROFILE_NAME,
+            profile,
             ctypes.byref(sid),
         )
     )
@@ -876,13 +876,13 @@ def _stored_capabilities_are_empty(sid: ctypes.c_void_p) -> bool:
         kernel32.DeleteProcThreadAttributeList(attributes)
 
 
-def _open_proven_profile() -> tuple[ctypes.c_void_p, str]:
+def _open_proven_profile(profile: str = _PROFILE_NAME) -> tuple[ctypes.c_void_p, str]:
     """Open the profile a live script is using, when it has no capabilities.
 
     The profile is not deleted. A profile with stored capabilities is not used.
     """
 
-    result, sid = _derive_profile_sid()
+    result, sid = _derive_profile_sid(profile)
     if result != 0:
         _free_partial_sid(sid)
         raise OSError(
@@ -900,7 +900,7 @@ def _open_proven_profile() -> tuple[ctypes.c_void_p, str]:
     return sid, text
 
 
-def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
+def _appcontainer_sid(profile: str = _PROFILE_NAME) -> tuple[ctypes.c_void_p, str]:
     """A script profile with no stored capabilities.
 
     When no script is using the name, an existing profile is deleted and
@@ -910,14 +910,14 @@ def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
 
     _acquire_profile_lock()
     try:
-        result, sid = _create_appcontainer_profile()
+        result, sid = _create_appcontainer_profile(profile)
         if result != 0:
             _free_partial_sid(sid)
-            if _profile_is_in_use():
-                sid, text = _open_proven_profile()
+            if _profile_is_in_use(profile):
+                sid, text = _open_proven_profile(profile)
             else:
-                _delete_appcontainer_profile()
-                result, sid = _create_appcontainer_profile()
+                _delete_appcontainer_profile(profile)
+                result, sid = _create_appcontainer_profile(profile)
                 if result != 0:
                     _free_partial_sid(sid)
                     raise OSError(
@@ -927,7 +927,7 @@ def _appcontainer_sid() -> tuple[ctypes.c_void_p, str]:
                 text = _sid_to_string(sid)
         else:
             text = _sid_to_string(sid)
-        _change_profile_use(1)
+        _change_profile_use(1, profile)
         return sid, text
     finally:
         _release_profile_lock()
@@ -1374,9 +1374,9 @@ def _marker_path() -> Path:
     return Path(sys.prefix) / ".aicad-appcontainer-acl"
 
 
-# Folders this process has already made readable. Another process's record
-# does not stand in for a folder this process has not granted.
-_granted_read: set[str] = set()
+# Folders this process has already made readable, per container. Another
+# process's record does not stand in for a folder this process has not granted.
+_granted_read: set[tuple[str, str]] = set()
 
 
 def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = None) -> None:
@@ -1393,11 +1393,11 @@ def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = 
             key = str(Path(path).resolve())
         except OSError:
             key = os.path.normcase(str(path))
-        if key in _granted_read:
+        if (sid, key) in _granted_read:
             continue
         _grant_tree(Path(path), sid, "(OI)(CI)RX")
         _grant_traverse(Path(path), sid, package_sid)
-        _granted_read.add(key)
+        _granted_read.add((sid, key))
     marker = _marker_path()
     try:
         from aicad.file_access import read_text
@@ -2084,31 +2084,6 @@ def _job_limit_violated(job: wintypes.HANDLE) -> bool:
     return bool(int(info.ViolationLimitFlags) & _LIMIT_VIOLATION_BITS)
 
 
-# ALE authorize layers. No protocol field and no port field: one package SID
-# matches TCP, UDP, and every other protocol those layers classify.
-_FWP_ACTION_BLOCK = 0x00001001
-_FWP_UINT64 = 4
-_FWP_SID = 13
-_FWP_MATCH_EQUAL = 0
-_FWPM_FILTER_FLAG_PERSISTENT = 0x00000001
-_FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT = 0x00000008
-_FWPM_SESSION_FLAG_DYNAMIC = 0x00000001
-_RPC_C_AUTHN_WINNT = 10
-_WFP_ALE_PACKAGE_ID = "71bc78fa-f17c-4997-a602-6abb261f351c"
-_WFP_BLOCK_LAYERS = (
-    ("ALE_AUTH_CONNECT_V4", "c38d57d1-05a7-4c33-904f-7fbceee60e82"),
-    ("ALE_AUTH_CONNECT_V6", "4a72393b-319f-44bc-84c3-ba54dcb3b6b4"),
-    ("ALE_AUTH_RECV_ACCEPT_V4", "e1cd9fe7-f4b5-4273-96c0-592e487b8650"),
-    ("ALE_AUTH_RECV_ACCEPT_V6", "a3b42c97-9f04-4672-b87e-cee9c483257f"),
-    ("ALE_AUTH_LISTEN_V4", "88bb5dad-76d7-4227-9c71-df0a3ed7be7e"),
-    ("ALE_AUTH_LISTEN_V6", "7ac9de24-17dd-4814-b4bd-a9fbc95a321b"),
-    ("ALE_RESOURCE_ASSIGNMENT_V4", "1247d66d-0b60-4a15-8d44-7155d0f53a0c"),
-    ("ALE_RESOURCE_ASSIGNMENT_V6", "55a650e1-5f0a-4eca-a653-88f53b26aa8c"),
-)
-_fwpuclnt_lib: ctypes.WinDLL | None = None
-_wfp_engine: int | None = None
-
-
 class _Guid(ctypes.Structure):
     _fields_ = [
         ("Data1", ctypes.c_uint32),
@@ -2118,359 +2093,8 @@ class _Guid(ctypes.Structure):
     ]
 
 
-class _WfpDisplay(ctypes.Structure):
-    _fields_ = [
-        ("name", ctypes.c_wchar_p),
-        ("description", ctypes.c_wchar_p),
-    ]
-
-
-class _WfpBlob(ctypes.Structure):
-    _fields_ = [
-        ("size", ctypes.c_uint32),
-        ("data", ctypes.POINTER(ctypes.c_ubyte)),
-    ]
-
-
-class _WfpValueData(ctypes.Union):
-    _fields_ = [
-        ("uint8", ctypes.c_uint8),
-        ("uint64", ctypes.POINTER(ctypes.c_uint64)),
-        ("sid", ctypes.c_void_p),
-    ]
-
-
-class _WfpValue(ctypes.Structure):
-    _fields_ = [
-        ("type", ctypes.c_uint32),
-        ("data", _WfpValueData),
-    ]
-
-
-class _WfpCondition(ctypes.Structure):
-    _fields_ = [
-        ("fieldKey", _Guid),
-        ("matchType", ctypes.c_uint32),
-        ("value", _WfpValue),
-    ]
-
-
-class _WfpActionData(ctypes.Union):
-    _fields_ = [
-        ("filterType", _Guid),
-        ("calloutKey", _Guid),
-    ]
-
-
-class _WfpAction(ctypes.Structure):
-    _fields_ = [
-        ("type", ctypes.c_uint32),
-        ("data", _WfpActionData),
-    ]
-
-
-class _WfpContext(ctypes.Union):
-    _fields_ = [
-        ("rawContext", ctypes.c_uint64),
-        ("providerContextKey", _Guid),
-    ]
-
-
-class _WfpFilter(ctypes.Structure):
-    """FWPM_FILTER0. The layout is the 64-bit one: 200 bytes."""
-
-    _fields_ = [
-        ("filterKey", _Guid),
-        ("displayData", _WfpDisplay),
-        ("flags", ctypes.c_uint32),
-        ("providerKey", ctypes.c_void_p),
-        ("providerData", _WfpBlob),
-        ("layerKey", _Guid),
-        ("subLayerKey", _Guid),
-        ("weight", _WfpValue),
-        ("numFilterConditions", ctypes.c_uint32),
-        ("filterCondition", ctypes.POINTER(_WfpCondition)),
-        ("action", _WfpAction),
-        ("context", _WfpContext),
-        ("reserved", ctypes.c_void_p),
-        ("filterId", ctypes.c_uint64),
-        ("effectiveWeight", _WfpValue),
-    ]
-
-
-class _WfpSession(ctypes.Structure):
-    _fields_ = [
-        ("sessionKey", _Guid),
-        ("displayData", _WfpDisplay),
-        ("flags", ctypes.c_uint32),
-        ("txnWaitTimeoutInMSec", ctypes.c_uint32),
-        ("processId", ctypes.c_uint32),
-        ("sid", ctypes.c_void_p),
-        ("username", ctypes.c_wchar_p),
-        ("kernelMode", ctypes.c_int),
-    ]
-
-
-class _WfpSubLayer(ctypes.Structure):
-    _fields_ = [
-        ("subLayerKey", _Guid),
-        ("displayData", _WfpDisplay),
-        ("flags", ctypes.c_uint32),
-        ("providerKey", ctypes.c_void_p),
-        ("providerData", _WfpBlob),
-        ("weight", ctypes.c_uint16),
-    ]
-
-
 def _guid(text: str) -> _Guid:
     return _Guid.from_buffer_copy(uuid.UUID(text).bytes_le)
-
-
-def _wfp_failure(step: str, code: int) -> OSError:
-    number = code & 0xFFFFFFFF
-    return OSError(f"Could not set the script network block ({step}, code {number:#010x}).")
-
-
-def _wfp_block_filter(layer: str, sid_pointer: int, sublayer: _Guid) -> _WfpFilter:
-    """One hard block for this container. The only condition is its package SID."""
-
-    if not sid_pointer:
-        raise OSError("Could not set the script network block (the container id was empty).")
-    weight = ctypes.c_uint64(0xFFFFFFFFFFFFFFFF)
-    condition = _WfpCondition()
-    condition.fieldKey = _guid(_WFP_ALE_PACKAGE_ID)
-    condition.matchType = _FWP_MATCH_EQUAL
-    condition.value.type = _FWP_SID
-    condition.value.data.sid = sid_pointer
-    name = ctypes.create_unicode_buffer("aicad script network block")
-    description = ctypes.create_unicode_buffer("Blocks one aicad script container.")
-    filt = _WfpFilter()
-    filt.displayData.name = ctypes.cast(name, ctypes.c_wchar_p)
-    filt.displayData.description = ctypes.cast(description, ctypes.c_wchar_p)
-    filt.flags = _FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
-    filt.layerKey = _guid(layer)
-    filt.subLayerKey = sublayer
-    filt.weight.type = _FWP_UINT64
-    filt.weight.data.uint64 = ctypes.pointer(weight)
-    filt.numFilterConditions = 1
-    filt.filterCondition = ctypes.pointer(condition)
-    filt.action.type = _FWP_ACTION_BLOCK
-    filt._keepalive = [weight, condition, name, description]
-    return filt
-
-
-def _wfp_block_filters(sid_pointer: int, sublayer: _Guid | None = None) -> list[_WfpFilter]:
-    key = sublayer if sublayer is not None else _guid(str(uuid.uuid4()))
-    return [_wfp_block_filter(layer, sid_pointer, key) for _name, layer in _WFP_BLOCK_LAYERS]
-
-
-def _fwpuclnt() -> ctypes.WinDLL:
-    global _fwpuclnt_lib
-    if _fwpuclnt_lib is None:
-        library = ctypes.WinDLL("fwpuclnt", use_last_error=True)
-        library.FwpmEngineOpen0.argtypes = [
-            wintypes.LPCWSTR,
-            wintypes.UINT,
-            ctypes.c_void_p,
-            ctypes.POINTER(_WfpSession),
-            ctypes.POINTER(ctypes.c_void_p),
-        ]
-        library.FwpmEngineOpen0.restype = wintypes.DWORD
-        library.FwpmEngineClose0.argtypes = [ctypes.c_void_p]
-        library.FwpmEngineClose0.restype = wintypes.DWORD
-        library.FwpmSubLayerAdd0.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(_WfpSubLayer),
-            ctypes.c_void_p,
-        ]
-        library.FwpmSubLayerAdd0.restype = wintypes.DWORD
-        library.FwpmFilterAdd0.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(_WfpFilter),
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_uint64),
-        ]
-        library.FwpmFilterAdd0.restype = wintypes.DWORD
-        _fwpuclnt_lib = library
-    return _fwpuclnt_lib
-
-
-def _install_wfp_block(sid_text: str) -> None:
-    """Block this container on every ALE authorize layer. Fail closed."""
-
-    global _wfp_engine
-    if sys.platform != "win32":
-        return
-    if _wfp_engine:
-        raise OSError("Could not set the script network block (a filter is already installed).")
-    _bind()
-    client = _fwpuclnt()
-    session_name = ctypes.create_unicode_buffer("aicad script network")
-    session_text = ctypes.create_unicode_buffer("Blocks one aicad script container.")
-    session = _WfpSession()
-    session.flags = _FWPM_SESSION_FLAG_DYNAMIC
-    session.displayData.name = ctypes.cast(session_name, ctypes.c_wchar_p)
-    session.displayData.description = ctypes.cast(session_text, ctypes.c_wchar_p)
-    session.kernelMode = 0
-    engine = ctypes.c_void_p()
-    code = int(
-        client.FwpmEngineOpen0(
-            None,
-            _RPC_C_AUTHN_WINNT,
-            None,
-            ctypes.byref(session),
-            ctypes.byref(engine),
-        )
-    )
-    if code or not engine.value:
-        raise _wfp_failure("FwpmEngineOpen0", code)
-    sid_ptr = None
-    try:
-        sid_ptr = _sid_pointer(sid_text)
-        if not sid_ptr.value:
-            raise OSError("Could not set the script network block (the container id was empty).")
-        sublayer_key = _guid(str(uuid.uuid4()))
-        sublayer_name = ctypes.create_unicode_buffer("aicad script network")
-        sublayer_text = ctypes.create_unicode_buffer("Blocks one aicad script container.")
-        sublayer = _WfpSubLayer()
-        sublayer.subLayerKey = sublayer_key
-        sublayer.displayData.name = ctypes.cast(sublayer_name, ctypes.c_wchar_p)
-        sublayer.displayData.description = ctypes.cast(sublayer_text, ctypes.c_wchar_p)
-        sublayer.weight = 0xFFFF
-        code = int(client.FwpmSubLayerAdd0(engine, ctypes.byref(sublayer), None))
-        if code:
-            raise _wfp_failure("FwpmSubLayerAdd0", code)
-        for name, layer in _WFP_BLOCK_LAYERS:
-            filt = _wfp_block_filter(layer, int(sid_ptr.value), sublayer_key)
-            if int(filt.numFilterConditions) != 1 or int(filt.action.type) != _FWP_ACTION_BLOCK:
-                raise OSError(
-                    "Could not set the script network block (the filter is not limited to the container)."
-                )
-            added = ctypes.c_uint64()
-            code = int(client.FwpmFilterAdd0(engine, ctypes.byref(filt), None, ctypes.byref(added)))
-            if code:
-                raise _wfp_failure(name, code)
-    except Exception:
-        client.FwpmEngineClose0(engine)
-        raise
-    finally:
-        if sid_ptr:
-            _kernel32().LocalFree(sid_ptr)
-    _wfp_engine = int(engine.value)
-
-
-def _close_wfp_block() -> None:
-    """Drop the dynamic filters. They also die when this process exits."""
-
-    global _wfp_engine
-    engine = _wfp_engine
-    _wfp_engine = None
-    if not engine or sys.platform != "win32":
-        return
-    _fwpuclnt().FwpmEngineClose0(ctypes.c_void_p(engine))
-
-
-def _firewall_rule_names() -> tuple[str, ...]:
-    return _NETWORK_OFF_RULES + _NETWORK_OFF_STALE_RULES
-
-
-def _firewall_script(sid: str | None = None, *, install: bool) -> str:
-    """PowerShell that blocks, or clears, this container's inbound and outbound traffic.
-
-    The package id is the AppContainer SID. A capability SID is not accepted.
-    Every protocol is blocked. The rules name no port.
-    """
-
-    names = ", ".join(repr(name) for name in _firewall_rule_names())
-    # A missing rule is not an error. Ending on that lookup would make
-    # powershell.exe exit 1, and a later script that needs the network
-    # would not start.
-    remove = (
-        "$ErrorActionPreference = 'Stop'\n"
-        "try {\n"
-        f"  foreach ($name in @({names})) {{\n"
-        "    foreach ($rule in @(Get-NetFirewallRule -Name $name -ErrorAction Ignore)) {\n"
-        "      Remove-NetFirewallRule -InputObject $rule\n"
-        "    }\n"
-        "  }\n"
-    )
-    if not install:
-        return remove + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
-    if sid is None or _PACKAGE_SID_TEXT.fullmatch(sid) is None:
-        raise OSError("The AppContainer id is not a package SID, so the network was not blocked.")
-    package = sid.upper()
-    # Remove returns before the firewall service drops the name. Wait until
-    # the name is gone, then create the block. The script has not started.
-    fresh = ", ".join(repr(name) for name in _NETWORK_OFF_RULES)
-    wait = (
-        f"  foreach ($name in @({fresh})) {{\n"
-        "    $gone = $false\n"
-        "    foreach ($attempt in 1..40) {\n"
-        "      $left = @(Get-NetFirewallRule -Name $name -ErrorAction Ignore)\n"
-        "      if ($left.Count -eq 0) { $gone = $true; break }\n"
-        "      Start-Sleep -Milliseconds 250\n"
-        "    }\n"
-        "    if (-not $gone) { throw 'the network block name is still registered' }\n"
-        "  }\n"
-    )
-    return (
-        remove
-        + wait
-        + "  New-NetFirewallRule -Name 'aicad-script-network-off-out' "
-        + "-DisplayName 'aicad script network off outbound' "
-        + "-Direction Outbound -Action Block -Protocol Any "
-        + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
-        + "  New-NetFirewallRule -Name 'aicad-script-network-off-in' "
-        + "-DisplayName 'aicad script network off inbound' "
-        + "-Direction Inbound -Action Block -Protocol Any "
-        + f"-Package '{package}' -Profile Any -Enabled True | Out-Null\n"
-        + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
-    )
-
-
-def _powershell_executable() -> str:
-    """The system PowerShell, not a name looked up on PATH.
-
-    Windows PowerShell is under System32\\WindowsPowerShell, not in System32
-    itself. A child whose PATH is only the interpreter and the system
-    directories still has to install the network block.
-    """
-
-    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
-    if not root:
-        return "powershell.exe"
-    return str(Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
-
-
-def _run_firewall_script(script: str) -> None:
-    kwargs: dict = {
-        "capture_output": True,
-        "text": True,
-        # Later calls get slower. A timeout is still a missing block.
-        "timeout": 120,
-        "check": False,
-        "stdin": subprocess.DEVNULL,
-    }
-    if sys.platform == "win32":
-        kwargs["creationflags"] = _CREATE_NO_WINDOW
-    try:
-        completed = subprocess.run(
-            [_powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", script],
-            **kwargs,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise OSError(f"Could not set the script network block. {exc}") from exc
-    if completed.returncode != 0:
-        detail = ((completed.stderr or "") + (completed.stdout or "")).strip()
-        if "Access is denied" in detail or "PermissionDenied" in detail:
-            raise OSError(
-                "Windows refused the firewall rule that keeps a script off the network, "
-                "because this process is not running as administrator"
-            )
-        raise OSError(
-            "Could not set the script network block "
-            f"(code {completed.returncode}). {detail}"
-        )
 
 
 def _lookup_profile_local_app_data() -> Path | None:
@@ -2519,268 +2143,6 @@ def _profile_local_app_data() -> Path | None:
     return _profile_local_app_data_path
 
 
-def _network_off_marker() -> Path | None:
-    if _network_off_marker_path is not None:
-        return _network_off_marker_path
-    base = _profile_local_app_data()
-    if base is None:
-        return None
-    return base / "aicad" / "script-network-off-sid"
-
-
-def _recorded_rules_sid() -> str | None:
-    path = _network_off_marker()
-    if path is None:
-        return None
-    try:
-        from aicad.file_access import read_text
-
-        text = read_text(path, maximum=4096).strip()
-    except OSError:
-        return None
-    if _PACKAGE_SID_TEXT.fullmatch(text) is None:
-        return None
-    return text.upper()
-
-
-def _record_rules_sid(sid: str) -> None:
-    path = _network_off_marker()
-    if path is None:
-        return
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        from aicad.paths import publish_text
-
-        publish_text(path, sid.upper() + "\n", root=path.parent)
-    except OSError:
-        return
-
-
-def _forget_recorded_rules() -> None:
-    path = _network_off_marker()
-    if path is None:
-        return
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        return
-    _forget_firewall_verified()
-
-
-def _firewall_verified_path() -> Path | None:
-    try:
-        marker = _network_off_marker()
-    except (OSError, AttributeError):
-        return None
-    if marker is None:
-        return None
-    return marker.with_name("script-network-off-verified")
-
-
-def _remember_firewall_verified(sid: str) -> None:
-    """Remember a successful read-back while this process is still running."""
-
-    import time
-
-    path = _firewall_verified_path()
-    if path is None:
-        return
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{sid.upper()} {os.getpid()} {time.time():.0f}\n", encoding="utf-8")
-    except OSError:
-        return
-
-
-def _firewall_recently_verified(sid: str) -> bool:
-    """True when a live process read this block back within the script limit.
-
-    A part script started from a design script would otherwise read the
-    firewall again. That read can take as long as the design script is
-    allowed to run.
-    """
-
-    path = _firewall_verified_path()
-    if path is None or _PACKAGE_SID_TEXT.fullmatch(sid) is None:
-        return False
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return False
-    if len(text) > 4096:
-        return False
-    parts = text.split()
-    if len(parts) != 3 or parts[0].upper() != sid.upper():
-        return False
-    if _PACKAGE_SID_TEXT.fullmatch(parts[0]) is None:
-        return False
-    try:
-        pid = int(parts[1])
-        when = float(parts[2])
-    except ValueError:
-        return False
-    if not _pid_alive(pid):
-        return False
-    import time
-
-    return time.time() - when <= 120
-
-
-def _forget_firewall_verified() -> None:
-    path = _firewall_verified_path()
-    if path is None:
-        return
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        return
-
-
-def _firewall_present_script(sid: str) -> str:
-    """Read the two block rules. This script does not create or remove any rule."""
-
-    if _PACKAGE_SID_TEXT.fullmatch(sid) is None:
-        raise OSError("The AppContainer id is not a package SID, so the network was not blocked.")
-    package = sid.upper()
-    names = (
-        ("aicad-script-network-off-out", "Outbound"),
-        ("aicad-script-network-off-in", "Inbound"),
-    )
-    checks = "\n".join(
-        f"  if (-not (Test-AicadBlock '{name}' '{direction}' '{package}')) {{ exit 2 }}\n"
-        for name, direction in names
-    )
-    return (
-        "$ErrorActionPreference = 'Stop'\n"
-        "function Test-AicadBlock([string]$Name, [string]$Direction, [string]$Package) {\n"
-        "  $rules = @(Get-NetFirewallRule -Name $Name -ErrorAction Ignore)\n"
-        "  if ($rules.Count -ne 1) { return $false }\n"
-        "  $rule = $rules[0]\n"
-        "  if ([string]$rule.Enabled -ne 'True') { return $false }\n"
-        "  if ([string]$rule.Action -ne 'Block') { return $false }\n"
-        "  if ([string]$rule.Direction -ne $Direction) { return $false }\n"
-        "  $ports = @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule)\n"
-        "  if ($ports.Count -ne 1) { return $false }\n"
-        "  $protocol = [string]$ports[0].Protocol\n"
-        "  if ($protocol -ne 'Any' -and $protocol -ne '256') { return $false }\n"
-        "  foreach ($value in @($ports[0].LocalPort) + @($ports[0].RemotePort)) {\n"
-        "    foreach ($item in @($value)) {\n"
-        "      $text = [string]$item\n"
-        "      if ($text -and $text -ne 'Any') { return $false }\n"
-        "    }\n"
-        "  }\n"
-        "  $apps = @(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule)\n"
-        "  if ($apps.Count -ne 1) { return $false }\n"
-        "  if ([string]$apps[0].Package.Trim().ToUpperInvariant() -ne $Package) { return $false }\n"
-        "  return $true\n"
-        "}\n"
-        "try {\n"
-        f"{checks}"
-        "  exit 0\n"
-        "} catch {\n"
-        "  Write-Output ($_ | Out-String)\n"
-        "  exit 2\n"
-        "}\n"
-    )
-
-
-def _firewall_block_is_present(sid: str) -> bool:
-    """True only when both block rules for this package are installed now.
-
-    A missing rule, a timed-out lookup, or any other failure is not present.
-    The caller installs the rules again or does not start the script. A live
-    process that just read the same block back is reused, so the lookup does
-    not run again inside that script's time limit.
-    """
-
-    if sys.platform != "win32":
-        return False
-    if _firewall_recently_verified(sid):
-        return True
-    try:
-        _run_firewall_script(_firewall_present_script(sid))
-    except OSError:
-        return False
-    _remember_firewall_verified(sid)
-    return True
-
-
-def _hold_network_block(sid_text: str) -> None:
-    """Install the container block before a network-off script starts.
-
-    A block the read-back already accepts is left in place. A missing record
-    does not remove it. A missing block is installed, and this returns only
-    after the read-back accepts it. The filter is installed for each hold,
-    because closing it drops the dynamic session.
-    """
-
-    global _network_off_holders, _network_off_sid, _network_off_rules_sid
-    with _network_off_lock:
-        wanted = sid_text.upper()
-        if _network_off_holders and _network_off_sid != wanted:
-            raise OSError(
-                "A script still has the network blocked, so this script was not started."
-            )
-        if _network_off_holders == 0:
-            if not _firewall_block_is_present(wanted):
-                _run_firewall_script(_firewall_script(sid_text, install=True))
-                if not _firewall_block_is_present(wanted):
-                    raise OSError(
-                        "The script network block is not in place, so the script was not started."
-                    )
-            if _recorded_rules_sid() != wanted:
-                _record_rules_sid(wanted)
-            _network_off_rules_sid = wanted
-            try:
-                if _wfp_engine is None:
-                    _install_wfp_block(sid_text)
-            except Exception:
-                try:
-                    _run_firewall_script(_firewall_script(install=False))
-                except OSError:
-                    pass
-                _forget_recorded_rules()
-                _network_off_rules_sid = None
-                raise
-            _network_off_sid = wanted
-        _network_off_holders += 1
-
-
-def _release_network_block() -> None:
-    """Drop the filter once the last network-off child has exited.
-
-    The firewall rules stay. The next network-off script reads them back and
-    leaves a block that already matches this package. A network-on script
-    removes them before it starts.
-    """
-
-    global _network_off_holders, _network_off_sid
-    with _network_off_lock:
-        if _network_off_holders <= 0:
-            return
-        _network_off_holders -= 1
-        if _network_off_holders > 0:
-            return
-        _network_off_sid = None
-        _close_wfp_block()
-
-
-def _require_script_network_open() -> None:
-    """A network-on script must not run while the shared container is blocked."""
-
-    global _network_off_sid, _network_off_rules_sid
-    with _network_off_lock:
-        if _network_off_holders:
-            raise OSError(
-                "A script still has the network blocked, so this script was not started."
-            )
-        _close_wfp_block()
-        _forget_recorded_rules()
-        _run_firewall_script(_firewall_script(install=False))
-        _network_off_sid = None
-        _network_off_rules_sid = None
-
-
 def spawn(
     command: list[str],
     *,
@@ -2795,17 +2157,29 @@ def spawn(
     stdout_path: Path,
     stderr_path: Path,
     disk=None,
+    child_checks_network: bool = False,
 ) -> tuple[int, str, str, bool, bool, str]:
-    """Start one confined process. Returns code, stdout, stderr, timed_out, memory_killed, mechanism."""
+    """Start one confined process. Returns code, stdout, stderr, timed_out, memory_killed, mechanism.
+
+    A run installs nothing. A network-off process starts only when the permanent
+    block can be read. ``child_checks_network`` says the process proves the network
+    is refused before it does anything else. Any other process gets that proof first.
+    """
 
     _bind()
+    if not network:
+        blocked = network_block_error()
+        if blocked:
+            raise SandboxNotReady(blocked)
     mode = ensure_mode(read_paths)
+    if not network and not child_checks_network:
+        _prove_network_off(mode, read_paths)
+    profile = _NETWORK_PROFILE_NAME if network else _PROFILE_NAME
     sid = None
     job = None
     process = None
-    held_block = False
     try:
-        sid, sid_text = _appcontainer_sid()
+        sid, sid_text = _appcontainer_sid(profile)
         # Do not rewrite this process's access list. An AppContainer can open
         # a process only when that process grants the container, and this
         # process does not. Adding a deny entry here stopped later scripts
@@ -2814,13 +2188,6 @@ def spawn(
         grant_workspace(workspace, sid_text, package)
         grant_read_paths(read_paths, sid_text, package)
         job = _create_job(cpu_seconds, memory_bytes)
-        if network:
-            _require_script_network_open()
-        else:
-            # The block is in place before the process is resumed. The child
-            # then checks that the connection is refused.
-            _hold_network_block(sid_text)
-            held_block = True
         process, io_base = _launch(
             command,
             cwd=cwd,
@@ -2901,13 +2268,11 @@ def spawn(
                 _kernel32().CloseHandle(process.hProcess)
             if job is not None:
                 _kernel32().CloseHandle(job)
-            if held_block:
-                _release_network_block()
             if sid is not None:
                 _advapi32().FreeSid(sid)
         finally:
             if sid is not None:
-                _release_profile_use()
+                _release_profile_use(profile)
 
 
 def _probe_source() -> str:
@@ -2923,21 +2288,39 @@ def _probe_source() -> str:
     )
 
 
-def _probe_command(workspace: Path) -> list[str]:
+def _network_probe_source() -> str:
+    """A process with no check of its own gets this one, in the same container, first."""
+
+    return (
+        "from aicad.sandbox import windows_network_attempts, windows_network_detail, windows_network_is_off\n"
+        "from aicad.sandbox_windows import identity_failures, windows_token_network\n"
+        f"failed = identity_failures({_PROBE_MEMORY_BYTES})\n"
+        "if failed:\n"
+        "    raise SystemExit('confinement: ' + '; '.join(failed))\n"
+        "found = {'package': None, 'capabilities': None, 'attempts': ()}\n"
+        "found['package'], found['capabilities'] = windows_token_network()\n"
+        "found['attempts'] = windows_network_attempts()\n"
+        "if not windows_network_is_off(**found):\n"
+        "    raise SystemExit(windows_network_detail(**found))\n"
+        "print('sandbox-ok')\n"
+    )
+
+
+def _probe_command(workspace: Path, source: str | None = None) -> list[str]:
     script = workspace / "probe.py"
     # The real script imports aicad. A probe that only prints can succeed in a
     # container that then fails to load the geometry libraries. The same
     # confinement check the script uses has to pass before this counts.
     from aicad.paths import publish_text
 
-    publish_text(script, _probe_source(), root=script.parent)
+    publish_text(script, source or _probe_source(), root=script.parent)
     # -P keeps the project folder, which is both the working directory and the
     # script directory, off sys.path. The script path is absolute.
     return [sys.executable, "-P", "-B", "-u", str(script.resolve())]
 
 
-def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
-    """Return an error string when this AppContainer mode cannot start Python."""
+def _probe_mode(mode: str, read_paths: Sequence[Path], source: str | None = None) -> str | None:
+    """Return an error string when this AppContainer mode cannot run the probe."""
 
     import tempfile
 
@@ -2951,14 +2334,11 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
             grant_read_paths(read_paths, sid_text, package)
             grant_workspace(root, sid_text, package)
             job = _create_job(_PROBE_CPU_SECONDS, _PROBE_MEMORY_BYTES)
-            held_block = False
             try:
                 stdout_path = root / "stdout.txt"
                 stderr_path = root / "stderr.txt"
-                _hold_network_block(sid_text)
-                held_block = True
                 process, _io_base = _launch(
-                    _probe_command(root),
+                    _probe_command(root, source),
                     cwd=str(root),
                     env=_probe_env(root),
                     job=job,
@@ -2982,8 +2362,6 @@ def _probe_mode(mode: str, read_paths: Sequence[Path]) -> str | None:
                     _kernel32().CloseHandle(process.hProcess)
             finally:
                 _kernel32().CloseHandle(job)
-                if held_block:
-                    _release_network_block()
         finally:
             _advapi32().FreeSid(sid)
     except OSError as exc:
@@ -3031,7 +2409,7 @@ def _probe_env(workspace: Path) -> dict[str, str]:
 def ensure_mode(read_paths: Sequence[Path]) -> str:
     """Pick LPAC when it can start Python, otherwise a normal AppContainer."""
 
-    global _mode, _mode_error
+    global _mode, _mode_error, _lpac_fallback_reason
     if _mode:
         return _mode
     if _mode_error:
@@ -3043,6 +2421,9 @@ def ensure_mode(read_paths: Sequence[Path]) -> str:
     app_error = _probe_mode("appcontainer", read_paths)
     if app_error is None:
         _mode = "appcontainer"
+        _lpac_fallback_reason = lpac_error
+        # Stderr, because stdout is the MCP connection.
+        print(f"aicad: scripts run in a normal AppContainer. The stricter one failed: {lpac_error}", file=sys.stderr)
         return _mode
     if lpac_error == app_error:
         failures = f"Both AppContainer modes failed ({lpac_error})."
@@ -3058,14 +2439,51 @@ def ensure_mode(read_paths: Sequence[Path]) -> str:
     raise OSError(_mode_error)
 
 
+def mode_report() -> dict[str, str]:
+    """Which container scripts use here, and why not the stricter one. Empty before the first check."""
+
+    if not _mode:
+        return {}
+    report = {"mode": _mode}
+    if _lpac_fallback_reason:
+        report["stricter_mode_failed"] = _lpac_fallback_reason
+    return report
+
+
+def network_block_error() -> str | None:
+    """Why a network-off process may not start, or None. It needs no administrator rights.
+
+    This is read on every run, so setup in another window is seen at once. A read
+    that fails is not a block. Finding the filters is not proof either: the check
+    inside the container still decides.
+    """
+
+    if sys.platform != "win32":
+        return None
+    try:
+        found = setup.filters_present()
+    except OSError:
+        found = 0
+    return None if found == len(setup.BLOCK_LAYERS) else _SETUP_NEEDED
+
+
+def _prove_network_off(mode: str, read_paths: Sequence[Path]) -> None:
+    error = _probe_mode(mode, read_paths, _network_probe_source())
+    if error:
+        raise SandboxNotReady(f"The block is set up, but the network was not refused, so nothing was run. {error}")
+
+
 def availability_error(read_paths: Sequence[Path] | None = None) -> str | None:
-    """Whether this process can confine a script. The answer is kept for the process."""
+    """Whether this process can confine a script. The container answer is kept for the process."""
 
     global _probe_done, _probe_result
     if ctypes.sizeof(ctypes.c_void_p) != 8:
         return "The Windows sandbox needs 64-bit Python. The script was not run."
     if not read_paths:
         return "The sandbox was not given the Python folders it needs to read."
+    blocked = network_block_error()
+    if blocked:
+        return blocked
     if _probe_done:
         return _probe_result
     try:

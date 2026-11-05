@@ -1,7 +1,7 @@
 """Which shard runs a test file.
 
 The Windows suite runs sandboxed tests one at a time, because they share one
-machine's firewall rules. A runner of its own has its own rules, so the files
+container profile. A runner of its own has its own profile, so the files
 are split across runners. A file stays whole, so its fixtures stay together.
 
 windows_test_seconds.json holds each file's share of a Windows job, measured on a

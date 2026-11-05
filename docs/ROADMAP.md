@@ -132,22 +132,31 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 
 Left for 1.0, and not in the tree:
 
+- **Windows sandbox setup survives a reboot.** A manual check in Windows Sandbox: run `aicad sandbox-setup`, restart, and confirm the filters and rules are still in place and a script's network is still refused. A CI runner cannot restart inside its job.
 - **Joint-sized reducers.** A reducer sized from the joint it drives.
 - **Catalog mounting orientation.** A catalog row does not store the orientation of its mount. A mount can snap a catalog mate onto a face or an axis and turn in steps of 15 degrees.
 
-v1.0 does not add another feature track. CNC machining and sheet metal stay in the section after this one.
+v1.0 does not add another feature track. CAM and the manufacturing checks stay in the section after this one.
 
 ## After v1.0
 
-The tracks that follow v1.0, in order, are power and fluid estimates, hose routing with bend-radius and pinch checks, robot export (URDF and MJCF), and CNC machining and sheet-metal checks.
+Power and fluid estimates, hose routing with bend-radius and pinch checks, and robot export (URDF and MJCF) were planned for after v1.0. They are already in the tree and are described under Done.
+
+The first track after v1.0 is CAM and manufacturing checks. A part designed here should be able to go to a machine.
 
 Catalog parts carrying mass and the moment loads used by the checks are planned after v1.
 
-The power estimate, the hose checks, and the robot export are already in the tree and are described under Done. The first of these tracks that is not in the tree is:
+### CAM and manufacturing checks
 
-### CNC machining and sheet-metal checks
+**Next.** Taking a part from the model to a machine.
 
-**Next.** Checks aimed at CNC machining and at sheet metal. Print overhangs, support area, printer fit, and an optional slicer estimate stay the print half of print preparation. They do not cover a toolpath, a bend allowance, or a flat pattern.
+- **CNC checks.** Checks aimed at CNC machining, such as tool reach, internal corner radii, and features a cutter cannot get to.
+- **Sheet-metal checks.** Bend radius, bend allowance, and a flat pattern.
+- **Toolpaths.** Milling toolpaths, and lathe toolpaths where the part is turned, generated through an existing open-source engine under the "reuse the engine" rule. FreeCAD's CAM workbench and OpenCAMLib are candidates to evaluate. No engine is chosen yet.
+- **Simulation.** The toolpath is run against the stock before it is written, so a gouge, a collision, or uncut material shows up first.
+- **G-code.** A post-processor writes G-code for common controllers.
+
+3D printing stays with PrusaSlicer and OrcaSlicer. Print overhangs, support area, printer fit, and the slicer estimate remain the print half of print preparation.
 
 ## Later
 

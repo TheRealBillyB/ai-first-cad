@@ -851,6 +851,7 @@ def test_tool_runner_refuses_shell_network_and_outside_writes(tmp_path, config_h
     # The tool adds whether this computer can confine a script; the permission part matches.
     assert isinstance(reported.pop("can_run"), bool)
     reported.pop("cannot_run", None)
+    reported.pop("windows_container", None)
     assert workspace.script_status() == reported
     assert workspace.script_status()["enabled"] is False
     assert workspace.script_status()["network"] == "off"
