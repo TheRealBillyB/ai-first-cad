@@ -14,7 +14,7 @@ import pytest
 from aicad.app import make_server
 from aicad.app_worker import GeometryWorker, _error_payload, _rebuilt_error
 from aicad.blueprint import BlueprintError
-from aicad.errors import AICADError, EdgeOpError, GeometryError, PartNotFound, ScriptError
+from aicad.errors import AICADError, EdgeOpError, GeometryError, PartNotFound, SandboxNotReady, ScriptError
 from aicad.plugins import PluginConsentError, PluginError
 from aicad.session_record import RecordRefused
 
@@ -116,6 +116,13 @@ def test_an_expected_failure_from_outside_the_errors_module_stays_expected(raise
     rebuilt = _rebuilt_error(json.loads(json.dumps(_error_payload(raised))))
     assert isinstance(rebuilt, AICADError)
     assert str(rebuilt) == "no"
+
+
+def test_a_run_refused_for_a_missing_setup_keeps_its_own_error():
+    """The app answers this one with the setup message, not a server error."""
+    rebuilt = _rebuilt_error(json.loads(json.dumps(_error_payload(SandboxNotReady("run the setup")))))
+    assert type(rebuilt) is SandboxNotReady
+    assert str(rebuilt) == "run the setup"
 
 
 def test_a_failure_becomes_the_nearest_error_the_app_knows():
