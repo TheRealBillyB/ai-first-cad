@@ -205,4 +205,4 @@ def _link_without_the_symlink_privilege(monkeypatch: pytest.MonkeyPatch) -> None
 
 def pytest_collection_modifyitems(config, items):
     if os.environ.get("AICAD_DIAG_ONLY") or Path(__file__).with_name(".diag_only").exists():
-        items[:] = [i for i in items if "test_zz_diag" in i.nodeid]
+        items[:] = [i for i in items if any(k in i.nodeid for k in ("test_zz_diag", "one_gmsh_thread", "sigpipe"))]
