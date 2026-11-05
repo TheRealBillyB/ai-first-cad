@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -215,21 +216,38 @@ def _free_port():
         return probe.getsockname()[1]
 
 
+def _get(port, path, token=None):
+    connection = HTTPConnection("127.0.0.1", port, timeout=30)
+    connection.request("GET", path, headers={"X-Aicad-Token": token} if token else {})
+    response = connection.getresponse()
+    answer = response.read()
+    connection.close()
+    return response.status, answer
+
+
 def test_the_terminal_and_the_page_answer_before_the_project_opens(environment):
+    """The real `aicad app`. Its worker cannot open the project until the test has seen the page say it is opening.
+
+    A busy machine can take a long time to start Python, so this checks the order, never a duration.
+    """
     port = _free_port()
+    release = environment / "release-the-worker"
     script = (
         "import sys, time\n"
+        "from pathlib import Path\n"
         "from aicad import app_worker\n"
         "real = app_worker.GeometryWorker._start\n"
-        "def slow(self):\n"
-        "    time.sleep(8)\n"
+        "def held(self):\n"
+        f"    release = Path({str(release)!r})\n"
+        "    deadline = time.monotonic() + 600\n"
+        "    while not release.exists() and time.monotonic() < deadline:\n"
+        "        time.sleep(0.05)\n"
         "    real(self)\n"
-        "app_worker.GeometryWorker._start = slow\n"
+        "app_worker.GeometryWorker._start = held\n"
         "from aicad.cli import main\n"
         f"sys.argv = ['aicad', 'app', '--workspace', {str(environment / 'project')!r}, '--no-browser', '--port', '{port}']\n"
         "sys.exit(main())\n"
     )
-    started = time.monotonic()
     process = subprocess.Popen(
         [sys.executable, "-X", "utf8", "-c", script],
         stdout=subprocess.PIPE,
@@ -239,29 +257,31 @@ def test_the_terminal_and_the_page_answer_before_the_project_opens(environment):
     )
     try:
         assert process.stdout.readline().strip() == "Opening the project, this can take a minute..."
+        deadline = time.monotonic() + 240
         page = None
-        while time.monotonic() - started < 60 and page is None:
+        while page is None:
+            assert time.monotonic() < deadline, "the page never answered"
+            assert process.poll() is None, "the app exited"
             try:
-                connection = HTTPConnection("127.0.0.1", port, timeout=2)
-                connection.request("GET", "/")
-                page = connection.getresponse().status
-                connection.close()
+                status, page = _get(port, "/")
             except OSError:
                 time.sleep(0.1)
-        answered = time.monotonic() - started
-        assert page == 200
+        assert status == 200
+        token = re.search(rb'name="aicad-token" content="([^"]+)"', page).group(1).decode("ascii")
+        status, answer = _get(port, "/api/state", token)
+        assert status == 200
+        assert json.loads(answer)["result"]["opening"]["error"] is None
+        assert not release.exists()
+
+        release.write_text("go", encoding="utf-8")
         lines = []
-        while time.monotonic() - started < 120:
+        while "The project is open." not in lines:
             line = process.stdout.readline()
-            if not line:
-                break
+            assert line, f"the app stopped first: {lines}"
             lines.append(line.strip())
-            if line.startswith("The project is open."):
-                break
-        opened = time.monotonic() - started
-        assert "The project is open." in lines
-        # The page answered while the worker was still held back.
-        assert opened - answered > 4
+        status, answer = _get(port, "/api/state", token)
+        assert status == 200
+        assert "opening" not in json.loads(answer)["result"]
     finally:
         process.terminate()
         try:
