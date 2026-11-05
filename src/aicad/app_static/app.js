@@ -2807,6 +2807,14 @@ async function editSettings() {
   $("chat-key").textContent = body.result.has_key ? `${body.result.provider} ${body.result.key_hint}` : "No API key";
 }
 
+// A button whose action fails would otherwise change nothing on screen, and
+// the person cannot tell a failure from a long wait. Every failure that no
+// handler caught reaches the notice bar.
+window.addEventListener("unhandledrejection", (event) => {
+  event.preventDefault();
+  showError(event.reason);
+});
+
 function showError(error) {
   const message = error && error.message ? error.message : String(error || "The command failed.");
   const banner = $("app-notice");
