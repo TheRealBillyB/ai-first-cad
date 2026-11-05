@@ -1,0 +1,35 @@
+# Secret scan settings for gitleaks. To run it on your machine:
+#
+#     gitleaks git --config .gitleaks.toml .
+#
+# The default gitleaks rules stay on. The rule below also flags a path into
+# a real person's home folder, which tells a reader that person's account name.
+
+title = "ai-first-cad secret scan"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "personal-home-path"
+description = "A path into a person's home folder. Use a placeholder such as C:\\Users\\you, /home/you, %USERPROFILE%, or ~ instead."
+# Group 1 is the account name. A Windows path may be written with one or two
+# backslashes, or with forward slashes. A Unix path must start the token, so a
+# URL such as https://api.github.com/users/name does not match.
+regex = '''(?i:\b[a-z]:(?:\\\\|\\|/)(?:users|documents and settings)(?:\\\\|\\|/))([A-Za-z0-9][A-Za-z0-9._-]+)|(?:^|[\s"'`(=,\[])/(?:home|Users)/([A-Za-z0-9][A-Za-z0-9._-]+)'''
+keywords = ["users", "home", "documents and settings"]
+
+[[rules.allowlists]]
+description = "Placeholder account names that do not identify anyone"
+regexTarget = "match"
+regexes = [
+    '''(?i)[\\/](?:you|yourname|your_name|your-name|username|user|someone|me|name|example|runner|secret|public|default|all users|aicadtest\d*)(?:$|[\\/\s"'`.,:;)\]])''',
+]
+
+[[allowlists]]
+description = "Windows Filtering Platform layer GUIDs are public constants, not keys"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+    '''\("ALE_[A-Z0-9_]+", "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"\)''',
+]

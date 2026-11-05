@@ -12,6 +12,8 @@ git config core.hooksPath .githooks
 
 That setting is optional. `.github/workflows/docs.yml` still runs the check on every push and pull request.
 
+Never commit secrets (API keys, tokens, passwords) or personal paths such as `C:\Users\<name>` or `/home/<name>`. This applies to people and to AI agents. Keep private notes in `private/`. `.gitleaks.toml` holds the secret-scan rules. To check your commits before a push, run `gitleaks git --config .gitleaks.toml .`
+
 ## How to contribute
 
 1. Open an issue or a pull request against `main`.
