@@ -153,6 +153,9 @@ def read_agent_token(port: int) -> str:
 
 
 _OPEN_RECHECK_SECONDS = 5.0
+# A browser that leaves mid-response. Windows raises ConnectionAbortedError.
+# ConnectionRefusedError is not here: from a chat turn it is a real error.
+_CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 
 def _open_project_path(port: int) -> Path:
@@ -294,6 +297,12 @@ class _WorkspaceServer(ThreadingHTTPServer):
                 if changed:
                     _record_open_project(port, root)
             return self._other_app_port
+
+    def handle_error(self, request, client_address) -> None:
+        # A page that reloads or closes drops its connection. That is normal.
+        if isinstance(sys.exc_info()[1], _CLIENT_GONE):
+            return
+        super().handle_error(request, client_address)
 
     def process_request(self, request, client_address) -> None:
         # This request's geometry runs on the thread started below.
@@ -680,7 +689,7 @@ def _handler(session: Workspace):
                 emit("done", {})
             except AICADError as exc:
                 emit("error", {"error": str(exc)})
-            except (BrokenPipeError, ConnectionResetError):
+            except _CLIENT_GONE:
                 return
 
         def _events(self) -> None:
@@ -708,7 +717,7 @@ def _handler(session: Workspace):
                         continue
                     self.wfile.write(b"data: " + json.dumps(event).encode("utf-8") + b"\n\n")
                     self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            except (ConnectionError, TimeoutError):
                 return
             finally:
                 unsubscribe()
@@ -832,13 +841,16 @@ def _handler(session: Workspace):
             except Exception:
                 pass
             data = json.dumps({"ok": False, "error": message}).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self._security_headers()
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self._security_headers()
+                self.end_headers()
+                self.wfile.write(data)
+            except _CLIENT_GONE:
+                return  # the client left. There is no one to answer.
 
         def _content_length(self) -> int | None:
             """How many body bytes the client declared.
