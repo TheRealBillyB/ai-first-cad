@@ -58,7 +58,7 @@ jobs:
           printf 'Dir::Cache::Archives "%s";\n' "${GITHUB_WORKSPACE}/.apt-archives" | sudo tee /etc/apt/apt.conf.d/99-aicad-archive-cache >/dev/null
 
       - name: Install aicad
-        run: python install.py
+        run: python install.py --no-sandbox-setup
 
       # macOS and Windows have no CalculiX package on the runner image.
       # The lock names every conda-forge file, and the script checks sha256

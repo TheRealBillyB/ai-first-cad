@@ -172,6 +172,14 @@ function renderScriptWarning() {
   const text = document.createElement("p");
   const button = document.createElement("button");
   button.type = "button";
+  if (scripts.setup_needed) {
+    // Allowing scripts would not help until this is done, so there is no button.
+    box.className = "script-warning";
+    text.textContent = scripts.setup_needed;
+    box.append(text);
+    document.documentElement.style.setProperty("--banner", box.offsetHeight + "px");
+    return;
+  }
   if (!scripts.enabled) {
     box.className = "script-warning";
     text.textContent = (scripts.warning || "Design scripts run code the assistant wrote.") + " Design scripts are off for this project.";

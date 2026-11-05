@@ -289,14 +289,14 @@ def _firewall_script_around(body: str) -> str:
     return "$ErrorActionPreference = 'Stop'\ntry {\n" + body + "} catch {\n  Write-Output ($_ | Out-String)\n  exit 1\n}\nexit 0\n"
 
 
-def firewall_read_script(sid: str) -> str:
-    """Exit 0 when both rules block every protocol for this container. Otherwise exit 2."""
+def firewall_read_script(sid: str, rules: tuple = FIREWALL_RULES) -> str:
+    """Exit 0 when these rules block every protocol for this container. Otherwise exit 2."""
     if _PACKAGE_SID.fullmatch(sid) is None:
         raise ValueError("Not a package SID.")
     package = sid.upper()
     checks = "".join(
         f"  if (-not (Test-AicadBlock '{name}' '{direction}' '{package}')) {{ exit 2 }}\n"
-        for name, _display, direction in FIREWALL_RULES
+        for name, _display, direction in rules
     )
     return (
         "$ErrorActionPreference = 'Stop'\n"
@@ -491,21 +491,26 @@ def _remove_wfp() -> None:
         client.FwpmEngineClose0(engine)
 
 
-def filters_present() -> int:
-    """How many block filters this account can read. It needs no administrator rights."""
+def readable_filters() -> list[str]:
+    """The layers whose block filter this account can read. It needs no administrator rights."""
     client = _wfp()
     engine = _open_engine(client)
-    found = 0
+    found = []
     try:
         for name, _layer in BLOCK_LAYERS:
             key = _guid(filter_key(name))
             out = ctypes.c_void_p()
             if client.FwpmFilterGetByKey0(engine, ctypes.byref(key), ctypes.byref(out)) == 0 and out.value:
                 client.FwpmFreeMemory0(ctypes.byref(out))
-                found += 1
+                found.append(name)
     finally:
         client.FwpmEngineClose0(engine)
     return found
+
+
+def filters_present() -> int:
+    """How many block filters this account can read."""
+    return len(readable_filters())
 
 
 def rules_present() -> bool:
@@ -624,6 +629,66 @@ def _run_with_uac_prompt(action: str) -> int:
         return int(code.value)
     finally:
         kernel32.CloseHandle(info.hProcess)
+
+
+def status_report() -> dict:
+    """What is in place and what is missing. This reads and changes nothing."""
+    report: dict = {
+        "ready": False,
+        "container": PROFILE_NAME,
+        "package_sid": None,
+        "filters_found": [],
+        "filters_missing": [name for name, _layer in BLOCK_LAYERS],
+        "rules_found": [],
+        "rules_missing": [rule[0] for rule in FIREWALL_RULES],
+        "errors": [],
+    }
+    try:
+        sid = package_sid()
+    except OSError as exc:
+        report["errors"].append(str(exc))
+        return report
+    report["package_sid"] = sid
+    try:
+        found = readable_filters()
+    except OSError as exc:
+        report["errors"].append(str(exc))
+    else:
+        report["filters_found"] = found
+        report["filters_missing"] = [name for name, _layer in BLOCK_LAYERS if name not in found]
+    rules_found = []
+    for rule in FIREWALL_RULES:
+        try:
+            if _run_powershell(firewall_read_script(sid, (rule,))).returncode == 0:
+                rules_found.append(rule[0])
+        except (OSError, subprocess.SubprocessError) as exc:
+            report["errors"].append(str(exc))
+    report["rules_found"] = rules_found
+    report["rules_missing"] = [rule[0] for rule in FIREWALL_RULES if rule[0] not in rules_found]
+    report["ready"] = not (report["filters_missing"] or report["rules_missing"] or report["errors"])
+    return report
+
+
+def run_status() -> int:
+    """``aicad sandbox-setup --status``. Exit 0 when ready, 1 when not. It changes nothing."""
+    if sys.platform != "win32":
+        print("Only Windows needs this step. There is nothing to set up on this computer.")
+        return 0
+    report = status_report()
+    print("The Windows sandbox is set up." if report["ready"] else "The Windows sandbox is not set up.")
+    print(f"Blocked script container: {report['container']} ({report['package_sid'] or 'could not be read'})")
+    print(f"Network filters: {len(report['filters_found'])} of {len(BLOCK_LAYERS)}")
+    for name in report["filters_missing"]:
+        print(f"    missing: {name}")
+    print(f"Firewall rules: {len(report['rules_found'])} of {len(FIREWALL_RULES)}")
+    for name in report["rules_missing"]:
+        print(f"    missing: {name}")
+    for error in report["errors"]:
+        print(f"Could not read this: {error}")
+    if report["ready"]:
+        return 0
+    print("To set it up, run `aicad sandbox-setup` and approve the Windows prompt.")
+    return 1
 
 
 def failure_reason(code: int) -> str:

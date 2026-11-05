@@ -45,14 +45,17 @@ from ctypes import wintypes
 from pathlib import Path
 
 from aicad import sandbox_setup_windows as setup
+from aicad.errors import SandboxNotReady
 
 _PROFILE_NAME = setup.PROFILE_NAME
 # Network-on scripts run here. The permanent block names only the other profile,
 # so a person allowing the network never has to take that block down.
 _NETWORK_PROFILE_NAME = "aicadscriptnet"
 _SETUP_NEEDED = (
-    "Scripts need one setup step on this computer: run `aicad sandbox-setup` and approve the "
-    "Windows prompt. On a managed computer, ask an administrator to run it once. "
+    "Design scripts and strength and vibration solves need one setup step on this computer. "
+    "Run `aicad sandbox-setup` and approve the Windows administrator prompt. It is needed once, "
+    "and it keeps those scripts and solves off the network, so code an assistant wrote cannot "
+    "send anything out. On a managed computer, ask an administrator to run it. "
     "Shape, sketch, gear, and catalog parts still work."
 )
 _PROFILE_DISPLAY = "aicad design script"
@@ -2167,7 +2170,7 @@ def spawn(
     if not network:
         blocked = network_block_error()
         if blocked:
-            raise OSError(blocked)
+            raise SandboxNotReady(blocked)
     mode = ensure_mode(read_paths)
     if not network and not child_checks_network:
         _prove_network_off(mode, read_paths)
@@ -2467,7 +2470,7 @@ def network_block_error() -> str | None:
 def _prove_network_off(mode: str, read_paths: Sequence[Path]) -> None:
     error = _probe_mode(mode, read_paths, _network_probe_source())
     if error:
-        raise OSError(f"The block is set up, but the network was not refused, so nothing was run. {error}")
+        raise SandboxNotReady(f"The block is set up, but the network was not refused, so nothing was run. {error}")
 
 
 def availability_error(read_paths: Sequence[Path] | None = None) -> str | None:

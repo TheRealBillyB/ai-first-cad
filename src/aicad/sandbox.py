@@ -658,7 +658,7 @@ def design_script_status(workspace: str | Path, network_once: bool = False, netw
         network = "off"
     from aicad.paths import hide_project_path
 
-    return {
+    status = {
         "enabled": design_scripts_enabled(root),
         "warning": WARNING,
         "enable": hide_project_path(f"aicad allow-scripts --workspace {root}", root),
@@ -667,6 +667,19 @@ def design_script_status(workspace: str | Path, network_once: bool = False, netw
         "wall_seconds": wall_seconds(root),
         "log": hide_project_path(str(root / ".aicad" / "script_log.jsonl"), root),
     }
+    setup_needed = windows_setup_needed()
+    if setup_needed:
+        status["setup_needed"] = setup_needed
+    return status
+
+
+def windows_setup_needed() -> str | None:
+    """What to tell the person when the Windows one-time setup has not run. None otherwise."""
+    if sys.platform != "win32":
+        return None
+    from aicad.sandbox_windows import network_block_error
+
+    return network_block_error()
 
 
 def script_log_path(workspace: Path) -> Path:

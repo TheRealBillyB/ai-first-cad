@@ -66,7 +66,7 @@ echo Step 2 of 2: Installing AI-First CAD into a .venv folder in this project.
 echo This can take several minutes. The geometry library is large.
 echo Leave this window open.
 echo.
-"%AICAD_PYTHON%" "%~dp0install.py"
+"%AICAD_PYTHON%" "%~dp0install.py" %*
 if errorlevel 1 goto install_failed
 echo.
 echo Install finished.

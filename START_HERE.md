@@ -35,6 +35,22 @@ The command creates a `.venv` folder and installs aicad into it, including the r
 
 If PowerShell refuses the activate script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then try the activate line the installer printed.
 
+### Windows sandbox setup
+
+On Windows, design scripts and strength and vibration solves run in a sandbox. Its network block needs one administrator approval per computer. The installer offers to do this at the end. You can also run it yourself:
+
+```bash
+aicad sandbox-setup
+```
+
+- **What it does.** It adds two firewall rules and eight network filters that block one fixed script container on every protocol. Nothing else on the computer changes.
+- **Why it needs an administrator once.** A normal account cannot add these rules, and it cannot remove them either, so a script cannot take the block down. No later run needs administrator rights.
+- **How to check it.** `aicad sandbox-setup --status` lists what is in place and what is missing. It changes nothing. It exits 0 when ready and 1 when not.
+- **How to undo it.** `aicad sandbox-setup --remove` deletes the rules and filters. It also asks for an administrator's approval.
+- **If you skip it.** Shape, sketch, gear, and catalog parts still work. Design scripts and solves do not run, and the app and any connected assistant say why and name this command.
+
+An assistant cannot run this step, and a Mac or Linux computer does not need it. For a scripted install, pass `--sandbox-setup` or `--no-sandbox-setup` to `install.py` or `install.bat`. Without a flag, an install with no one at the keyboard does not ask and prints the command to run later.
+
 ### CalculiX
 
 Strength and vibration checks need the CalculiX program `ccx`. Modeling, the app, print prep, and assemblies work without it. `python install.py` tells you if `ccx` is missing and prints the install command for your system. It does not download CalculiX. aicad only starts `ccx` as a separate program.
