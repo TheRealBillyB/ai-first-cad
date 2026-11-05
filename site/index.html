@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aicad roadmap (draft)</title>
+<meta name="description" content="What is in aicad 1.0, what comes next (CAM), and ideas for later. Free, open source, local CAD that an AI can operate as well as a person.">
+<meta name="theme-color" content="#0a1224">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<a class="skip" href="#roadmap">Skip to the roadmap</a>
+<header class="top">
+  <a class="brand" href="#top" aria-label="aicad roadmap, top"><span class="brand-mark" aria-hidden="true"></span>aicad <span class="accent">roadmap</span></a>
+  <span class="draft">Draft</span>
+  <nav class="top-nav"><a href="#done">1.0</a><a href="#next">CAM</a><a href="#future">Ideas</a><a href="https://github.com/TheRealBillyB/ai-first-cad" rel="noopener">GitHub</a></nav>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="hero-text">
+      <p class="eyebrow">ai-first-cad · roadmap</p>
+      <h1>CAD an AI can operate as well as a person.</h1>
+      <p class="lede">Free, open source, runs on your own computer, no usage limits. Here is what is in 1.0, what comes next, and the ideas we would like to build after that.</p>
+      <ul class="legend" aria-label="Legend">
+        <li><span class="dot dot-done"></span>Done in the repository</li>
+        <li><span class="dot dot-wip"></span>Finishing for 1.0</li>
+        <li><span class="dot dot-next"></span>Next: CAM</li>
+        <li><span class="dot dot-future"></span>Idea, not built yet</li>
+      </ul>
+    </div>
+    <figure class="hero-fig">
+      <picture>
+        <source media="(max-width: 640px)" srcset="images/roadmap-overview-9x16.svg">
+        <img src="images/roadmap-overview-16x9.svg" alt="Roadmap overview: 1.0 done, CAM next, then future ideas" width="1920" height="1080">
+      </picture>
+    </figure>
+  </section>
+
+  <div class="toolbar" id="roadmap" role="toolbar" aria-label="Filter roadmap items">
+    <div class="filters" role="group" aria-label="Status">
+      <button type="button" class="chip is-on" data-filter="all" aria-pressed="true">All <span class="n" data-count="all"></span></button>
+      <button type="button" class="chip" data-filter="done" aria-pressed="false"><span class="dot dot-done"></span>Done <span class="n" data-count="done"></span></button>
+      <button type="button" class="chip" data-filter="wip" aria-pressed="false"><span class="dot dot-wip"></span>Finishing <span class="n" data-count="wip"></span></button>
+      <button type="button" class="chip" data-filter="next" aria-pressed="false"><span class="dot dot-next"></span>Next <span class="n" data-count="next"></span></button>
+      <button type="button" class="chip" data-filter="future" aria-pressed="false"><span class="dot dot-future"></span>Ideas <span class="n" data-count="future"></span></button>
+    </div>
+    <label class="search"><span class="sr">Search</span><input type="search" id="q" placeholder="Search, e.g. gears, PCB" autocomplete="off"></label>
+  </div>
+
+  <div class="track">
+    <section class="stage" id="done" data-stage="done">
+      <div class="stage-head">
+        <span class="node node-done" aria-hidden="true"></span>
+        <p class="stage-kicker">1.0</p>
+        <h2>What's in 1.0</h2>
+        <p class="stage-sub">Only things the roadmap in the repository lists as done. Two items are still being finished for 1.0.</p>
+      </div>
+      <div class="grid" data-group="done wip"></div>
+    </section>
+
+    <section class="stage" id="next" data-stage="next">
+      <div class="stage-head">
+        <span class="node node-next" aria-hidden="true"></span>
+        <p class="stage-kicker">Next</p>
+        <h2>CAM: from model to machine</h2>
+        <p class="stage-sub">The first track after 1.0. Toolpaths will come from an existing open-source engine rather than a new one (none is chosen yet). 3D printing stays with PrusaSlicer and OrcaSlicer.</p>
+      </div>
+      <div class="grid" data-group="next"></div>
+    </section>
+
+    <section class="stage" id="future" data-stage="future">
+      <div class="stage-head">
+        <span class="node node-future" aria-hidden="true"></span>
+        <p class="stage-kicker">Future</p>
+        <h2>Ideas board</h2>
+        <p class="stage-sub">Things we would like to build. None of these exist yet, they are in no set order, and they may change.</p>
+      </div>
+      <div class="idea-bar" role="group" aria-label="Idea topics">
+        <button type="button" class="chip is-on" data-topic="all" aria-pressed="true">All ideas <span class="n" data-topic-count="all"></span></button>
+        <button type="button" class="chip" data-topic="Electronics" aria-pressed="false">Electronics <span class="n" data-topic-count="Electronics"></span></button>
+        <button type="button" class="chip" data-topic="Analysis" aria-pressed="false">Analysis <span class="n" data-topic-count="Analysis"></span></button>
+        <button type="button" class="chip" data-topic="Construction" aria-pressed="false">Construction <span class="n" data-topic-count="Construction"></span></button>
+        <button type="button" class="chip" data-topic="Marine" aria-pressed="false">Marine <span class="n" data-topic-count="Marine"></span></button>
+        <button type="button" class="chip" data-topic="Robotics" aria-pressed="false">Robotics <span class="n" data-topic-count="Robotics"></span></button>
+        <button type="button" class="chip" data-topic="App" aria-pressed="false">App <span class="n" data-topic-count="App"></span></button>
+      </div>
+      <div class="idea-group" data-topic="Electronics"><h3 class="group-h">Electronics</h3><div class="grid" data-group="future" data-topic="Electronics"></div></div>
+      <div class="idea-group" data-topic="Analysis"><h3 class="group-h">Analysis and testing</h3><div class="grid" data-group="future" data-topic="Analysis"></div></div>
+      <div class="idea-group" data-topic="Construction"><h3 class="group-h">Construction and architecture</h3><div class="grid" data-group="future" data-topic="Construction"></div></div>
+      <div class="idea-group" data-topic="Marine"><h3 class="group-h">Marine</h3><div class="grid" data-group="future" data-topic="Marine"></div></div>
+      <div class="idea-group" data-topic="Robotics"><h3 class="group-h">Robotics</h3><div class="grid" data-group="future" data-topic="Robotics"></div></div>
+      <div class="idea-group" data-topic="App"><h3 class="group-h">App and documents</h3><div class="grid" data-group="future" data-topic="App"></div></div>
+    </section>
+    <p class="empty" hidden>No items match. <button type="button" class="linkish" id="reset">Show everything</button></p>
+  </div>
+</main>
+
+<footer class="foot">
+  <p><strong>aicad</strong> (ai-first-cad) is free and open source under AGPL-3.0-or-later. It runs locally on Windows, macOS and Linux.</p>
+  <p><a href="https://github.com/TheRealBillyB/ai-first-cad" rel="noopener">github.com/TheRealBillyB/ai-first-cad</a></p>
+  <p class="fine">Draft roadmap. Future items are ideas, not promises or dates.</p>
+</footer>
+
+<div class="scrim" hidden></div>
+<aside class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="p-title" hidden>
+  <div class="panel-bar">
+    <button type="button" class="icon-btn" id="p-prev" aria-label="Previous item">‹</button>
+    <span class="panel-pos" id="p-pos"></span>
+    <button type="button" class="icon-btn" id="p-next" aria-label="Next item">›</button>
+    <button type="button" class="icon-btn close" id="p-close" aria-label="Close">×</button>
+  </div>
+  <img id="p-img" src="" alt="" width="800" height="600">
+  <div class="panel-body">
+    <p class="badge" id="p-badge"></p>
+    <h3 id="p-title"></h3>
+    <p class="cat" id="p-cat"></p>
+    <p id="p-desc"></p>
+    <p class="dl">Image: <a id="p-svg" href="#" download>SVG</a> · <a id="p-png" href="#" download>PNG</a></p>
+  </div>
+</aside>
+
+<script src="js/data.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

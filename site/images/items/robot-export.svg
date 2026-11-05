@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600" role="img" aria-label="Robot export (URDF and MJCF)"><title>Robot export (URDF and MJCF)</title><style>
+.ln{fill:none;stroke:#e6edf7;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}
+.lf{fill:#14233f;stroke:#e6edf7;stroke-width:3;stroke-linejoin:round}
+.lfi{fill:none;stroke:#14233f}
+.lf2{fill:#0f1b33;stroke:#9fb3cf;stroke-width:2.5;stroke-linejoin:round}
+.lf3{fill:#4cc9f0;fill-opacity:.35;stroke:#4cc9f0;stroke-width:3}
+.fa{fill:#4cc9f0;fill-opacity:.18;stroke:#4cc9f0;stroke-width:3;stroke-linejoin:round}
+.ac{fill:none;stroke:#4cc9f0;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}
+.ac-head{fill:#4cc9f0}
+.af{fill:#4cc9f0}
+.dm{stroke:#3a4d6b;stroke-width:2;fill:none}
+.tl{fill:#e6edf7;font-family:'Inter','DejaVu Sans','Segoe UI',Arial,sans-serif;font-size:20px;font-weight:700}
+.tm{fill:#4cc9f0;font-family:'JetBrains Mono','DejaVu Sans Mono',Consolas,monospace;font-size:16px}
+.ts{fill:#9fb3cf;font-family:'Inter','DejaVu Sans','Segoe UI',Arial,sans-serif;font-size:14px}
+.st-wip .lf,.st-wip .ln{stroke:#cbd5e1}
+.st-next .lf{stroke:#4cc9f0;fill:#0f2440}
+.st-next .ln{stroke:#4cc9f0}
+.st-future .lf,.st-future .ln{stroke:#8aa0c0;stroke-dasharray:9 6}
+.st-future .lf{fill:#101b31}
+.st-future .lfi{stroke:#101b31;stroke-dasharray:none}
+.st-next .lfi{stroke:#0f2440}
+.st-future .lf2{stroke:#5f7393;stroke-dasharray:6 5}
+.st-future .ac{stroke-opacity:.8}
+.st-future .fa{fill-opacity:.09}
+.mini text{display:none}
+</style><defs><pattern id="grobotexport" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0H0V20" fill="none" stroke="#12203a" stroke-width="1"/></pattern><pattern id="Grobotexport" width="100" height="100" patternUnits="userSpaceOnUse"><path d="M100 0H0V100" fill="none" stroke="#1a2c4c" stroke-width="1.2"/></pattern></defs><rect width="800" height="600" fill="#0a1224"/><rect width="800" height="600" fill="url(#grobotexport)"/><rect width="800" height="600" fill="url(#Grobotexport)"/><rect x="10" y="10" width="780" height="580" rx="14" fill="none" stroke="#2a4468" stroke-width="2"/><path d="M14,36 V14 H36" fill="none" stroke="#4cc9f0" stroke-width="3"/><path d="M786,36 V14 H764" fill="none" stroke="#4cc9f0" stroke-width="3"/><path d="M14,564 V586 H36" fill="none" stroke="#4cc9f0" stroke-width="3"/><path d="M786,564 V586 H764" fill="none" stroke="#4cc9f0" stroke-width="3"/><rect x="28" y="26" width="146.0" height="36" rx="18" fill="#4cc9f0"/><circle cx="50" cy="44" r="7" fill="#06101f"/><path d="M46.5,44 l2.5,3 l4.5,-6" stroke="#4cc9f0" stroke-width="2" fill="none"/><text x="66" y="50" fill="#06101f" font-family="'JetBrains Mono','DejaVu Sans Mono',Consolas,monospace" font-size="15" font-weight="700">DONE · 1.0</text><text x="770" y="50" text-anchor="end" fill="#5f7393" font-family="'JetBrains Mono','DejaVu Sans Mono',Consolas,monospace" font-size="15">aicad · 23</text><g class="st-done"><rect class="lf" x="250" y="120" width="110" height="80" rx="10" /><circle class="fa" cx="305" cy="160" r="12" /><line class="lf" x1="285" y1="200" x2="270" y2="300"  style="stroke-width:22;stroke-linecap:round"/><line class="lfi" x1="285" y1="200" x2="270" y2="300"  style="stroke-width:16;stroke-linecap:round"/><line class="lf" x1="270" y1="300" x2="300" y2="390"  style="stroke-width:20;stroke-linecap:round"/><line class="lfi" x1="270" y1="300" x2="300" y2="390"  style="stroke-width:14;stroke-linecap:round"/><line class="lf" x1="325" y1="200" x2="345" y2="300"  style="stroke-width:22;stroke-linecap:round"/><line class="lfi" x1="325" y1="200" x2="345" y2="300"  style="stroke-width:16;stroke-linecap:round"/><line class="lf" x1="345" y1="300" x2="330" y2="390"  style="stroke-width:20;stroke-linecap:round"/><line class="lfi" x1="345" y1="300" x2="330" y2="390"  style="stroke-width:14;stroke-linecap:round"/><circle class="fa" cx="285" cy="200" r="11" /><circle class="fa" cx="270" cy="300" r="11" /><circle class="fa" cx="325" cy="200" r="11" /><circle class="fa" cx="345" cy="300" r="11" /><rect class="lf2" x="240" y="390" width="80" height="18" rx="4" /><rect class="lf2" x="300" y="390" width="80" height="18" rx="4" /><line class="ac" x1="400.0" y1="260.0" x2="455.0" y2="260.0"/><polygon class="ac-head" points="455.0,260.0 444.2,265.2 444.2,254.8"/><path class="lf" d="M470,150 h120 l20,20 v40 h-140 z" /><text class="tm" x="540" y="188" text-anchor="middle">robot.urdf</text><path class="lf" d="M470,230 h120 l20,20 v40 h-140 z" /><text class="tm" x="540" y="268" text-anchor="middle">robot.xml</text><path class="lf" d="M470,310 h120 l20,20 v40 h-140 z" /><text class="tm" x="540" y="348" text-anchor="middle">meshes/*.stl</text></g><rect x="10" y="478" width="780" height="112" fill="#0a1224" fill-opacity=".88"/><line x1="40" y1="478" x2="760" y2="478" stroke="#2a4468" stroke-width="1.5"/><text x="40" y="530" fill="#f1f5fb" font-family="'Inter','DejaVu Sans','Segoe UI',Arial,sans-serif" font-size="32" font-weight="700">Robot export (URDF and MJCF)</text><text x="40" y="566" fill="#4cc9f0" font-family="'JetBrains Mono','DejaVu Sans Mono',Consolas,monospace" font-size="16">MAKE</text></svg>
