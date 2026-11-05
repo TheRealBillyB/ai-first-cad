@@ -861,6 +861,14 @@ async function writeSketch(spec) {
   drawSketch();
 }
 
+const SKETCH_COLORS = {
+  grid: "#2a2f38",
+  line: "#e9e5db",
+  faint: "#a39c8f",
+  selected: "#e0a458",
+  free: "#7fb6e6",
+};
+
 function drawSketch() {
   const canvas = $("sketch-canvas");
   if (canvas.hidden || !ui.sketch) return;
@@ -906,7 +914,7 @@ function drawSketch() {
   canvas._map = { scale, cx, cy, width: rect.width, height: rect.height };
   const toScreen = (x, y) => [rect.width / 2 + (x - cx) * scale, rect.height / 2 - (y - cy) * scale];
   canvas._toScreen = toScreen;
-  ctx.strokeStyle = "#e4ddd0";
+  ctx.strokeStyle = SKETCH_COLORS.grid;
   ctx.lineWidth = 1;
   sketchGridLines({
     width: rect.width,
@@ -929,7 +937,7 @@ function drawSketch() {
   Object.entries(geometry.lines || {}).forEach(([id, line]) => {
     const [x0, y0] = toScreen(line.start.x, line.start.y);
     const [x1, y1] = toScreen(line.end.x, line.end.y);
-    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : line.construction ? "#6d655b" : "#1d1a16";
+    ctx.strokeStyle = selected.has(id) ? SKETCH_COLORS.selected : line.construction ? SKETCH_COLORS.faint : SKETCH_COLORS.line;
     ctx.setLineDash(line.construction ? [6, 4] : []);
     ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
   });
@@ -937,7 +945,7 @@ function drawSketch() {
   Object.entries(geometry.arcs || {}).forEach(([id, arc]) => {
     const samples = sketchArcSamples(arc, 32);
     if (samples.length < 2) return;
-    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : arc.construction ? "#6d655b" : "#1d1a16";
+    ctx.strokeStyle = selected.has(id) ? SKETCH_COLORS.selected : arc.construction ? SKETCH_COLORS.faint : SKETCH_COLORS.line;
     ctx.setLineDash(arc.construction ? [6, 4] : []);
     ctx.beginPath();
     samples.forEach((point, index) => {
@@ -951,7 +959,7 @@ function drawSketch() {
   Object.entries(geometry.splines || {}).forEach(([id, spline]) => {
     const samples = spline.samples || [];
     if (samples.length < 2) return;
-    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : spline.construction ? "#6d655b" : "#1d1a16";
+    ctx.strokeStyle = selected.has(id) ? SKETCH_COLORS.selected : spline.construction ? SKETCH_COLORS.faint : SKETCH_COLORS.line;
     ctx.setLineDash(spline.construction ? [6, 4] : []);
     ctx.beginPath();
     samples.forEach((point, index) => {
@@ -964,17 +972,17 @@ function drawSketch() {
   ctx.setLineDash([]);
   Object.entries(geometry.circles || {}).forEach(([id, circle]) => {
     const [sx, sy] = toScreen(circle.center.x, circle.center.y);
-    ctx.strokeStyle = selected.has(id) ? "#8d4e22" : circle.construction ? "#6d655b" : "#1d1a16";
+    ctx.strokeStyle = selected.has(id) ? SKETCH_COLORS.selected : circle.construction ? SKETCH_COLORS.faint : SKETCH_COLORS.line;
     ctx.setLineDash(circle.construction ? [6, 4] : []);
     ctx.beginPath(); ctx.arc(sx, sy, circle.radius * scale, 0, Math.PI * 2); ctx.stroke();
   });
   ctx.setLineDash([]);
   Object.entries(geometry.points || {}).forEach(([id, point]) => {
     const [sx, sy] = toScreen(point.x, point.y);
-    ctx.fillStyle = selected.has(id) ? "#8d4e22" : free.has(id) ? "#2a5f8a" : "#1d1a16";
+    ctx.fillStyle = selected.has(id) ? SKETCH_COLORS.selected : free.has(id) ? SKETCH_COLORS.free : SKETCH_COLORS.line;
     ctx.beginPath(); ctx.arc(sx, sy, 3.5, 0, Math.PI * 2); ctx.fill();
   });
-  ctx.fillStyle = "#6d655b";
+  ctx.fillStyle = SKETCH_COLORS.faint;
   ctx.font = "12px ui-sans-serif, sans-serif";
   (ui.sketch.dimensions || []).forEach((dimension, index) => {
     ctx.fillText(`${dimension.name || dimension.kind} ${dimension.text || dimension.value}`, 12, 28 + index * 16);
@@ -1418,6 +1426,8 @@ function drawSolid() {
   gl.clearColor(0.08, 0.09, 0.11, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST);
+  const gridSpacing = drawViewportGuides(gl, cameraMatrix(canvas.width / canvas.height), view.target, view.distance);
+  $("grid-readout").textContent = `Grid ${gridSpacing} mm`;
   drawOverlay();
   if (!ui.mesh || !ui.mesh.positions.length) return;
   const mvp = cameraMatrix(canvas.width / canvas.height);
