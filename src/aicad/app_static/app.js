@@ -67,7 +67,8 @@ function fileUrl(path) {
   if (!path) return "";
   // An image tag cannot set a header, so the picture request carries the same
   // session token in the query. Every other call sends it as a header.
-  return "/api/file?path=" + encodeURIComponent(path) + "&token=" + encodeURIComponent(sessionToken());
+  const root = ui.state && ui.state.project ? ui.state.project.path : null;
+  return "/api/file?path=" + encodeURIComponent(projectRelativePath(path, root)) + "&token=" + encodeURIComponent(sessionToken());
 }
 
 let refreshChain = Promise.resolve();
