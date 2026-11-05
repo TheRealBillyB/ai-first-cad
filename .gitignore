@@ -232,5 +232,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Local planning. Do not commit business or personal notes.
-/private/
+# Agents keep their scratch notes in private/ too, at any depth.
+private/
 /notes/
+*.local.md
