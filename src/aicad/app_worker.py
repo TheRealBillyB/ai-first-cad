@@ -436,13 +436,53 @@ def _serve(start: dict) -> None:
             return
 
 
+_ERROR_BROKEN_PIPE = 109
+
+
+def _wait_until_the_app_closes_stdin() -> None:
+    """Return when the app closes this process's stdin, which it also does by exiting."""
+    if sys.platform != "win32":
+        sys.stdin.buffer.read()
+        return
+    # On Windows, a read that waits on a pipe makes every other use of that
+    # handle wait behind it. A DLL that looks at the standard handles while it
+    # loads, as Gmsh's does, then never finishes loading, and the first strength
+    # solve hung. Peeking returns at once, so nothing is left waiting on stdin.
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    peek = kernel32.PeekNamedPipe
+    peek.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    peek.restype = wintypes.BOOL
+    descriptor = sys.stdin.fileno()
+    handle = msvcrt.get_osfhandle(descriptor)
+    waiting = wintypes.DWORD()
+    while peek(handle, None, 0, None, ctypes.byref(waiting), None):
+        if waiting.value:
+            # The app sends nothing after the start line. Anything else is dropped.
+            os.read(descriptor, waiting.value)
+        time.sleep(0.2)
+    if ctypes.get_last_error() != _ERROR_BROKEN_PIPE:
+        # Not a pipe. Only a person starting the worker by hand gets here.
+        sys.stdin.buffer.read()
+
+
 def _main() -> int:
     start = json.loads(sys.stdin.buffer.readline().decode("utf-8"))
     # Ctrl-C reaches both processes. The app decides when this one stops.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     def stop_with_the_app() -> None:
-        sys.stdin.buffer.read()
+        _wait_until_the_app_closes_stdin()
         os._exit(0)
 
     threading.Thread(target=stop_with_the_app, name="aicad-worker-parent", daemon=True).start()
