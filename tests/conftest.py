@@ -10,10 +10,22 @@ from pathlib import Path
 
 import pytest
 
+if os.environ.get("AICAD_TEST_APP_WORKER"):
+    # A CI step runs the app's security tests this way, because `aicad app` uses the worker.
+    import aicad.app as _app
+
+    _one_process_make_server = _app.make_server
+
+    def _make_server_with_worker(workspace, host="127.0.0.1", port=8765, *, worker=True):
+        return _one_process_make_server(workspace, host, port, worker=worker)
+
+    _app.make_server = _make_server_with_worker
+
 # These files start a sandboxed script. On Windows every such script uses the
 # same container profile, so the runs stay on one worker when the suite is split.
 _WINDOWS_SANDBOX_FILES = frozenset(
     {
+        "tests/test_app_worker_security.py",
         "tests/test_assembly.py",
         "tests/test_catalog.py",
         "tests/test_document.py",

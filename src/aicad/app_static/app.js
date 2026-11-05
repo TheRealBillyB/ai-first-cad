@@ -162,6 +162,23 @@ function renderProjectWarning() {
   const warning = (ui.state && ui.state.project_warning) || "";
   box.textContent = warning;
   box.hidden = !warning;
+  renderBusyNote();
+}
+
+let busyCheck = null;
+
+function renderBusyNote() {
+  const box = $("busy-note");
+  const busy = ui.state && ui.state.busy;
+  box.textContent = busy ? `Still working on ${busy.command}. You can keep looking around.` : "";
+  box.hidden = !busy;
+  // No event marks the end when another request took the slot, so check again.
+  if (busy && !busyCheck) {
+    busyCheck = setTimeout(() => {
+      busyCheck = null;
+      refresh().catch(showError);
+    }, 2000);
+  }
 }
 
 function renderScriptWarning() {

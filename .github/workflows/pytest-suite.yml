@@ -135,6 +135,23 @@ jobs:
           exec .venv/Scripts/pytest.exe -ra -s --tb=short --durations=15 --timeout=180 \
             tests/test_sandbox.py tests/test_sandbox_findings.py
 
+      # `aicad app` runs commands in a worker process, and most app tests do not.
+      - name: Run the app security tests through the worker
+        if: inputs.os != 'windows-latest' || inputs.shard == '' || startsWith(inputs.shard, '1/')
+        timeout-minutes: 15
+        shell: bash
+        env:
+          AICAD_TEST_APP_WORKER: "1"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          if [ -x .venv/bin/pytest ]; then PY=.venv/bin/pytest; else PY=.venv/Scripts/pytest.exe; fi
+          exec "$PY" -ra --tb=short --timeout=180 \
+            tests/test_app_worker_security.py tests/test_sandbox_person_consent.py \
+            tests/test_sandbox_response_headers.py tests/test_sandbox_method_by.py \
+            tests/test_sandbox_method_am.py tests/test_sandbox_method_s.py \
+            tests/test_sandbox_workspace_file.py tests/test_sandbox_file_limits.py \
+            tests/test_sandbox_shared.py tests/test_app_session.py tests/test_plan_browser_approve.py
+
       - name: Run the test suite
         shell: bash
         env:
