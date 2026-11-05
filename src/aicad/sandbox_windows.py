@@ -1398,6 +1398,7 @@ def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = 
         _grant_tree(Path(path), sid, "(OI)(CI)RX")
         _grant_traverse(Path(path), sid, package_sid)
         _granted_read.add((sid, key))
+    _grant_links_on_the_way([*paths, *_interpreter_paths()], sid, package_sid)
     marker = _marker_path()
     try:
         from aicad.file_access import read_text
@@ -1412,6 +1413,71 @@ def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = 
         publish_text(marker, sid, root=marker.parent)
     except OSError:
         pass
+
+
+# Links this process has let a container pass through, per container.
+_granted_links: set[tuple[str, str]] = set()
+
+
+def _interpreter_paths() -> list[str]:
+    """The interpreter's own paths, as the container's Python will name them."""
+    names = [sys.prefix, sys.base_prefix, os.path.dirname(sys.executable)]
+    names += [entry for entry in sys.path if entry]
+    try:
+        from aicad.file_access import read_text
+
+        for line in read_text(Path(sys.prefix) / "pyvenv.cfg", maximum=65536).splitlines():
+            key, _, value = line.partition("=")
+            if key.strip().lower() == "home" and value.strip():
+                names.append(value.strip())
+    except OSError:
+        pass
+    return names
+
+
+def links_on_the_way(names: Sequence[str | Path]) -> list[Path]:
+    """Every junction or symbolic link a path passes through, before it is resolved.
+
+    uv names its Python ``cpython-3.11-windows-x86_64-none``, a junction to the
+    exact release, and a venv records that name. The folder behind it is
+    granted resolved, but a container that opens a path through the junction
+    also needs leave to pass the junction itself.
+    """
+    from aicad.paths import is_reparse
+
+    found: list[Path] = []
+    seen: set[str] = set()
+    for name in names:
+        try:
+            path = Path(os.path.abspath(os.fspath(name)))
+        except (OSError, ValueError):
+            continue
+        current = Path(path.anchor)
+        for part in path.parts[1:]:
+            current = current / part
+            key = ntpath.normcase(str(current))
+            if key in seen:
+                continue
+            seen.add(key)
+            if is_reparse(current):
+                found.append(current)
+    return found
+
+
+def _grant_links_on_the_way(names: Sequence[str | Path], sid: str, package_sid: str) -> None:
+    """Let the container pass through each link. What lies behind it keeps its own grants."""
+    for link in links_on_the_way(names):
+        key = (sid, ntpath.normcase(str(link)))
+        if key in _granted_links:
+            continue
+        # /L changes the link itself. Without it icacls would change the folder it points to.
+        command = ["icacls", str(link), "/grant", f"*{sid}:(RX)", "/L", "/C", "/Q"]
+        completed = _run_icacls(command, link, recurse=False)
+        if completed.returncode != 0:
+            detail = (completed.stdout or "") + (completed.stderr or "")
+            raise OSError(f"Could not let the sandbox pass through {link}. {detail.strip()}")
+        _grant_traverse(link.parent, sid, package_sid)
+        _granted_links.add(key)
 
 
 def _ace_allows_modify(ace_type: int, ace_flags: int, mask: int) -> bool:
