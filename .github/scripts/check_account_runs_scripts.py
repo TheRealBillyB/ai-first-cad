@@ -59,12 +59,52 @@ print(json.dumps(report))
 """
 
 
+def python_folder() -> Path:
+    """The real install folder.
+
+    uv names its Python through a junction, ``cpython-3.11-windows-x86_64-none``.
+    A grant made through that name with icacls /T stays on the junction, so the
+    files behind it were unreadable to the accounts, and robocopy retried each
+    one for the default million times, 30 seconds apart.
+    """
+    return Path(sys.base_prefix).resolve()
+
+
+def copy_python(account: str, password: str, copied: str) -> str | None:
+    """Copy the install as this account. None when it copied, else what went wrong with robocopy's own output."""
+    label = f"{account}-copy"
+    # A file it cannot read is tried twice, a second apart, then reported.
+    # The job summary is kept. In a batch file %%ERRORLEVEL%% read through
+    # call is the exit code robocopy left, not the one before the line ran.
+    line = (
+        f'(robocopy "{python_folder()}" "{copied}" /E /R:1 /W:1 /NFL /NDL /NP'
+        " & call echo robocopy-exit=%%ERRORLEVEL%%)"
+    )
+    try:
+        text, stderr = accounts.as_account(account, password, line, label)
+    except SystemExit as exc:
+        out = accounts.WORK / "out" / f"{label}.txt"
+        err = accounts.WORK / "out" / f"{label}.err"
+        seen = out.read_text(encoding="utf-8", errors="replace")[-1500:] if out.exists() else "(nothing)"
+        errors = err.read_text(encoding="utf-8", errors="replace")[-700:] if err.exists() else ""
+        return f"the copy did not finish ({exc}). robocopy printed:\n{seen}\n{errors}"
+    print(f"::notice title={label}::" + accounts.annotation(text.strip()[-1500:]))
+    found = [line for line in text.splitlines() if line.startswith("robocopy-exit=")]
+    code = int(found[-1].split("=", 1)[1]) if found else None
+    # robocopy uses 0 to 7 for a copy that worked, and 8 or more when a file failed.
+    if code is None or code >= 8 or not Path(copied, "python.exe").exists():
+        return f"the copy failed (robocopy exit {code}). robocopy printed:\n{text[-1500:]}\n{stderr}"
+    return None
+
+
 def check_account(account: str) -> list[str]:
     password = "Aa1!" + secrets.token_urlsafe(18)
     accounts.run("net", "user", account, password, "/add", "/y")
     accounts.run("net", "localgroup", "Performance Log Users", account, "/add")
     copied = rf"C:\Users\{account}\py"
-    accounts.as_account(account, password, f'robocopy "{sys.base_prefix}" "{copied}" /E /NFL /NDL /NJH /NJS /NP', f"{account}-copy")
+    problem = copy_python(account, password, copied)
+    if problem:
+        return [f"{account}: {problem}"]
     line = f'"{copied}\\python.exe" -I "{accounts.WORK / "run_scripts.py"}"'
     text, stderr = accounts.as_account(account, password, line, f"{account}-scripts")
     print(f"::notice title={account}::" + accounts.annotation(text.strip()))
@@ -96,8 +136,8 @@ def main() -> int:
     accounts.run("icacls", str(work), "/grant", "Users:(OI)(CI)RX", "/T", "/Q")
     accounts.run("icacls", str(work / "out"), "/grant", "Users:(OI)(CI)M", "/T", "/Q")
     # Each account copies this install, as the existing check copies its own Python.
-    accounts.run("icacls", sys.base_prefix, "/grant", "Users:(OI)(CI)RX", "/T", "/Q")
-    print(f"::notice title=Python::{sys.version.split()[0]} at {sys.base_prefix}")
+    accounts.run("icacls", str(python_folder()), "/grant", "Users:(OI)(CI)RX", "/T", "/Q")
+    print(f"::notice title=Python::{sys.version.split()[0]} at {sys.base_prefix}, copied from {python_folder()}")
     started = time.time()
     problems: list[str] = []
     for account in ACCOUNTS:
