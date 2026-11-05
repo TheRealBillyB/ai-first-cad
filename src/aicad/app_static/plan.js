@@ -86,6 +86,7 @@
         }, 0);
       });
       root.addEventListener("click", onClick);
+      window.addEventListener("resize", placeBelowHeader);
       setInterval(() => {
         if (ui.editing) return;
         const mounted = document.getElementById("plan-body");
@@ -95,8 +96,17 @@
     refreshSummaries(true).catch(() => {});
   }
 
+  let previousButton = null;
+
+  // The header wraps to a second row in a narrow window.
+  function placeBelowHeader() {
+    const root = page();
+    if (root) root.style.top = document.querySelector("header").getBoundingClientRect().bottom + "px";
+  }
+
   function otherPages() {
-    return Array.from(document.querySelectorAll("[id^='page-']")).filter((node) => node.id !== "page-plan");
+    // Only the pages themselves. The header's buttons are in #page-nav.
+    return Array.from(document.querySelectorAll("body > [id^='page-']")).filter((node) => node.id !== "page-plan");
   }
 
   function hidePlan() {
@@ -105,12 +115,19 @@
     const button = document.getElementById("nav-plan");
     if (button) button.classList.remove("on");
     otherPages().forEach((node) => node.style.removeProperty("display"));
+    // Open or Save also leave this page, and they do not mark a page button.
+    const marked = document.querySelector("header nav button.on");
+    if (!marked && previousButton) previousButton.classList.add("on");
+    previousButton = null;
   }
 
   function showPlan() {
     if (!page()) return;
     // Those pages set display in their own CSS, which beats the hidden attribute.
     otherPages().forEach((node) => node.style.setProperty("display", "none", "important"));
+    const marked = document.querySelector("header nav button.on");
+    if (marked && marked.id !== "nav-plan") previousButton = marked;
+    placeBelowHeader();
     document.querySelectorAll("header nav button").forEach((node) => {
       node.classList.toggle("on", node.id === "nav-plan");
     });
