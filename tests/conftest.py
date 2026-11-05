@@ -201,8 +201,3 @@ def _link_without_the_symlink_privilege(monkeypatch: pytest.MonkeyPatch) -> None
         pytest.skip("this Windows account cannot create a file symlink")
 
     monkeypatch.setattr(os, "symlink", symlink)
-
-
-def pytest_collection_modifyitems(config, items):
-    if os.environ.get("AICAD_DIAG_ONLY") or Path(__file__).with_name(".diag_only").exists():
-        items[:] = [i for i in items if any(k in i.nodeid for k in ("test_zz_diag", "one_gmsh_thread", "sigpipe"))]
