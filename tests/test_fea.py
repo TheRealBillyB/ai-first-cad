@@ -759,3 +759,40 @@ def test_a_mesh_on_a_worker_thread_leaves_sigpipe_ignored():
     # start of stderr, where the thread stacks are.
     assert proc.returncode == 0, (proc.returncode, proc.stderr[:3000])
     assert "broken pipe raised" in proc.stdout
+
+
+def test_every_mesh_runs_on_one_gmsh_thread_whatever_thread_asks(monkeypatch):
+    """Gmsh crashes on macOS when a new thread starts it after another has exited."""
+    gmsh = pytest.importorskip("gmsh")
+    import threading
+
+    from aicad import fea
+
+    started: list[int] = []
+    real_initialize = gmsh.initialize
+
+    def initialize(*args, **kwargs):
+        started.append(threading.get_ident())
+        return real_initialize(*args, **kwargs)
+
+    monkeypatch.setattr(gmsh, "initialize", initialize)
+    cube = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10], "center": [0, 0, 5]}])
+    callers: list[int] = []
+    failures: list[BaseException] = []
+
+    def mesh_once():
+        callers.append(threading.get_ident())
+        try:
+            fea._mesh_solid(cube, 2.5, 1)
+        except BaseException as exc:  # pragma: no cover - reported below
+            failures.append(exc)
+
+    for _ in range(3):
+        thread = threading.Thread(target=mesh_once)
+        thread.start()
+        thread.join()
+    mesh_once()
+    assert not failures, failures
+    assert len(started) == 4
+    assert len(set(started)) == 1
+    assert started[0] not in callers
