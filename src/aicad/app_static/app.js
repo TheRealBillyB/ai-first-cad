@@ -2472,6 +2472,7 @@ function retitleRequirementFields() {
 }
 
 async function boot() {
+  showUnhandledFailures(window);
   initView();
   $("nav-model").onclick = () => showPage("model");
   $("nav-assembly").onclick = () => showPage("assembly");
@@ -2809,11 +2810,13 @@ async function editSettings() {
 
 // A button whose action fails would otherwise change nothing on screen, and
 // the person cannot tell a failure from a long wait. Every failure that no
-// handler caught reaches the notice bar.
-window.addEventListener("unhandledrejection", (event) => {
-  event.preventDefault();
-  showError(event.reason);
-});
+// handler caught reaches the notice bar. boot() calls this when the page starts.
+function showUnhandledFailures(target) {
+  target.addEventListener("unhandledrejection", (event) => {
+    event.preventDefault();
+    showError(event.reason);
+  });
+}
 
 function showError(error) {
   const message = error && error.message ? error.message : String(error || "The command failed.");

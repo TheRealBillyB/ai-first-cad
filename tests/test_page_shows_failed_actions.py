@@ -12,7 +12,7 @@ _PROBE = r"""
 const fs = require("fs");
 const vm = require("vm");
 const source = fs.readFileSync(process.argv[2], "utf8");
-const start = source.indexOf('window.addEventListener("unhandledrejection"');
+const start = source.indexOf("function showUnhandledFailures");
 const end = source.indexOf("function appendBubble");
 const listeners = {};
 const shown = [];
@@ -25,6 +25,7 @@ const sandbox = {
 };
 vm.createContext(sandbox);
 vm.runInContext(source.slice(start, source.indexOf("\n}\n", source.indexOf("function showError")) + 3), sandbox);
+vm.runInContext("showUnhandledFailures(window)", sandbox);
 let prevented = false;
 listeners.unhandledrejection({ reason: new Error("CalculiX (ccx) is not on your PATH."), preventDefault: () => { prevented = true; } });
 process.stdout.write(JSON.stringify({ prevented, hidden: notice.hidden, text: text.textContent }));
@@ -40,7 +41,9 @@ def test_a_failed_action_reaches_the_notice_bar(tmp_path):
     assert answer == {"prevented": True, "hidden": False, "text": "CalculiX (ccx) is not on your PATH."}
 
 
-def test_the_strength_solve_has_no_catch_of_its_own_to_bypass_it():
-    """The Solve button, like the other panel buttons, relies on the page-wide handler."""
-    assert '$("fea-run").onclick = () => runFea();' in SCRIPT
-    assert SCRIPT.index('addEventListener("unhandledrejection"') < SCRIPT.index("function showError")
+def test_the_page_installs_it_when_it_starts_and_not_when_the_file_loads():
+    """Loading app.js has no side effects, so other tests can run it in Node without a window."""
+    boot = SCRIPT[SCRIPT.index("async function boot()") :]
+    assert boot.index("showUnhandledFailures(window);") < boot.index("initView();")
+    assert SCRIPT.count('addEventListener("unhandledrejection"') == 1
+    assert SCRIPT.index("function showUnhandledFailures") < SCRIPT.index('addEventListener("unhandledrejection"')
