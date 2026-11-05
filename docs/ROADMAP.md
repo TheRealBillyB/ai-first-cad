@@ -149,6 +149,10 @@ The power estimate, the hose checks, and the robot export are already in the tre
 
 **Next.** Checks aimed at CNC machining and at sheet metal. Print overhangs, support area, printer fit, and an optional slicer estimate stay the print half of print preparation. They do not cover a toolpath, a bend allowance, or a flat pattern.
 
+### Workspace app interface
+
+The interface ideas for the app, with their order, estimates, and pull request splits, are in [the interface list](roadmap/post-1.0-ui.md).
+
 ## Later
 
 - **Drawings.** The layout sheet, the parts count, and the exploded view are in. Still later: tolerances, GD&T (the standard language for how far a size and a form may vary), and prices on the bill of materials.
