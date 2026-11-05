@@ -10,6 +10,7 @@ The log lists each date newest first. On a date, a file with no `order` key is l
 
 | Decision | Rationale |
 | --- | --- |
+| The app has one dark theme | The panels now match the dark 3D view, with amber as the only accent color and a light sheet kept only behind pictures the server draws on one. The grid and origin axes are drawn first with depth testing off, so every part covers them and a click hits what it hit before. The grid sits on z = 0, and the view shows its spacing, because a grid with no stated size can be misread as a scale. |
 | The Windows installer offers the sandbox setup | Without the setup, no design script or solve runs on Windows, so the installer explains that and asks at the end. The default is no. No answer fails the install, because modeling works without it, and an install with no one at the keyboard does not ask. `aicad sandbox-setup --status` is the one read-only check that the installer, the docs, and a person can all use. The elevated step's reason travels in its exit code, so a failure can be named without an elevated process writing a file. |
 
 ## 2026-11-04
