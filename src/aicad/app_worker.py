@@ -55,20 +55,27 @@ def _error_payload(exc: BaseException) -> dict:
         except (TypeError, ValueError):
             continue
         fields[key] = value
-    return {"type": type(exc).__name__, "message": str(exc), "fields": fields}
+    # Every class name, nearest first. Some AICADError classes live outside aicad.errors.
+    kinds = [kind.__name__ for kind in type(exc).__mro__]
+    return {"type": type(exc).__name__, "kinds": kinds, "message": str(exc), "fields": fields}
 
 
 def _rebuilt_error(payload: dict) -> Exception:
-    """The same error the worker raised, so the app answers it the same way."""
-    kind = getattr(errors, str(payload.get("type")), None)
+    """The nearest error the app knows, so it answers the failure the same way.
+
+    An expected failure stays an expected failure, even when its own class is
+    defined outside aicad.errors. Anything else is a RuntimeError.
+    """
     message = str(payload.get("message") or "The geometry process reported a failure.")
-    if not (isinstance(kind, type) and issubclass(kind, AICADError)):
-        return RuntimeError(message)
-    # Some errors take more constructor arguments. Their values come back as fields.
-    exc = kind.__new__(kind)
-    Exception.__init__(exc, message)
-    exc.__dict__.update(payload.get("fields") or {})
-    return exc
+    for name in payload.get("kinds") or [payload.get("type")]:
+        kind = getattr(errors, str(name), None)
+        if isinstance(kind, type) and issubclass(kind, AICADError):
+            # Some errors take more constructor arguments. Their values come back as fields.
+            exc = kind.__new__(kind)
+            Exception.__init__(exc, message)
+            exc.__dict__.update(payload.get("fields") or {})
+            return exc
+    return RuntimeError(message)
 
 
 class GeometryWorker:
@@ -132,6 +139,9 @@ class GeometryWorker:
     def assembly_mesh(self, name: str) -> dict:
         return self._mesh("assembly_mesh", name)
 
+    def script_status(self) -> dict:
+        return self._call("script_status", "script_status")
+
     def allow_script_network_once(self) -> dict:
         return self._call("allow_script_network_once", "allow_script_network_once")
 
@@ -147,12 +157,16 @@ class GeometryWorker:
             kept = self._meshes.get(key)
             if kept is not None and kept[0] == self.geometry_revision:
                 return kept[1]
-        result = self._call("the view", method, *args)
+        with self._request_lock:
+            result = self._exchange("the view", method, args)
+            # From this reply. Once the lock is released, a command can move the revision on.
+            revision = self.geometry_revision
         with self._mesh_lock:
-            self._meshes = {k: v for k, v in self._meshes.items() if v[0] == self.geometry_revision}
-            while len(self._meshes) >= _KEPT_MESHES:
-                self._meshes.pop(next(iter(self._meshes)))
-            self._meshes[key] = (self.geometry_revision, result)
+            if revision == self.geometry_revision:
+                self._meshes = {k: v for k, v in self._meshes.items() if v[0] == revision}
+                while len(self._meshes) >= _KEPT_MESHES:
+                    self._meshes.pop(next(iter(self._meshes)))
+                self._meshes[key] = (revision, result)
         return result
 
     def _call(self, label: str, method: str, *args) -> dict:
@@ -254,19 +268,20 @@ class GeometryWorker:
 
     def _stop_process(self) -> None:
         connection, self._connection = self._connection, None
+        process, self._process = self._process, None
+        if process is not None:
+            try:
+                # Closing stdin is the signal to stop, so it goes before the connection.
+                process.stdin.close()
+            except OSError:
+                pass
         if connection is not None:
             try:
                 connection.close()
             except OSError:
                 pass
-        process, self._process = self._process, None
         if process is None:
             return
-        try:
-            # Closing stdin is the signal to stop.
-            process.stdin.close()
-        except OSError:
-            pass
         try:
             process.wait(_STOP_SECONDS)
         except subprocess.TimeoutExpired:
@@ -338,6 +353,7 @@ def _serve(start: dict) -> None:
     methods = {
         "execute": workspace.execute,
         "state": workspace.state,
+        "script_status": workspace.script_status,
         "mesh": workspace.mesh,
         "scene_mesh": workspace.scene_mesh,
         "assembly_mesh": workspace.assembly_mesh,
@@ -354,7 +370,10 @@ def _serve(start: dict) -> None:
             data = _encoded(workspace, {"ok": True, "result": result})
         except Exception as exc:  # The app decides what a failure means.
             data = _encoded(workspace, {"ok": False, "error": _error_payload(exc)})
-        _send(connection, send_lock, data)
+        try:
+            _send(connection, send_lock, data)
+        except OSError:
+            return
 
 
 def _main() -> int:
@@ -367,8 +386,14 @@ def _main() -> int:
         os._exit(0)
 
     threading.Thread(target=stop_with_the_app, name="aicad-worker-parent", daemon=True).start()
-    _serve(start)
-    return 0
+    # A normal interpreter exit aborts while that thread holds stdin's lock, so this exit skips it.
+    code = 1
+    try:
+        _serve(start)
+        code = 0
+    finally:
+        sys.stderr.flush()
+        os._exit(code)
 
 
 if __name__ == "__main__":

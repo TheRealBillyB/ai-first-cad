@@ -13,7 +13,10 @@ import pytest
 
 from aicad.app import make_server
 from aicad.app_worker import GeometryWorker, _error_payload, _rebuilt_error
+from aicad.blueprint import BlueprintError
 from aicad.errors import AICADError, EdgeOpError, GeometryError, PartNotFound, ScriptError
+from aicad.plugins import PluginConsentError, PluginError
+from aicad.session_record import RecordRefused
 
 _MANY_CUTS = [{"op": "add", "shape": "box", "size": [400, 400, 10]}] + [
     {"op": "cut", "shape": "cylinder", "radius": 3, "height": 30, "center": [(i % 15) * 25 - 180, (i // 15) * 25 - 120, 0]}
@@ -108,6 +111,23 @@ def test_a_failure_keeps_its_extra_fields():
     assert rebuilt.code == "too_big"
 
 
+@pytest.mark.parametrize("raised", [PluginError("no"), PluginConsentError("no"), BlueprintError("no")])
+def test_an_expected_failure_from_outside_the_errors_module_stays_expected(raised):
+    rebuilt = _rebuilt_error(json.loads(json.dumps(_error_payload(raised))))
+    assert isinstance(rebuilt, AICADError)
+    assert str(rebuilt) == "no"
+
+
+def test_a_failure_becomes_the_nearest_error_the_app_knows():
+    rebuilt = _rebuilt_error(json.loads(json.dumps(_error_payload(RecordRefused("no")))))
+    assert type(rebuilt) is GeometryError
+
+
+def test_an_unexpected_failure_is_still_not_expected():
+    rebuilt = _rebuilt_error(json.loads(json.dumps(_error_payload(KeyError("oops")))))
+    assert type(rebuilt) is RuntimeError
+
+
 def test_an_unknown_failure_is_not_presented_as_an_expected_one():
     rebuilt = _rebuilt_error({"type": "KeyError", "message": "oops"})
     assert type(rebuilt) is RuntimeError
@@ -173,6 +193,38 @@ def test_a_mesh_from_another_revision_is_not_used(worker):
         worker.mesh("box")
 
 
+def test_a_mesh_is_not_kept_under_a_revision_it_does_not_show(worker):
+    """A command that lands just after a mesh's reply moves the revision on."""
+    box = [{"op": "add", "shape": "box", "size": [4, 4, 4]}]
+    worker.execute("create_part_from_ops", {"name": "a", "ops": box}, "ui")
+    worker.execute("create_part_from_ops", {"name": "b", "ops": box}, "ui")
+    real = worker._request_lock
+
+    class CommandLandsNext:
+        armed = True
+
+        def acquire(self, *args, **kwargs):
+            return real.acquire(*args, **kwargs)
+
+        def release(self):
+            real.release()
+
+        def __enter__(self):
+            real.acquire()
+
+        def __exit__(self, *_exc):
+            real.release()
+            if CommandLandsNext.armed:
+                CommandLandsNext.armed = False
+                worker.execute("delete_part", {"name": "b"}, "ui")
+
+    worker._request_lock = CommandLandsNext()
+    assert worker.mesh("b")["part"] == "b"
+    worker._request_lock = real
+    with pytest.raises(PartNotFound):
+        worker.mesh("b")
+
+
 def test_a_worker_that_dies_is_replaced_and_the_project_is_still_there(worker):
     worker.execute("write_document", {"name": "kept.md", "markdown": "# Kept\n"}, "ui")
     before = worker.geometry_revision
@@ -193,7 +245,7 @@ def test_the_worker_stops_with_the_app(tmp_path):
     running = GeometryWorker(tmp_path / "project")
     process = running._process
     running.close()
-    assert process.poll() is not None
+    assert process.returncode == 0
     with pytest.raises(GeometryError, match="closed"):
         running.execute("list_parts")
 
@@ -202,7 +254,7 @@ def test_the_worker_stops_when_the_app_dies_without_closing(tmp_path):
     running = GeometryWorker(tmp_path / "project")
     process = running._process
     process.stdin.close()
-    process.wait(20)
+    assert process.wait(20) == 0
     running._process = None
     running.close()
 
