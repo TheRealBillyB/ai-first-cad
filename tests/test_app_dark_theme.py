@@ -76,7 +76,7 @@ def test_no_light_surface_is_left_behind(sheet):
 
 def test_only_pictures_keep_the_light_sheet():
     users = sorted(line.split("{")[0].strip() for line in CSS.splitlines() if "var(--sheet)" in line)
-    assert users == ["#assembly-picture", ".panel img"]
+    assert users == ["#assembly-picture", ".panel img", ".picture-viewer-image"]
 
 
 def test_the_sketch_uses_the_same_colors_as_the_theme():
