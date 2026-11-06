@@ -194,6 +194,29 @@ nav { display: flex; gap: 4px; }
 .panel p, .panel li { font-size: 13px; line-height: 1.45; }
 /* Pictures from the server are drawn on a light sheet. */
 .panel img { width: 100%; border: 1px solid var(--line); background: var(--sheet); color: var(--on-accent); margin-top: 8px; }
+/* A report picture opens at full size when clicked. See picture_viewer.js. */
+img[src^="/api/file?"] { cursor: zoom-in; }
+.picture-viewer {
+  position: fixed; inset: 0; z-index: 1000; overflow: hidden;
+  background: rgba(8, 9, 12, 0.88); touch-action: none; user-select: none;
+}
+.picture-viewer[hidden] { display: none; }
+.picture-viewer-image {
+  position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0;
+  background: var(--sheet); box-shadow: var(--shadow); cursor: grab;
+}
+.picture-viewer-image:active { cursor: grabbing; }
+.picture-viewer-close {
+  position: absolute; top: 12px; right: 12px; width: 40px; height: 40px;
+  border: 1px solid var(--line); border-radius: 50%; background: var(--raised); color: var(--ink);
+  font-size: 24px; line-height: 1; cursor: pointer; box-shadow: var(--shadow);
+}
+.picture-viewer-close:hover, .picture-viewer-close:focus-visible { border-color: var(--brass); outline: none; }
+.picture-viewer-hint {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); margin: 0;
+  padding: 4px 10px; border-radius: 4px; background: var(--glass); color: var(--muted); font-size: 12px;
+  pointer-events: none;
+}
 .kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 8px; font-size: 13px; }
 .kv span { color: var(--muted); }
 .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; align-items: center; }

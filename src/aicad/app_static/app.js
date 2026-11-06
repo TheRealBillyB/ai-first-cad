@@ -2558,6 +2558,7 @@ function retitleRequirementFields() {
 
 async function boot() {
   showUnhandledFailures(window);
+  installPictureViewer(document, window);
   initView();
   $("nav-model").onclick = () => showPage("model");
   $("nav-assembly").onclick = () => showPage("assembly");
