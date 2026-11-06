@@ -1,6 +1,6 @@
 # Dependency license audit
 
-Audited 2026-10-21, against aicad `AGPL-3.0-or-later`.
+Audited 2026-10-21, against aicad `AGPL-3.0-or-later`. Updated 2026-11-06: lib3mf's license, CalculiX's two license statements, and what a commercial license from the owner can cover. The list of outside software with links is [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 This is a compatibility check of the packages aicad installs or runs, not a legal opinion. There is no lockfile. Versions are the newest PyPI release on that date that satisfies `pyproject.toml`, and the direct dependencies of those releases. "Imported" means aicad loads it in the same Python process. "Separate program" means aicad only launches an executable and exchanges files.
 
@@ -73,7 +73,7 @@ The Open CASCADE README also offers a commercial license as an alternative for O
 | webcolors | 24.8.0 | BSD-3-Clause | Pinned by build123d to `~=24.8.0`, so 25.x is not installed | Yes |
 | requests | 2.34.2 | Apache-2.0 | Pulls urllib3 (MIT), charset-normalizer (MIT), idna (BSD-3-Clause), certifi (MPL-2.0) | Yes |
 | certifi | 2026.10.19 | MPL-2.0 | Second-level, via requests | Yes |
-| lib3mf | 2.5.0 | BSD-2-Clause | Installed where the platform is not Linux aarch64. PyPI only says "BSD License". Upstream `LICENSE` is the 2-clause BSD. | Yes |
+| lib3mf | 2.5.0 | BSD-3-Clause | Installed where the platform is not Linux aarch64. PyPI only says "BSD License". The `LICENSE` file in the 2.5.0 wheel is the 3-clause BSD, copyright 2024 the 3MF Consortium. | Yes |
 | py-lib3mf | 2.5.0 | Apache-2.0 | Linux aarch64 only, instead of lib3mf. PyPI license field says Apache-2.0 and has no classifier. | Yes |
 | bd_materials | 0.2.4 | Apache-2.0 | PyPI license field is empty. Upstream `LICENSE` is Apache-2.0. | Yes |
 | threejs-materials | 1.2.5 | Apache-2.0 | Python material data. The browser app does not load three.js. | Yes |
@@ -153,7 +153,7 @@ IPython 9.17.1 also installs these, all permissive:
 
 | Program | SPDX | How aicad uses it | AGPL-3.0 compatible |
 | --- | --- | --- | --- |
-| CalculiX `ccx` | GPL-2.0-only | Separate process. Ubuntu `calculix-ccx` 2.21 copyright file: upstream files are "GPL-2", the notice names version 2 and does not say "or later". Some files linked into `ccx` itself (a LAPACK routine) are BSD-3-Clause. | Yes, only while it stays a separate program. Do not import or link it. |
+| CalculiX `ccx` | Treated as GPL-2.0-only | Separate process. The two statements disagree; see [CalculiX's license](#calculixs-license). Ubuntu `calculix-ccx` 2.21 copyright file: upstream files are "GPL-2", the notice names version 2 and does not say "or later". Some files linked into `ccx` itself (a LAPACK routine) are BSD-3-Clause. On Windows and macOS, `install.py --with-calculix` downloads the pinned conda-forge 2.23 build and its runtime libraries; their licenses are listed in THIRD_PARTY_NOTICES.md. | Yes, only while it stays a separate program. Do not import or link it. |
 | PrusaSlicer | AGPL-3.0 | Separate process, and only if the binary is already on `PATH` (`aicad.printprep`) | Yes. aicad does not ship it. |
 | OrcaSlicer | AGPL-3.0 | Same as PrusaSlicer. Upstream README: "GNU Affero General Public License, version 3." | Yes. aicad does not ship it. |
 
@@ -172,13 +172,34 @@ None.
 These PyPI records do not state a precise SPDX identifier. The upstream license text does. All of them are permissive and compatible.
 
 - anytree 2.13.0, bd_materials 0.2.4, ocpsvg 0.7.0: empty PyPI license field. Upstream `LICENSE` is Apache-2.0.
-- lib3mf 2.5.0: PyPI says "BSD License". Upstream `LICENSE` is BSD-2-Clause.
-- py-lib3mf 2.5.0: PyPI license field says Apache-2.0 and there is no classifier. Treated as Apache-2.0. Compatible either way if the wheel also contains the BSD-2-Clause lib3mf library.
+- lib3mf 2.5.0: PyPI says "BSD License". The `LICENSE` in the wheel is BSD-3-Clause. An earlier version of this audit said BSD-2-Clause; the wheel has the third clause, which forbids using the copyright holders' names to endorse a product.
+- py-lib3mf 2.5.0: PyPI license field says Apache-2.0 and there is no classifier. Treated as Apache-2.0. Compatible either way if the wheel also contains the BSD-3-Clause lib3mf library.
 - prompt_toolkit 3.0.53 and ipython-pygments-lexers 1.1.1: PyPI says "BSD License" without a clause count. Compatible under either the 2-clause or the 3-clause BSD.
 - cadquery-ocp-novtk: PyPI says Apache-2.0. That covers the binding code. The wheel bundles Open CASCADE, which is LGPL-2.1-only with the OCCT exception. Anyone who redistributes that wheel has to keep the LGPL and the exception on the Open CASCADE libraries and has to leave those libraries replaceable. That is compatible with AGPL-3.0. The PyPI label alone is not the whole license.
+
+### CalculiX's license
+
+- conda-forge's metadata for the `calculix` 2.23 package says GPL-2.0-or-later.
+- The upstream CalculiX 2.23 source names the GNU GPL version 2 and does not say "or later".
+
+aicad follows the stricter reading and treats `ccx` as GPL-2.0-only. Either way it is compatible, because aicad only starts `ccx` as a separate program.
 
 ### Usage constraint
 
 CalculiX is the one GPL-2.0-only program in the stack. It is compatible because aicad launches it. Linking CalculiX into the aicad process, or shipping a modified `ccx` inside an aicad install without treating it as a separate GPL-2.0-only program, would not be compatible with AGPL-3.0.
 
 Gmsh and python-solvespace are compatible, and they are part of the combined program. A build that strips their license notices, or that fails to offer their source, would break that.
+
+## What a commercial license from the owner can cover
+
+aicad is AGPL-3.0-or-later. The owner can also offer aicad under a separate commercial license. That license can only cover code the owner holds the rights to: the owner's own code, and code contributed under the [Contributor License Agreement](../CLA.md).
+
+It cannot cover anyone else's code:
+
+- **Gmsh and python-solvespace (SolveSpace) stay GPL.** They are loaded into the aicad process, so a program that includes them is combined with them, and their GPL terms apply to it whatever license the rest of aicad is under. A commercial build that has to avoid the GPL would need to leave them out or replace them.
+- **Open CASCADE** stays LGPL-2.1-only with the OCCT exception. A separate commercial license for it is Open Cascade SAS's to offer, not aicad's.
+- **CalculiX** stays GPL as a separate program.
+- **Every permissive dependency** keeps its notice requirements.
+
+This is not a legal opinion.
+
