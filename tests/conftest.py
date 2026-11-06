@@ -35,6 +35,7 @@ _WINDOWS_SANDBOX_FILES = frozenset(
         "tests/test_honesty.py",
         "tests/test_sandbox_interpreter_links.py",
         "tests/test_launch_paths.py",
+        "tests/test_sandbox_probe_failures.py",
         "tests/test_library.py",
         "tests/test_packaging.py",
         "tests/test_plugins.py",
