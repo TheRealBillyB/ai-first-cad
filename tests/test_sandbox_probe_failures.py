@@ -65,3 +65,12 @@ def test_the_stricter_container_answers_promptly_with_a_reason(monkeypatch):
 )
 def test_a_known_start_failure_is_named(code, words):
     assert words in win._exit_reason(code)
+
+
+def test_every_launch_sets_the_error_mode_before_it_starts_a_child():
+    """_launch owns it: it uses the real kernel32, so a test's stand-in for CreateProcess needs none."""
+    import inspect
+
+    launch = inspect.getsource(win._launch)
+    assert launch.index("_quiet_load_failures(kernel32)") < launch.index("_start_suspended(")
+    assert "_quiet_load_failures" not in inspect.getsource(win._start_suspended)
