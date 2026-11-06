@@ -162,6 +162,10 @@ Catalog parts carrying mass and the moment loads used by the checks are planned 
 
 The interface ideas for the app, with their order, estimates, and pull request splits, are in [the interface list](roadmap/post-1.0-ui.md). That list is 1.0.x polish for the app, and it does not replace CAM and manufacturing checks as the first track after v1.0.
 
+### 1.0.x fixes
+
+- **A clear message with no signed-in desktop.** On Windows, a design script or solve started with no signed-in desktop (Task Scheduler, a Windows service, or an SSH session) stops with a DLL initialization error. The window station Windows gives that session does not let app containers in, so the container cannot load Windows' window library. The run should say that a signed-in desktop is needed, and why, instead of the DLL error. aicad will not change a window station's or a desktop's access list to get around it.
+
 ## Later
 
 - **Drawings.** The layout sheet, the parts count, and the exploded view are in. Still later: tolerances, GD&T (the standard language for how far a size and a form may vary), and prices on the bill of materials.
