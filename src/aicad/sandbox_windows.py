@@ -92,6 +92,13 @@ _CPU_LIMIT_SLACK_TICKS = 1_000_000
 
 _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 0x00000102
+# Error-mode flags. A child process inherits its parent's error mode.
+_SEM_FAILCRITICALERRORS = 0x0001
+_SEM_NOGPFAULTERRORBOX = 0x0002
+_SEM_NOOPENFILEERRORBOX = 0x8000
+_QUIET_FAILURES = _SEM_FAILCRITICALERRORS | _SEM_NOGPFAULTERRORBOX | _SEM_NOOPENFILEERRORBOX
+# How long the start-up probe may run before it is stopped.
+_PROBE_WAIT_MS = 60_000
 _TOKEN_QUERY = 0x0008
 _TokenIsAppContainer = 29
 _TokenCapabilities = 30
@@ -119,7 +126,6 @@ _advapi32_lib: ctypes.WinDLL | None = None
 _bound = False
 # The availability probe starts a container. Later tests in this process reuse it.
 _probe_done = False
-_lpac_fallback_reason: str | None = None
 _probe_result: str | None = None
 # Parents already checked for this container, so a later script does not open them again.
 _granted_traverse: set[tuple[str, str, str]] = set()
@@ -391,6 +397,10 @@ def _bind() -> None:
     kernel32.TerminateJobObject.restype = wintypes.BOOL
     kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
     kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.GetErrorMode.argtypes = []
+    kernel32.GetErrorMode.restype = wintypes.UINT
+    kernel32.SetErrorMode.argtypes = [wintypes.UINT]
+    kernel32.SetErrorMode.restype = wintypes.UINT
     kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
     kernel32.ResumeThread.restype = wintypes.DWORD
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
@@ -1784,6 +1794,20 @@ def _startup_info(attribute_list, stdin: int, stdout: int, stderr: int) -> _Star
     return startup
 
 
+def _quiet_load_failures(kernel32) -> None:
+    """A child that cannot load exits with its error instead of showing a dialog.
+
+    The child inherits this process's error mode. Without these flags, a
+    container that is refused a DLL showed "Application Error 0xc0000022" on
+    the person's desktop and stayed alive until someone closed it. This process
+    keeps the flags too, which only means it reports such errors instead of
+    showing them.
+    """
+    current = kernel32.GetErrorMode()
+    if current & _QUIET_FAILURES != _QUIET_FAILURES:
+        kernel32.SetErrorMode(current | _QUIET_FAILURES)
+
+
 def _start_suspended(
     kernel32,
     application: str,
@@ -1898,6 +1922,8 @@ def _launch(
 ) -> tuple[_ProcessInformation, int | None]:
     kernel32 = _kernel32()
     advapi32 = _advapi32()
+    # The error mode belongs to this process, and the child inherits it.
+    _quiet_load_failures(kernel32)
     command, env = _command_for_container(command, env)
     stdin = _open_inherited("NUL", _GENERIC_READ, _OPEN_EXISTING)
     stdout = _open_inherited(str(stdout_path), _GENERIC_WRITE, _CREATE_ALWAYS)
@@ -2385,6 +2411,20 @@ def _probe_command(workspace: Path, source: str | None = None) -> list[str]:
     return [sys.executable, "-P", "-B", "-u", str(script.resolve())]
 
 
+_EXIT_NAMES = {
+    0xC0000022: "access denied while it started (0xC0000022)",
+    0xC0000135: "a DLL it needs was not found (0xC0000135)",
+    0xC0000142: "a DLL failed to initialize (0xC0000142)",
+    0xC0000044: "it reached its CPU limit (0xC0000044)",
+}
+
+
+def _exit_reason(code: int) -> str:
+    """An exit code in words where it is a known start-up failure."""
+    name = _EXIT_NAMES.get(code)
+    return f"the probe stopped: {name}" if name else f"the probe exited with code {code}"
+
+
 def _probe_mode(mode: str, read_paths: Sequence[Path], source: str | None = None) -> str | None:
     """Return an error string when this AppContainer mode cannot run the probe."""
 
@@ -2415,14 +2455,21 @@ def _probe_mode(mode: str, read_paths: Sequence[Path], source: str | None = None
                     stderr_path=stderr_path,
                 )
                 try:
-                    _kernel32().WaitForSingleObject(process.hProcess, 60_000)
+                    if _kernel32().WaitForSingleObject(process.hProcess, _PROBE_WAIT_MS) == _WAIT_TIMEOUT:
+                        # A process still running has no exit code yet. Stop it, and say so.
+                        _kernel32().TerminateJobObject(job, 1)
+                        _kernel32().WaitForSingleObject(process.hProcess, 5_000)
+                        detail = _read_text(stderr_path).strip()
+                        return f"the probe did not finish in {_PROBE_WAIT_MS // 1000} seconds, so it was stopped" + (
+                            f". {detail}" if detail else ""
+                        )
                     code = wintypes.DWORD(0)
                     _kernel32().GetExitCodeProcess(process.hProcess, ctypes.byref(code))
                     output = _read_text(stdout_path)
                     if code.value == 0 and "sandbox-ok" in output:
                         return None
                     detail = _read_text(stderr_path).strip()
-                    return detail or f"the probe exited with code {code.value}"
+                    return detail or _exit_reason(code.value)
                 finally:
                     _kernel32().CloseHandle(process.hThread)
                     _kernel32().CloseHandle(process.hProcess)
@@ -2473,47 +2520,37 @@ def _probe_env(workspace: Path) -> dict[str, str]:
 
 
 def ensure_mode(read_paths: Sequence[Path]) -> str:
-    """Pick LPAC when it can start Python, otherwise a normal AppContainer."""
+    """Use a normal AppContainer for scripts and solves.
 
-    global _mode, _mode_error, _lpac_fallback_reason
+    The stricter container (LPAC) is not tried. Python needs Windows'
+    registryRead capability to start in it, and importing aicad then creates a
+    socket, which LPAC refuses without a network capability. See the decision
+    dated 2026-11-05 on skipping the stricter container. The firewall rules, the
+    filters, and the check inside the container are the same either way.
+    """
+
+    global _mode, _mode_error
     if _mode:
         return _mode
     if _mode_error:
         raise OSError(_mode_error)
-    lpac_error = _probe_mode("lpac", read_paths)
-    if lpac_error is None:
-        _mode = "lpac"
-        return _mode
-    app_error = _probe_mode("appcontainer", read_paths)
-    if app_error is None:
+    error = _probe_mode("appcontainer", read_paths)
+    if error is None:
         _mode = "appcontainer"
-        _lpac_fallback_reason = lpac_error
-        # Stderr, because stdout is the MCP connection.
-        print(f"aicad: scripts run in a normal AppContainer. The stricter one failed: {lpac_error}", file=sys.stderr)
         return _mode
-    if lpac_error == app_error:
-        failures = f"Both AppContainer modes failed ({lpac_error})."
-    else:
-        failures = (
-            f"The stricter AppContainer failed ({lpac_error}). "
-            f"A normal AppContainer failed ({app_error})."
-        )
     _mode_error = (
-        f"Windows could not start a confined Python. {failures} "
+        f"Windows could not start a confined Python ({error}). "
         "The script was not run. Shape, sketch, gear, and catalog parts do not run a script."
     )
     raise OSError(_mode_error)
 
 
 def mode_report() -> dict[str, str]:
-    """Which container scripts use here, and why not the stricter one. Empty before the first check."""
+    """Which container scripts use here. Empty before the first check."""
 
     if not _mode:
         return {}
-    report = {"mode": _mode}
-    if _lpac_fallback_reason:
-        report["stricter_mode_failed"] = _lpac_fallback_reason
-    return report
+    return {"mode": _mode}
 
 
 def network_block_error() -> str | None:

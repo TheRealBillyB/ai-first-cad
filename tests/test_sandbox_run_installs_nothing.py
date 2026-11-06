@@ -7,6 +7,7 @@ tests/test_sandbox_setup_real.py, on a disposable CI runner.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -161,27 +162,41 @@ def test_setup_in_another_window_is_seen_without_a_restart(monkeypatch):
     assert win.availability_error([Path("python")]) is None
 
 
-def test_the_fallback_to_a_normal_container_is_visible(monkeypatch, capsys):
+def test_a_run_goes_straight_to_a_normal_container_and_says_nothing_about_lpac(monkeypatch, capsys):
+    """The stricter container is not tried, so there is no fallback to report. See the 2026-11-05 decision."""
     monkeypatch.setattr(win, "_mode", None)
     monkeypatch.setattr(win, "_mode_error", None)
-    monkeypatch.setattr(win, "_lpac_fallback_reason", None)
     assert win.mode_report() == {}
-    answers = iter(["exited 0xC0000022", None])
-    monkeypatch.setattr(win, "_probe_mode", lambda _mode, _paths: next(answers))
+    tried = []
+    monkeypatch.setattr(win, "_probe_mode", lambda mode, _paths: tried.append(mode))
     assert win.ensure_mode([]) == "appcontainer"
-    assert win.mode_report() == {"mode": "appcontainer", "stricter_mode_failed": "exited 0xC0000022"}
+    assert win.ensure_mode([]) == "appcontainer"
+    assert tried == ["appcontainer"]
+    assert win.mode_report() == {"mode": "appcontainer"}
     captured = capsys.readouterr()
-    assert "0xC0000022" in captured.err
+    assert captured.err == ""
     assert captured.out == ""
 
 
-def test_the_stricter_container_reports_no_fallback(monkeypatch):
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows AppContainer")
+def test_a_real_run_starts_no_stricter_container(monkeypatch, capsys):
+    """The real probe on this computer: only the normal container starts, and nothing is printed."""
     monkeypatch.setattr(win, "_mode", None)
     monkeypatch.setattr(win, "_mode_error", None)
-    monkeypatch.setattr(win, "_lpac_fallback_reason", None)
-    monkeypatch.setattr(win, "_probe_mode", lambda _mode, _paths: None)
-    assert win.ensure_mode([]) == "lpac"
-    assert win.mode_report() == {"mode": "lpac"}
+    real_probe = win._probe_mode
+    tried = []
+
+    def probe(mode, read_paths, source=None):
+        tried.append(mode)
+        return real_probe(mode, read_paths, source)
+
+    monkeypatch.setattr(win, "_probe_mode", probe)
+    win._bind()
+    assert win.ensure_mode([Path(sys.base_prefix).resolve()]) == "appcontainer"
+    assert tried == ["appcontainer"]
+    captured = capsys.readouterr()
+    assert "stricter" not in captured.err.lower()
+    assert "lpac" not in captured.err.lower()
 
 
 def test_the_script_log_records_which_container_ran(tmp_path):
