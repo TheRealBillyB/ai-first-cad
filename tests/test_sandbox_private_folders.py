@@ -4,7 +4,7 @@ aicad makes a private temporary folder while it loads inside the container.
 On Windows with Python 3.11.10 or later, the container could not make one,
 and tempfile spun until the CPU limit, so no script ran. The second run also
 needs its new job folder to inherit the container's grant. CI's Windows Python
-is 3.11.9, so the account check in CI runs this with a current Python too.
+is 3.11.9, which predates the change, so on CI this checks only that nothing broke.
 """
 
 from __future__ import annotations
