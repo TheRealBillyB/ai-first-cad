@@ -74,6 +74,24 @@ for attempt in (1, 2):
     except Exception as exc:
         report["runs"].append({"ok": False, "seconds": round(time.monotonic() - start, 1), "error": f"{type(exc).__name__}: {exc}"[:6000]})
     say(f"design script run {attempt} finished: {report['runs'][-1]}")
+if not all(run["ok"] for run in report["runs"]):
+    # Why a run failed. The task runs under a batch logon, whose window station
+    # is not the interactive one, and user32 needs a desktop it can open.
+    user32 = ctypes.WinDLL("user32")
+    name = ctypes.create_unicode_buffer(256)
+    user32.GetUserObjectInformationW(user32.GetProcessWindowStation(), 2, name, 512, None)
+    say(f"diagnostic: this process's window station is {name.value!r}")
+    from aicad import sandbox_windows as win
+    win._bind()
+    for label, code in (("plain print", "print(1)"), ("winsound, which needs user32", "import winsound"), ("_ctypes", "import _ctypes")):
+        root = Path(tempfile.mkdtemp(prefix="diagnostic-", dir=home))
+        found = win.spawn(
+            [sys.executable, "-I", "-S", "-B", "-c", code + "; print('loaded')"],
+            cwd=str(root), env=win._probe_env(root), read_paths=[Path(sys.base_prefix)], workspace=root,
+            cpu_seconds=30, memory_bytes=1 << 31, network=False, timeout_seconds=60,
+            stdout_path=root / "out.txt", stderr_path=root / "err.txt", child_checks_network=True,
+        )
+        say(f"diagnostic {label}: exit {found[0]}, out {found[1][-120:]!r}, err {found[2][-400:]!r}")
 faulthandler.cancel_dump_traceback_later()
 print(json.dumps(report), flush=True)
 """
