@@ -126,7 +126,6 @@ _advapi32_lib: ctypes.WinDLL | None = None
 _bound = False
 # The availability probe starts a container. Later tests in this process reuse it.
 _probe_done = False
-_lpac_fallback_reason: str | None = None
 _probe_result: str | None = None
 # Parents already checked for this container, so a later script does not open them again.
 _granted_traverse: set[tuple[str, str, str]] = set()
@@ -2520,47 +2519,37 @@ def _probe_env(workspace: Path) -> dict[str, str]:
 
 
 def ensure_mode(read_paths: Sequence[Path]) -> str:
-    """Pick LPAC when it can start Python, otherwise a normal AppContainer."""
+    """Use a normal AppContainer for scripts and solves.
 
-    global _mode, _mode_error, _lpac_fallback_reason
+    The stricter container (LPAC) is not tried. Python needs Windows'
+    registryRead capability to start in it, and importing aicad then creates a
+    socket, which LPAC refuses without a network capability. See the decision
+    dated 2026-11-05 on skipping the stricter container. The firewall rules, the
+    filters, and the check inside the container are the same either way.
+    """
+
+    global _mode, _mode_error
     if _mode:
         return _mode
     if _mode_error:
         raise OSError(_mode_error)
-    lpac_error = _probe_mode("lpac", read_paths)
-    if lpac_error is None:
-        _mode = "lpac"
-        return _mode
-    app_error = _probe_mode("appcontainer", read_paths)
-    if app_error is None:
+    error = _probe_mode("appcontainer", read_paths)
+    if error is None:
         _mode = "appcontainer"
-        _lpac_fallback_reason = lpac_error
-        # Stderr, because stdout is the MCP connection.
-        print(f"aicad: scripts run in a normal AppContainer. The stricter one failed: {lpac_error}", file=sys.stderr)
         return _mode
-    if lpac_error == app_error:
-        failures = f"Both AppContainer modes failed ({lpac_error})."
-    else:
-        failures = (
-            f"The stricter AppContainer failed ({lpac_error}). "
-            f"A normal AppContainer failed ({app_error})."
-        )
     _mode_error = (
-        f"Windows could not start a confined Python. {failures} "
+        f"Windows could not start a confined Python ({error}). "
         "The script was not run. Shape, sketch, gear, and catalog parts do not run a script."
     )
     raise OSError(_mode_error)
 
 
 def mode_report() -> dict[str, str]:
-    """Which container scripts use here, and why not the stricter one. Empty before the first check."""
+    """Which container scripts use here. Empty before the first check."""
 
     if not _mode:
         return {}
-    report = {"mode": _mode}
-    if _lpac_fallback_reason:
-        report["stricter_mode_failed"] = _lpac_fallback_reason
-    return report
+    return {"mode": _mode}
 
 
 def network_block_error() -> str | None:
