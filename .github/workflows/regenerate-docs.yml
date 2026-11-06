@@ -91,7 +91,10 @@ jobs:
             exit 0
           fi
           git push origin "HEAD:${branch}"
-          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${GITHUB_REPOSITORY%%/*}:${branch}" --base main --state open --json number --jq '.[0].number // empty')
+          # gh pr list --head takes a bare branch name. The "owner:branch" form
+          # matched nothing, so every later run tried to open a second pull
+          # request and failed on main.
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
             echo "updated pull request #${existing}"
             exit 0

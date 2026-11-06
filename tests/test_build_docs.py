@@ -924,3 +924,16 @@ def test_regenerate_workflow_uses_pinned_actions_and_does_not_merge():
     docs = (ROOT / ".github/workflows/docs.yml").read_text(encoding="utf-8")
     assert "--forbid-master-edits" in docs
     assert "github.head_ref" in docs
+
+
+def test_regenerate_workflow_finds_its_open_pull_request():
+    """gh pr list --head takes a bare branch name; "owner:branch" matches nothing.
+
+    With the owner form, every run after the first missed the open pull request,
+    tried to open a second one, and failed on main.
+    """
+    text = (ROOT / ".github/workflows/regenerate-docs.yml").read_text(encoding="utf-8")
+    listing = next(line for line in text.splitlines() if line.strip().startswith("existing=$(gh pr list"))
+    assert '--head "$branch"' in listing
+    assert ":${branch}" not in listing
+    assert text.index(listing) < text.index("gh pr create")
