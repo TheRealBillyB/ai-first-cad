@@ -66,6 +66,14 @@ report = {"is_admin": bool(ctypes.windll.shell32.IsUserAnAdmin()), "python": lis
 # user32, which _ctypes loads through ole32, cannot start in a container
 # without that. Give this account's own station and desktop the same AC
 # entries a person's sign-in has. aicad's container is unchanged.
+#
+# TEST HARNESS ONLY. Do not copy this into aicad. It mirrors what a desktop
+# sign-in already grants, so this throwaway account sees what a person sees.
+# It changes only the station and desktop this process runs on, opened by
+# their own names, on a CI machine that is thrown away. aicad must never
+# change a window station's or desktop's access list. With no signed-in
+# desktop (Task Scheduler, a service, SSH), aicad's scripts do not start; that
+# is a known 1.0 limit.
 from ctypes import wintypes
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
