@@ -5402,6 +5402,21 @@ def _write_new_temp(prefix: str, suffix: str, data: bytes, directory: str | None
     return Path(name)
 
 
+def make_run_folder(path: Path) -> None:
+    """Make a folder one run uses, inside the project's private data.
+
+    On Windows it inherits the project's access list, which names the script
+    container. Python 3.11.10 and later turn mode 0o700 into an owner-only list
+    that does not inherit, so after the first run, which grants the whole
+    project, the container could not open its own job folder. Other systems
+    keep the owner-only mode.
+    """
+    if sys.platform == "win32":
+        path.mkdir()
+    else:
+        path.mkdir(mode=0o700)
+
+
 def _child_command(job: Path) -> list[str]:
     """Python command for one sandbox child.
 
@@ -5430,7 +5445,7 @@ class _DesignRecord:
 
     def start(self) -> None:
         calls = self.job / "calls"
-        calls.mkdir(mode=0o700)
+        make_run_folder(calls)
         directory = _control_directory()
         self._directory = directory
         try:
@@ -5726,7 +5741,7 @@ def _spawn(
         cache_dir = output_dir(workspace, cache_path, "Library cache", ScriptError)
     job = jobs_dir / uuid.uuid4().hex
     try:
-        job.mkdir(mode=0o700)
+        make_run_folder(job)
     except OSError as exc:
         raise ScriptError("Could not create a project folder, so the script was not run.") from exc
     spec: dict = {"kind": kind, "network": network}
