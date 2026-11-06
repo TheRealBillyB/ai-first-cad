@@ -72,7 +72,7 @@ for attempt in (1, 2):
         result = workspace.execute("run_design_script", {"script": script}, "ui")
         report["runs"].append({"ok": True, "seconds": round(time.monotonic() - start, 1), "stdout": str(result.get("stdout", ""))[:200]})
     except Exception as exc:
-        report["runs"].append({"ok": False, "seconds": round(time.monotonic() - start, 1), "error": f"{type(exc).__name__}: {exc}"[:600]})
+        report["runs"].append({"ok": False, "seconds": round(time.monotonic() - start, 1), "error": f"{type(exc).__name__}: {exc}"[:6000]})
     say(f"design script run {attempt} finished: {report['runs'][-1]}")
 faulthandler.cancel_dump_traceback_later()
 print(json.dumps(report), flush=True)
