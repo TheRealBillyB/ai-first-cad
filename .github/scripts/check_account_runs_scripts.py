@@ -13,6 +13,11 @@ on Windows. The script container cannot create one, and every run once spun
 until its CPU limit. The other account check imports only the container code,
 and the test jobs use Python 3.11.9, so neither could see that.
 
+The account runs as a scheduled task, which Windows gives a service window
+station. A person's sign-in gives every app package access to its window
+station and desktop, and a container cannot load user32 without that. So the
+account first gives its own station and desktop those same entries.
+
 Every step prints as it starts, with the time. While the account works, a
 line every minute shows the newest thing it printed. A step that does not
 finish prints everything the account wrote, including a stack dump the account
@@ -56,6 +61,58 @@ os.environ["AICAD_CONFIG"] = str(home / "config")
 os.environ["AICAD_RECENT"] = str(home / "recent.json")
 os.environ["AICAD_SERVER_TOKENS"] = str(home / "tokens")
 report = {"is_admin": bool(ctypes.windll.shell32.IsUserAnAdmin()), "python": list(sys.version_info[:3]), "runs": []}
+# A scheduled task gets a service window station, not the interactive WinSta0.
+# Windows lets every app package (AC) use WinSta0 and its Default desktop, and
+# user32, which _ctypes loads through ole32, cannot start in a container
+# without that. Give this account's own station and desktop the same AC
+# entries a person's sign-in has. aicad's container is unchanged.
+from ctypes import wintypes
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+user32.GetProcessWindowStation.restype = wintypes.HANDLE
+user32.GetThreadDesktop.restype = wintypes.HANDLE
+user32.OpenWindowStationW.restype = wintypes.HANDLE
+user32.OpenDesktopW.restype = wintypes.HANDLE
+advapi32.GetSecurityInfo.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+advapi32.SetSecurityInfo.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR), ctypes.c_void_p]
+advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+advapi32.GetSecurityDescriptorDacl.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+def object_name(handle):
+    name = ctypes.create_unicode_buffer(256)
+    user32.GetUserObjectInformationW(handle, 2, name, 512, None)
+    return name.value
+def access_list(handle):
+    dacl, sd, text = ctypes.c_void_p(), ctypes.c_void_p(), wintypes.LPWSTR()
+    error = advapi32.GetSecurityInfo(handle, 7, 4, None, None, ctypes.byref(dacl), None, ctypes.byref(sd))
+    if error:
+        raise OSError(error, "GetSecurityInfo")
+    advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, 1, 4, ctypes.byref(text), None)
+    return text.value
+def add_entries(handle, entries):
+    before = access_list(handle)
+    if entries in before:
+        return before
+    sd, present, dacl, defaulted = ctypes.c_void_p(), wintypes.BOOL(), ctypes.c_void_p(), wintypes.BOOL()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(before + entries, 1, ctypes.byref(sd), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    advapi32.GetSecurityDescriptorDacl(sd, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted))
+    error = advapi32.SetSecurityInfo(handle, 7, 4, None, None, dacl, None)
+    if error:
+        raise OSError(error, "SetSecurityInfo")
+    return access_list(handle)
+READ_CONTROL_AND_WRITE_DAC = 0x00020000 | 0x00040000
+station_name = object_name(user32.GetProcessWindowStation())
+desktop_name = object_name(user32.GetThreadDesktop(ctypes.windll.kernel32.GetCurrentThreadId()))
+say(f"window station {station_name!r}, desktop {desktop_name!r}")
+station = user32.OpenWindowStationW(station_name, False, READ_CONTROL_AND_WRITE_DAC)
+desktop = user32.OpenDesktopW(desktop_name, 0, False, READ_CONTROL_AND_WRITE_DAC)
+if not station or not desktop:
+    raise ctypes.WinError(ctypes.get_last_error())
+say("window station before: " + access_list(station))
+say("window station after: " + add_entries(station, "(A;OICIIO;GXGR;;;AC)(A;NP;0x20327;;;AC)"))
+say("desktop after: " + add_entries(desktop, "(A;;CCDCLCSWRPWPDTLOSDRCWDWO;;;AC)"))
+report["station"] = station_name
 say("importing aicad")
 from aicad.sandbox import allow_design_scripts
 from aicad.workspace import Workspace
@@ -74,24 +131,6 @@ for attempt in (1, 2):
     except Exception as exc:
         report["runs"].append({"ok": False, "seconds": round(time.monotonic() - start, 1), "error": f"{type(exc).__name__}: {exc}"[:6000]})
     say(f"design script run {attempt} finished: {report['runs'][-1]}")
-if not all(run["ok"] for run in report["runs"]):
-    # Why a run failed. The task runs under a batch logon, whose window station
-    # is not the interactive one, and user32 needs a desktop it can open.
-    user32 = ctypes.WinDLL("user32")
-    name = ctypes.create_unicode_buffer(256)
-    user32.GetUserObjectInformationW(user32.GetProcessWindowStation(), 2, name, 512, None)
-    say(f"diagnostic: this process's window station is {name.value!r}")
-    from aicad import sandbox_windows as win
-    win._bind()
-    for label, code in (("plain print", "print(1)"), ("winsound, which needs user32", "import winsound"), ("_ctypes", "import _ctypes")):
-        root = Path(tempfile.mkdtemp(prefix="diagnostic-", dir=home))
-        found = win.spawn(
-            [sys.executable, "-I", "-S", "-B", "-c", code + "; print('loaded')"],
-            cwd=str(root), env=win._probe_env(root), read_paths=[Path(sys.base_prefix)], workspace=root,
-            cpu_seconds=30, memory_bytes=1 << 31, network=False, timeout_seconds=60,
-            stdout_path=root / "out.txt", stderr_path=root / "err.txt", child_checks_network=True,
-        )
-        say(f"diagnostic {label}: exit {found[0]}, out {found[1][-120:]!r}, err {found[2][-400:]!r}")
 faulthandler.cancel_dump_traceback_later()
 print(json.dumps(report), flush=True)
 """
