@@ -1820,7 +1820,6 @@ def _start_suspended(
     """Create the process suspended. Retry without breakaway when the parent job forbids it."""
 
     last = "Could not start the sandboxed script."
-    _quiet_load_failures(kernel32)
     for breakaway in (True, False):
         created = kernel32.CreateProcessW(
             application,
@@ -1923,6 +1922,8 @@ def _launch(
 ) -> tuple[_ProcessInformation, int | None]:
     kernel32 = _kernel32()
     advapi32 = _advapi32()
+    # The error mode belongs to this process, and the child inherits it.
+    _quiet_load_failures(kernel32)
     command, env = _command_for_container(command, env)
     stdin = _open_inherited("NUL", _GENERIC_READ, _OPEN_EXISTING)
     stdout = _open_inherited(str(stdout_path), _GENERIC_WRITE, _CREATE_ALWAYS)
