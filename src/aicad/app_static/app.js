@@ -2557,6 +2557,7 @@ function retitleRequirementFields() {
 }
 
 async function boot() {
+  showUnhandledFailures(window);
   initView();
   $("nav-model").onclick = () => showPage("model");
   $("nav-assembly").onclick = () => showPage("assembly");
@@ -2890,6 +2891,16 @@ async function editSettings() {
   const body = await saved.json();
   if (!body.ok) throw new Error(body.error);
   $("chat-key").textContent = body.result.has_key ? `${body.result.provider} ${body.result.key_hint}` : "No API key";
+}
+
+// A button whose action fails would otherwise change nothing on screen, and
+// the person cannot tell a failure from a long wait. Every failure that no
+// handler caught reaches the notice bar. boot() calls this when the page starts.
+function showUnhandledFailures(target) {
+  target.addEventListener("unhandledrejection", (event) => {
+    event.preventDefault();
+    showError(event.reason);
+  });
 }
 
 function showError(error) {
