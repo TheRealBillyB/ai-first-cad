@@ -105,6 +105,13 @@ del _imported_shadows
 del _same_directory
 del _module_invocation
 
+if sys.platform == "win32":
+    # Before anything below makes a temporary folder. See container_folders.
+    from aicad.container_folders import make_private_folders_work_in_a_container
+
+    make_private_folders_work_in_a_container()
+    del make_private_folders_work_in_a_container
+
 from aicad._version import __version__
 from aicad.document import Document
 from aicad.errors import (

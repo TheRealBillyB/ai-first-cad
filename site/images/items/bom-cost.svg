@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600" role="img" aria-label="Bill of materials and a cost estimate"><title>Bill of materials and a cost estimate</title><style>
+.ln{fill:none;stroke:#e6edf7;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}
+.lf{fill:#14233f;stroke:#e6edf7;stroke-width:3;stroke-linejoin:round}
+.lfi{fill:none;stroke:#14233f}
+.lf2{fill:#0f1b33;stroke:#9fb3cf;stroke-width:2.5;stroke-linejoin:round}
+.lf3{fill:#4cc9f0;fill-opacity:.35;stroke:#4cc9f0;stroke-width:3}
+.fa{fill:#4cc9f0;fill-opacity:.18;stroke:#4cc9f0;stroke-width:3;stroke-linejoin:round}
+.ac{fill:none;stroke:#4cc9f0;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}
+.ac-head{fill:#4cc9f0}
+.af{fill:#4cc9f0}
+.dm{stroke:#3a4d6b;stroke-width:2;fill:none}
+.tl{fill:#e6edf7;font-family:'Inter','DejaVu Sans','Segoe UI',Arial,sans-serif;font-size:20px;font-weight:700}
+.tm{fill:#4cc9f0;font-family:'JetBrains Mono','DejaVu Sans Mono',Consolas,monospace;font-size:16px}
+.ts{fill:#9fb3cf;font-family:'Inter','DejaVu Sans','Segoe UI',Arial,sans-serif;font-size:14px}
+.st-wip .lf,.st-wip .ln{stroke:#cbd5e1}
+.st-next .lf{stroke:#4cc9f0;fill:#0f2440}
+.st-next .ln{stroke:#4cc9f0}
+.st-future .lf,.st-future .ln{stroke:#8aa0c0;stroke-dasharray:9 6}
+.st-future .lf{fill:#101b31}
+.st-future .lfi{stroke:#101b31;stroke-dasharray:none}
+.st-next .lfi{stroke:#0f2440}
+.st-future .lf2{stroke:#5f7393;stroke-dasharray:6 5}
+.st-future .ac{stroke-opacity:.8}
+.st-future .fa{fill-opacity:.09}
+.mini text{display:none}
+</style><defs><pattern id="gbomcost" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0H0V20" fill="none" stroke="#12203a" stroke-width="1"/></pattern><pattern id="Gbomcost" width="100" height="100" patternUnits="userSpaceOnUse"><path d="M100 0H0V100" fill="none" stroke="#1a2c4c" stroke-width="1.2"/></pattern></defs><rect width="800" height="600" fill="#0a1224"/><rect width="800" height="600" fill="url(#gbomcost)"/><rect width="800" height="600" fill="url(#Gbomcost)"/><rect x="10" y="10" width="780" height="580" rx="14" fill="none" stroke="#2a3a55" stroke-width="2" stroke-dasharray="10 7"/><path d="M14,36 V14 H36" fill="none" stroke="#4cc9f0" stroke-width="3"/><path d="M786,36 V14 H764" fill="none" stroke="#4cc9f0" stroke-width="3"/><path d="M14,564 V586 H36" fill="none" stroke="#4cc9f0" stroke-width="3"/><path d="M786,564 V586 H764" fill="none" stroke="#4cc9f0" stroke-width="3"/><rect x="28" y="26" width="174.8" height="36" rx="18" fill="#0a1224" stroke="#8aa0c0" stroke-width="2" stroke-dasharray="6 5"/><path d="M50,37 L57,44 L50,51 L43,44 Z" fill="none" stroke="#b8c6da" stroke-width="2"/><text x="66" y="50" fill="#b8c6da" font-family="'JetBrains Mono','DejaVu Sans Mono',Consolas,monospace" font-size="15" font-weight="700">IDEA · FUTURE</text><text x="770" y="50" text-anchor="end" fill="#5f7393" font-family="'JetBrains Mono','DejaVu Sans Mono',Consolas,monospace" font-size="15">aicad · 54</text><g class="st-future"><rect class="lf" x="170" y="150" width="460" height="250" rx="8" /><rect class="fa" x="170" y="150" width="460" height="44" rx="0" /><text class="ts" x="250" y="180" text-anchor="start">part</text><text class="ts" x="470" y="180" text-anchor="middle">qty</text><text class="ts" x="590" y="180" text-anchor="end">price</text><text class="ts" x="190" y="230" text-anchor="start">M8 hex bolt</text><text class="ts" x="470" y="230" text-anchor="middle">12</text><text class="tm" x="600" y="230" text-anchor="end">—</text><line class="dm" x1="180" y1="244" x2="610" y2="244" /><text class="ts" x="190" y="270" text-anchor="start">608 bearing</text><text class="ts" x="470" y="270" text-anchor="middle">4</text><text class="tm" x="600" y="270" text-anchor="end">—</text><line class="dm" x1="180" y1="284" x2="610" y2="284" /><text class="ts" x="190" y="310" text-anchor="start">hose 1/2 in</text><text class="ts" x="470" y="310" text-anchor="middle">2</text><text class="tm" x="600" y="310" text-anchor="end">—</text><line class="dm" x1="180" y1="324" x2="610" y2="324" /><text class="ts" x="190" y="350" text-anchor="start">steel tube</text><text class="ts" x="470" y="350" text-anchor="middle">6</text><text class="tm" x="600" y="350" text-anchor="end">—</text><text class="tm" x="400" y="440" text-anchor="middle">rough · dated · editable table</text></g><rect x="10" y="478" width="780" height="112" fill="#0a1224" fill-opacity=".88"/><line x1="40" y1="478" x2="760" y2="478" stroke="#2a3a55" stroke-width="1.5" stroke-dasharray="10 7"/><text x="40" y="530" fill="#f1f5fb" font-family="'Inter','DejaVu Sans','Segoe UI',Arial,sans-serif" font-size="32" font-weight="700">Bill of materials and a cost estimate</text><text x="40" y="566" fill="#8aa0c0" font-family="'JetBrains Mono','DejaVu Sans Mono',Consolas,monospace" font-size="16">APP</text></svg>

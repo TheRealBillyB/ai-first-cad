@@ -153,6 +153,9 @@ def read_agent_token(port: int) -> str:
 
 
 _OPEN_RECHECK_SECONDS = 5.0
+# A browser that leaves mid-response. Windows raises ConnectionAbortedError.
+# ConnectionRefusedError is not here: from a chat turn it is a real error.
+_CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 
 def _open_project_path(port: int) -> Path:
@@ -272,6 +275,7 @@ def _origin_is_local(origin: str, port: int) -> bool:
 class _WorkspaceServer(ThreadingHTTPServer):
     page_token: str
     agent_token: str
+    log_commands = False
     _open_root: Path | None = None
     _other_app_port: int | None = None
     _open_lock = threading.Lock()
@@ -294,6 +298,12 @@ class _WorkspaceServer(ThreadingHTTPServer):
                 if changed:
                     _record_open_project(port, root)
             return self._other_app_port
+
+    def handle_error(self, request, client_address) -> None:
+        # A page that reloads or closes drops its connection. That is normal.
+        if isinstance(sys.exc_info()[1], _CLIENT_GONE):
+            return
+        super().handle_error(request, client_address)
 
     def process_request(self, request, client_address) -> None:
         # This request's geometry runs on the thread started below.
@@ -395,6 +405,27 @@ def _bounded_body(response, maximum: int) -> bytes:
     return data
 
 
+_LOG_WHO = {"ui": "person", "agent": "assistant"}
+_LOG_ERROR_CHARS = 200
+_LOG_NAME_CHARS = 80
+
+
+def _log_text(text: str, limit: int) -> str:
+    """One line of plain ASCII, so any Windows console code page can print it."""
+    first = (text.strip().splitlines() or [""])[0].strip()
+    plain = "".join(ch if " " <= ch <= "~" else "?" for ch in first)
+    if len(plain) > limit:
+        plain = plain[: limit - 3].rstrip() + "..."
+    return plain
+
+
+def _log_command(who: str, name: str, outcome: str) -> None:
+    """Print one line for a command. Arguments and results are never printed."""
+    stamp = time.strftime("%H:%M:%S")
+    label = _log_text(name, _LOG_NAME_CHARS) or "(no name)"
+    print(f"{stamp} {_LOG_WHO.get(who, who)} {label} {outcome}", flush=True)
+
+
 def _second_app_warning(port: int) -> str:
     return (
         f"This project is also open in another aicad app at http://127.0.0.1:{port}/. "
@@ -409,7 +440,7 @@ def serve_app(workspace: str | Path, host: str = "127.0.0.1", port: int = 8765, 
 
     warn_design_scripts(workspace)
     # The page answers while the project opens, and fills in when it is ready.
-    server = make_server(workspace, host, port, worker=True, open_in_background=True)
+    server = make_server(workspace, host, port, worker=True, open_in_background=True, log_commands=True)
     url = f"http://{host}:{port}/"
     print(f"aicad workspace at {url}", flush=True)
     threading.Thread(target=_say_when_open, args=(server.workspace,), name="aicad-open-note", daemon=True).start()
@@ -442,11 +473,14 @@ def make_server(
     *,
     worker: bool = False,
     open_in_background: bool = False,
+    log_commands: bool = False,
 ) -> _WorkspaceServer:
     """The app's server. With ``worker``, geometry runs in its own process. See app_worker.
 
     With ``open_in_background`` as well, this returns before the project has
     opened, so the page can say that it is opening.
+
+    With ``log_commands``, each command prints a line when it starts and when it ends.
     """
     if not _bind_host_is_loopback(host):
         raise GeometryError(
@@ -465,6 +499,7 @@ def make_server(
     handler = _handler(session)
     server = _WorkspaceServer((host, port), handler)
     server.workspace = session  # type: ignore[attr-defined]
+    server.log_commands = log_commands
     server.page_token = secrets.token_urlsafe(32)
     server.agent_token = secrets.token_urlsafe(32)
     write_agent_token(int(server.server_address[1]), server.agent_token)
@@ -534,10 +569,10 @@ def _handler(session: Workspace):
                 body = self._read_json()
                 if parsed.path == "/api/command":
                     # ``source`` in the body is ignored. The token says who called.
-                    result = self.workspace.execute(
+                    result = self._run_command(
                         str(body.get("name") or ""),
                         body.get("arguments") or {},
-                        source=self._caller(),
+                        self._caller(),
                     )
                     self._json({"ok": True, "revision": self.workspace.geometry_revision, "result": result})
                 elif parsed.path == "/api/settings":
@@ -561,6 +596,21 @@ def _handler(session: Workspace):
             except Exception as exc:
                 self._discard_unread_body()
                 self._error(500, str(exc))
+
+        def _run_command(self, name: str, arguments, source: str):
+            if not self.server.log_commands:
+                return self.workspace.execute(name, arguments, source=source)
+            _log_command(source, name, "started")
+            started = time.monotonic()
+            try:
+                result = self.workspace.execute(name, arguments, source=source)
+            except BaseException as exc:
+                elapsed = time.monotonic() - started
+                reason = _log_text(str(exc), _LOG_ERROR_CHARS) or type(exc).__name__
+                _log_command(source, name, f"failed after {elapsed:.1f} s: {reason}")
+                raise
+            _log_command(source, name, f"ok after {time.monotonic() - started:.1f} s")
+            return result
 
         def _guard(self) -> None:
             self._check_target()
@@ -680,7 +730,7 @@ def _handler(session: Workspace):
                 emit("done", {})
             except AICADError as exc:
                 emit("error", {"error": str(exc)})
-            except (BrokenPipeError, ConnectionResetError):
+            except _CLIENT_GONE:
                 return
 
         def _events(self) -> None:
@@ -708,7 +758,7 @@ def _handler(session: Workspace):
                         continue
                     self.wfile.write(b"data: " + json.dumps(event).encode("utf-8") + b"\n\n")
                     self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            except (ConnectionError, TimeoutError):
                 return
             finally:
                 unsubscribe()
@@ -832,13 +882,16 @@ def _handler(session: Workspace):
             except Exception:
                 pass
             data = json.dumps({"ok": False, "error": message}).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self._security_headers()
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self._security_headers()
+                self.end_headers()
+                self.wfile.write(data)
+            except _CLIENT_GONE:
+                return  # the client left. There is no one to answer.
 
         def _content_length(self) -> int | None:
             """How many body bytes the client declared.

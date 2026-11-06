@@ -453,6 +453,7 @@ function renderPanel() {
         <button type="button" id="fea-load">Load selection</button>
         <button type="button" id="fea-run" class="primary">Solve</button>
       </div>
+      <p id="fea-status" role="status" hidden></p>
       <div id="fea-setup" class="muted"></div>
       ${report ? feaHtml(report, state.panel_revision.fea !== state.revision) : `<p class="muted">Strength is this linear static check. Hold faces, apply a force, and read the safety factor.</p>`}`;
     $("fea-fix").onclick = () => rememberLoad("fix");
@@ -462,6 +463,7 @@ function renderPanel() {
     $("fea-mesh").onchange = () => { feaForm.mesh = $("fea-mesh").value; };
     $("fea-sf").onchange = () => { feaForm.sf = $("fea-sf").value; };
     renderFeaSetup();
+    renderFeaStatus();
     return;
   }
   if (ui.tab === "vibration") {
@@ -835,20 +837,59 @@ async function runSection() {
   await refresh();
 }
 
+// A solve can take minutes. The panel is drawn again on every refresh, so
+// what it shows while one runs, or after one fails, is kept here.
+const feaRun = { started: null, error: null, timer: null };
+
+function renderFeaStatus() {
+  const button = $("fea-run");
+  const running = feaRun.started !== null;
+  if (button) button.disabled = running;
+  const node = $("fea-status");
+  if (!node) return;
+  if (running) {
+    const seconds = Math.floor((performance.now() - feaRun.started) / 1000);
+    node.className = "muted";
+    node.textContent = `Solving… ${seconds} s. Meshing and the solve can take a few minutes.`;
+  } else if (feaRun.error) {
+    node.className = "warn";
+    node.textContent = `The solve failed. ${feaRun.error}`;
+  } else {
+    node.className = "";
+    node.textContent = "";
+  }
+  node.hidden = !node.textContent;
+}
+
 async function runFea() {
   if (!ui.part) return;
   if (!feaPlan.fixes.length || !feaPlan.loads.length) return alert("Add a fixed face and a load from the selection.");
-  await command("solve_mechanics", {
-    name: ui.part,
-    setup: {
-      material: $("fea-material").value,
-      mesh_size_mm: Number($("fea-mesh").value),
-      target_safety_factor: Number($("fea-sf").value),
-      fixes: feaPlan.fixes,
-      loads: feaPlan.loads,
-    },
-  });
-  await refresh();
+  if (feaRun.started !== null) return;
+  feaRun.started = performance.now();
+  feaRun.error = null;
+  feaRun.timer = setInterval(renderFeaStatus, 1000);
+  renderFeaStatus();
+  try {
+    await command("solve_mechanics", {
+      name: ui.part,
+      setup: {
+        material: $("fea-material").value,
+        mesh_size_mm: Number($("fea-mesh").value),
+        target_safety_factor: Number($("fea-sf").value),
+        fixes: feaPlan.fixes,
+        loads: feaPlan.loads,
+      },
+    });
+  } catch (error) {
+    feaRun.error = error && error.message ? error.message : String(error);
+    showError(error);
+  } finally {
+    clearInterval(feaRun.timer);
+    feaRun.timer = null;
+    feaRun.started = null;
+    renderFeaStatus();
+  }
+  if (!feaRun.error) await refresh();
 }
 
 async function runChecks() {
@@ -2516,6 +2557,7 @@ function retitleRequirementFields() {
 }
 
 async function boot() {
+  showUnhandledFailures(window);
   initView();
   $("nav-model").onclick = () => showPage("model");
   $("nav-assembly").onclick = () => showPage("assembly");
@@ -2849,6 +2891,16 @@ async function editSettings() {
   const body = await saved.json();
   if (!body.ok) throw new Error(body.error);
   $("chat-key").textContent = body.result.has_key ? `${body.result.provider} ${body.result.key_hint}` : "No API key";
+}
+
+// A button whose action fails would otherwise change nothing on screen, and
+// the person cannot tell a failure from a long wait. Every failure that no
+// handler caught reaches the notice bar. boot() calls this when the page starts.
+function showUnhandledFailures(target) {
+  target.addEventListener("unhandledrejection", (event) => {
+    event.preventDefault();
+    showError(event.reason);
+  });
 }
 
 function showError(error) {
