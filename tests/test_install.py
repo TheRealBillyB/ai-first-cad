@@ -149,7 +149,7 @@ def test_package_commands_stop_if_they_do_not_finish(monkeypatch):
 
         class Done:
             returncode = 0
-            stdout = "aicad 0.9.0\n"
+            stdout = "aicad 1.0.0\n"
             stderr = ""
 
         return Done()

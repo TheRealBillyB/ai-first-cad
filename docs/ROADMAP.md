@@ -11,7 +11,7 @@ Where the software work stands. Statuses describe this repository. They are not 
 | **Planned** | The direction after those tracks |
 | **Later** | Far enough out that the shape can still change |
 
-What is already in the tree is listed under Done. The Next release section names the 0.9 preview items that are already in the tree, then what is still left for 1.0. The tracks after that release are the ones that are not in the tree yet.
+What is already in the tree is listed under Done. The Next release section names the items named for 1.0 that are already in the tree, then what is still left before the 1.0 release. The tracks after that release are the ones that are not in the tree yet.
 
 ## Done
 
@@ -114,7 +114,7 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 
 ## Next release
 
-**0.9** is the preview in this tree. **v1.0** is the release of that feature set. These items were named for v1 and are already in the tree:
+**1.0.0** is the version in this tree. It is the release of the 0.9 preview's feature set. These items were named for v1 and are already in the tree:
 
 - **Arc tool.** Three-point arcs, center-start-end arcs, and a tangent arc that continues a line, with the same snapping, constraints, and dimensions as lines and circles.
 - **Sketch planes.** A sketch on a planar face of a solid, or on an offset or angled datum, including the XY, YZ, and XZ planes. The sketch stays attached when the model rebuilds.
@@ -133,8 +133,6 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 Left for 1.0, and not in the tree:
 
 - **Windows sandbox setup survives a reboot.** A manual check in Windows Sandbox: run `aicad sandbox-setup`, restart, and confirm the filters and rules are still in place and a script's network is still refused. A CI runner cannot restart inside its job.
-- **Joint-sized reducers.** A reducer sized from the joint it drives.
-- **Catalog mounting orientation.** A catalog row does not store the orientation of its mount. A mount can snap a catalog mate onto a face or an axis and turn in steps of 15 degrees.
 
 v1.0 does not add another feature track. CAM and the manufacturing checks stay in the section after this one.
 
@@ -145,6 +143,13 @@ Power and fluid estimates, hose routing with bend-radius and pinch checks, and r
 The first track after v1.0 is CAM and manufacturing checks. A part designed here should be able to go to a machine.
 
 Catalog parts carrying mass and the moment loads used by the checks are planned after v1.
+
+### Moved out of 1.0
+
+These two were named for 1.0. They ship after it.
+
+- **Joint-sized reducers.** A reducer sized from the joint it drives.
+- **Catalog mounting orientation.** A catalog row does not store the orientation of its mount. A mount can snap a catalog mate onto a face or an axis and turn in steps of 15 degrees.
 
 ### CAM and manufacturing checks
 
@@ -165,6 +170,8 @@ The interface ideas for the app, with their order, estimates, and pull request s
 ### 1.0.x fixes
 
 - **A clear message with no signed-in desktop.** On Windows, a design script or solve started with no signed-in desktop (Task Scheduler, a Windows service, or an SSH session) stops with a DLL initialization error. The window station Windows gives that session does not let app containers in, so the container cannot load Windows' window library. The run should say that a signed-in desktop is needed, and why, instead of the DLL error. aicad will not change a window station's or a desktop's access list to get around it.
+- **A faster first script run on Windows.** The first design script in a project waits while the script container is granted the project, the Python install, and its links. On a CI runner that first run took 89.5 s, and the second took 4.9 s. The grants should be made once, ahead of the first run, or made smaller.
+- **The picture viewer holds the pointer during a drag.** The full-size report picture (#438) should call `setPointerCapture` when a drag starts, so letting go outside the window does not leave a pointer stuck down. A click on the picture after a drag must still not count as a click outside it, because capture changes which element the click lands on.
 
 ## Later
 

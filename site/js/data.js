@@ -193,18 +193,18 @@ window.ROADMAP_ITEMS = [
  },
  {
   "id": "joint-reducers",
-  "status": "wip",
+  "status": "next",
   "title": "Joint-sized reducers",
-  "category": "Finishing for 1.0",
-  "desc": "Listed in the roadmap as left for 1.0: a reducer sized from the joint it drives.",
+  "category": "After 1.0",
+  "desc": "Moved out of 1.0 and planned after it: a reducer sized from the joint it drives.",
   "n": 25
  },
  {
   "id": "mount-orientation",
-  "status": "wip",
+  "status": "next",
   "title": "Catalog mounting orientation",
-  "category": "Finishing for 1.0",
-  "desc": "Listed in the roadmap as left for 1.0: a mount can snap a catalog part onto a face or an axis and turn in steps of 15 degrees.",
+  "category": "After 1.0",
+  "desc": "Moved out of 1.0 and planned after it: a catalog row will store the orientation of its mount. Today a mount snaps a catalog part onto a face or an axis and turns in steps of 15 degrees.",
   "n": 26
  },
  {
