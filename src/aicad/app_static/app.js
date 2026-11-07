@@ -2524,6 +2524,11 @@ function clearMeasure() {
 async function browseProjects(mode) {
   const dialog = $("modal");
   let current = ui.state.project ? ui.state.project.path : "";
+  if (mode === "save" && current) {
+    // The copy goes beside this project. Save as refuses a folder inside it.
+    const here = await command("list_folders", { path: current });
+    if (here.parent) current = here.parent;
+  }
   const paint = async () => {
     const listed = await command("list_folders", current ? { path: current } : {});
     current = listed.path;
