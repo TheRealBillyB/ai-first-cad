@@ -29,6 +29,8 @@ EXACT = frozenset(
         "LICENSE",
         # The contributor license agreement is a project legal document.
         "CLA.md",
+        # Licenses and links for the outside software aicad uses.
+        "THIRD_PARTY_NOTICES.md",
         "SECURITY.md",
         "CONTRIBUTING.md",
         "CODE_OF_CONDUCT.md",
