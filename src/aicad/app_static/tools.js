@@ -41,6 +41,7 @@ function renderAssemblyForm() {
   const form = $("assembly-form");
   if (!form || !ui.assemblyTool) return;
   const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
+  ui.assemblyFormFor = ui.assembly;
   form.innerHTML = assemblyFormHtml(ui.assemblyTool, current || { instances: [], motions: [], studies: [], poses: [] });
   form.hidden = false;
   form.onsubmit = (event) => {

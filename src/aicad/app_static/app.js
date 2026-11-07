@@ -2079,6 +2079,12 @@ function renderAssemblies() {
       renderAssemblies();
     };
   });
+  // An open tool form lists the instances, joints, poses, and motions of one
+  // assembly. After another one is selected, it is drawn again for that one.
+  const form = $("assembly-form");
+  if (ui.assemblyTool && ui.assemblyFormFor !== ui.assembly && form && !form.hidden && typeof renderAssemblyForm === "function") {
+    renderAssemblyForm();
+  }
   const current = assemblies.find((item) => item.name === ui.assembly);
   if (!current) {
     $("assembly-controls").innerHTML = `<p class="muted">No assembly yet. The tools above the picture run a motion study, gear mesh, gear train, kinematics, a position error budget, packaging, a drawing, a bill of materials, an exploded view, or an animation.</p>`;
