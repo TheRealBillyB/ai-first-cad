@@ -2092,6 +2092,40 @@ def project_roots() -> tuple[Path, ...]:
     return tuple(_PROJECTS)
 
 
+def running_install_folders() -> tuple[Path, ...]:
+    """The folders that hold the aicad that is running: its Python environment and its own code."""
+    found: list[Path] = []
+    for raw in (sys.prefix, Path(__file__).parent):
+        try:
+            folder = Path(raw).resolve()
+        except OSError:
+            continue
+        if folder not in found:
+            found.append(folder)
+    return tuple(found)
+
+
+def refuse_install_as_project(folder: Path, error: type[Exception]) -> None:
+    """Refuse a project folder that is, or holds, the aicad that is running.
+
+    Programs inside an open project are not started, so CalculiX installed in
+    ``.venv`` would be skipped. A design script may write anywhere in its
+    project, so it could also change aicad itself.
+    """
+    try:
+        project = Path(folder).resolve()
+    except OSError:
+        return
+    for install in running_install_folders():
+        if install == project or _is_inside(install, project):
+            raise error(
+                f"{project} holds the aicad install ({install}), so it cannot be a project. "
+                "aicad does not start programs inside an open project, so CalculiX installed there "
+                "would not run, and a design script could change aicad itself. "
+                f"Pick or create a project folder instead, for example {project / 'aicad_workspace'}."
+            )
+
+
 def _project_containing(path: Path) -> Path | None:
     """The longest remembered project that lexically contains ``path``."""
     if not path.is_absolute():

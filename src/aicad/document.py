@@ -171,8 +171,10 @@ class Document:
 
     def __init__(self, workspace: str | Path = "aicad_workspace"):
         self.workspace = Path(workspace).resolve()
+        from aicad.paths import refuse_install_as_project, remember_project
+
+        refuse_install_as_project(self.workspace, DocumentError)
         self.workspace.mkdir(parents=True, exist_ok=True)
-        from aicad.paths import remember_project
 
         remember_project(self.workspace)
         self._parts: dict[str, _Part] = {}
