@@ -41,6 +41,7 @@ function renderAssemblyForm() {
   const form = $("assembly-form");
   if (!form || !ui.assemblyTool) return;
   const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
+  ui.assemblyFormFor = ui.assembly;
   form.innerHTML = assemblyFormHtml(ui.assemblyTool, current || { instances: [], motions: [], studies: [], poses: [] });
   form.hidden = false;
   form.onsubmit = (event) => {
@@ -997,6 +998,8 @@ function showFocusedReport() {
   const report = ui.state.panels[focus];
   if (!report) return false;
   if (report.assembly && ui.assembly && report.assembly !== ui.assembly && focus !== "gears") return false;
+  // These panels also hold a part's result, which is not this assembly's.
+  if (ASSEMBLY_ONLY_REPORTS.includes(focus) && report.assembly !== ui.assembly) return false;
   return paintAssemblyReport(focus, report);
 }
 
@@ -1013,8 +1016,17 @@ function showKnownAssemblyReport() {
   return false;
 }
 
+// Buttons above the picture whose reports live in app.js.
+const ASSEMBLY_ONLY_REPORTS = ["motion", "cables", "power", "vibration", "bolts", "robot"];
+
 function paintAssemblyReport(key, report) {
   const painters = {
+    motion: () => showMotionReport(),
+    cables: (item) => { showPicture(null); showCableReport(item); },
+    power: (item) => { showPicture(null); showPowerReport(item); },
+    vibration: showModalReport,
+    bolts: (item) => { showPicture(null); showBoltReport(item); },
+    robot: (item) => { showPicture(null); showRobotReport(item); },
     motion_study: showStudyReport,
     gears: showGearMeshReport,
     gear_train: showGearTrainReport,
@@ -1059,10 +1071,14 @@ function showGearMeshReport(report) {
   const rows = pairs.map((pair) => {
     const backlash = pair.backlash || {};
     const names = (pair.instances || []).join(" × ") || "Pair";
+    // A pair that could not be checked has no interference result, and its
+    // findings are the only place that says why it failed.
+    const interference = pair.interference == null ? "n/a" : pair.interference ? "yes" : "no";
+    const findings = (pair.findings || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
     return `<li><strong>${escapeHtml(names)}</strong> ${escapeHtml(pair.status || "")}
       · backlash ${backlash.circumferential_mm != null ? backlash.circumferential_mm : "n/a"} mm
       · contact ${pair.total_contact_ratio != null ? pair.total_contact_ratio : "n/a"}
-      · interference ${pair.interference ? "yes" : "no"}</li>`;
+      · interference ${interference}${findings ? `<ul>${findings}</ul>` : ""}</li>`;
   }).join("");
   $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Gear mesh</h3><ul>${rows}</ul>`;
 }
@@ -1086,16 +1102,34 @@ function showKinematicsReport(report) {
   const solutions = (inverse.solutions || []).map((item) =>
     `<li>${escapeHtml(item.name || item.status || "solution")} ${escapeHtml(JSON.stringify(item.joints || {}))}</li>`
   ).join("");
-  $("assembly-status").textContent = `Kinematics ${report.task || ""} ${inverse.status || ""}`.trim();
+  // A line path has its own status, message, and poses. The solver's message
+  // is what says how far out of reach a target is.
+  const path = report.path || null;
+  const outcome = path || inverse;
+  $("assembly-status").textContent = `Kinematics ${report.task || ""} ${outcome.status || ""}`.trim();
   showPicture(null);
   $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Kinematics</h3>
     <div class="kv">
       <span>Task</span><b>${escapeHtml(report.task || "")}</b>
       <span>Tool</span><b>${position || "n/a"}</b>
-      <span>Inverse</span><b>${escapeHtml(inverse.status || "")}</b>
+      <span>${path ? "Path" : "Inverse"}</span><b>${escapeHtml(outcome.status || "")}</b>
     </div>
+    ${outcome.message ? `<p>${escapeHtml(outcome.message)}</p>` : ""}
     ${solutions ? `<ul>${solutions}</ul>` : ""}
+    ${path ? kinematicsPathHtml(path) : ""}
     <p class="muted">${escapeHtml(report.note || "")}</p>`;
+}
+
+function kinematicsPathHtml(path) {
+  const steps = path.steps || [];
+  const shown = steps.slice(0, 25).map((step) => {
+    const at = (step.position_mm || []).map((value) => Number(value).toFixed(2)).join(", ");
+    const error = step.position_error_mm != null ? ` · off ${Number(step.position_error_mm).toFixed(3)} mm` : "";
+    return `<li>${step.index != null ? step.index : ""} ${escapeHtml(step.status || "")} · ${at}${error}
+      ${escapeHtml(JSON.stringify(step.joints || {}))}</li>`;
+  }).join("");
+  const more = steps.length > 25 ? `<p class="muted">${steps.length - 25} more poses are in the report.</p>` : "";
+  return shown ? `<ol>${shown}</ol>${more}` : "";
 }
 
 function showPositionErrorReport(report) {
