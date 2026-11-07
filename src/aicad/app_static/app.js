@@ -2593,6 +2593,7 @@ async function boot() {
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
     const sequence = current && (current.motions[0] || (current.studies || [])[0]);
     const report = await command("check_cables", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
+    ui.reportFocus = "cables";
     await refresh();
     showCableReport(report);
   };
@@ -2601,6 +2602,7 @@ async function boot() {
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
     const sequence = current && (current.motions[0] || (current.studies || [])[0]);
     const report = await command("estimate_power", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
+    ui.reportFocus = "power";
     await refresh();
     showPowerReport(report);
   };
@@ -2621,6 +2623,7 @@ async function boot() {
           ],
         },
       });
+      ui.reportFocus = "vibration";
       await refresh();
       showModalReport(report);
     } catch (error) {
@@ -2632,6 +2635,7 @@ async function boot() {
       if (!ui.assembly) return;
       $("assembly-status").textContent = "Exporting robot…";
       const report = await command("export_robot", { name: ui.assembly });
+      ui.reportFocus = "robot";
       await refresh();
       showRobotReport(report);
     } catch (error) {
@@ -2655,6 +2659,7 @@ async function boot() {
           ],
         },
       });
+      ui.reportFocus = "bolts";
       await refresh();
       showBoltReport(report);
     } catch (error) {
