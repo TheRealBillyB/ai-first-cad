@@ -2079,6 +2079,12 @@ function renderAssemblies() {
       renderAssemblies();
     };
   });
+  // An open tool form lists the instances, joints, poses, and motions of one
+  // assembly. After another one is selected, it is drawn again for that one.
+  const form = $("assembly-form");
+  if (ui.assemblyTool && ui.assemblyFormFor !== ui.assembly && form && !form.hidden && typeof renderAssemblyForm === "function") {
+    renderAssemblyForm();
+  }
   const current = assemblies.find((item) => item.name === ui.assembly);
   if (!current) {
     $("assembly-controls").innerHTML = `<p class="muted">No assembly yet. The tools above the picture run a motion study, gear mesh, gear train, kinematics, a position error budget, packaging, a drawing, a bill of materials, an exploded view, or an animation.</p>`;
@@ -2112,11 +2118,9 @@ function renderAssemblies() {
       </div>
       <p class="muted">${current.instances.map((item) => escapeHtml(item.name)).join(", ")}</p>`;
     $("assembly-controls").querySelectorAll("[data-apply]").forEach((button) => {
-      button.onclick = async () => {
+      button.onclick = () => {
         const input = $("assembly-controls").querySelector(`[data-joint="${button.dataset.apply}"]`);
-        await command("set_joint", { name: ui.assembly, joint: button.dataset.apply, value: Number(input.value) });
-        ui.assemblySignature = "";
-        await refresh();
+        applyJoint(button.dataset.apply, input.value).catch(showError);
       };
     });
     $("assembly-controls").querySelectorAll("[data-pose]").forEach((button) => {
@@ -2142,6 +2146,14 @@ function renderAssemblies() {
     });
   }
   showStoredAssemblyReports();
+}
+
+// An empty box is not zero. A number input reads empty for text it cannot parse.
+async function applyJoint(joint, text) {
+  const value = requiredNumber(String(text == null ? "" : text).trim(), `Enter a number for joint ${joint}.`);
+  await command("set_joint", { name: ui.assembly, joint, value });
+  ui.assemblySignature = "";
+  await refresh();
 }
 
 function showStoredAssemblyReports() {
@@ -2645,6 +2657,7 @@ async function boot() {
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
     const sequence = current && (current.motions[0] || (current.studies || [])[0]);
     const report = await command("check_cables", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
+    ui.reportFocus = "cables";
     await refresh();
     showCableReport(report);
   };
@@ -2653,6 +2666,7 @@ async function boot() {
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
     const sequence = current && (current.motions[0] || (current.studies || [])[0]);
     const report = await command("estimate_power", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
+    ui.reportFocus = "power";
     await refresh();
     showPowerReport(report);
   };
@@ -2673,6 +2687,7 @@ async function boot() {
           ],
         },
       });
+      ui.reportFocus = "vibration";
       await refresh();
       showModalReport(report);
     } catch (error) {
@@ -2684,6 +2699,7 @@ async function boot() {
       if (!ui.assembly) return;
       $("assembly-status").textContent = "Exporting robot…";
       const report = await command("export_robot", { name: ui.assembly });
+      ui.reportFocus = "robot";
       await refresh();
       showRobotReport(report);
     } catch (error) {
@@ -2707,6 +2723,7 @@ async function boot() {
           ],
         },
       });
+      ui.reportFocus = "bolts";
       await refresh();
       showBoltReport(report);
     } catch (error) {
