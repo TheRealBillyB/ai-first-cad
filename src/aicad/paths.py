@@ -2092,6 +2092,64 @@ def project_roots() -> tuple[Path, ...]:
     return tuple(_PROJECTS)
 
 
+def running_install_folders() -> tuple[Path, ...]:
+    """The folders that hold the aicad that is running: its Python environment and its own code."""
+    found: list[Path] = []
+    for raw in (sys.prefix, Path(__file__).parent):
+        try:
+            folder = Path(raw).resolve()
+        except OSError:
+            continue
+        if folder not in found:
+            found.append(folder)
+    return tuple(found)
+
+
+def refuse_install_as_project(folder: Path, error: type[Exception]) -> None:
+    """Refuse a project folder that is, holds, or is inside the aicad that is running.
+
+    Programs inside an open project are not started, so CalculiX installed in
+    ``.venv`` would be skipped. A design script may write anywhere in its
+    project, so it could also change aicad itself.
+    """
+    try:
+        project = Path(folder).resolve()
+    except OSError:
+        return
+    installs = running_install_folders()
+    for install in installs:
+        if install == project or _is_inside(install, project):
+            reason = (
+                f"{project} holds the aicad install ({install}), so it cannot be a project. "
+                "aicad does not start programs inside an open project, so CalculiX installed there "
+                "would not run, and a design script could change aicad itself."
+            )
+        elif _is_inside(project, install):
+            reason = (
+                f"{project} is inside the aicad install ({install}), so it cannot be a project. "
+                "A design script could change aicad itself."
+            )
+        else:
+            continue
+        raise error(f"{reason} Pick or create a project folder instead, for example {_folder_beside(install, installs)}.")
+
+
+def _folder_beside(install: Path, installs: tuple[Path, ...]) -> Path:
+    """``aicad_workspace`` next to the install, never inside any part of it.
+
+    For ``ai-first-cad/.venv`` that is ``ai-first-cad/aicad_workspace``.
+    """
+    parent = install.parent
+    moved = True
+    while moved:
+        moved = False
+        for other in installs:
+            if parent == other or _is_inside(parent, other):
+                parent = other.parent
+                moved = True
+    return parent / "aicad_workspace"
+
+
 def _project_containing(path: Path) -> Path | None:
     """The longest remembered project that lexically contains ``path``."""
     if not path.is_absolute():

@@ -292,6 +292,9 @@ def save_project_as(workspace, path: str, name: str | None = None) -> dict:
         requested = parent
     refuse_link_ancestors(requested, "Save as", GeometryError)
     destination = requested.resolve()
+    from aicad.paths import refuse_install_as_project
+
+    refuse_install_as_project(destination, GeometryError)
     source = workspace.root.resolve()
     if _same_folder(destination, source):
         raise GeometryError("Save as needs a different folder.")
