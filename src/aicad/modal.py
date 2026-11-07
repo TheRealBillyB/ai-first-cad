@@ -431,8 +431,9 @@ def fatigue_check(spec: dict) -> dict:
         known = ", ".join(sorted({name for name in _SURFACE if "_" in name or name in ("polished", "machined", "printed")}))
         raise GeometryError(f"Surface {surface_name!r} is unknown. Use polished, machined, as_rolled, or printed.")
     surface = _SURFACE[surface_name]
-    section = float(spec.get("section_mm") or 8.0)
-    if section <= 0:
+    # A zero or negative value is refused. Only a missing value takes the default.
+    section = _number_or_default(spec.get("section_mm"), 8.0, "section_mm")
+    if not section > 0:
         raise GeometryError("section_mm is the thickness that sets the size factor, and it must be positive.")
     size = 0.85 if section > 10.0 else 0.9
     if key == "steel" or material.get("endurance") == "steel":
@@ -458,7 +459,9 @@ def fatigue_check(spec: dict) -> dict:
             scaled = amplitude * amplification
             goodman = scaled / endurance + mean_used / ultimate
             life_factor = 1.0 / goodman if goodman > 0 else None
-    target = float(spec.get("target_safety_factor") or 2.0)
+    target = _number_or_default(spec.get("target_safety_factor"), 2.0, "target_safety_factor")
+    if not target > 0:
+        raise GeometryError("target_safety_factor must be positive.")
     status = "pass" if life_factor is not None and life_factor >= target else "fail"
     return finish(
         {
@@ -1268,6 +1271,16 @@ def _positive(value, default, label: str) -> float:
     if number <= 0:
         raise GeometryError(f"{label} must be positive.")
     return number
+
+
+def _number_or_default(value, default: float, label: str) -> float:
+    """The number given, or the default when none was given. A zero stays a zero."""
+    if value is None or value == "":
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise GeometryError(f"{label} must be a number.") from exc
 
 
 def _timeout(setup: dict, default: int) -> int:
