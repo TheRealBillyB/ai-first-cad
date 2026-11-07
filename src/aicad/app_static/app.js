@@ -2065,11 +2065,9 @@ function renderAssemblies() {
       </div>
       <p class="muted">${current.instances.map((item) => escapeHtml(item.name)).join(", ")}</p>`;
     $("assembly-controls").querySelectorAll("[data-apply]").forEach((button) => {
-      button.onclick = async () => {
+      button.onclick = () => {
         const input = $("assembly-controls").querySelector(`[data-joint="${button.dataset.apply}"]`);
-        await command("set_joint", { name: ui.assembly, joint: button.dataset.apply, value: Number(input.value) });
-        ui.assemblySignature = "";
-        await refresh();
+        applyJoint(button.dataset.apply, input.value).catch(showError);
       };
     });
     $("assembly-controls").querySelectorAll("[data-pose]").forEach((button) => {
@@ -2095,6 +2093,14 @@ function renderAssemblies() {
     });
   }
   showStoredAssemblyReports();
+}
+
+// An empty box is not zero. A number input reads empty for text it cannot parse.
+async function applyJoint(joint, text) {
+  const value = requiredNumber(String(text == null ? "" : text).trim(), `Enter a number for joint ${joint}.`);
+  await command("set_joint", { name: ui.assembly, joint, value });
+  ui.assemblySignature = "";
+  await refresh();
 }
 
 function showStoredAssemblyReports() {
