@@ -118,9 +118,7 @@ def analyze_print(
     setup = setup or {}
     if not isinstance(setup, dict):
         raise GeometryError("A print check is an object with an orientation and a printer.")
-    threshold = float(setup.get("threshold_deg") if setup.get("threshold_deg") is not None else 45.0)
-    if not 0 < threshold < 90:
-        raise GeometryError("threshold_deg is how far from vertical a face may lean before it needs support, between 0 and 90.")
+    threshold = _threshold(setup.get("threshold_deg"))
     bridge_mm = _bridge_span(setup.get("bridge_mm", _DEFAULT_BRIDGE_MM))
     layer_height = _layer_height(setup.get("layer_height_mm"))
     mesh = kernel.tessellate(shape)
@@ -450,6 +448,26 @@ def _score(mesh, name: str, threshold: float, bridge_mm: float = _DEFAULT_BRIDGE
         "footprint_mm": [round(float(size[0]), 3), round(float(size[1]), 3)],
         "size_mm": [round(float(value), 3) for value in size],
     }
+
+
+def _threshold(value) -> float:
+    """The overhang angle in degrees from vertical, above 0 and below 90.
+
+    At 0 a vertical wall whose normal leans down by rounding would need support.
+    At 90 no face ever would, not even a ceiling.
+    """
+    if value is None:
+        return 45.0
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError) as exc:
+        raise GeometryError("threshold_deg must be a number of degrees from vertical, such as 45.") from exc
+    if not 0 < threshold < 90:
+        raise GeometryError(
+            "threshold_deg is how far from vertical a face may lean before it needs support. "
+            "Use a number above 0 and below 90, such as 45."
+        )
+    return threshold
 
 
 def _classify(vertices, triangles, normals, threshold: float, bridge_mm: float):
