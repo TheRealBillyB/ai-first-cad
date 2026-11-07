@@ -10,6 +10,7 @@ project, with a message that says to pick a project folder.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -66,6 +67,13 @@ def _link_directory(link: Path, target: Path) -> None:
         link.symlink_to(target, target_is_directory=True)
 
 
+def _suggested_folder(message: str) -> Path:
+    """The project folder the refusal suggests."""
+    found = re.search(r"for example (.+)\.$", message)
+    assert found, message
+    return Path(found.group(1))
+
+
 def _unlink_directory(link: Path) -> None:
     """Remove only the link, never the solver it points at."""
     if os.name == "nt":
@@ -112,15 +120,24 @@ def test_the_folder_that_holds_the_install_is_not_opened_as_a_project(tmp_path, 
     install = tmp_path / "ai-first-cad"
     (install / ".venv").mkdir(parents=True)
     monkeypatch.setattr(sys, "prefix", str(install / ".venv"))
-    for folder in (install, install / ".venv", tmp_path):
+    beside = install.resolve() / "aicad_workspace"
+    (install / ".venv" / "Lib").mkdir()
+    for folder in (install, install / ".venv", install / ".venv" / "Lib", tmp_path):
         with pytest.raises(DocumentError) as refused:
             Document(folder)
         message = str(refused.value)
-        assert "holds the aicad install" in message
+        inside = folder.resolve() == (install / ".venv" / "Lib").resolve()
+        assert ("is inside the aicad install" if inside else "holds the aicad install") in message
         assert "Pick or create a project folder" in message
-        assert str(folder.resolve() / "aicad_workspace") in message
-    assert not (install / "session.json").exists()
-    assert not (tmp_path / "session.json").exists()
+        # Beside the install, never inside it: ai-first-cadicad_workspace, not .venvicad_workspace.
+        assert _suggested_folder(message) == beside, message
+    for name in ("session.json",):
+        assert not (install / name).exists()
+        assert not (install / ".venv" / name).exists()
+        assert not (tmp_path / name).exists()
+    # The suggested folder opens.
+    document = Document(_suggested_folder(message))
+    assert document.workspace == beside
 
 
 def test_a_project_folder_beside_the_install_still_opens(tmp_path, monkeypatch):
@@ -133,10 +150,16 @@ def test_a_project_folder_beside_the_install_still_opens(tmp_path, monkeypatch):
 
 def test_the_running_install_itself_is_refused():
     """No stand-in: the Python and the aicad code running this test."""
-    with pytest.raises(DocumentError, match="holds the aicad install"):
-        refuse_install_as_project(Path(sys.prefix).parent, DocumentError)
-    with pytest.raises(DocumentError, match="holds the aicad install"):
-        refuse_install_as_project(Path(__import__("aicad").__file__).parent, DocumentError)
+    installs = (Path(sys.prefix).resolve(), Path(__import__("aicad").__file__).resolve().parent)
+    for folder in (Path(sys.prefix).parent, *installs, Path(sys.prefix) / "Lib"):
+        with pytest.raises(DocumentError, match="the aicad install") as refused:
+            refuse_install_as_project(folder, DocumentError)
+        suggested = _suggested_folder(str(refused.value))
+        assert suggested.name == "aicad_workspace"
+        for install in installs:
+            assert suggested != install and install not in suggested.parents, (suggested, install)
+        # Opening it would pass this check. It is not created here, beside the real install.
+        refuse_install_as_project(suggested, DocumentError)
 
 
 def test_the_app_says_why_it_will_not_open_the_install_folder(tmp_path, monkeypatch):
