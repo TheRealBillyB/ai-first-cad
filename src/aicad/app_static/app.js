@@ -22,6 +22,7 @@ const ui = {
   splinePoint: null,
   arcPoints: [],
   doc: "requirements.md",
+  docProject: null,
   assembly: null,
   viewAssembly: null,
   assemblySignature: "",
@@ -133,6 +134,7 @@ async function applyRefresh(options = {}) {
   }
   renderTree();
   renderPanel();
+  forgetDocumentOfOtherProject();
   renderDocs();
   renderAssemblies();
   renderDimensions();
@@ -1935,13 +1937,41 @@ function renderDocs() {
   if (ui.part) $("req-part").value = $("req-part").value || ui.part;
 }
 
+function projectPath() {
+  return ui.state && ui.state.project ? ui.state.project.path : "";
+}
+
+// The editor holds one document of one project. Once another project is open,
+// that text belongs to the old folder, so it is dropped before Save can write it.
+function forgetDocumentOfOtherProject() {
+  if (ui.docProject == null || ui.docProject === projectPath()) return;
+  ui.docProject = null;
+  if (!(ui.state.documents || []).includes(ui.doc)) ui.doc = "requirements.md";
+  $("doc-name").textContent = ui.doc;
+  $("doc-editor").value = "";
+  $("doc-preview").innerHTML = "";
+  if (ui.page === "documents") loadDoc(ui.doc).catch(showError);
+}
+
 async function loadDoc(name) {
-  ui.doc = name;
+  const project = projectPath();
   const result = await command("read_document", { name });
+  ui.doc = name;
+  ui.docProject = project;
   $("doc-name").textContent = name;
   $("doc-editor").value = result.markdown;
   $("doc-preview").innerHTML = markdown(result.markdown);
   renderDocs();
+}
+
+async function saveDoc() {
+  if (ui.docProject == null || ui.docProject !== projectPath()) {
+    throw new Error("No document from this project is open. Pick one from the list, then save.");
+  }
+  const text = $("doc-editor").value;
+  await command("write_document", { name: ui.doc, markdown: text });
+  $("doc-preview").innerHTML = markdown(text);
+  await refresh();
 }
 
 function markdown(text) {
@@ -2767,11 +2797,7 @@ async function boot() {
   $("tabs").addEventListener("keydown", moveTab);
   $("page-nav").addEventListener("keydown", moveTab);
   bindWorkspaceTools();
-  $("doc-save").onclick = async () => {
-    await command("write_document", { name: ui.doc, markdown: $("doc-editor").value });
-    $("doc-preview").innerHTML = markdown($("doc-editor").value);
-    await refresh();
-  };
+  $("doc-save").onclick = () => saveDoc().catch(showError);
   $("doc-editor").addEventListener("input", () => { $("doc-preview").innerHTML = markdown($("doc-editor").value); });
   $("req-kind").addEventListener("change", retitleRequirementFields);
   $("req-form").onsubmit = async (event) => {
