@@ -23,7 +23,7 @@ function cut(name) {
 }
 const context = {};
 vm.createContext(context);
-vm.runInContext(cut("feaFormValues") + "\n" + cut("feaSetupLines"), context);
+vm.runInContext(cut("feaFormValues") + "\n" + cut("feaLoadText") + "\n" + cut("feaSetupLines"), context);
 const cases = JSON.parse(process.argv[3]);
 const out = cases.map((item) =>
   item.kind === "form"
@@ -43,6 +43,8 @@ _REPORT = {
 }
 _EMPTY_TYPED = {"material": None, "mesh": None, "sf": None}
 _EMPTY_PLAN = {"fixes": [], "loads": []}
+# The Load button's force: 10 N along -Z until the person types another.
+_LOAD = {"force": "10", "dx": "0", "dy": "0", "dz": "-1"}
 
 
 def _run(tmp_path: Path, cases: list[dict]) -> list:
@@ -59,13 +61,13 @@ def _run(tmp_path: Path, cases: list[dict]) -> list:
 
 def test_the_form_starts_from_the_last_solve(tmp_path):
     (form,) = _run(tmp_path, [{"kind": "form", "typed": _EMPTY_TYPED, "report": _REPORT, "ids": _IDS}])
-    assert form == {"material": "steel", "mesh": "2.5", "sf": "3"}
+    assert form == {"material": "steel", "mesh": "2.5", "sf": "3", **_LOAD}
 
 
 def test_typed_values_outlast_a_redraw(tmp_path):
     typed = {"material": "aluminum", "mesh": "4", "sf": None}
     (form,) = _run(tmp_path, [{"kind": "form", "typed": typed, "report": _REPORT, "ids": _IDS}])
-    assert form == {"material": "aluminum", "mesh": "4", "sf": "3"}
+    assert form == {"material": "aluminum", "mesh": "4", "sf": "3", **_LOAD}
 
 
 def test_no_solve_keeps_the_defaults_and_an_unknown_material_falls_back(tmp_path):
@@ -76,7 +78,7 @@ def test_no_solve_keeps_the_defaults_and_an_unknown_material_falls_back(tmp_path
             {"kind": "form", "typed": _EMPTY_TYPED, "report": {"material": {"id": "unobtainium"}}, "ids": _IDS},
         ],
     )
-    assert fresh == {"material": "pla", "mesh": "1.5", "sf": "2"}
+    assert fresh == {"material": "pla", "mesh": "1.5", "sf": "2", **_LOAD}
     assert unknown["material"] == "pla"
 
 
