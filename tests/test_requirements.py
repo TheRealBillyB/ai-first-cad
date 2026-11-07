@@ -71,30 +71,56 @@ def test_mass_and_build_volume_pass_and_fail(tmp_path):
 def test_wall_and_safety_factor_stay_unchecked_until_asked(tmp_path):
     workspace = Workspace(tmp_path)
     _plate(workspace)
+    setup = {
+        "material": "steel",
+        "mesh_size_mm": 2,
+        "fixes": [{"name": "root", "select": {"ref": "plane/x-"}}],
+        "loads": [{"name": "tip", "type": "force", "vector": [0, 0, -10], "select": {"ref": "plane/x+"}}],
+    }
     workspace.execute(
         "set_requirements",
         {
             "requirements": [
                 {"id": "wall", "kind": "min_wall", "part": "plate", "min_mm": 1, "samples": 2},
-                {"id": "sf", "kind": "min_safety_factor", "part": "plate", "minimum": 2},
+                {"id": "sf", "kind": "min_safety_factor", "part": "plate", "minimum": 2, "setup": setup},
             ]
         },
     )
     waiting = {item["id"]: item["status"] for item in workspace.state()["requirements"]}
     assert waiting == {"wall": "unchecked", "sf": "unchecked"}
+    workspace.execute(
+        "set_requirements",
+        {"requirements": [{"id": "wall", "kind": "min_wall", "part": "plate", "min_mm": 1, "samples": 2}]},
+    )
     ran = {item["id"]: item for item in workspace.execute("check_requirements", {"run": True})["checks"]}
     assert ran["wall"]["status"] == "pass"
     assert ran["wall"]["measured"] >= 1
-    assert ran["sf"]["status"] == "error"
     again = {item["id"]: item["status"] for item in workspace.state()["requirements"]}
     assert again["wall"] == "pass"
-    assert again["sf"] == "unchecked"
     workspace.execute(
         "update_part_ops",
         {"name": "plate", "ops": [{"op": "add", "shape": "box", "size": [40, 20, 8], "center": [0, 0, 4]}]},
     )
     stale = {item["id"]: item["status"] for item in workspace.state()["requirements"]}
     assert stale["wall"] == "unchecked"
+
+
+def test_a_safety_factor_without_a_setup_says_so_before_and_after_a_run(tmp_path):
+    workspace = Workspace(tmp_path)
+    _plate(workspace)
+    workspace.execute(
+        "set_requirements",
+        {"requirements": [{"id": "sf", "kind": "min_safety_factor", "part": "plate", "minimum": 2}]},
+    )
+    # It can never be solved, so "not solved since this part changed" would never go away.
+    waiting = workspace.state()["requirements"][0]
+    assert waiting["status"] == "error"
+    assert "needs a setup object" in waiting["detail"]
+    assert "Strength tab" in waiting["detail"]
+    ran = workspace.execute("check_requirements", {"run": True})["checks"][0]
+    assert ran["status"] == "error"
+    assert ran["detail"] == waiting["detail"]
+    assert workspace.state()["requirements"][0]["status"] == "error"
 
 
 def test_unknown_kind_and_duplicate_ids_are_rejected():
