@@ -390,7 +390,34 @@ function armRow(node) {
   };
 }
 
+// What the person typed in the right panel, by tab and field id. The panel is
+// drawn again from its defaults on every refresh, so these are put back after.
+const panelDrafts = {};
+
+function rememberPanelField(event) {
+  const field = event.target;
+  if (!field || !field.id || !/^(INPUT|SELECT|TEXTAREA)$/.test(field.tagName)) return;
+  if (field.type === "file" || field.type === "hidden") return;
+  const drafts = panelDrafts[ui.tab] || (panelDrafts[ui.tab] = {});
+  drafts[field.id] = field.type === "checkbox" ? { checked: field.checked } : { value: field.value };
+}
+
+function restorePanelFields(root, drafts) {
+  if (!root || !drafts) return;
+  root.querySelectorAll("input[id], select[id], textarea[id]").forEach((field) => {
+    const draft = drafts[field.id];
+    if (!draft) return;
+    if ("checked" in draft) field.checked = draft.checked;
+    else if (field.tagName !== "SELECT" || [...field.options].some((option) => option.value === draft.value)) field.value = draft.value;
+  });
+}
+
 function renderPanel() {
+  drawPanel();
+  restorePanelFields($("panel"), panelDrafts[ui.tab]);
+}
+
+function drawPanel() {
   const root = $("panel");
   const state = ui.state;
   const part = ui.part;
@@ -2765,6 +2792,8 @@ async function boot() {
     selectModelTab(button.dataset.tab);
   };
   $("tabs").addEventListener("keydown", moveTab);
+  $("panel").addEventListener("input", rememberPanelField);
+  $("panel").addEventListener("change", rememberPanelField);
   $("page-nav").addEventListener("keydown", moveTab);
   bindWorkspaceTools();
   $("doc-save").onclick = async () => {
