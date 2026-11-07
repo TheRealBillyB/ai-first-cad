@@ -392,7 +392,59 @@ function armRow(node) {
   };
 }
 
+// What is in the right panel's fields, by tab and field id. The panel is drawn
+// again from its defaults on every refresh. Just before that, the fields on
+// screen are read, so a value the person typed and a value code set (a role
+// swap, a Use selection button) both come back after the redraw. Each tab
+// keeps its own, so switching tabs and back keeps them too.
+const panelDrafts = {};
+// The tab the panel's fields belong to, so a tab switch saves them under the old tab.
+let panelDrawnTab = null;
+
+// The fields that differ from what they were drawn with. A field left alone is
+// not kept, so a default that follows the part or the last solve still updates.
+// A field that is not on screen keeps what was saved for it.
+function snapshotPanelFields(root, saved) {
+  const drafts = { ...(saved || {}) };
+  if (!root) return drafts;
+  root.querySelectorAll("input[id], select[id], textarea[id]").forEach((field) => {
+    if (field.type === "file" || field.type === "hidden") return;
+    if (field.type === "checkbox" || field.type === "radio") {
+      if (field.checked !== field.defaultChecked) drafts[field.id] = { checked: field.checked };
+      else delete drafts[field.id];
+      return;
+    }
+    let drawn = field.defaultValue;
+    if (field.tagName === "SELECT") {
+      const options = [...field.options];
+      const chosen = options.find((option) => option.defaultSelected) || options[0];
+      drawn = chosen ? chosen.value : "";
+    }
+    if (field.value !== drawn) drafts[field.id] = { value: field.value };
+    else delete drafts[field.id];
+  });
+  return drafts;
+}
+
+function restorePanelFields(root, drafts) {
+  if (!root || !drafts) return;
+  root.querySelectorAll("input[id], select[id], textarea[id]").forEach((field) => {
+    const draft = drafts[field.id];
+    if (!draft) return;
+    if ("checked" in draft) field.checked = draft.checked;
+    else if (field.tagName !== "SELECT" || [...field.options].some((option) => option.value === draft.value)) field.value = draft.value;
+  });
+}
+
 function renderPanel() {
+  const root = $("panel");
+  if (panelDrawnTab !== null) panelDrafts[panelDrawnTab] = snapshotPanelFields(root, panelDrafts[panelDrawnTab]);
+  drawPanel();
+  panelDrawnTab = ui.tab;
+  restorePanelFields(root, panelDrafts[ui.tab]);
+}
+
+function drawPanel() {
   const root = $("panel");
   const state = ui.state;
   const part = ui.part;
