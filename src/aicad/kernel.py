@@ -711,6 +711,9 @@ def _ray_wall_thickness(
     thinnest_point: Vec3 | None = None
     thinnest_measured: float | None = None
     accepted = 0
+    # One classifier for the whole estimate. Building it is most of the cost,
+    # and a gear asks it tens of thousands of times.
+    inside = _InsideTest(impl)
 
     def consider(face, u: float, v: float, *, record_miss: bool) -> None:
         nonlocal accepted, thinnest_measured, thinnest_point
@@ -721,7 +724,7 @@ def _ray_wall_thickness(
             return
         if normal.length < 1e-9 or not face.is_inside(point):
             return
-        inward, probe = _inward_probe(impl, point, normal)
+        inward, probe = _inward_probe(impl, point, normal, inside)
         if inward is None or probe is None:
             # A border sample that cannot enter is not evidence the whole part is thin.
             # The regular grid still records that miss.
@@ -729,7 +732,7 @@ def _ray_wall_thickness(
                 missed.append(_WALL_PROBES_MM[-1])
             return
         origin = point + inward * probe
-        distance = _first_parallel_hit(impl, origin, inward, probe)
+        distance = _first_parallel_hit(impl, origin, inward, probe, inside)
         if distance is None:
             return
         thickness = distance + probe
@@ -2894,22 +2897,21 @@ def _positive(value, label: str) -> float:
     return finite_number(value, label, positive=True)
 
 
-def _inward_probe(impl, point, normal):
+def _inward_probe(impl, point, normal, inside=None):
     """Direction into the solid, and how far that step stayed inside.
 
     The step is small enough to enter a 0.05 mm wall. A larger step used to
     start in the cavity and report the far side as the wall.
     """
     normal = normal.normalized()
+    inside = inside or _InsideTest(impl)
     for probe in _WALL_PROBES_MM:
         # is_inside is true on the face itself. A step that only reaches the
         # opposite face has not entered the wall, so a thinner step is tried.
-        into_negative = _strictly_inside(impl, point - normal * probe) and not _strictly_inside(
-            impl, point + normal * probe
-        )
-        into_positive = _strictly_inside(impl, point + normal * probe) and not _strictly_inside(
-            impl, point - normal * probe
-        )
+        behind = inside(point - normal * probe)
+        ahead = inside(point + normal * probe)
+        into_negative = behind and not ahead
+        into_positive = ahead and not behind
         if into_negative:
             return -normal, probe
         if into_positive:
@@ -2917,8 +2919,9 @@ def _inward_probe(impl, point, normal):
     return None, None
 
 
-def _first_parallel_hit(impl, origin, direction, probe: float) -> float | None:
+def _first_parallel_hit(impl, origin, direction, probe: float, inside=None) -> float | None:
     """Distance along ``direction`` to the first opposing face that stays in the solid."""
+    inside = inside or _InsideTest(impl)
     floor = max(_WALL_HIT_FLOOR_MM, probe * 0.05)
     line = gp_Lin(
         gp_Pnt(origin.X, origin.Y, origin.Z),
@@ -2926,7 +2929,7 @@ def _first_parallel_hit(impl, origin, direction, probe: float) -> float | None:
     )
     intersector = BRepIntCurveSurface_Inter()
     intersector.Init(impl.wrapped, line, 1e-7)
-    best: float | None = None
+    candidates: list[float] = []
     while intersector.More():
         parameter = float(intersector.W())
         if parameter > floor:
@@ -2937,11 +2940,14 @@ def _first_parallel_hit(impl, origin, direction, probe: float) -> float | None:
             except Exception:
                 aligned = 0.0
             if aligned > _WALL_ALIGNMENT:
-                midpoint = origin + direction * (parameter * 0.5)
-                if _strictly_inside(impl, midpoint) and (best is None or parameter < best):
-                    best = parameter
+                candidates.append(parameter)
         intersector.Next()
-    return best
+    # The nearest aligned hit whose segment stays in the solid. Checking them
+    # nearest first and stopping there gives the same answer with fewer tests.
+    for parameter in sorted(candidates):
+        if inside(origin + direction * (parameter * 0.5)):
+            return parameter
+    return None
 
 
 _BURIED_FLAG = 0.5
@@ -4007,6 +4013,17 @@ def _loop_points(wire, plane, limit: int = 160) -> list[tuple[float, float]]:
         stride = max(1, len(points) // limit)
         points = points[::stride]
     return points
+
+
+class _InsideTest:
+    """``_strictly_inside`` for many points of one solid, with the classifier built once."""
+
+    def __init__(self, impl):
+        self._classifier = BRepClass3d_SolidClassifier(impl.wrapped)
+
+    def __call__(self, point) -> bool:
+        self._classifier.Perform(gp_Pnt(float(point.X), float(point.Y), float(point.Z)), 1e-7)
+        return self._classifier.State() == TopAbs_IN
 
 
 def _strictly_inside(impl, point) -> bool:
