@@ -1793,10 +1793,24 @@ function onPointerMove(event) {
     const scale = view.distance * 0.002;
     view.target = add(view.dragging.target, add(scaleV(right, -dx * scale), scaleV(up, dy * scale)));
   } else {
-    view.yaw = view.dragging.yaw + dx * 0.008;
-    view.pitch = Math.max(-1.2, Math.min(1.2, view.dragging.pitch + dy * 0.008));
+    const turned = orbitAfterDrag(view.dragging, dx, dy);
+    view.yaw = turned.yaw;
+    view.pitch = turned.pitch;
   }
   drawSolid();
+}
+
+const ORBIT_RADIANS_PER_PIXEL = 0.008;
+
+// Orbit as if the model were grabbed: a drag to the right turns its front to
+// the right, so the camera swings left (yaw goes down), and a drag up tilts
+// its front up, so the camera drops (pitch goes down). Mouse, touch, and pen
+// all arrive here as pointer events.
+function orbitAfterDrag(start, dx, dy) {
+  return {
+    yaw: start.yaw - dx * ORBIT_RADIANS_PER_PIXEL,
+    pitch: Math.max(-1.2, Math.min(1.2, start.pitch + dy * ORBIT_RADIANS_PER_PIXEL)),
+  };
 }
 
 async function onPointerUp(event) {

@@ -125,6 +125,9 @@ def _one(spec: dict) -> dict:
     if vibration not in ("mild", "moderate", "intense"):
         raise GeometryError("vibration is mild, moderate, or intense.")
     locking = [str(item) for item in spec.get("locking") or []]
+    # The threadlocker condition means a threadlocker is on the threads. It is a locking feature.
+    if condition == "threadlocker" and "threadlocker" not in {item.strip().lower() for item in locking}:
+        locking.append("threadlocker")
 
     proof_load = grade["proof_mpa"] * area
     preload = fraction * proof_load
@@ -262,7 +265,7 @@ def _loosening(
     has_lock = bool(locking)
     if rating != "low" and not has_lock:
         reasons.append("No locking feature is declared. Preload alone is what is holding the nut.")
-    countermeasures = _countermeasures(rating, yield_margin, residual, preload)
+    countermeasures = _countermeasures(rating, yield_margin, residual, preload, locking)
     summary = {
         "low": "Low loosening risk for the stated loads. A drilling rig still wants a locking feature, because embedment and shock are not in this static margin.",
         "moderate": "Moderate loosening risk. Raise preload if the yield margin allows, and add a locking feature. Do not rely on friction alone.",
@@ -277,7 +280,9 @@ def _loosening(
     }
 
 
-def _countermeasures(rating: str, yield_margin: float | None, residual: float, preload: float) -> list[dict]:
+def _countermeasures(
+    rating: str, yield_margin: float | None, residual: float, preload: float, locking: list[str]
+) -> list[dict]:
     room = yield_margin is None or yield_margin > 1.3
     items = [
         {
@@ -343,6 +348,11 @@ def _countermeasures(rating: str, yield_margin: float | None, residual: float, p
     if preload <= 0:
         for item in items:
             item["recommended"] = item["name"] != "higher preload"
+    # A feature the joint already has is not recommended again.
+    present = {item.strip().lower() for item in locking}
+    for item in items:
+        if item["name"] in present:
+            item["recommended"] = False
     return items
 
 

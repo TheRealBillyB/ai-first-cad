@@ -378,9 +378,15 @@ def _solve_pitch(z1: int, z2: int, offset: float, shaft_deg: float, rm2: float, 
         if best is None or rank < best[0]:
             best = (rank, solved)
     if best is None or best[0] >= 1.0e8:
+        counts = ""
+        if z2 <= z1:
+            counts = (
+                f" The ring has {z2} teeth and the pinion {z1}. A hypoid ring usually has more teeth "
+                "than its pinion, so check teeth, mate_teeth, and role too."
+            )
         raise GeometryError(
             "No hypoid pitch point fits this offset_mm, shaft_angle_deg, ring_diameter_mm, "
-            "and spiral_angle_deg. Change one of those four."
+            "and spiral_angle_deg. Change one of those four." + counts
         )
     solved = best[1]
     solved.update(

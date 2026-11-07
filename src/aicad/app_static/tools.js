@@ -270,12 +270,34 @@ function renderLibraryPanel() {
     button.onclick = () => {
       const match = rows[Number(button.dataset.match)];
       ui.reports.libraryPick = match;
-      if (match && match.size && !$("library-name").value.trim()) {
-        ui.reports.libraryName = String(match.size).replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "part";
+      if (match && match.size) {
+        ui.reports.libraryName = libraryNameAfterPick($("library-name").value, ui.reports.librarySuggested, match);
+        ui.reports.librarySuggested = ui.reports.libraryName;
       }
       renderLibraryPanel();
     };
   });
+}
+
+// A part name the server accepts: a letter or underscore first, then letters,
+// digits, underscores, and hyphens, 64 characters at most, and not a Windows
+// device name. Bearing designations such as 608 start with a digit, so the
+// part kind goes in front: ball_bearing_608.
+function suggestedLibraryName(match) {
+  const clean = (text) => String(text || "").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+  let name = clean(match && match.size) || "part";
+  if (!/^[A-Za-z_]/.test(name)) name = `${clean(match && match.kind) || "part"}_${name}`;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) name = `${name}_part`;
+  return name.slice(0, 64);
+}
+
+// The name to show after a size is chosen. A name the person typed stays. A
+// suggested name, or the name of the part just inserted, is replaced, so the
+// next insert does not reuse a taken name.
+function libraryNameAfterPick(current, lastSuggested, match) {
+  const typed = String(current || "").trim();
+  if (typed && typed !== lastSuggested) return typed;
+  return suggestedLibraryName(match);
 }
 
 function renderGearPanel() {
@@ -292,7 +314,8 @@ function renderGearPanel() {
     shaft: "90",
     spiral: "35",
     role: "pinion",
-    hypoidMate: "16",
+    // The ring needs more teeth than the pinion: 18 against 36 builds.
+    hypoidMate: "36",
     offset: "12",
     ring: "80",
     hypoidSpiral: "35",
@@ -355,11 +378,30 @@ function renderGearPanel() {
     rememberGearDraft();
     toggleGearFields();
   };
+  $("gear-role").onchange = () => {
+    const counts = hypoidCountsForRole($("gear-role").value, $("gear-teeth").value, $("gear-hypoid-mate").value);
+    $("gear-teeth").value = counts.teeth;
+    $("gear-hypoid-mate").value = counts.mate;
+    rememberGearDraft();
+  };
   form.onsubmit = (event) => {
     event.preventDefault();
     runCreateGear().catch(showError);
   };
   toggleGearFields();
+}
+
+// A hypoid ring has more teeth than its pinion. Teeth is this gear and Mate
+// teeth the other, so switching the role swaps the counts when they are on
+// the wrong side, and the pair stays the same.
+function hypoidCountsForRole(role, teeth, mate) {
+  const own = Number(teeth);
+  const other = Number(mate);
+  if (String(teeth).trim() === "" || String(mate).trim() === "" || !Number.isFinite(own) || !Number.isFinite(other)) {
+    return { teeth, mate };
+  }
+  if ((role === "ring" && own < other) || (role === "pinion" && own > other)) return { teeth: mate, mate: teeth };
+  return { teeth, mate };
 }
 
 function gearOption(value, label, selected) {
@@ -493,6 +535,8 @@ async function runLibraryInsert() {
   const report = await runTool($("library-insert"), "Inserting…", () => command("insert_standard_part", args));
   if (!report) return;
   clearNotice();
+  // That name is taken now, so the next size chosen gets a new one.
+  ui.reports.librarySuggested = name;
   ui.part = name;
   await refresh({ fit: "part", focus: name, solid: true });
 }
