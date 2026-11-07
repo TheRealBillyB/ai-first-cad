@@ -137,8 +137,13 @@ def test_each_assembly_button_moves_the_report_focus_to_its_own_result():
         ("assembly-power", "estimate_power", "power"),
         ("assembly-modes", "solve_assembly_modal", "vibration"),
         ("assembly-robot", "export_robot", "robot"),
-        ("assembly-bolts", "check_bolts", "bolts"),
     ):
         handler = script.split(f'$("{button}").onclick', 1)[1].split(".onclick", 1)[0]
         after = handler.split(f'command("{command}"', 1)[1]
         assert f'ui.reportFocus = "{focus}";' in after.split("await refresh()", 1)[0], button
+    # Bolt check is a form in tools.js. Its runner sets the focus the same way.
+    tools = (ROOT / "src" / "aicad" / "app_static" / "tools.js").read_text(encoding="utf-8")
+    assert '"assembly-bolts": "bolts"' in tools
+    runner = tools.split("async function runAssemblyBolts(", 1)[1].split("\nfunction ", 1)[0].split("\nasync function ", 1)[0]
+    after = runner.split('command("check_bolts"', 1)[1]
+    assert 'ui.reportFocus = "bolts";' in after.split("await refresh()", 1)[0]
