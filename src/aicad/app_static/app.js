@@ -2213,6 +2213,14 @@ async function applyJoint(joint, text) {
   await refresh();
 }
 
+// The excitation is the speed that was typed. A blank or zero box is not 120 rpm,
+// and a negative speed is refused before the modes are solved.
+function drillRpm(text) {
+  const rpm = requiredNumber(String(text == null ? "" : text).trim(), "Enter the drill speed in rpm.");
+  if (!(rpm > 0)) throw new Error("Drill rpm must be greater than zero.");
+  return rpm;
+}
+
 function showStoredAssemblyReports() {
   if (typeof showFocusedReport === "function" && showFocusedReport()) return;
   const motion = ui.state.panels.motion;
@@ -2730,7 +2738,7 @@ async function boot() {
   $("assembly-modes").onclick = async () => {
     try {
       if (!ui.assembly) return;
-      const rpm = Number($("assembly-rpm").value) || 120;
+      const rpm = drillRpm($("assembly-rpm").value);
       $("assembly-status").textContent = "Solving modes…";
       const report = await command("solve_assembly_modal", {
         name: ui.assembly,
