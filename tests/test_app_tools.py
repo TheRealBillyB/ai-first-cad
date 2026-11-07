@@ -36,6 +36,7 @@ _BUTTONS = {
     "assembly-bom": "bill_of_materials",
     "assembly-exploded": "exploded_view",
     "assembly-animate": "render_animation",
+    "assembly-bolts": "check_bolts",
 }
 
 
