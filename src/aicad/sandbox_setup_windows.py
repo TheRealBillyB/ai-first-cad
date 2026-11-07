@@ -707,6 +707,163 @@ def failure_reason(code: int) -> str:
     return _FAILURE_REASONS.get(code) or f"The setup step exited with code {code & 0xFFFFFFFF:#x}."
 
 
+# The script containers. NETWORK_PROFILE_NAME matches sandbox_windows.
+NETWORK_PROFILE_NAME = "aicadscriptnet"
+
+# Known folders, found where Windows keeps them now, even when one was moved
+# (for example to OneDrive), and not from environment variables a process can change.
+_KNOWN_FOLDERS = (
+    ("your user folder", "{5E6C858F-0E22-4760-9AFE-EA3317B67173}"),
+    ("your local app data folder", "{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}"),
+    ("your Desktop", "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"),
+    ("your Documents folder", "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}"),
+    ("your Downloads folder", "{374DE290-123F-4565-9164-39C4925E467B}"),
+)
+_HKEY_CURRENT_USER = 0x80000001
+_RRF_RT_REG_SZ_ANY = 0x0000FFFF
+
+
+def _known_folder(text: str) -> str | None:
+    try:
+        shell32 = ctypes.WinDLL("shell32")
+        ole32 = ctypes.WinDLL("ole32")
+    except OSError:
+        return None
+    guid = _guid(text)
+    found = ctypes.c_wchar_p()
+    if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(found)) != 0:
+        return None
+    try:
+        return found.value
+    finally:
+        ole32.CoTaskMemFree(found)
+
+
+def _saved_user_variable(name: str) -> str | None:
+    """A variable as saved for this account (HKCU\\Environment), expanded. Not this process's copy."""
+    try:
+        advapi = ctypes.WinDLL("advapi32")
+        kernel32 = ctypes.WinDLL("kernel32")
+    except OSError:
+        return None
+    buffer = ctypes.create_unicode_buffer(1024)
+    size = wintypes.DWORD(ctypes.sizeof(buffer))
+    if advapi.RegGetValueW(
+        wintypes.HANDLE(_HKEY_CURRENT_USER), "Environment", name, _RRF_RT_REG_SZ_ANY, None, buffer, ctypes.byref(size)
+    ) != 0:
+        return None
+    expanded = ctypes.create_unicode_buffer(2048)
+    if not kernel32.ExpandEnvironmentStringsW(buffer.value, expanded, len(expanded)):
+        return None
+    return expanded.value
+
+
+def _folder_key(path) -> str:
+    """A Windows path compares without case."""
+    try:
+        return str(Path(path).resolve()).lower()
+    except (OSError, ValueError):
+        return str(path).lower()
+
+
+def broad_folders() -> list[tuple[str, Path]]:
+    """Folders a script container is never given: (what the folder is, the folder).
+
+    A grant there is inherited by everything below it, so a script could read
+    every other file in it. A folder inside one of these is still allowed.
+    """
+    found: list[tuple[str, Path]] = []
+
+    def add(name: str, value) -> None:
+        if not value:
+            return
+        try:
+            path = Path(value).resolve()
+        except (OSError, ValueError):
+            return
+        if all(_folder_key(existing) != _folder_key(path) for _, existing in found):
+            found.append((name, path))
+
+    try:
+        mask = ctypes.WinDLL("kernel32").GetLogicalDrives()
+    except OSError:
+        mask = 0
+    for index in range(26):
+        if mask & (1 << index):
+            add("a drive root", f"{chr(ord('A') + index)}:\\")
+    known = {}
+    for name, guid in _KNOWN_FOLDERS:
+        known[name] = _known_folder(guid)
+        add(name, known[name])
+    if known.get("your local app data folder"):
+        add("your Temp folder", Path(known["your local app data folder"]) / "Temp")
+    for variable in ("TEMP", "TMP"):
+        add("your Temp folder", _saved_user_variable(variable))
+    windows = _system_directory().parent
+    add("the Windows Temp folder", windows / "Temp")
+    return found
+
+
+def broad_folder_name(path: Path) -> str | None:
+    """What the folder is, when ``path`` is one of the broad folders. None otherwise."""
+    key = _folder_key(path)
+    for name, folder in broad_folders():
+        if _folder_key(folder) == key:
+            return name
+    return None
+
+
+def _explicit_container_entries(folder: Path, sids: set[str]) -> list[str]:
+    """The script containers named on the folder itself, not inherited."""
+    completed = subprocess.run(["icacls", str(folder)], capture_output=True, text=True, check=False)
+    found = []
+    for line in (completed.stdout or "").splitlines():
+        for sid in sids:
+            if sid in line and "(I)" not in line and sid not in found:
+                found.append(sid)
+    return found
+
+
+def _container_sid(name: str) -> str | None:
+    userenv = ctypes.WinDLL("userenv")
+    advapi = ctypes.WinDLL("advapi32")
+    pointer = ctypes.c_void_p()
+    if userenv.DeriveAppContainerSidFromAppContainerName(ctypes.c_wchar_p(name), ctypes.byref(pointer)) != 0:
+        return None
+    text = wintypes.LPWSTR()
+    try:
+        if not advapi.ConvertSidToStringSidW(pointer, ctypes.byref(text)):
+            return None
+        value = text.value
+        ctypes.windll.kernel32.LocalFree(text)
+        return value
+    finally:
+        advapi.FreeSid(pointer)
+
+
+def remove_broad_container_grants(print_line=print) -> list[str]:
+    """Take the script containers off every broad folder they were granted on. One line each."""
+    names = {sid: label for sid, label in (
+        (_container_sid(PROFILE_NAME), PROFILE_NAME),
+        (_container_sid(NETWORK_PROFILE_NAME), NETWORK_PROFILE_NAME),
+    ) if sid}
+    removed = []
+    for what, folder in broad_folders():
+        if not folder.is_dir():
+            continue
+        for sid in _explicit_container_entries(folder, set(names)):
+            done = subprocess.run(
+                ["icacls", str(folder), "/remove:g", f"*{sid}", "/C", "/Q"], capture_output=True, text=True, check=False
+            )
+            if done.returncode == 0:
+                line = f"Removed {names[sid]}'s access to {what}. A script container must not share that whole folder."
+            else:
+                line = f"Could not remove {names[sid]}'s access to {what}. Run this setup from an administrator prompt."
+            print_line(line)
+            removed.append(line)
+    return removed
+
+
 def run_setup(*, remove: bool = False) -> int:
     """``aicad sandbox-setup``. Asks for approval, runs the elevated step, then checks the result."""
     if sys.platform != "win32":
@@ -739,6 +896,7 @@ def run_setup(*, remove: bool = False) -> int:
         print("Setup finished, but this account cannot confirm the block is in place.")
         return 1
     print("The script network block is in place for every account on this computer.")
+    remove_broad_container_grants()
     return 0
 
 

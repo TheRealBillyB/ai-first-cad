@@ -1000,9 +1000,29 @@ def _icacls(path: Path, sid: str, rights: str, *, recurse: bool) -> None:
         raise OSError(f"Could not grant the sandbox access to {path}. {detail.strip()}")
 
 
+class BroadFolderRefused(OSError):
+    """A grant on a folder that holds far more than the script needs."""
+
+
+def refuse_broad_folder(path: Path) -> None:
+    """Never give a script container a drive root, the profile, Temp, LocalAppData, Desktop, Documents, or Downloads."""
+    name = setup.broad_folder_name(path)
+    if name is not None:
+        raise BroadFolderRefused(
+            f"aicad will not give design scripts {name}. A grant there reaches every file in it. "
+            "Keep the project, and the programs aicad runs, in folders of their own."
+        )
+
+
 def _grant_tree(path: Path, sid: str, rights: str) -> None:
     if path.is_dir():
         _icacls(path, sid, rights, recurse=True)
+
+
+def _grant_file(path: Path, sid: str) -> None:
+    """Read and run one file, without granting the folder it is in."""
+    if path.is_file():
+        _icacls(path, sid, "RX", recurse=False)
 
 
 def _package_sid(lpac: bool) -> str:
@@ -1405,7 +1425,11 @@ def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = 
             key = os.path.normcase(str(path))
         if (sid, key) in _granted_read:
             continue
-        _grant_tree(Path(path), sid, "(OI)(CI)RX")
+        refuse_broad_folder(Path(path))
+        if Path(path).is_file():
+            _grant_file(Path(path), sid)
+        else:
+            _grant_tree(Path(path), sid, "(OI)(CI)RX")
         _grant_traverse(Path(path), sid, package_sid)
         _granted_read.add((sid, key))
     _grant_links_on_the_way([*paths, *_interpreter_paths()], sid, package_sid)
@@ -1536,6 +1560,7 @@ def _directory_allows_modify(path: Path, sid: str) -> bool:
 def grant_workspace(path: Path, sid: str, package_sid: str | None = None) -> None:
     if not package_sid:
         package_sid = _ALL_APPLICATION_PACKAGES
+    refuse_broad_folder(path)
     path.mkdir(parents=True, exist_ok=True)
     # A design script already granted this folder. Walking it again blocks on
     # files that script has open and can use the whole script time limit.

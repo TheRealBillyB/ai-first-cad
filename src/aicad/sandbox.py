@@ -927,10 +927,30 @@ def _read_roots() -> list[Path]:
     add(sys.prefix)
     add(sys.base_prefix)
     add(Path(sys.executable).resolve().parent)
-    for entry in sys.path:
-        if entry:
-            add(entry)
+    # Not every sys.path entry: one can be the current folder, Temp, or the
+    # Desktop, and a grant there is permanent. The packages a script imports
+    # are in site-packages, and aicad's own folder holds an editable install.
+    for entry in _site_packages():
+        add(entry)
+    add(Path(__file__).resolve().parent.parent)
     return found
+
+
+def _site_packages() -> list[str]:
+    import site
+
+    found = list(site.getsitepackages())
+    if site.ENABLE_USER_SITE:
+        found.append(site.getusersitepackages())
+    return found
+
+
+def _is_broad_folder(path: Path) -> bool:
+    if sys.platform != "win32":
+        return False
+    from aicad import sandbox_setup_windows
+
+    return sandbox_setup_windows.broad_folder_name(path) is not None
 
 
 def _cgroup_words(path: Path) -> set[str]:
@@ -2783,13 +2803,19 @@ def _helper_read_paths(command: list[str]) -> list[Path]:
     program = Path(command[0])
     try:
         if program.is_file():
-            parent = program.resolve().parent
-            roots.append(parent)
-            # A packaged solver keeps its libraries beside the program directory.
-            for name in ("lib", "lib64"):
-                library = parent.parent / name
-                if library.is_dir():
-                    roots.append(library)
+            resolved = program.resolve()
+            parent = resolved.parent
+            if _is_broad_folder(parent):
+                # A program left in Temp or on the Desktop: only the file itself.
+                roots.append(resolved)
+            else:
+                # The program's own install folder, with the libraries beside it.
+                roots.append(parent)
+                # A packaged solver keeps its libraries beside the program directory.
+                for name in ("lib", "lib64"):
+                    library = parent.parent / name
+                    if library.is_dir() and not _is_broad_folder(library):
+                        roots.append(library)
     except OSError:
         pass
     names = {os.path.normcase(os.path.normpath(sys.executable))}
@@ -2808,7 +2834,8 @@ def _helper_read_paths(command: list[str]) -> list[Path]:
         candidate = Path(arg)
         try:
             if candidate.is_file():
-                roots.append(candidate.resolve().parent)
+                # The script file, not whatever folder it happens to be in.
+                roots.append(candidate.resolve())
         except OSError:
             pass
         break
