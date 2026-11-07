@@ -711,6 +711,10 @@ async function runModal() {
   planForPart(modalPlan, ui.part);
   if (!modalPlan.fixes.length) return alert("Fix a face from the selection.");
   const kind = $("modal-kind").value;
+  // An empty field reads as 0 rpm, and nothing is compared at 0 Hz. Ask for the speed before the solve.
+  const rpmText = String($("modal-rpm").value ?? "").trim();
+  const rpm = Number(rpmText);
+  if (!rpmText || !Number.isFinite(rpm) || rpm <= 0) return alert("Enter the running speed in rpm, above 0.");
   await command("solve_modal", {
     name: ui.part,
     setup: {
@@ -719,7 +723,7 @@ async function runModal() {
       modes: Number($("modal-count").value),
       render_modes: 1,
       fixes: modalPlan.fixes,
-      excitations: [{ name: kind, kind, rpm: Number($("modal-rpm").value) }],
+      excitations: [{ name: kind, kind, rpm }],
     },
   });
   await refresh();

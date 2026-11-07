@@ -303,8 +303,10 @@ def classify_resonance(frequencies, excitations, margin: float = 0.10) -> dict:
                         }
                     )
     suggestions = _suggestions(flags, rigid, sources, float(margin))
+    # With no running speed above 0 there is nothing to compare, so it is not a clear.
+    compared = any(source["fundamental_hz"] > 0 for source in sources)
     return {
-        "status": "resonance" if flags else "clear",
+        "status": "resonance" if flags else "clear" if compared else "skipped",
         "margin": float(margin),
         "flags": flags,
         "rigid_body_modes": [item["index"] for item in rigid],
@@ -1179,6 +1181,9 @@ def _suggestions(flags, rigid, sources, margin: float) -> list[str]:
     if not sources:
         lines.append("No excitation was declared, so nothing was compared. Pass rpm or Hz for the motor, drill, pump, or engine.")
         return lines
+    if not any(source["fundamental_hz"] > 0 for source in sources):
+        lines.append("The running speed is 0, so nothing was compared. Enter the running speed in rpm or Hz.")
+        return lines
     if not flags:
         lines.append(
             f"No flexible frequency sits within {margin:.0%} of a declared excitation or its harmonics. "
@@ -1251,6 +1256,8 @@ def _headline(modes, resonance) -> str:
             f"First flexible frequency {first:.2f} Hz. "
             "The mesh was simplified, so this is not a clear and not a confirmed resonance."
         )
+    if resonance["status"] == "skipped":
+        return f"First flexible frequency {first:.2f} Hz. No running speed was given, so resonance was not checked."
     if resonance["status"] == "resonance":
         return (
             f"First flexible frequency {first:.2f} Hz. "
