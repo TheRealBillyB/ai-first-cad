@@ -6164,8 +6164,35 @@ def _payload_from_result(
     if not isinstance(payload, dict):
         shutil.rmtree(job, ignore_errors=True)
         raise ScriptError("The script's result was not a report.")
+    notes = _container_notes(stderr)
+    if notes:
+        payload["notes"] = notes
     payload["_job"] = str(job)
     return payload
+
+
+_shown_container_notes: set[str] = set()
+
+
+def _container_notes(stderr: str) -> list[str]:
+    """The script container's note on other app containers, shown once in this console.
+
+    container_folders writes it when a project inherits access for another app
+    container, such as Claude Desktop's, so it is visible and not silent.
+    """
+    from aicad.container_folders import CONTAINER_NOTE, package_name
+
+    notes = []
+    for line in (stderr or "").splitlines():
+        if not line.startswith(CONTAINER_NOTE):
+            continue
+        sids = [sid.strip() for sid in line[len(CONTAINER_NOTE):].split(",") if sid.strip()]
+        notes.append(f"{CONTAINER_NOTE} " + ", ".join(f"{sid} ({package_name(sid)})" for sid in sids))
+    for note in notes:
+        if note not in _shown_container_notes:
+            _shown_container_notes.add(note)
+            print(note, file=sys.stderr, flush=True)
+    return notes
 
 
 def _drop_job(payload: dict) -> None:

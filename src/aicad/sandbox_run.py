@@ -58,6 +58,53 @@ def _read_job_text(path: Path, maximum: int) -> str:
     return read_text(path, maximum=maximum)
 
 
+def _error_codes(exc: BaseException) -> str:
+    """The error type with its errno and Windows error number, and no path."""
+    codes = []
+    number = getattr(exc, "errno", None)
+    if number is not None:
+        codes.append(f"errno {number}")
+    windows = getattr(exc, "winerror", None)
+    if windows is not None:
+        codes.append(f"winerror {windows}")
+    return type(exc).__name__ + (", " + ", ".join(codes) if codes else "")
+
+
+def _start_problem(exc: BaseException) -> str:
+    """Why aicad could not load in the container. ``strerror`` never carries the path."""
+    reason = getattr(exc, "strerror", None)
+    text = f": {reason}" if isinstance(reason, str) and reason else ""
+    return f"aicad could not start in the script container ({_error_codes(exc)}){text}"
+
+
+def _load_job_reader():
+    """aicad's reader for job files. Loading it loads aicad, so a start problem shows up here."""
+    from aicad.file_access import read_text
+
+    return read_text
+
+
+def _job_read_problem(exc: BaseException | None, maximum: int = 0) -> str:
+    """Why job.json could not be used, without a path, so no user name shows."""
+    if exc is None:
+        return "The script job could not be read: job.json is not a JSON object."
+    kind = type(exc).__name__
+    if isinstance(exc, json.JSONDecodeError):
+        return f"The script job could not be read: job.json is not valid JSON (line {exc.lineno}, column {exc.colno})."
+    if isinstance(exc, UnicodeError):
+        return f"The script job could not be read: job.json is not UTF-8 ({kind})."
+    detail = _error_codes(exc)
+    if isinstance(exc, FileNotFoundError):
+        reason = "job.json is missing"
+    elif isinstance(exc, PermissionError):
+        reason = "access to job.json was denied"
+    elif type(exc).__name__ == "TooLarge" or "larger" in str(getattr(exc, "strerror", "") or "").lower():
+        reason = f"job.json is larger than {maximum} bytes" if maximum else "job.json is too large"
+    else:
+        reason = "job.json could not be opened"
+    return f"The script job could not be read: {reason} ({detail})."
+
+
 def _write(job: Path, payload: dict) -> None:
     """Publish ``result.json``. A link at that name is not followed.
 
@@ -291,12 +338,17 @@ class ScriptDocument:
 def _probe(workspace: Path, job: Path) -> int:
     import socket
 
+    try:
+        _load_job_reader()
+    except Exception as exc:
+        _write(job, {"ok": False, "error": _start_problem(exc)})
+        return 0
     from aicad.sandbox import denied_probe_label
 
     try:
         spec = json.loads(_read_job_text(job / "job.json", _JOB_MAX_BYTES))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        _write(job, {"ok": False, "error": "The script job could not be read."})
+    except Exception as exc:
+        _write(job, {"ok": False, "error": _job_read_problem(exc, _JOB_MAX_BYTES)})
         return 0
     read_path = str(spec.get("probe_read") or "/etc/passwd")
     write_path = str(spec.get("probe_write") or "/tmp/aicad-sandbox-outside")
@@ -752,15 +804,25 @@ def main(argv: list[str] | None = None) -> int:
             print(stack.SMALL_CALLER_STACK, file=sys.stderr)
         return _leave(0)
     try:
-        spec = json.loads(_read_job_text(job / "job.json", _JOB_MAX_BYTES))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        _load_job_reader()
+    except Exception as exc:
+        problem = _start_problem(exc)
         try:
-            _write(job, {"ok": False, "error": "The script job could not be read."})
+            _write(job, {"ok": False, "error": problem})
         except OSError:
-            print("The script job could not be read.", file=sys.stderr)
+            print(problem, file=sys.stderr)
+        return _leave(0)
+    try:
+        spec = json.loads(_read_job_text(job / "job.json", _JOB_MAX_BYTES))
+    except Exception as exc:
+        problem = _job_read_problem(exc, _JOB_MAX_BYTES)
+        try:
+            _write(job, {"ok": False, "error": problem})
+        except OSError:
+            print(problem, file=sys.stderr)
         return _leave(0)
     if not isinstance(spec, dict):
-        _write(job, {"ok": False, "error": "The script job could not be read."})
+        _write(job, {"ok": False, "error": _job_read_problem(None)})
         return _leave(0)
     workspace = Path(os.environ["AICAD_WORKSPACE"]).resolve()
     try:
