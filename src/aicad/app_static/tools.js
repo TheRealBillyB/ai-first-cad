@@ -997,6 +997,8 @@ function showFocusedReport() {
   const report = ui.state.panels[focus];
   if (!report) return false;
   if (report.assembly && ui.assembly && report.assembly !== ui.assembly && focus !== "gears") return false;
+  // These panels also hold a part's result, which is not this assembly's.
+  if (ASSEMBLY_ONLY_REPORTS.includes(focus) && report.assembly !== ui.assembly) return false;
   return paintAssemblyReport(focus, report);
 }
 
@@ -1013,8 +1015,17 @@ function showKnownAssemblyReport() {
   return false;
 }
 
+// Buttons above the picture whose reports live in app.js.
+const ASSEMBLY_ONLY_REPORTS = ["motion", "cables", "power", "vibration", "bolts", "robot"];
+
 function paintAssemblyReport(key, report) {
   const painters = {
+    motion: () => showMotionReport(),
+    cables: (item) => { showPicture(null); showCableReport(item); },
+    power: (item) => { showPicture(null); showPowerReport(item); },
+    vibration: showModalReport,
+    bolts: (item) => { showPicture(null); showBoltReport(item); },
+    robot: (item) => { showPicture(null); showRobotReport(item); },
     motion_study: showStudyReport,
     gears: showGearMeshReport,
     gear_train: showGearTrainReport,
