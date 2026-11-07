@@ -17,6 +17,7 @@ function bindWorkspaceTools() {
     "assembly-bom": "bom",
     "assembly-exploded": "exploded",
     "assembly-animate": "animate",
+    "assembly-bolts": "bolts",
   };
   Object.keys(tools).forEach((id) => {
     $(id).onclick = () => openAssemblyTool(tools[id]);
@@ -169,6 +170,34 @@ function assemblyFormHtml(tool, current) {
       <p data-tool-progress class="muted" role="status"></p>
       <p data-tool-error class="warn" hidden></p>
       <button type="submit" class="primary">Write drawing</button>`;
+  }
+  if (tool === "bolts") {
+    return `<h3>Bolt check</h3>
+      <p class="muted">Preload, tightening torque, slip, and loosening for one bolt in this assembly. Type the bolt and the loads it carries. This calls check_bolts.</p>
+      <div class="field-grid">
+        <label>Size <input id="asm-bolt-size" value="M8" /></label>
+        <label>Grade
+          <select id="asm-bolt-grade"><option>8.8</option><option>10.9</option><option>12.9</option><option>a2-70</option></select>
+        </label>
+        <label>Threads
+          <select id="asm-bolt-condition">
+            <option value="dry">dry</option>
+            <option value="zinc">zinc</option>
+            <option value="lubricated">lubricated</option>
+            <option value="threadlocker">threadlocker</option>
+          </select>
+        </label>
+        <label>Axial load N <input id="asm-bolt-axial" type="number" min="0" step="any" value="1000" /></label>
+        <label>Shear load N <input id="asm-bolt-shear" type="number" min="0" step="any" value="2500" /></label>
+        <label>Grip mm <input id="asm-bolt-grip" type="number" min="0" step="any" value="20" /></label>
+        <label>Plate friction <input id="asm-bolt-friction" type="number" min="0" step="0.01" value="0.14" /></label>
+        <label>Vibration
+          <select id="asm-bolt-vibration"><option>mild</option><option>moderate</option><option selected>intense</option></select>
+        </label>
+      </div>
+      <p data-tool-progress class="muted" role="status"></p>
+      <p data-tool-error class="warn" hidden></p>
+      <button type="submit" class="primary">Check bolt</button>`;
   }
   if (tool === "bom") {
     return `<h3>Bill of materials</h3>
@@ -659,8 +688,37 @@ function submitAssemblyForm(tool) {
     bom: runBom,
     exploded: runExploded,
     animate: runAnimation,
+    bolts: runAssemblyBolts,
   };
   return Promise.resolve(runners[tool](button));
+}
+
+// The bolt and its loads are the ones typed in the form. Nothing is made up.
+function assemblyBoltSpec() {
+  if (!ui.assembly) throw new Error("Select an assembly first.");
+  const size = $("asm-bolt-size").value.trim();
+  if (!size) throw new Error("Enter the bolt size, such as M8.");
+  return {
+    assembly: ui.assembly,
+    size,
+    grade: $("asm-bolt-grade").value,
+    condition: $("asm-bolt-condition").value,
+    axial_n: requiredNumber($("asm-bolt-axial").value.trim(), "Enter the axial load in newtons."),
+    shear_n: requiredNumber($("asm-bolt-shear").value.trim(), "Enter the shear load in newtons."),
+    grip_mm: requiredNumber($("asm-bolt-grip").value.trim(), "Enter the grip length in millimeters."),
+    friction: requiredNumber($("asm-bolt-friction").value.trim(), "Enter the plate friction, such as 0.14."),
+    vibration: $("asm-bolt-vibration").value,
+  };
+}
+
+async function runAssemblyBolts(button) {
+  const spec = assemblyBoltSpec();
+  const report = await runTool(button, "Checking the bolt…", () => command("check_bolts", { spec }));
+  if (!report) return;
+  clearNotice();
+  ui.reportFocus = "bolts";
+  await refresh();
+  showBoltReport(report);
 }
 
 async function runGearMesh(button) {

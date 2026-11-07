@@ -2638,29 +2638,6 @@ async function boot() {
       showError(error);
     }
   };
-  $("assembly-bolts").onclick = async () => {
-    try {
-      if (!ui.assembly) return;
-      $("assembly-status").textContent = "Checking bolts…";
-      const report = await command("check_bolts", {
-        spec: {
-          assembly: ui.assembly,
-          vibration: "intense",
-          friction: 0.14,
-          grip_mm: 20,
-          condition: "dry",
-          bolts: [
-            { name: "base M8", size: "M8", grade: "8.8", axial_n: 1000, shear_n: 2500 },
-            { name: "contrast M12", size: "M12", grade: "10.9", axial_n: 1000, shear_n: 800 },
-          ],
-        },
-      });
-      await refresh();
-      showBoltReport(report);
-    } catch (error) {
-      showError(error);
-    }
-  };
   $("undo").onclick = async () => { await command("undo"); ui.parameterKey = ""; await refresh({ fit: "scene" }); };
   $("redo").onclick = async () => { await command("redo"); ui.parameterKey = ""; await refresh({ fit: "scene" }); };
   $("fit").onclick = () => { view.fit(); drawSolid(); };
