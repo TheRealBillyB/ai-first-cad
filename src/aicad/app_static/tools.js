@@ -1070,10 +1070,14 @@ function showGearMeshReport(report) {
   const rows = pairs.map((pair) => {
     const backlash = pair.backlash || {};
     const names = (pair.instances || []).join(" × ") || "Pair";
+    // A pair that could not be checked has no interference result, and its
+    // findings are the only place that says why it failed.
+    const interference = pair.interference == null ? "n/a" : pair.interference ? "yes" : "no";
+    const findings = (pair.findings || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("");
     return `<li><strong>${escapeHtml(names)}</strong> ${escapeHtml(pair.status || "")}
       · backlash ${backlash.circumferential_mm != null ? backlash.circumferential_mm : "n/a"} mm
       · contact ${pair.total_contact_ratio != null ? pair.total_contact_ratio : "n/a"}
-      · interference ${pair.interference ? "yes" : "no"}</li>`;
+      · interference ${interference}${findings ? `<ul>${findings}</ul>` : ""}</li>`;
   }).join("");
   $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Gear mesh</h3><ul>${rows}</ul>`;
 }
