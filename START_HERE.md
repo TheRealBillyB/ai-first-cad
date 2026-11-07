@@ -1,6 +1,6 @@
 # Start here
 
-This is version 0.9.0, a public preview ahead of 1.0. It is a CAD program you drive yourself, or hand to an AI assistant. You describe a solid part, look at it, and check whether it is strong enough, whether it will print, and whether a bolted joint will stay tight. The same buttons the app shows are the tools an assistant calls, so you and the assistant are editing one project. What this preview contains is listed in [docs/reference/changelog.md](docs/reference/changelog.md).
+This is version 1.0.0, the 1.0 release. It is a CAD program you drive yourself, or hand to an AI assistant. You describe a solid part, look at it, and check whether it is strong enough, whether it will print, and whether a bolted joint will stay tight. The same buttons the app shows are the tools an assistant calls, so you and the assistant are editing one project. What this release contains is listed in [docs/reference/changelog.md](docs/reference/changelog.md).
 
 You do not need a mechanical-engineering background to walk through the examples. The numbers are in millimeters. A force is in newtons. A stress from the solver is in megapascals, which is newtons per square millimeter.
 

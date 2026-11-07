@@ -1,6 +1,46 @@
 # Changelog
 
-Version 0.9.0 is a public preview ahead of 1.0. The notes below describe what this tree does. A root `CHANGELOG.md` is not on the software-docs allowlist, so this file is the record.
+Version 1.0.0 is the 1.0 release of the 0.9.0 preview's feature set. The 1.0.0 notes list what changed since the preview. The 0.9.0 notes describe what the tree does. A root `CHANGELOG.md` is not on the software-docs allowlist, so this file is the record.
+
+## 1.0.0
+
+1.0 is a stability and safety release. It adds no feature track. Joint-sized reducers and a stored catalog mounting orientation were named for 1.0 and moved to after it.
+
+### Windows sandbox
+
+- The installer offers a one-time administrator setup, `aicad sandbox-setup`, for the script network block. A run installs nothing. A script allowed to use the network gets its own container.
+- `aicad sandbox-setup --status` confirms the firewall rules from a standard account, without administrator rights.
+- Scripts and solves run in a normal AppContainer. The stricter one (LPAC) is no longer tried, so there is no fallback message.
+- A container child that cannot start exits with a named reason instead of showing a Windows error dialog. A probe that does not finish is stopped.
+- The script container can make private folders with a current Python (3.11.10 and later), where it once spun until its CPU limit. It can also pass through the links on its Python's paths, such as uv's version folder.
+- A refused firewall rule says why.
+
+### The app
+
+- The app's geometry runs in a second process, so the page keeps answering during a long rebuild or solve. Gmsh loads in that process on Windows, so the Strength solve no longer hangs.
+- The page answers at once and says the project is opening while it loads.
+- One dark theme, with a grid and origin axes in the model view.
+- A running Strength solve shows its time, and a failed one says why. Every failed page action shows in the notice bar. Each app command and its result is logged to the console.
+- Clicking a report picture opens it at full size over the app, with zoom, drag, and close.
+- Report pictures named with a full path load. The page buttons stay on screen when the Plan page opens.
+- The app warns when another app has the same project open. A page that drops its live connection no longer fills the console.
+
+### Install
+
+- Double-click install and launch scripts for Windows, macOS, and Linux.
+- `install.py --with-calculix`, and checks for libGLU, a C++ compiler, and Python headers. A failed apt-get step is reported instead of crashing.
+
+### Checks and modeling
+
+- The static solve takes a torque load. A CalculiX timeout reports "not solved". A folded quadratic mesh is solved straight-sided before falling back to linear. Each Gmsh mesh runs on one long-lived thread, which fixed a macOS crash.
+- New materials: grey cast iron (ASTM A48 Class 30) and TPU 95A. New catalog rows: ISO 15 miniature and flanged miniature bearings, and M1.6, M2, and M2.5 cap screws, nuts, and washers.
+- A fixed joint can turn its child. Tendon wraps stay continuous through a study, and a tendon can be tied off on its own drum and state its line modulus. Cable collision checks skip parts out of reach.
+- A part an assembly uses cannot be deleted. A solid with a sphere pole or a cone apex counts as watertight.
+- Clearer messages for an impossible sketch dimension, a refused export path, a hidden project folder, a bolt check without `grip_mm`, and whether this computer can run a design script.
+
+### Known limits
+
+- On Windows, design scripts and solves need a signed-in desktop. Task Scheduler, a Windows service, and an SSH session are not supported. See the README's Limitations.
 
 ## 0.9.0
 
