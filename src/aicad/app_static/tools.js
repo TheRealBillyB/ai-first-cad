@@ -292,7 +292,8 @@ function renderGearPanel() {
     shaft: "90",
     spiral: "35",
     role: "pinion",
-    hypoidMate: "16",
+    // The ring needs more teeth than the pinion: 18 against 36 builds.
+    hypoidMate: "36",
     offset: "12",
     ring: "80",
     hypoidSpiral: "35",
@@ -355,11 +356,30 @@ function renderGearPanel() {
     rememberGearDraft();
     toggleGearFields();
   };
+  $("gear-role").onchange = () => {
+    const counts = hypoidCountsForRole($("gear-role").value, $("gear-teeth").value, $("gear-hypoid-mate").value);
+    $("gear-teeth").value = counts.teeth;
+    $("gear-hypoid-mate").value = counts.mate;
+    rememberGearDraft();
+  };
   form.onsubmit = (event) => {
     event.preventDefault();
     runCreateGear().catch(showError);
   };
   toggleGearFields();
+}
+
+// A hypoid ring has more teeth than its pinion. Teeth is this gear and Mate
+// teeth the other, so switching the role swaps the counts when they are on
+// the wrong side, and the pair stays the same.
+function hypoidCountsForRole(role, teeth, mate) {
+  const own = Number(teeth);
+  const other = Number(mate);
+  if (String(teeth).trim() === "" || String(mate).trim() === "" || !Number.isFinite(own) || !Number.isFinite(other)) {
+    return { teeth, mate };
+  }
+  if ((role === "ring" && own < other) || (role === "pinion" && own > other)) return { teeth: mate, mate: teeth };
+  return { teeth, mate };
 }
 
 function gearOption(value, label, selected) {
