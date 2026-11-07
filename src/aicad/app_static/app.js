@@ -22,6 +22,7 @@ const ui = {
   splinePoint: null,
   arcPoints: [],
   doc: "requirements.md",
+  docProject: null,
   assembly: null,
   viewAssembly: null,
   assemblySignature: "",
@@ -133,6 +134,7 @@ async function applyRefresh(options = {}) {
   }
   renderTree();
   renderPanel();
+  forgetDocumentOfOtherProject();
   renderDocs();
   renderAssemblies();
   renderDimensions();
@@ -507,7 +509,7 @@ function drawPanel() {
       </div>
       <p id="fea-status" role="status" hidden></p>
       <div id="fea-setup" class="muted"></div>
-      ${report ? feaHtml(report, state.panel_revision.fea !== state.revision) : `<p class="muted">Strength is this linear static check. Hold faces, apply a force, and read the safety factor.</p>`}`;
+      ${report && report.part === part ? feaHtml(report, state.panel_revision.fea !== state.revision) : `<p class="muted">Strength is this linear static check. Hold faces, apply a force, and read the safety factor.</p>`}`;
     $("fea-fix").onclick = () => rememberLoad("fix");
     $("fea-load").onclick = () => rememberLoad("force");
     $("fea-run").onclick = () => runFea();
@@ -535,7 +537,7 @@ function drawPanel() {
         <button type="button" id="modal-run" class="primary">Solve</button>
       </div>
       <div id="modal-setup" class="muted"></div>
-      ${report && report.part ? modalHtml(report) : `<p class="muted">Hold a face, name the running speed, and read which modes sit near that excitation. The picture is a magnified shape.</p>`}`;
+      ${report && report.part === part ? modalHtml(report) : `<p class="muted">Hold a face, name the running speed, and read which modes sit near that excitation. The picture is a magnified shape.</p>`}`;
     $("modal-fix").onclick = () => rememberModalFix();
     $("modal-run").onclick = () => runModal().catch(showError);
     renderModalSetup();
@@ -695,7 +697,7 @@ function checkHtml(item) {
     <div><strong>${claimText(item.title)}</strong> ${label}<div class="muted">${claimText(item.detail || "")}</div>${limits}</div></div>`;
 }
 
-const feaPlan = { fixes: [], loads: [] };
+const feaPlan = { part: null, fixes: [], loads: [] };
 // Values the person typed in the Strength form. They outlast a redraw.
 const feaForm = { material: null, mesh: null, sf: null };
 
@@ -729,11 +731,22 @@ function feaSetupLines(plan, report) {
     "Select faces to set up a new solve.",
   ];
 }
-const modalPlan = { fixes: [] };
+const modalPlan = { part: null, fixes: [] };
+
+// Faces picked on one part name nothing on another part. A plan keeps the part
+// its faces came from, and starts empty when a different part is selected.
+function planForPart(plan, part) {
+  if (plan.part !== part) {
+    Object.keys(plan).forEach((key) => { if (Array.isArray(plan[key])) plan[key] = []; });
+    plan.part = part;
+  }
+  return plan;
+}
 
 function rememberModalFix() {
   const ref = ui.selectedFaces[0];
   if (!ref) return alert("Select a face in the viewport first.");
+  planForPart(modalPlan, ui.part);
   modalPlan.fixes.push({ name: "fix_" + (modalPlan.fixes.length + 1), select: { ref } });
   renderModalSetup();
 }
@@ -741,11 +754,13 @@ function rememberModalFix() {
 function renderModalSetup() {
   const node = $("modal-setup");
   if (!node) return;
+  planForPart(modalPlan, ui.part);
   node.textContent = modalPlan.fixes.map((item) => `fix ${item.select.ref}`).join("\n") || "No support yet.";
 }
 
 async function runModal() {
   if (!ui.part) return;
+  planForPart(modalPlan, ui.part);
   if (!modalPlan.fixes.length) return alert("Fix a face from the selection.");
   const kind = $("modal-kind").value;
   await command("solve_modal", {
@@ -858,6 +873,7 @@ function boltHtml(report) {
 function rememberLoad(kind) {
   const ref = ui.selectedFaces[0];
   if (!ref) return alert("Select a face in the viewport first.");
+  planForPart(feaPlan, ui.part);
   if (kind === "fix") feaPlan.fixes.push({ name: "fix_" + (feaPlan.fixes.length + 1), select: { ref } });
   else feaPlan.loads.push({ name: "load_" + (feaPlan.loads.length + 1), type: "force", vector: [0, 0, -10], select: { ref } });
   renderFeaSetup();
@@ -866,7 +882,9 @@ function rememberLoad(kind) {
 function renderFeaSetup() {
   const node = $("fea-setup");
   if (!node) return;
-  const report = ui.state && ui.state.panels ? ui.state.panels.fea : null;
+  const last = ui.state && ui.state.panels ? ui.state.panels.fea : null;
+  const report = last && last.part === ui.part ? last : null;
+  planForPart(feaPlan, ui.part);
   const lines = feaSetupLines(feaPlan, report);
   node.textContent = lines.join("\n") || "No supports or loads yet.";
 }
@@ -915,6 +933,7 @@ function renderFeaStatus() {
 
 async function runFea() {
   if (!ui.part) return;
+  planForPart(feaPlan, ui.part);
   if (!feaPlan.fixes.length || !feaPlan.loads.length) return alert("Add a fixed face and a load from the selection.");
   if (feaRun.started !== null) return;
   feaRun.started = performance.now();
@@ -1987,13 +2006,41 @@ function renderDocs() {
   if (ui.part) $("req-part").value = $("req-part").value || ui.part;
 }
 
+function projectPath() {
+  return ui.state && ui.state.project ? ui.state.project.path : "";
+}
+
+// The editor holds one document of one project. Once another project is open,
+// that text belongs to the old folder, so it is dropped before Save can write it.
+function forgetDocumentOfOtherProject() {
+  if (ui.docProject == null || ui.docProject === projectPath()) return;
+  ui.docProject = null;
+  if (!(ui.state.documents || []).includes(ui.doc)) ui.doc = "requirements.md";
+  $("doc-name").textContent = ui.doc;
+  $("doc-editor").value = "";
+  $("doc-preview").innerHTML = "";
+  if (ui.page === "documents") loadDoc(ui.doc).catch(showError);
+}
+
 async function loadDoc(name) {
-  ui.doc = name;
+  const project = projectPath();
   const result = await command("read_document", { name });
+  ui.doc = name;
+  ui.docProject = project;
   $("doc-name").textContent = name;
   $("doc-editor").value = result.markdown;
   $("doc-preview").innerHTML = markdown(result.markdown);
   renderDocs();
+}
+
+async function saveDoc() {
+  if (ui.docProject == null || ui.docProject !== projectPath()) {
+    throw new Error("No document from this project is open. Pick one from the list, then save.");
+  }
+  const text = $("doc-editor").value;
+  await command("write_document", { name: ui.doc, markdown: text });
+  $("doc-preview").innerHTML = markdown(text);
+  await refresh();
 }
 
 function markdown(text) {
@@ -2084,6 +2131,12 @@ function renderAssemblies() {
       renderAssemblies();
     };
   });
+  // An open tool form lists the instances, joints, poses, and motions of one
+  // assembly. After another one is selected, it is drawn again for that one.
+  const form = $("assembly-form");
+  if (ui.assemblyTool && ui.assemblyFormFor !== ui.assembly && form && !form.hidden && typeof renderAssemblyForm === "function") {
+    renderAssemblyForm();
+  }
   const current = assemblies.find((item) => item.name === ui.assembly);
   if (!current) {
     $("assembly-controls").innerHTML = `<p class="muted">No assembly yet. The tools above the picture run a motion study, gear mesh, gear train, kinematics, a position error budget, packaging, a drawing, a bill of materials, an exploded view, or an animation.</p>`;
@@ -2117,11 +2170,9 @@ function renderAssemblies() {
       </div>
       <p class="muted">${current.instances.map((item) => escapeHtml(item.name)).join(", ")}</p>`;
     $("assembly-controls").querySelectorAll("[data-apply]").forEach((button) => {
-      button.onclick = async () => {
+      button.onclick = () => {
         const input = $("assembly-controls").querySelector(`[data-joint="${button.dataset.apply}"]`);
-        await command("set_joint", { name: ui.assembly, joint: button.dataset.apply, value: Number(input.value) });
-        ui.assemblySignature = "";
-        await refresh();
+        applyJoint(button.dataset.apply, input.value).catch(showError);
       };
     });
     $("assembly-controls").querySelectorAll("[data-pose]").forEach((button) => {
@@ -2147,6 +2198,14 @@ function renderAssemblies() {
     });
   }
   showStoredAssemblyReports();
+}
+
+// An empty box is not zero. A number input reads empty for text it cannot parse.
+async function applyJoint(joint, text) {
+  const value = requiredNumber(String(text == null ? "" : text).trim(), `Enter a number for joint ${joint}.`);
+  await command("set_joint", { name: ui.assembly, joint, value });
+  ui.assemblySignature = "";
+  await refresh();
 }
 
 function showStoredAssemblyReports() {
@@ -2529,6 +2588,11 @@ function clearMeasure() {
 async function browseProjects(mode) {
   const dialog = $("modal");
   let current = ui.state.project ? ui.state.project.path : "";
+  if (mode === "save" && current) {
+    // The copy goes beside this project. Save as refuses a folder inside it.
+    const here = await command("list_folders", { path: current });
+    if (here.parent) current = here.parent;
+  }
   const paint = async () => {
     const listed = await command("list_folders", current ? { path: current } : {});
     current = listed.path;
@@ -2645,6 +2709,7 @@ async function boot() {
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
     const sequence = current && (current.motions[0] || (current.studies || [])[0]);
     const report = await command("check_cables", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
+    ui.reportFocus = "cables";
     await refresh();
     showCableReport(report);
   };
@@ -2653,6 +2718,7 @@ async function boot() {
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
     const sequence = current && (current.motions[0] || (current.studies || [])[0]);
     const report = await command("estimate_power", sequence ? { name: ui.assembly, sequence } : { name: ui.assembly });
+    ui.reportFocus = "power";
     await refresh();
     showPowerReport(report);
   };
@@ -2673,6 +2739,7 @@ async function boot() {
           ],
         },
       });
+      ui.reportFocus = "vibration";
       await refresh();
       showModalReport(report);
     } catch (error) {
@@ -2684,6 +2751,7 @@ async function boot() {
       if (!ui.assembly) return;
       $("assembly-status").textContent = "Exporting robot…";
       const report = await command("export_robot", { name: ui.assembly });
+      ui.reportFocus = "robot";
       await refresh();
       showRobotReport(report);
     } catch (error) {
@@ -2707,6 +2775,7 @@ async function boot() {
           ],
         },
       });
+      ui.reportFocus = "bolts";
       await refresh();
       showBoltReport(report);
     } catch (error) {
@@ -2819,11 +2888,7 @@ async function boot() {
   $("tabs").addEventListener("keydown", moveTab);
   $("page-nav").addEventListener("keydown", moveTab);
   bindWorkspaceTools();
-  $("doc-save").onclick = async () => {
-    await command("write_document", { name: ui.doc, markdown: $("doc-editor").value });
-    $("doc-preview").innerHTML = markdown($("doc-editor").value);
-    await refresh();
-  };
+  $("doc-save").onclick = () => saveDoc().catch(showError);
   $("doc-editor").addEventListener("input", () => { $("doc-preview").innerHTML = markdown($("doc-editor").value); });
   $("req-kind").addEventListener("change", retitleRequirementFields);
   $("req-form").onsubmit = async (event) => {
@@ -2852,7 +2917,7 @@ async function boot() {
     }
     if (kind === "min_safety_factor") {
       item.minimum = requiredNumber(limitText, "Enter the minimum safety factor.");
-      if (feaPlan.fixes.length && feaPlan.loads.length) {
+      if (feaPlan.part === item.part && feaPlan.fixes.length && feaPlan.loads.length) {
         item.setup = {
           material: $("req-material").value || "pla",
           mesh_size_mm: 2,

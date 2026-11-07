@@ -29,7 +29,7 @@ let pending = null;
 const sandbox = {
   $: (id) => nodes[id] || null,
   ui: { part: "motor_mount" },
-  feaPlan: { fixes: [{ name: "fix_1" }], loads: [{ name: "load_1" }] },
+  feaPlan: { part: "motor_mount", fixes: [{ name: "fix_1" }], loads: [{ name: "load_1" }] },
   performance: { now: () => clock.now },
   setInterval: (fn) => { timers.push(fn); return timers.length; },
   clearInterval: () => { timers.length = 0; },
@@ -39,6 +39,9 @@ const sandbox = {
   alert: () => {},
 };
 vm.createContext(sandbox);
+// runFea keeps the setup with the part it was picked on, through planForPart.
+const helper = source.indexOf("function planForPart(");
+vm.runInContext(source.slice(helper, source.indexOf("\nfunction ", helper + 1)), sandbox);
 vm.runInContext(source.slice(start, end), sandbox);
 const look = () => ({ text: nodes["fea-status"].textContent, hidden: nodes["fea-status"].hidden, disabled: nodes["fea-run"].disabled, className: nodes["fea-status"].className });
 (async () => {
