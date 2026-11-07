@@ -34,9 +34,14 @@ const context = {
   renderModalSetup: () => {},
   feaPlan: { part: null, fixes: [], loads: [] },
   modalPlan: { part: null, fixes: [] },
+  // No form on screen: the Load button takes the form's defaults.
+  $: () => null,
+  feaForm: {},
 };
 vm.createContext(context);
-vm.runInContext(["planForPart", "rememberLoad", "rememberModalFix"].map(cut).join("\n"), context);
+// The load form's helpers, when this copy of app.js has them.
+const helpers = ["feaFormValues", "feaNumber", "feaLoadVector"].filter((name) => code.includes("function " + name + "("));
+vm.runInContext([...helpers, "planForPart", "rememberLoad", "rememberModalFix"].map(cut).join("\n"), context);
 const pick = (part, ref) => { context.ui.part = part; context.ui.selectedFaces = [ref]; };
 const refs = (plan) => ({ part: plan.part, fixes: plan.fixes.map((item) => item.select.ref), loads: (plan.loads || []).map((item) => item.select.ref) });
 const steps = [];
