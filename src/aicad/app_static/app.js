@@ -455,7 +455,7 @@ function renderPanel() {
       </div>
       <p id="fea-status" role="status" hidden></p>
       <div id="fea-setup" class="muted"></div>
-      ${report ? feaHtml(report, state.panel_revision.fea !== state.revision) : `<p class="muted">Strength is this linear static check. Hold faces, apply a force, and read the safety factor.</p>`}`;
+      ${report && report.part === part ? feaHtml(report, state.panel_revision.fea !== state.revision) : `<p class="muted">Strength is this linear static check. Hold faces, apply a force, and read the safety factor.</p>`}`;
     $("fea-fix").onclick = () => rememberLoad("fix");
     $("fea-load").onclick = () => rememberLoad("force");
     $("fea-run").onclick = () => runFea();
@@ -483,7 +483,7 @@ function renderPanel() {
         <button type="button" id="modal-run" class="primary">Solve</button>
       </div>
       <div id="modal-setup" class="muted"></div>
-      ${report && report.part ? modalHtml(report) : `<p class="muted">Hold a face, name the running speed, and read which modes sit near that excitation. The picture is a magnified shape.</p>`}`;
+      ${report && report.part === part ? modalHtml(report) : `<p class="muted">Hold a face, name the running speed, and read which modes sit near that excitation. The picture is a magnified shape.</p>`}`;
     $("modal-fix").onclick = () => rememberModalFix();
     $("modal-run").onclick = () => runModal().catch(showError);
     renderModalSetup();
@@ -643,7 +643,7 @@ function checkHtml(item) {
     <div><strong>${claimText(item.title)}</strong> ${label}<div class="muted">${claimText(item.detail || "")}</div>${limits}</div></div>`;
 }
 
-const feaPlan = { fixes: [], loads: [] };
+const feaPlan = { part: null, fixes: [], loads: [] };
 // Values the person typed in the Strength form. They outlast a redraw.
 const feaForm = { material: null, mesh: null, sf: null };
 
@@ -677,11 +677,22 @@ function feaSetupLines(plan, report) {
     "Select faces to set up a new solve.",
   ];
 }
-const modalPlan = { fixes: [] };
+const modalPlan = { part: null, fixes: [] };
+
+// Faces picked on one part name nothing on another part. A plan keeps the part
+// its faces came from, and starts empty when a different part is selected.
+function planForPart(plan, part) {
+  if (plan.part !== part) {
+    Object.keys(plan).forEach((key) => { if (Array.isArray(plan[key])) plan[key] = []; });
+    plan.part = part;
+  }
+  return plan;
+}
 
 function rememberModalFix() {
   const ref = ui.selectedFaces[0];
   if (!ref) return alert("Select a face in the viewport first.");
+  planForPart(modalPlan, ui.part);
   modalPlan.fixes.push({ name: "fix_" + (modalPlan.fixes.length + 1), select: { ref } });
   renderModalSetup();
 }
@@ -689,11 +700,13 @@ function rememberModalFix() {
 function renderModalSetup() {
   const node = $("modal-setup");
   if (!node) return;
+  planForPart(modalPlan, ui.part);
   node.textContent = modalPlan.fixes.map((item) => `fix ${item.select.ref}`).join("\n") || "No support yet.";
 }
 
 async function runModal() {
   if (!ui.part) return;
+  planForPart(modalPlan, ui.part);
   if (!modalPlan.fixes.length) return alert("Fix a face from the selection.");
   const kind = $("modal-kind").value;
   await command("solve_modal", {
@@ -806,6 +819,7 @@ function boltHtml(report) {
 function rememberLoad(kind) {
   const ref = ui.selectedFaces[0];
   if (!ref) return alert("Select a face in the viewport first.");
+  planForPart(feaPlan, ui.part);
   if (kind === "fix") feaPlan.fixes.push({ name: "fix_" + (feaPlan.fixes.length + 1), select: { ref } });
   else feaPlan.loads.push({ name: "load_" + (feaPlan.loads.length + 1), type: "force", vector: [0, 0, -10], select: { ref } });
   renderFeaSetup();
@@ -814,7 +828,9 @@ function rememberLoad(kind) {
 function renderFeaSetup() {
   const node = $("fea-setup");
   if (!node) return;
-  const report = ui.state && ui.state.panels ? ui.state.panels.fea : null;
+  const last = ui.state && ui.state.panels ? ui.state.panels.fea : null;
+  const report = last && last.part === ui.part ? last : null;
+  planForPart(feaPlan, ui.part);
   const lines = feaSetupLines(feaPlan, report);
   node.textContent = lines.join("\n") || "No supports or loads yet.";
 }
@@ -863,6 +879,7 @@ function renderFeaStatus() {
 
 async function runFea() {
   if (!ui.part) return;
+  planForPart(feaPlan, ui.part);
   if (!feaPlan.fixes.length || !feaPlan.loads.length) return alert("Add a fixed face and a load from the selection.");
   if (feaRun.started !== null) return;
   feaRun.started = performance.now();
@@ -2800,7 +2817,7 @@ async function boot() {
     }
     if (kind === "min_safety_factor") {
       item.minimum = requiredNumber(limitText, "Enter the minimum safety factor.");
-      if (feaPlan.fixes.length && feaPlan.loads.length) {
+      if (feaPlan.part === item.part && feaPlan.fixes.length && feaPlan.loads.length) {
         item.setup = {
           material: $("req-material").value || "pla",
           mesh_size_mm: 2,
