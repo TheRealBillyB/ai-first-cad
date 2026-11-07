@@ -1101,16 +1101,34 @@ function showKinematicsReport(report) {
   const solutions = (inverse.solutions || []).map((item) =>
     `<li>${escapeHtml(item.name || item.status || "solution")} ${escapeHtml(JSON.stringify(item.joints || {}))}</li>`
   ).join("");
-  $("assembly-status").textContent = `Kinematics ${report.task || ""} ${inverse.status || ""}`.trim();
+  // A line path has its own status, message, and poses. The solver's message
+  // is what says how far out of reach a target is.
+  const path = report.path || null;
+  const outcome = path || inverse;
+  $("assembly-status").textContent = `Kinematics ${report.task || ""} ${outcome.status || ""}`.trim();
   showPicture(null);
   $("assembly-report").innerHTML = `${claimBlock(report)}<h3>Kinematics</h3>
     <div class="kv">
       <span>Task</span><b>${escapeHtml(report.task || "")}</b>
       <span>Tool</span><b>${position || "n/a"}</b>
-      <span>Inverse</span><b>${escapeHtml(inverse.status || "")}</b>
+      <span>${path ? "Path" : "Inverse"}</span><b>${escapeHtml(outcome.status || "")}</b>
     </div>
+    ${outcome.message ? `<p>${escapeHtml(outcome.message)}</p>` : ""}
     ${solutions ? `<ul>${solutions}</ul>` : ""}
+    ${path ? kinematicsPathHtml(path) : ""}
     <p class="muted">${escapeHtml(report.note || "")}</p>`;
+}
+
+function kinematicsPathHtml(path) {
+  const steps = path.steps || [];
+  const shown = steps.slice(0, 25).map((step) => {
+    const at = (step.position_mm || []).map((value) => Number(value).toFixed(2)).join(", ");
+    const error = step.position_error_mm != null ? ` · off ${Number(step.position_error_mm).toFixed(3)} mm` : "";
+    return `<li>${step.index != null ? step.index : ""} ${escapeHtml(step.status || "")} · ${at}${error}
+      ${escapeHtml(JSON.stringify(step.joints || {}))}</li>`;
+  }).join("");
+  const more = steps.length > 25 ? `<p class="muted">${steps.length - 25} more poses are in the report.</p>` : "";
+  return shown ? `<ol>${shown}</ol>${more}` : "";
 }
 
 function showPositionErrorReport(report) {
