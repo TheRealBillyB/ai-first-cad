@@ -303,14 +303,28 @@
       <p class="plan-source">Only you can answer, mark, and approve. The assistant cannot.</p>`;
   }
 
+  // The list and the sidebar summary are drawn again every few seconds. Writing
+  // the same HTML again replaced the buttons under the pointer, so a click that
+  // straddled a redraw was lost and keyboard focus fell off the button.
+  function setHtml(node, html) {
+    if (node.planHtml === html) return false;
+    node.planHtml = html;
+    node.innerHTML = html;
+    return true;
+  }
+
   function renderList() {
     const rows = document.getElementById("plan-rows");
-    if (!rows) return;
-    if (!ui.summaries.length) {
-      rows.innerHTML = "<p class='plan-source'>None in this project.</p>";
+    if (!rows) {
+      renderMount();
       return;
     }
-    rows.innerHTML = ui.summaries.map((item) => {
+    if (!ui.summaries.length) {
+      setHtml(rows, "<p class='plan-source'>None in this project.</p>");
+      renderMount();
+      return;
+    }
+    setHtml(rows, ui.summaries.map((item) => {
       if (item.status === "unreadable") {
         return `<div class="plan-row">
           <span>${esc(item.title)}</span>
@@ -323,7 +337,7 @@
         <span>${esc(item.title)}${mark}</span>
         <span>v${item.current_revision}</span>
       </button>`;
-    }).join("");
+    }).join(""));
     renderMount();
   }
 
@@ -333,7 +347,7 @@
     const readable = ui.summaries.filter((item) => item.status !== "unreadable");
     const broken = ui.summaries.filter((item) => item.status === "unreadable");
     if (!ui.summaries.length) {
-      slot.innerHTML = `<p class="muted">Nothing planned yet. A plan and a rough sketch will show here before a model starts.</p>`;
+      setHtml(slot, `<p class="muted">Nothing planned yet. A plan and a rough sketch will show here before a model starts.</p>`);
       return;
     }
     const current = readable.find((item) => item.id === ui.id) || readable[0];
@@ -355,7 +369,7 @@
       lines.push(`<p class="plan-error">${esc(item.title)} could not be read. ${esc(item.error || "")}</p>`);
     });
     lines.push(`<button type="button" id="plan-mount-open">Open the plan</button>`);
-    slot.innerHTML = lines.join("");
+    if (!setHtml(slot, lines.join(""))) return;
     const opener = document.getElementById("plan-mount-open");
     if (opener) opener.addEventListener("click", () => showPlan());
   }
