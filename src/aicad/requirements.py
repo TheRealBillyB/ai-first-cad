@@ -155,6 +155,13 @@ def _one(document, item: dict, cache: dict[str, dict], run: bool) -> dict:
             }
         return _row(item, **cache[key])
     if kind == "min_safety_factor":
+        # Without a setup there is nothing to solve, so "not solved yet" would never change.
+        setup = item.get("setup")
+        if not isinstance(setup, dict):
+            raise GeometryError(
+                f"{item['id']}: min_safety_factor needs a setup object, the same one solve_mechanics uses. "
+                "In the app, set a support and a load on the Strength tab, then add this requirement again."
+            )
         if key not in cache:
             if not run:
                 return _row(
@@ -164,9 +171,6 @@ def _one(document, item: dict, cache: dict[str, dict], run: bool) -> dict:
                     item.get("minimum"),
                     "The safety factor has not been solved since this part or its load changed.",
                 )
-            setup = item.get("setup")
-            if not isinstance(setup, dict):
-                raise GeometryError(f"{item['id']}: min_safety_factor needs a setup object, the same one solve_mechanics uses.")
             limit = _number(item.get("minimum"), "minimum")
             merged = dict(setup)
             merged["target_safety_factor"] = limit
