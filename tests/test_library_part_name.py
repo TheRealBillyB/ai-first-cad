@@ -23,25 +23,30 @@ _PROBE = r"""
 const fs = require("fs");
 const vm = require("vm");
 const source = fs.readFileSync(process.argv[2], "utf8").replace(/\r\n/g, "\n");
-const start = source.indexOf("function suggestedLibraryName(");
-const end = source.indexOf("\n}\n", start);
-if (start < 0 || end < 0) throw new Error("tools.js no longer has suggestedLibraryName");
+function fn(name) {
+  const start = source.indexOf(`function ${name}(`);
+  const end = source.indexOf("\n}\n", start);
+  if (start < 0 || end < 0) throw new Error(`tools.js no longer has ${name}`);
+  return source.slice(start, end + 3);
+}
 const sandbox = {};
 vm.createContext(sandbox);
-vm.runInContext(source.slice(start, end + 3), sandbox);
-sandbox.matches = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
-process.stdout.write(JSON.stringify(vm.runInContext("matches.map(suggestedLibraryName)", sandbox)));
+vm.runInContext(fn("suggestedLibraryName") + fn("libraryNameAfterPick"), sandbox);
+sandbox.input = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const expression = process.argv[4] || "input.map(suggestedLibraryName)";
+process.stdout.write(JSON.stringify(vm.runInContext(expression, sandbox)));
 """
 
 
-def _suggest(tmp_path, matches):
+def _suggest(tmp_path, matches, expression=None):
     node = shutil.which("node")
     assert node, "Node runs the page scripts in these tests"
     probe = tmp_path / "probe.js"
     probe.write_text(_PROBE, encoding="utf-8")
     listed = tmp_path / "matches.json"
     listed.write_text(json.dumps(matches), encoding="utf-8")
-    done = subprocess.run([node, str(probe), str(STATIC / "tools.js"), str(listed)], capture_output=True, text=True, encoding="utf-8")
+    command = [node, str(probe), str(STATIC / "tools.js"), str(listed)] + ([expression] if expression else [])
+    done = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
 
@@ -83,3 +88,20 @@ def test_inserting_under_the_suggested_name_works(tmp_path):
     workspace = Workspace(tmp_path / "project")
     workspace.execute("insert_standard_part", {"name": name, "kind": "ball_bearing", "size": "608"}, "ui")
     assert name in [part["name"] for part in workspace.execute("list_parts", {}, "ui")["parts"]]
+
+
+_PICKS = "input.map(([current, last, match]) => libraryNameAfterPick(current, last, match))"
+
+
+def test_choosing_another_size_replaces_a_suggested_or_used_name_but_keeps_a_typed_one(tmp_path):
+    bearing = {"kind": "ball_bearing", "size": "608"}
+    screw = {"kind": "socket_head_cap_screw", "size": "M5-0.8"}
+    cases = [
+        ["", None, bearing],
+        # The bearing was just inserted under its suggested name, then a screw is chosen.
+        ["ball_bearing_608", "ball_bearing_608", screw],
+        # The person typed their own name and has not inserted yet.
+        ["motor_bearing", "ball_bearing_608", screw],
+        ["  ", "x", screw],
+    ]
+    assert _suggest(tmp_path, cases, _PICKS) == ["ball_bearing_608", "M5-0_8", "motor_bearing", "M5-0_8"]

@@ -270,8 +270,9 @@ function renderLibraryPanel() {
     button.onclick = () => {
       const match = rows[Number(button.dataset.match)];
       ui.reports.libraryPick = match;
-      if (match && match.size && !$("library-name").value.trim()) {
-        ui.reports.libraryName = suggestedLibraryName(match);
+      if (match && match.size) {
+        ui.reports.libraryName = libraryNameAfterPick($("library-name").value, ui.reports.librarySuggested, match);
+        ui.reports.librarySuggested = ui.reports.libraryName;
       }
       renderLibraryPanel();
     };
@@ -288,6 +289,15 @@ function suggestedLibraryName(match) {
   if (!/^[A-Za-z_]/.test(name)) name = `${clean(match && match.kind) || "part"}_${name}`;
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) name = `${name}_part`;
   return name.slice(0, 64);
+}
+
+// The name to show after a size is chosen. A name the person typed stays. A
+// suggested name, or the name of the part just inserted, is replaced, so the
+// next insert does not reuse a taken name.
+function libraryNameAfterPick(current, lastSuggested, match) {
+  const typed = String(current || "").trim();
+  if (typed && typed !== lastSuggested) return typed;
+  return suggestedLibraryName(match);
 }
 
 function renderGearPanel() {
@@ -505,6 +515,8 @@ async function runLibraryInsert() {
   const report = await runTool($("library-insert"), "Inserting…", () => command("insert_standard_part", args));
   if (!report) return;
   clearNotice();
+  // That name is taken now, so the next size chosen gets a new one.
+  ui.reports.librarySuggested = name;
   ui.part = name;
   await refresh({ fit: "part", focus: name, solid: true });
 }
