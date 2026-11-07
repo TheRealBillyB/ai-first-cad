@@ -3528,7 +3528,10 @@ def _polygon_prism(step: dict, geometry: dict, name: str):
     z = _optional_number(step.get("z", 0.0), f"{name} z")
     try:
         face = _profile_face(step, geometry, name, coords)
-        solid = Pos(0, 0, z) * extrude(face, amount=height)
+        # Up the sketch normal, whichever way the profile was drawn. Without a
+        # direction the extrude follows the face normal, and a clockwise loop
+        # went down instead of up.
+        solid = Pos(0, 0, z) * extrude(face, amount=height, dir=(0, 0, 1))
     except GeometryError:
         raise
     except Exception as exc:
