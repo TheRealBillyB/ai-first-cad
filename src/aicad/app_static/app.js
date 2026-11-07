@@ -450,6 +450,11 @@ function renderPanel() {
       <div class="row"><select id="fea-material">${materials}</select>
         <label>mesh <input id="fea-mesh" type="number" value="${escapeAttr(form.mesh)}" step="0.1" style="width:64px" /></label>
         <label>SF <input id="fea-sf" type="number" value="${escapeAttr(form.sf)}" step="0.5" style="width:56px" /></label></div>
+      <div class="row"><label>force N <input id="fea-force" type="number" value="${escapeAttr(form.force)}" step="1" style="width:64px" /></label>
+        <span class="muted">along</span>
+        <label>X <input id="fea-dx" type="number" value="${escapeAttr(form.dx)}" step="1" style="width:48px" /></label>
+        <label>Y <input id="fea-dy" type="number" value="${escapeAttr(form.dy)}" step="1" style="width:48px" /></label>
+        <label>Z <input id="fea-dz" type="number" value="${escapeAttr(form.dz)}" step="1" style="width:48px" /></label></div>
       <div class="row">
         <button type="button" id="fea-fix">Fix selection</button>
         <button type="button" id="fea-load">Load selection</button>
@@ -464,6 +469,7 @@ function renderPanel() {
     $("fea-material").onchange = () => { feaForm.material = $("fea-material").value; };
     $("fea-mesh").onchange = () => { feaForm.mesh = $("fea-mesh").value; };
     $("fea-sf").onchange = () => { feaForm.sf = $("fea-sf").value; };
+    ["force", "dx", "dy", "dz"].forEach((key) => { $("fea-" + key).onchange = () => { feaForm[key] = $("fea-" + key).value; }; });
     renderFeaSetup();
     renderFeaStatus();
     return;
@@ -647,7 +653,7 @@ function checkHtml(item) {
 
 const feaPlan = { part: null, fixes: [], loads: [] };
 // Values the person typed in the Strength form. They outlast a redraw.
-const feaForm = { material: null, mesh: null, sf: null };
+const feaForm = { material: null, mesh: null, sf: null, force: null, dx: null, dy: null, dz: null };
 
 // The Strength form shows what the person typed, else the last solve, else the defaults.
 function feaFormValues(typed, report, materialIds) {
@@ -660,14 +666,47 @@ function feaFormValues(typed, report, materialIds) {
     material: known(typed.material) ? typed.material : known(material) ? material : (materialIds || [])[0] || "",
     mesh: String(typed.mesh ?? mesh ?? 1.5),
     sf: String(typed.sf ?? sf ?? 2),
+    // The Load button's force: 10 N straight down unless the person typed another.
+    force: String(typed.force ?? 10),
+    dx: String(typed.dx ?? 0),
+    dy: String(typed.dy ?? 0),
+    dz: String(typed.dz ?? -1),
   };
+}
+
+// A typed field as a number, or null when it is empty or not a number.
+function feaNumber(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : null;
+}
+
+// The force vector, in N, for a magnitude along a direction. The direction only sets the way.
+function feaLoadVector(form) {
+  const magnitude = feaNumber(form.force);
+  if (magnitude === null || !(magnitude > 0)) return { error: "Enter a force above 0 N." };
+  const direction = [form.dx, form.dy, form.dz].map(feaNumber);
+  if (direction.some((item) => item === null)) return { error: "Enter a number for each direction: X, Y, and Z." };
+  const length = Math.hypot(...direction);
+  if (!(length > 0)) return { error: "The direction can't be 0, 0, 0. Enter which way the force pushes." };
+  return { vector: direction.map((item) => (item / length) * magnitude + 0) };
+}
+
+// One load as the setup list shows it: its size and its way.
+function feaLoadText(item) {
+  const vector = item.vector || [];
+  const magnitude = Math.hypot(...vector);
+  const tidy = (value) => String(Number(value.toFixed(3)) + 0);
+  const way = magnitude > 0 ? vector.map((value) => tidy(value / magnitude)).join(", ") : vector.join(", ");
+  return `${item.name}: ${tidy(magnitude)} N along ${way} on ${item.select.ref}`;
 }
 
 // The faces being set up, else the faces the last solve held and loaded.
 function feaSetupLines(plan, report) {
   const lines = [
     ...plan.fixes.map((item) => `fix ${item.select.ref}`),
-    ...plan.loads.map((item) => `force ${item.vector.join(",")} on ${item.select.ref}`),
+    ...plan.loads.map(feaLoadText),
   ];
   if (lines.length || !report) return lines;
   const faces = (item) => `${item.name} (${item.face_count ?? 0} face${item.face_count === 1 ? "" : "s"})`;
@@ -827,7 +866,13 @@ function rememberLoad(kind) {
   if (!ref) return alert("Select a face in the viewport first.");
   planForPart(feaPlan, ui.part);
   if (kind === "fix") feaPlan.fixes.push({ name: "fix_" + (feaPlan.fixes.length + 1), select: { ref } });
-  else feaPlan.loads.push({ name: "load_" + (feaPlan.loads.length + 1), type: "force", vector: [0, 0, -10], select: { ref } });
+  else {
+    const typed = {};
+    ["force", "dx", "dy", "dz"].forEach((key) => { const field = $("fea-" + key); typed[key] = field ? field.value : feaForm[key]; });
+    const load = feaLoadVector(feaFormValues(typed, null, []));
+    if (load.error) return alert(load.error);
+    feaPlan.loads.push({ name: "load_" + (feaPlan.loads.length + 1), type: "force", vector: load.vector, select: { ref } });
+  }
   renderFeaSetup();
 }
 
