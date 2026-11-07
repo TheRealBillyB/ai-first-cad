@@ -2043,10 +2043,18 @@ function escapeAttr(text) {
   return escapeHtml(text).replace(/"/g, "&quot;");
 }
 
+// A secret, such as an API key, is typed into a password field: it does not
+// show on screen, in a recording, or in a timelapse, and the browser does
+// not offer to remember it.
+function modalInputType(field) {
+  if (field.type !== "password") return "";
+  return ' type="password" autocomplete="off" spellcheck="false"';
+}
+
 function ask(title, fields) {
   const dialog = $("modal");
   $("modal-title").textContent = title;
-  $("modal-body").innerHTML = `<div class="stack">${fields.map((field) => `<label>${escapeHtml(field.label)}<input name="${escapeAttr(field.name)}" value="${escapeAttr(field.value || "")}" /></label>`).join("")}</div>`;
+  $("modal-body").innerHTML = `<div class="stack">${fields.map((field) => `<label>${escapeHtml(field.label)}<input name="${escapeAttr(field.name)}" value="${escapeAttr(field.value || "")}"${modalInputType(field)} /></label>`).join("")}</div>`;
   dialog.showModal();
   return new Promise((resolve) => {
     const form = $("modal-form");
@@ -2963,7 +2971,7 @@ async function editSettings() {
     { name: "provider", label: "openai, anthropic, or compatible", value: current.provider },
     { name: "base_url", label: "Base URL", value: current.base_url },
     { name: "model", label: "Model", value: current.model },
-    { name: "api_key", label: "API key", value: "" },
+    { name: "api_key", label: "API key", value: "", type: "password" },
   ]);
   if (!answer) return;
   if (!answer.api_key) delete answer.api_key;
