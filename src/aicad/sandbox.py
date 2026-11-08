@@ -5713,6 +5713,17 @@ def _remove_job_when_watch_leaves(disk: _DiskWatch, job: Path) -> None:
     shutil.rmtree(job, ignore_errors=True)
 
 
+def _refuse_when_unsupported() -> None:
+    """Refuse a run this computer cannot confine before anything else happens.
+
+    _spawn checks again. A refused run should not wait behind another run, or
+    grant anything, first.
+    """
+    ok, reason = sandbox_supported()
+    if not ok:
+        raise ScriptError(reason)
+
+
 def _spawn(
     workspace: Path,
     kind: str,
@@ -6213,6 +6224,7 @@ def run_part_script(
     is a private directory. The limit cannot be raised past the cap.
     """
     _check_script(code)
+    _refuse_when_unsupported()
     temporary = None
     if workspace is None:
         temporary = tempfile.TemporaryDirectory(prefix="aicad-script-")
@@ -6247,6 +6259,7 @@ def run_design_script(workspace: str | Path, code: str, network: bool = False) -
         status = design_script_status(root)
         raise ScriptError(f"{status['warning']} It is off for this project. Turn it on with: {status['enable']}")
     try:
+        _refuse_when_unsupported()
         payload = _spawn(root, "design", code, network=network)
     except ScriptError as exc:
         _append_log(root, code, False, str(exc))
