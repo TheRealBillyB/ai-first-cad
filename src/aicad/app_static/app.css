@@ -98,6 +98,9 @@ nav { display: flex; gap: 4px; }
   grid-template-columns: minmax(160px, 240px) minmax(220px, 1fr) minmax(160px, 320px);
   grid-template-rows: minmax(0, 1fr) 210px;
 }
+/* One workspace: Model shows the parts, Assembly shows the assembled instances. */
+.shell.assembly-mode { grid-template-columns: minmax(200px, 300px) minmax(220px, 1fr) minmax(240px, 420px); }
+.shell.assembly-mode .parts-only, .shell:not(.assembly-mode) .assembly-only { display: none !important; }
 .tree, .side { background: var(--paper); overflow: auto; min-width: 0; }
 .tree { border-right: 1px solid var(--line); padding: 12px; }
 .side { border-left: 1px solid var(--line); display: flex; flex-direction: column; }
@@ -244,17 +247,15 @@ img[src^="/api/file?"] { cursor: zoom-in; }
 .muted { color: var(--muted); font-size: 12px; }
 
 .docs { flex: 1; min-height: 0; display: grid; grid-template-columns: 320px 1fr; }
-.assembly-page { grid-template-columns: minmax(240px, 360px) minmax(0, 1fr); }
-.docs section.assembly-stage {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  background: var(--paper-2);
-  grid-template-rows: none;
-}
+.assembly-side { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.assembly-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; background: var(--raised); border-bottom: 1px solid var(--line); }
+.assembly-status { margin: 0; padding: 6px 12px 0; min-height: 1em; }
+.instance-card { padding: 8px 12px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.instance-card strong { overflow-wrap: anywhere; }
 .assembly-form { flex: 0 0 auto; max-height: 42%; overflow: auto; padding: 8px 12px 12px; background: var(--paper); border-bottom: 1px solid var(--line); }
-.assembly-view { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 24px; }
+.assembly-view { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
+.assembly-tree h3 { font-size: 11px; }
+.assembly-tree details > summary { cursor: pointer; color: var(--muted); font-size: 12px; margin: 6px 0; }
 .tool-form { display: grid; gap: 8px; }
 .tool-form label { display: grid; gap: 2px; align-items: stretch; }
 .tool-form label.inline { display: flex; align-items: center; }
@@ -271,9 +272,12 @@ img[src^="/api/file?"] { cursor: zoom-in; }
 .result-list button { text-align: left; }
 .result-list button.on { background: var(--selected); color: var(--ink); border-color: var(--line); }
 #assembly-picture { max-width: 100%; background: var(--sheet); color: var(--on-accent); border: 1px solid var(--line); }
-.joint-row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
-.joint-row input { width: 88px; border: 1px solid var(--line); background: var(--field); border-radius: 4px; padding: 4px 6px; }
-.assembly-page h3 { margin: 14px 0 6px; font-size: 13px; }
+/* Name and type stack, so a long joint name never runs into its type. */
+.joint-row { display: grid; grid-template-columns: minmax(0, 1fr) 72px auto; gap: 2px 6px; align-items: center; margin: 6px 0; }
+.joint-name { grid-column: 1 / -1; display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.joint-name strong { font-weight: 500; overflow-wrap: anywhere; }
+.joint-row input[type="number"] { width: 100%; min-width: 0; border: 1px solid var(--line); background: var(--field); border-radius: 4px; padding: 4px 6px; }
+.joint-row input[type="range"] { width: 100%; min-width: 0; }
 .docs aside { padding: 14px; border-right: 1px solid var(--line); overflow: auto; background: var(--paper); }
 .docs aside h2 { margin: 12px 0 8px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 .docs section { display: grid; grid-template-rows: auto 1fr 1fr; min-width: 0; }
