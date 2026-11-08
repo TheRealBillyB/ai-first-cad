@@ -244,15 +244,21 @@ def _windows(monkeypatch, *, admin):
     monkeypatch.setattr(setup.sys, "platform", "win32")
     monkeypatch.setattr(setup, "is_admin", lambda: admin)
     monkeypatch.setattr(setup, "_system_directory", lambda: Path("."))
+    # The cleanup changes real folders' access lists. A test never runs it for real.
+    cleanups = []
+    monkeypatch.setattr(setup, "remove_broad_container_grants", lambda *args, **kwargs: cleanups.append(args) or [])
+    return cleanups
 
 
 def test_an_account_without_rights_goes_through_the_prompt(monkeypatch):
-    _windows(monkeypatch, admin=False)
+    cleanups = _windows(monkeypatch, admin=False)
     seen = []
     monkeypatch.setattr(setup, "_run_with_uac_prompt", lambda action: seen.append(action) or 0)
     monkeypatch.setattr(setup, "is_installed", lambda: True)
     assert setup.run_setup() == 0
     assert seen == ["install"]
+    # A finished setup takes the script containers off broad folders.
+    assert len(cleanups) == 1
 
 
 def test_an_administrator_runs_it_isolated_with_no_prompt(monkeypatch):
