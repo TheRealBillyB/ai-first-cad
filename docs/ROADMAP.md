@@ -132,7 +132,7 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 
 Nothing is left for 1.0. The last item was checked by hand:
 
-- **Windows sandbox setup survives a reboot.** Checked on a Windows 10 PC with a non-admin account, since a CI runner cannot restart inside its job and Windows Sandbox is wiped when it closes. After `aicad sandbox-setup` and a restart, the filters and rules were still in place and a script's network was still refused.
+- **Windows sandbox setup survives a reboot.** Checked on a Windows 10 PC with a non-admin account, since a CI runner cannot restart inside its job and Windows Sandbox is wiped when it closes. After `aicad sandbox-setup` and a restart, `aicad sandbox-setup --status` still reported all 8 filters and both rules in place.
 
 v1.0 does not add another feature track. CAM and the manufacturing checks stay in the section after this one.
 
