@@ -20,6 +20,7 @@ Model and assembly are separate workspaces today, and the assembly flow can be h
 - The app's geometry runs in a second process, so the page keeps answering during a long rebuild or solve. Gmsh loads in that process on Windows, so the Strength solve no longer hangs.
 - The page answers at once and says the project is opening while it loads.
 - One dark theme, with a grid and origin axes in the model view.
+- Model and Assembly are one workspace with one 3D view. Assembly shows the placed, colored instances to turn and click, moves with its joint sliders, and opens an instance's part with Edit part. A click there no longer reports a face reference error, and driven and fixed joints are marked.
 - A running Strength solve shows its time, and a failed one says why. Every failed page action shows in the notice bar. Each app command and its result is logged to the console.
 - Clicking a report picture opens it at full size over the app, with zoom, drag, and close.
 - Report pictures named with a full path load. The page buttons stay on screen when the Plan page opens.

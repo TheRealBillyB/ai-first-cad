@@ -322,7 +322,7 @@ aicad cables hinge --study swing --workspace ./aicad_workspace
 aicad power rod_arm --sequence lift --workspace ./aicad_workspace
 ```
 
-In the workspace app the Assembly page lists joints, poses, and motions. Apply sets a joint. A pose or a motion runs the same command the assistant uses. Preview and Orbit show the posed solids. Cables, Power, Modes, and Bolt check open the reports, including the assumptions.
+In the workspace app, Model and Assembly are two views of one workspace with one 3D view. Model shows the parts one at a time to edit. Assembly shows the placed instances in their colors, and you can turn it, pan it, and click an instance to see its part, with Edit part to open that part in Model. The left side lists joints, poses, and motions. A joint with limits has a slider, Apply sets a typed value, and the 3D view moves with it. A joint that a relation drives says which joint drives it, and fixed joints are folded away. A pose or a motion runs the same command the assistant uses. Picture renders the assembly to a file. Cables, Power, Modes, and Bolt check open the reports on the right, including the assumptions.
 
 `examples/rod_arm.py` builds a simplified drill-rod handler: a base, a two-joint arm, a gripper whose jaws are geared together, an M3 washer used as a clip, a hydraulic hose, and a cable. An 8 kg payload sits on the rod, on top of the rod's own steel mass. From the reach pose to the lift pose the rod origin rises from −259 mm to 309 mm, and the arm does not collide with itself. The hose shortens by about 17 mm and stays slack. The cable grows by about 23 mm, strain 0.057, under its 0.15 limit. The tightest bend on either route is about 112 mm, against limits of 18 mm and 12 mm. Neither route pinches. The shoulder cylinder (20 mm bore, 50 mm moment arm) peaks at 45.1 N·m, 3.83 MPa, and 32 W. The elbow cylinder (16 mm bore, 40 mm moment arm) peaks at 28.1 N·m, 4.65 MPa, and 8.6 W. Over the two-second lift the pump sees about 28 W mean and 17,600 mm³ of displaced fluid. A separate test leg runs a short walk cycle and collides with a block on the planted frames. The pictures are `examples/renders/rod_arm_strip.png`, `examples/renders/rod_arm.gif`, and `examples/renders/rod_leg_strip.png`. The numbers are in `examples/renders/rod_arm_report.json`.
 
@@ -330,7 +330,7 @@ In the workspace app the Assembly page lists joints, poses, and motions. Apply s
 
 The same assembly can be written out as a layout sheet, a parts count, and an exploded picture. These read the posed solids. They do not change a solver.
 
-In the workspace app those three are buttons on the Assembly page: Drawing, Bill of materials, and Exploded view. They call `export_drawing`, `bill_of_materials`, and `exploded_view`. The same three run from the CLI:
+In the workspace app those three are buttons in the Assembly view: Drawing, Bill of materials, and Exploded view. They call `export_drawing`, `bill_of_materials`, and `exploded_view`. The same three run from the CLI:
 
 ```bash
 aicad export-drawing rod_handler --exploded --workspace examples/rod_handler_workspace
@@ -380,7 +380,7 @@ aicad bolts --file joint.json --workspace ./aicad_workspace
 aicad fatigue --file fatigue.json --workspace ./aicad_workspace
 ```
 
-The part page has Vibration and Bolts tabs. Fix selection uses the face you picked. The Assembly page has Modes, with a drill rpm, and Bolt check. Both run the same commands the assistant uses.
+The part page has Vibration and Bolts tabs. Fix selection uses the face you picked. The Assembly view has Modes, with a drill rpm, and Bolt check. Both run the same commands the assistant uses.
 
 `examples/vibration_arm.py` reuses the rod-handling arm. The upper link, aluminum, is held at the shoulder end. A drill rotary at 120 rpm (2 Hz, and its second and third harmonics) is clear of the link. A hydraulic pump is then placed at 97% of the computed first flexible frequency so the report flags that line and suggests a change. The same two sources are declared for the posed arm, with the joints locked. Four M8-8.8 bolts are checked as the base flange under intense vibration: 1000 N axial and 2500 N shear each, friction 0.14, 20 mm grip. The slip margin is below 1 and the yield margin stays above 1, which is the loosening case. An M12-10.9 with 800 N of shear is the contrast that still holds. A separate fatigue line uses 90 MPa alternating and 40 MPa mean on machined mild steel and lands under a factor of 2. The numbers are in `examples/renders/vibration_report.json`.
 
@@ -411,7 +411,7 @@ aicad robot arm --out examples/robot_arm --workspace examples/print_workspace
 
 `export_robot` (CLI: `aicad robot`) writes `robot.urdf`, `robot.xml` (MJCF), and `meshes/*.stl`. Meshes stay in millimeters and the robot file scales them by 0.001. Mass is kilograms. Inertia is about the center of mass, in kg·m², including a `payload_kg` as a point mass. Joint origins are the pose at value 0. Revolute limits are radians in the URDF and degrees in the MJCF. A cylindrical joint becomes a revolute plus a prismatic. Gear, linkage, and cylinder relations are XML comments. A world link fixes every grounded part. Effort and velocity are placeholders.
 
-When MuJoCo is installed (`pip install -e ".[robot]"`), the export loads the MJCF and steps it. PyBullet is used the same way when it is installed. The example arm's shoulder runs from −45° to 90°, and MuJoCo loaded that file. The Assembly page button **Export robot** calls the same command.
+When MuJoCo is installed (`pip install -e ".[robot]"`), the export loads the MJCF and steps it. PyBullet is used the same way when it is installed. The example arm's shoulder runs from −45° to 90°, and MuJoCo loaded that file. The Assembly view button **Export robot** calls the same command.
 
 ## Connect an assistant
 

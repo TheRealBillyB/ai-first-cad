@@ -168,6 +168,15 @@ These two were named for 1.0. They ship after it.
 
 The interface ideas for the app, with their order, estimates, and pull request splits, are in [the interface list](roadmap/post-1.0-ui.md). That list is 1.0.x polish for the app, and it does not replace CAM and manufacturing checks as the first track after v1.0.
 
+### Motion simulation with MuJoCo
+
+**Planned.** The robot export already writes MJCF and takes a few steps in MuJoCo when it is installed. This track runs the motion itself, so a mechanism designed here can be tested here.
+
+- **MuJoCo 4.0.** The optional `robot` extra moves from MuJoCo 3.16 to 4.0, where fast or thin parts no longer pass through each other. MuJoCo stays an optional install under Apache-2.0.
+- **Tendons, motors, and relations in the file.** Tendon routes, motors, and the gear, linkage, and cylinder relations are written to the MJCF, so the simulator enforces them instead of reading them as comments.
+- **Motion and grip checks.** A mechanism such as a tendon-driven hand is driven through its range and closed on a test object. The check reports tendon tension, contact force, and whether each joint reached where it was meant to. Soft finger pads can use MuJoCo's deformable bodies.
+- **Seeing the run.** The run plays back in the workspace, and the numbers go into the same report as the other checks.
+
 ### 1.0.x fixes
 
 - **A clear message with no signed-in desktop.** On Windows, a design script or solve started with no signed-in desktop (Task Scheduler, a Windows service, or an SSH session) stops with a DLL initialization error. The window station Windows gives that session does not let app containers in, so the container cannot load Windows' window library. The run should say that a signed-in desktop is needed, and why, instead of the DLL error. aicad will not change a window station's or a desktop's access list to get around it.

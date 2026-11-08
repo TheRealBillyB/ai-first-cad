@@ -25,6 +25,7 @@ const ui = {
   docProject: null,
   assembly: null,
   viewAssembly: null,
+  selectedInstance: null,
   assemblySignature: "",
   measurePoints: [],
   mountTarget: null,
@@ -102,6 +103,7 @@ async function applyRefresh(options = {}) {
     ui.selectedEdges = ui.state.selection.edges || [];
   }
   if (options.focus) {
+    if (ui.page === "assembly") showPage("model");
     ui.part = options.focus;
     ui.livePart = options.focus;
     ui.viewAssembly = null;
@@ -137,6 +139,7 @@ async function applyRefresh(options = {}) {
   forgetDocumentOfOtherProject();
   renderDocs();
   renderAssemblies();
+  if (ui.page === "assembly") ui.viewAssembly = ui.assembly || null;
   renderDimensions();
   renderProjectWarning();
   renderScriptWarning();
@@ -151,7 +154,8 @@ async function applyRefresh(options = {}) {
     ? `Recording design steps (${record.steps || 0} stored)`
     : "Record design steps in this project";
   $("record-timelapse").disabled = !(record.steps > 0);
-  if (ui.page === "model" && ui.stage === "solid" && (ui.viewAssembly || ui.state.parts.length)) await loadMesh(options);
+  if (ui.page === "assembly") await loadMesh(options);
+  else if (ui.page === "model" && ui.stage === "solid" && (ui.viewAssembly || ui.state.parts.length)) await loadMesh(options);
   else if (ui.page === "model" && ui.stage === "sketch") drawSketch();
   else if (ui.page === "model") {
     ui.mesh = null;
@@ -269,6 +273,8 @@ function renderScriptWarning() {
 
 const EMPTY_NOTE = "The parts in this project show up here. Move one, or change a size on the left. With Live on, an assistant's edits show up here too.";
 
+const NO_ASSEMBLY_NOTE = "No assembly yet. Ask the assistant to put the parts together, and the assembled model shows up here.";
+
 function showEmpty(message) {
   const box = $("empty");
   if (!box) return;
@@ -292,6 +298,12 @@ async function openWorkedExample() {
 }
 
 async function loadMesh(options = {}) {
+  if (ui.page === "assembly" && !ui.viewAssembly) {
+    ui.mesh = null;
+    showEmpty(NO_ASSEMBLY_NOTE);
+    drawSolid();
+    return;
+  }
   if (!ui.viewAssembly && !(ui.state && ui.state.parts && ui.state.parts.length)) {
     ui.mesh = null;
     showEmpty();
@@ -320,7 +332,7 @@ async function loadMesh(options = {}) {
     return;
   }
   if (options.fit === "part" && options.focus) framePart(options.focus);
-  else if (options.fit === "scene" || firstLook || ui.viewAssembly) view.fit();
+  else if (options.fit === "scene" || firstLook) view.fit();
   drawSolid();
 }
 
@@ -1833,7 +1845,7 @@ function onPointerDown(event) {
   const rect = $("view").getBoundingClientRect();
   const localX = event.clientX - rect.left;
   const localY = event.clientY - rect.top;
-  if ((ui.pick === "measure" || ui.pick === "move") && event.button === 0 && !event.shiftKey && ui.mesh) {
+  if (ui.page !== "assembly" && (ui.pick === "measure" || ui.pick === "move") && event.button === 0 && !event.shiftKey && ui.mesh) {
     const hit = pickHit(localX, localY, rect);
     if (ui.pick === "move" && hit && hit.part) {
       const part = (ui.state.parts || []).find((item) => item.name === hit.part);
@@ -1934,6 +1946,10 @@ async function onPointerUp(event) {
   }
   if (drag.moved) return;
   const rect = $("view").getBoundingClientRect();
+  if (ui.page === "assembly") {
+    selectInstance(pickHit(event.clientX - rect.left, event.clientY - rect.top, rect));
+    return;
+  }
   const hit = ui.pick === "edge"
     ? pickEdge(event.clientX - rect.left, event.clientY - rect.top, rect)
     : pickHit(event.clientX - rect.left, event.clientY - rect.top, rect);
@@ -2185,7 +2201,13 @@ function renderAssemblies() {
       ui.assembly = node.dataset.assembly;
       ui.assemblySignature = "";
       ui.reportFocus = null;
+      ui.selectedInstance = null;
       renderAssemblies();
+      if (ui.page === "assembly") {
+        ui.viewAssembly = ui.assembly;
+        renderInstanceCard();
+        loadMesh().catch(showError);
+      }
     };
   });
   // An open tool form lists the instances, joints, poses, and motions of one
@@ -2202,19 +2224,41 @@ function renderAssemblies() {
   const signature = JSON.stringify(current);
   if (ui.assemblySignature !== signature) {
     ui.assemblySignature = signature;
-    const joints = current.joints.map((joint) => `
+    const jointRow = (joint) => {
+      if (joint.driven_by) {
+        return `
+      <div class="joint-row driven">
+        <div class="joint-name"><strong>${escapeHtml(joint.name)}</strong><span class="meta">${escapeHtml(joint.type)}</span></div>
+        <span class="meta" data-driven="${escapeAttr(joint.name)}">driven by ${escapeHtml(joint.driven_by)}</span>
+        <span class="meta">${Math.round(Number(joint.value) * 10) / 10}</span>
+        <span></span>
+      </div>`;
+      }
+      const limits = `${joint.min != null ? `min="${Number(joint.min)}"` : ""} ${joint.max != null ? `max="${Number(joint.max)}"` : ""}`;
+      const slider = joint.min != null && joint.max != null
+        ? `<input data-slide="${escapeAttr(joint.name)}" type="range" step="any" value="${Number(joint.value)}" ${limits} aria-label="${escapeAttr(joint.name)}" />`
+        : "<span></span>";
+      return `
       <div class="joint-row">
-        <span style="width:92px">${escapeHtml(joint.name)}</span>
-        <span class="meta" style="width:72px">${escapeHtml(joint.type)}</span>
-        <input data-joint="${escapeAttr(joint.name)}" type="number" step="1" value="${Number(joint.value)}" ${joint.min != null ? `min="${Number(joint.min)}"` : ""} ${joint.max != null ? `max="${Number(joint.max)}"` : ""} />
+        <div class="joint-name"><strong>${escapeHtml(joint.name)}</strong><span class="meta">${escapeHtml(joint.type)}</span></div>
+        ${slider}
+        <input data-joint="${escapeAttr(joint.name)}" type="number" step="1" value="${Number(joint.value)}" ${limits} />
         <button type="button" data-apply="${escapeAttr(joint.name)}">Apply</button>
-      </div>`).join("");
+      </div>`;
+    };
+    const moving = current.joints.filter((joint) => joint.type !== "fixed");
+    const fixed = current.joints.filter((joint) => joint.type === "fixed");
+    const joints = moving.map(jointRow).join("")
+      + (fixed.length
+        ? `<details><summary>Fixed joints (${fixed.length})</summary><ul class="fixed-joints">${fixed.map((joint) => `<li class="meta">${escapeHtml(joint.name)}</li>`).join("")}</ul></details>`
+        : "");
     const poses = current.poses.map((pose) => `<button type="button" data-pose="${escapeAttr(pose)}">${escapeHtml(pose)}</button>`).join(" ");
     const motions = current.motions.map((motion) => `<button type="button" data-motion="${escapeAttr(motion)}">${escapeHtml(motion)}</button>`).join(" ");
     const studies = (current.studies || []).map((study) => `<button type="button" data-study="${escapeAttr(study)}">${escapeHtml(study)}</button>`).join(" ");
     $("assembly-controls").innerHTML = `
       <h3>Joints</h3>
-      ${joints || `<p class="muted">Grounded only.</p>`}
+      ${moving.length ? "" : `<p class="muted">No moving joints.</p>`}
+      ${joints}
       <h3>Poses</h3>
       <div class="row">${poses || `<span class="muted">None</span>`}</div>
       <h3>Motion</h3>
@@ -2232,12 +2276,24 @@ function renderAssemblies() {
         applyJoint(button.dataset.apply, input.value).catch(showError);
       };
     });
+    $("assembly-controls").querySelectorAll("[data-joint]").forEach((input) => {
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        applyJoint(input.dataset.joint, input.value).catch(showError);
+      });
+    });
+    // Dragging shows the number. Letting go moves the joint in the 3D view.
+    $("assembly-controls").querySelectorAll("[data-slide]").forEach((slider) => {
+      const box = $("assembly-controls").querySelector(`[data-joint="${slider.dataset.slide}"]`);
+      slider.addEventListener("input", () => { if (box) box.value = String(Math.round(Number(slider.value) * 10) / 10); });
+      slider.addEventListener("change", () => applyJoint(slider.dataset.slide, box ? box.value : slider.value).catch(showError));
+    });
     $("assembly-controls").querySelectorAll("[data-pose]").forEach((button) => {
       button.onclick = async () => {
         await command("set_pose", { name: ui.assembly, pose: button.dataset.pose });
         ui.assemblySignature = "";
         await refresh();
-        await showAssemblyPicture();
       };
     });
     $("assembly-controls").querySelectorAll("[data-motion]").forEach((button) => {
@@ -2401,10 +2457,13 @@ async function showAssemblyPicture() {
 }
 
 function showPage(page) {
+  const assembly = page === "assembly";
+  const entering = assembly && (ui.page !== "assembly" || ui.viewAssembly !== ui.assembly);
+  if (ui.page === "assembly" && !assembly) leaveAssemblyView();
   ui.page = page;
-  $("page-model").hidden = page !== "model";
+  $("page-model").hidden = page !== "model" && !assembly;
+  $("page-model").classList.toggle("assembly-mode", assembly);
   $("page-docs").hidden = page !== "documents";
-  $("page-assembly").hidden = page !== "assembly";
   $("nav-model").classList.toggle("on", page === "model");
   $("nav-docs").classList.toggle("on", page === "documents");
   $("nav-assembly").classList.toggle("on", page === "assembly");
@@ -2414,10 +2473,72 @@ function showPage(page) {
   if (page === "documents" && ui.state) {
     renderDocs();
     if (!$("doc-editor").value) loadDoc(ui.doc);
-  } else if (page === "assembly") {
-    renderAssemblies();
+  } else if (assembly) {
+    if (ui.stage !== "solid") {
+      ui.stage = "solid";
+      setStage();
+    }
+    if (ui.state) renderAssemblies();
+    ui.viewAssembly = ui.assembly || null;
+    if (entering) {
+      ui.selectedInstance = null;
+      $("selection-readout").textContent = "Nothing selected";
+    }
+    renderInstanceCard();
+    if (entering && ui.state) loadMesh().catch(showError);
+    else requestAnimationFrame(() => drawSolid());
   } else if (ui.stage === "solid") requestAnimationFrame(() => drawSolid());
   else requestAnimationFrame(() => drawSketch());
+}
+
+// The parts view keeps its own selection. An instance picked in the assembly is not a face.
+function leaveAssemblyView() {
+  ui.viewAssembly = null;
+  ui.selectedInstance = null;
+  ui.selectedFaces = (ui.selectedFaces || []).filter((ref) => !String(ref).startsWith("instance/"));
+  $("selection-readout").textContent = ui.selectedFaces[0] || (ui.selectedEdges || [])[0] || "Nothing selected";
+}
+
+function instanceOfHit(hit) {
+  const ref = hit && typeof hit.ref === "string" ? hit.ref : "";
+  return ref.startsWith("instance/") ? ref.slice("instance/".length) : null;
+}
+
+// A click in the assembly picks one instance. Nothing is sent: a part selection
+// names a part's faces, and an instance is not one.
+function selectInstance(hit) {
+  const name = instanceOfHit(hit);
+  ui.selectedInstance = name;
+  ui.selectedFaces = name ? [`instance/${name}`] : [];
+  ui.selectedEdges = [];
+  const found = name ? assemblyInstance(name) : null;
+  $("selection-readout").textContent = found ? `${found.name} (part ${found.part})` : "Nothing selected";
+  renderInstanceCard();
+  drawSolid();
+}
+
+function assemblyInstance(name) {
+  const current = ((ui.state && ui.state.assemblies) || []).find((item) => item.name === ui.assembly);
+  return current ? (current.instances || []).find((item) => item.name === name) || null : null;
+}
+
+function renderInstanceCard() {
+  const card = $("instance-card");
+  if (!card) return;
+  const found = ui.selectedInstance ? assemblyInstance(ui.selectedInstance) : null;
+  if (!found) {
+    card.hidden = true;
+    card.innerHTML = "";
+    return;
+  }
+  card.hidden = false;
+  card.innerHTML = `<strong>${escapeHtml(found.name)}</strong><span class="meta">part ${escapeHtml(found.part)}</span><button type="button" id="instance-edit">Edit part</button>`;
+  $("instance-edit").onclick = () => editInstancePart(found.part).catch(showError);
+}
+
+async function editInstancePart(part) {
+  showPage("model");
+  await refresh({ focus: part, fit: "part" });
 }
 
 function renderActivity() {
@@ -2755,20 +2876,15 @@ async function boot() {
   showUnhandledFailures(window);
   installPictureViewer(document, window);
   initView();
-  $("nav-model").onclick = () => showPage("model");
+  $("nav-model").onclick = () => {
+    // The viewer may still hold the assembly, also after a stop on Documents.
+    const stale = Boolean(ui.mesh && ui.mesh.assembly);
+    showPage("model");
+    if (stale) loadMesh().catch(showError);
+  };
   $("nav-assembly").onclick = () => showPage("assembly");
   $("nav-docs").onclick = () => showPage("documents");
   $("assembly-preview").onclick = () => showAssemblyPicture().catch(showError);
-  $("assembly-orbit").onclick = async () => {
-    if (!ui.assembly) return;
-    ui.viewAssembly = ui.assembly;
-    ui.stage = "solid";
-    showPage("model");
-    await loadMesh();
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    view.fit();
-    drawSolid();
-  };
   $("assembly-cables").onclick = async () => {
     if (!ui.assembly) return;
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
@@ -2984,7 +3100,7 @@ async function boot() {
       return;
     }
     const named = viewShortcut(event);
-    if (!named || ui.page !== "model" || ui.stage !== "solid") return;
+    if (!named || (ui.page !== "model" && ui.page !== "assembly") || ui.stage !== "solid") return;
     event.preventDefault();
     if (named === "fit") {
       view.fit();
