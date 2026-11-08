@@ -815,15 +815,46 @@ def broad_folder_name(path: Path) -> str | None:
     return None
 
 
-def _explicit_container_entries(folder: Path, sids: set[str]) -> list[str]:
-    """The script containers named on the folder itself, not inherited."""
+# What the sandbox writes on each folder above a project: pass through, read
+# attributes, nothing more. It does not open the folder's contents.
+_TRAVERSE_RIGHTS = frozenset({"S", "X", "RA"})
+_INHERIT_FLAGS = frozenset({"OI", "CI", "IO", "NP"})
+
+
+def entry_shares_folder(entry: str) -> bool:
+    """True when one icacls allow entry, such as ``(OI)(CI)(RX)``, opens the folder or its children.
+
+    A traverse-only entry, ``(S,X,RA)`` on the folder alone, does not: it only
+    lets a container walk through to a project inside. A deny entry never does.
+    """
+    groups = re.findall(r"\(([^)]*)\)", entry)
+    if "DENY" in groups:
+        return False
+    rights: set[str] = set()
+    for group in groups:
+        if group in _INHERIT_FLAGS:
+            return True
+        rights.update(part.strip() for part in group.split(","))
+    return not rights <= _TRAVERSE_RIGHTS
+
+
+def _explicit_container_entries(folder: Path, sids: set[str]) -> dict[str, bool]:
+    """The script containers whose own entries on the folder share it, each with whether it also has a traverse entry."""
     completed = subprocess.run(["icacls", str(folder)], capture_output=True, text=True, check=False)
-    found = []
+    shares: dict[str, bool] = {}
+    traverse: set[str] = set()
     for line in (completed.stdout or "").splitlines():
         for sid in sids:
-            if sid in line and "(I)" not in line and sid not in found:
-                found.append(sid)
-    return found
+            if f"{sid}:" not in line:
+                continue
+            entry = line.split(f"{sid}:", 1)[1].strip()
+            if "(I)" in entry:
+                continue
+            if entry_shares_folder(entry):
+                shares[sid] = False
+            elif "(DENY)" not in entry:
+                traverse.add(sid)
+    return {sid: sid in traverse for sid in shares}
 
 
 def _container_sid(name: str) -> str | None:
@@ -846,7 +877,12 @@ def _container_sid(name: str) -> str | None:
 
 
 def remove_broad_container_grants(print_line=print) -> list[str]:
-    """Take the script containers off every broad folder they were granted on. One line each."""
+    """Take the script containers' shared access off every broad folder. One line each.
+
+    Only entries that open the folder or its children are removed. The
+    traverse-only entry the sandbox writes on each folder above a project stays,
+    so a script can still reach a project inside.
+    """
     names = {sid: label for sid, label in (
         (_container_sid(PROFILE_NAME), PROFILE_NAME),
         (_container_sid(NETWORK_PROFILE_NAME), NETWORK_PROFILE_NAME),
@@ -855,10 +891,19 @@ def remove_broad_container_grants(print_line=print) -> list[str]:
     for what, folder in broad_folders():
         if not folder.is_dir():
             continue
-        for sid in _explicit_container_entries(folder, set(names)):
+        for sid, had_traverse in _explicit_container_entries(folder, set(names)).items():
             done = subprocess.run(
                 ["icacls", str(folder), "/remove:g", f"*{sid}", "/C", "/Q"], capture_output=True, text=True, check=False
             )
+            if done.returncode == 0 and had_traverse:
+                # /remove:g takes every allow entry. The traverse one lets scripts reach
+                # projects inside this folder, and a running aicad remembers writing it.
+                done = subprocess.run(
+                    ["icacls", str(folder), "/grant", f"*{sid}:(S,X,RA)", "/C", "/Q"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
             if done.returncode == 0:
                 line = f"Removed {names[sid]}'s access to {what}. A script container must not share that whole folder."
             else:
