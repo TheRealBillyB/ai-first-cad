@@ -466,15 +466,69 @@ def test_a_plugin_ships_only_with_this_installs_metadata(tmp_path, monkeypatch):
 
 
 def test_shipped_metadata_is_the_directory_next_to_this_install(tmp_path):
+    """This copy's metadata sits next to the package, or is its editable install's metadata in site-packages."""
     roots = plugins._core_metadata_dirs()
-    package_parent = Path(plugins.__file__).resolve().parent.parent
+    package_dir = Path(plugins.__file__).resolve().parent
+    sites = {path.resolve() for path in plugins._site_package_dirs()}
     assert roots
     for path in roots:
         assert path.is_dir()
-        assert path.parent == package_parent
+        assert path.parent == package_dir.parent or path.parent in sites
     copied = tmp_path / "aicad-0.9.0.dist-info"
     copied.mkdir()
     assert copied.resolve() not in plugins._core_metadata_dirs()
+    # Even a copy that claims to be this project's editable install is not core outside site-packages.
+    project = package_dir.parent.parent if package_dir.parent.name == "src" else package_dir.parent
+    _editable_record(copied, project)
+    assert copied.resolve() not in plugins._core_metadata_dirs()
+
+
+def _editable_record(info: Path, source: Path, *, editable: bool = True) -> None:
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: aicad\nVersion: 1.0.0\n", encoding="utf-8")
+    record = {"url": source.resolve().as_uri(), "dir_info": {"editable": editable}}
+    (info / "direct_url.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_a_regular_install_finds_the_metadata_next_to_the_package(tmp_path):
+    from aicad import __version__
+
+    site = tmp_path / "site-packages"
+    package_dir = site / "aicad"
+    package_dir.mkdir(parents=True)
+    info = site / f"aicad-{__version__}.dist-info"
+    info.mkdir()
+    (site / "aicad-0.1.0.dist-info").mkdir()
+    assert plugins._core_metadata_dirs(package_dir, [site]) == {info.resolve()}
+
+
+@pytest.mark.parametrize("layout", ["src", "flat"])
+def test_an_editable_install_finds_its_metadata_in_site_packages(tmp_path, layout):
+    project = tmp_path / "AiFirstCad"
+    package_dir = project / "src" / "aicad" if layout == "src" else project / "aicad"
+    package_dir.mkdir(parents=True)
+    site = tmp_path / "venv" / "Lib" / "site-packages"
+    info = site / "aicad-1.0.0.dist-info"
+    _editable_record(info, project)
+    # pip leaves no metadata next to the package for an editable install.
+    assert not any(package_dir.parent.glob("*-info"))
+    assert plugins._core_metadata_dirs(package_dir, [site]) == {info.resolve()}
+
+
+def test_look_alike_editable_metadata_is_not_core(tmp_path):
+    project = tmp_path / "AiFirstCad"
+    package_dir = project / "src" / "aicad"
+    package_dir.mkdir(parents=True)
+    other = tmp_path / "other-checkout"
+    (other / "src" / "aicad").mkdir(parents=True)
+    site = tmp_path / "site-packages"
+    elsewhere = tmp_path / "Downloads"
+    _editable_record(site / "aicad-1.0.0.dist-info", other)  # another checkout of aicad
+    _editable_record(site / "aicad_fork-1.0.0.dist-info", tmp_path)  # a folder above this project
+    _editable_record(site / "aicad_copy-1.0.0.dist-info", project, editable=False)  # not an editable install
+    _editable_record(elsewhere / "aicad-1.0.0.dist-info", project)  # outside this interpreter's site-packages
+    assert plugins._core_metadata_dirs(package_dir, [site]) == frozenset()
+    assert plugins._core_metadata_dirs(other / "src" / "aicad", [site]) == {(site / "aicad-1.0.0.dist-info").resolve()}
 
 
 def test_one_unreadable_entry_point_file_does_not_hide_other_plugins(tmp_path, monkeypatch):
