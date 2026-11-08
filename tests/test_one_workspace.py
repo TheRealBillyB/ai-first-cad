@@ -264,3 +264,59 @@ def test_the_assembly_summary_names_the_driver_of_a_driven_joint(tmp_path):
     listed = {joint["name"]: joint for joint in workspace.document.list_assemblies()[0]["joints"]}
     assert listed["wheel_spin"]["driven_by"] == "pinion_spin"
     assert listed["pinion_spin"]["driven_by"] is None
+
+    # A cylinder relation drives two joints, the barrel's angle and the rod's stroke,
+    # so neither may get a slider that would do nothing.
+    for name in ("base", "arm", "barrel", "rod"):
+        workspace.execute("create_part_from_ops", {"name": name, "ops": [{"op": "add", "shape": "box", "size": [4, 4, 4]}]})
+    workspace.execute(
+        "create_assembly",
+        {
+            "spec": {
+                "name": "cyl",
+                "instances": [
+                    {"name": "base", "part": "base"},
+                    {"name": "arm", "part": "arm"},
+                    {"name": "barrel", "part": "barrel"},
+                    {"name": "rod", "part": "rod"},
+                ],
+                "joints": [
+                    {"name": "shoulder", "type": "revolute", "parent": "base", "child": "arm", "axis": [0, 1, 0]},
+                    {
+                        "name": "barrel",
+                        "type": "revolute",
+                        "parent": "base",
+                        "child": "barrel",
+                        "parent_anchor": [-50, 0, 0],
+                        "axis": [0, 1, 0],
+                    },
+                    {
+                        "name": "stroke",
+                        "type": "prismatic",
+                        "parent": "barrel",
+                        "child": "rod",
+                        "parent_anchor": [100, 0, 0],
+                        "axis": [1, 0, 0],
+                        "min": 0,
+                        "max": 80,
+                    },
+                ],
+                "relations": [
+                    {
+                        "name": "lift",
+                        "type": "cylinder",
+                        "driver": "shoulder",
+                        "driven": "barrel",
+                        "stroke": "stroke",
+                        "moving_anchor": [100, 0, 0],
+                        "retracted_mm": 100,
+                    }
+                ],
+            }
+        },
+    )
+    assemblies = {assembly["name"]: assembly for assembly in workspace.document.list_assemblies()}
+    listed = {joint["name"]: joint for joint in assemblies["cyl"]["joints"]}
+    assert listed["barrel"]["driven_by"] == "shoulder"
+    assert listed["stroke"]["driven_by"] == "shoulder"
+    assert listed["shoulder"]["driven_by"] is None

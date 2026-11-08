@@ -1688,9 +1688,12 @@ class Document:
             listed = []
             for spec in self._assemblies.values():
                 # A joint a relation drives follows its driver. The page shows that, not a slider.
-                drivers = {
-                    relation.get("driven"): relation.get("driver") for relation in spec.get("relations") or []
-                }
+                # A cylinder relation drives two joints: the barrel's angle and the rod's stroke.
+                drivers = {}
+                for relation in spec.get("relations") or []:
+                    drivers[relation.get("driven")] = relation.get("driver")
+                    if relation.get("type") == "cylinder":
+                        drivers[relation.get("stroke")] = relation.get("driver")
                 listed.append(
                     {
                         "name": spec["name"],
