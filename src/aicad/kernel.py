@@ -1788,7 +1788,10 @@ def _outline_solid(spec: dict):
     start = tuple(origin[index] + axis_unit[index] * low for index in range(3))
     try:
         face = Polygon(*points)
-        prism = extrude(face, amount=high - low)
+        # Along the axis whichever way the outline was listed. Without a
+        # direction the extrude follows the face normal, and a clockwise
+        # outline built the prism behind its start.
+        prism = extrude(face, amount=high - low, dir=(0, 0, 1))
         plane = Plane(origin=start, x_dir=x_dir, z_dir=axis_unit)
         solid = plane.location * prism
     except GeometryError:
