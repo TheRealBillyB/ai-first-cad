@@ -772,7 +772,7 @@ def broad_folders() -> list[tuple[str, Path]]:
     A grant there is inherited by everything below it, so a script could read
     every other file in it. A folder inside one of these is still allowed.
     """
-    if sys.platform != "win32":
+    if sys.platform != "win32" or not hasattr(ctypes, "WinDLL"):
         return []
     found: list[tuple[str, Path]] = []
 
@@ -827,6 +827,8 @@ def _explicit_container_entries(folder: Path, sids: set[str]) -> list[str]:
 
 
 def _container_sid(name: str) -> str | None:
+    if not hasattr(ctypes, "WinDLL"):
+        return None
     userenv = ctypes.WinDLL("userenv")
     advapi = ctypes.WinDLL("advapi32")
     pointer = ctypes.c_void_p()
