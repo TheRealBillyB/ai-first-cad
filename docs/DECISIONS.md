@@ -6,6 +6,13 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-11-07
+
+| Decision | Rationale |
+| --- | --- |
+| A script's private folder may inherit another app container | Claude Desktop gives its own app container full control of the whole user profile, so every project there inherits that entry, and inside the script container Python's owner-only folder either failed or locked the container out of its own folder, so aicad could not start and every design script failed with "The script job could not be read". Inside the container, a private folder is now always made the plain way and inherits its parent. It may name SYSTEM, Administrators, the owner, the account, the script container, and any other app container that it only inherits, such as Claude Desktop's. Each such container is named once in the app console and in the run's notes, by SID and package name. An app container set on the folder itself, any user or group such as Users, Everyone, or Authenticated Users, and, for an offline script, aicad's network container are refused with a clear message. A script that cannot start now says why, without a path. |
+| The script container is granted only what it reads, never a broad folder | Windows grants to the script container are permanent and inherited, and they followed every sys.path entry and the folder of any helper program or script, so a Python started from a script in Temp gave aicadscript read access to all of Temp. The container now reads Python's prefixes, the interpreter folder, the site-packages folders, and the folder that holds aicad. A helper keeps its own install folder, and its lib or lib64 beside it, unless that folder is a broad one, in which case only the program file is granted. A script passed to Python is granted as a file, not its folder. A drive root, the user folder, Temp, LocalAppData, Desktop, Documents, and Downloads are refused for any read or project grant with a clear message. `aicad sandbox-setup` removes any aicadscript or aicadscriptnet entry set on one of those folders that opens the folder or its children, and prints each removal. It keeps the traverse-only entry (`S,X,RA` on that folder alone) that lets a script walk through to a project inside; removing it stopped the next script in a running aicad from reaching its project. |
+
 ## 2026-11-06
 
 | Decision | Rationale |
