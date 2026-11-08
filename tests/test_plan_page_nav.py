@@ -49,8 +49,8 @@ const navModel = nav.appendChild(new Node("button", "nav-model"));
 navModel.classes.add("on");
 const navAssembly = nav.appendChild(new Node("button", "nav-assembly"));
 const open = header.appendChild(new Node("button", "open-project"));
+// Model and Assembly are one page: the Assembly button shows page-model in assembly mode.
 const model = body.appendChild(new Node("div", "page-model"));
-const assembly = body.appendChild(new Node("div", "page-assembly"));
 
 function everyNode(node = body) {
   return [node, ...node.children.flatMap((child) => everyNode(child))];
@@ -103,7 +103,6 @@ navAssembly.onPageClick = () => {
 const snapshot = () => ({
   navDisplay: nav.styles.display || null,
   modelDisplay: model.styles.display || null,
-  assemblyDisplay: assembly.styles.display || null,
   planHidden: documentStandIn.getElementById("page-plan").hidden,
   planTop: documentStandIn.getElementById("page-plan").styles.top || null,
   marked: nav.children.filter((item) => item.classes.has("on")).map((item) => item.id),
@@ -135,7 +134,6 @@ def test_the_page_buttons_stay_when_plan_opens(tmp_path):
     opened = _steps(tmp_path)["opened"]
     assert opened["navDisplay"] is None
     assert opened["modelDisplay"] == "none"
-    assert opened["assemblyDisplay"] == "none"
     assert opened["planHidden"] is False
     assert opened["marked"] == ["nav-plan"]
 
@@ -154,12 +152,14 @@ def test_leaving_with_open_marks_the_page_you_came_from(tmp_path):
 def test_leaving_with_a_page_button_marks_only_that_page(tmp_path):
     left = _steps(tmp_path)["leftWithPageButton"]
     assert left["planHidden"] is True
-    assert left["assemblyDisplay"] is None
+    assert left["modelDisplay"] is None
     assert left["marked"] == ["nav-assembly"]
 
 
 def test_each_page_is_a_direct_child_of_the_body():
     """The Plan page hides `body > [id^='page-']`, so a page nested deeper would stay visible."""
     page = PAGE.read_text(encoding="utf-8")
-    for name in ("page-model", "page-assembly", "page-docs"):
+    for name in ("page-model", "page-docs"):
         assert f'\n  <div id="{name}"' in page
+    # The assembly is a mode of page-model, not a page of its own.
+    assert 'id="page-assembly"' not in page

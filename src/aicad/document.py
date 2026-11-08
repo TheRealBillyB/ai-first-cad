@@ -1687,6 +1687,10 @@ class Document:
         with self._lock:
             listed = []
             for spec in self._assemblies.values():
+                # A joint a relation drives follows its driver. The page shows that, not a slider.
+                drivers = {
+                    relation.get("driven"): relation.get("driver") for relation in spec.get("relations") or []
+                }
                 listed.append(
                     {
                         "name": spec["name"],
@@ -1704,6 +1708,7 @@ class Document:
                                 "slide": joint["slide"],
                                 "min": joint.get("min"),
                                 "max": joint.get("max"),
+                                "driven_by": drivers.get(joint["name"]),
                             }
                             for joint in spec["joints"]
                         ],
