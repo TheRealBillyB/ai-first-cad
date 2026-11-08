@@ -1000,18 +1000,20 @@ def _icacls(path: Path, sid: str, rights: str, *, recurse: bool) -> None:
         raise OSError(f"Could not grant the sandbox access to {path}. {detail.strip()}")
 
 
-class BroadFolderRefused(OSError):
-    """A grant on a folder that holds far more than the script needs."""
-
-
 def refuse_broad_folder(path: Path) -> None:
     """Never give a script container a drive root, the profile, Temp, LocalAppData, Desktop, Documents, or Downloads."""
-    name = setup.broad_folder_name(path)
-    if name is not None:
-        raise BroadFolderRefused(
-            f"aicad will not give design scripts {name}. A grant there reaches every file in it. "
-            "Keep the project, and the programs aicad runs, in folders of their own."
-        )
+    from aicad.sandbox import refuse_broad_folder as refuse
+
+    refuse(path)
+
+
+def __getattr__(name: str):
+    # BroadFolderRefused lives in aicad.sandbox, which imports this module lazily.
+    if name == "BroadFolderRefused":
+        from aicad.sandbox import BroadFolderRefused
+
+        return BroadFolderRefused
+    raise AttributeError(name)
 
 
 def _grant_tree(path: Path, sid: str, rights: str) -> None:

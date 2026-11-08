@@ -772,6 +772,8 @@ def broad_folders() -> list[tuple[str, Path]]:
     A grant there is inherited by everything below it, so a script could read
     every other file in it. A folder inside one of these is still allowed.
     """
+    if sys.platform != "win32":
+        return []
     found: list[tuple[str, Path]] = []
 
     def add(name: str, value) -> None:

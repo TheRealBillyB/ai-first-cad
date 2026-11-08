@@ -133,3 +133,27 @@ def test_the_network_container_name_matches():
     from aicad import sandbox_setup_windows, sandbox_windows
 
     assert sandbox_setup_windows.NETWORK_PROFILE_NAME == sandbox_windows._NETWORK_PROFILE_NAME
+
+
+def test_the_comparison_works_on_any_system(tmp_path):
+    folders = [("a test folder", tmp_path.resolve())]
+    assert sandbox.broad_folder_name(tmp_path, folders) == "a test folder"
+    assert sandbox.broad_folder_name(tmp_path / "inside", folders) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the Linux and macOS list")
+def test_linux_and_macos_refuse_the_root_home_and_shared_temp():
+    named = {str(folder) for _name, folder in sandbox.broad_folders()}
+    for folder in (Path("/"), Path.home(), Path("/tmp")):
+        assert str(folder.resolve()) in named
+
+
+def test_the_macos_profile_refuses_a_broad_folder():
+    from aicad.errors import ScriptError
+    from aicad.sandbox_macos import build_profile
+
+    with pytest.raises(ScriptError, match="aicad will not give design scripts"):
+        build_profile([str(Path.home())], [], network=False)
+    with pytest.raises(ScriptError, match="aicad will not give design scripts"):
+        build_profile([], [str(Path.home())], network=False)
+

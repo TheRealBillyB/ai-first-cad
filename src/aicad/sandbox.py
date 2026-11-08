@@ -945,12 +945,82 @@ def _site_packages() -> list[str]:
     return found
 
 
-def _is_broad_folder(path: Path) -> bool:
-    if sys.platform != "win32":
-        return False
-    from aicad import sandbox_setup_windows
+class BroadFolderRefused(OSError):
+    """A grant on a folder that holds far more than a confined process needs."""
 
-    return sandbox_setup_windows.broad_folder_name(path) is not None
+
+def broad_folders() -> list[tuple[str, Path]]:
+    """Folders a confined process is never given: (what the folder is, the folder).
+
+    On Windows these come from Windows itself: drive roots, known folders, and
+    the account's saved Temp. Elsewhere they are the root, home, the shared
+    temp folders, and Desktop, Documents, and Downloads in home. A folder
+    inside one of these is still allowed.
+    """
+    if sys.platform == "win32":
+        from aicad import sandbox_setup_windows
+
+        return sandbox_setup_windows.broad_folders()
+    home = Path.home()
+    entries = [
+        ("the root folder", Path("/")),
+        ("your home folder", home),
+        ("the shared temp folder", Path("/tmp")),
+        ("the shared temp folder", Path("/var/tmp")),
+        ("your Desktop", home / "Desktop"),
+        ("your Documents folder", home / "Documents"),
+        ("your Downloads folder", home / "Downloads"),
+    ]
+    if sys.platform == "darwin":
+        entries += [("the shared temp folder", Path("/private/tmp")), ("the shared temp folder", Path("/private/var/tmp"))]
+    found: list[tuple[str, Path]] = []
+    for name, folder in entries:
+        try:
+            resolved = folder.resolve()
+        except (OSError, ValueError):
+            continue
+        if all(_folder_key(existing) != _folder_key(resolved) for _, existing in found):
+            found.append((name, resolved))
+    return found
+
+
+def _folder_key(path) -> str:
+    try:
+        text = str(Path(path).resolve())
+    except (OSError, ValueError):
+        text = str(path)
+    # Windows and the default macOS volume compare names without case.
+    return text.lower() if sys.platform in ("win32", "darwin") else text
+
+
+def broad_folder_name(path: Path, folders: list[tuple[str, Path]] | None = None) -> str | None:
+    """What the folder is, when ``path`` is one of ``folders`` (the broad folders). None otherwise."""
+    key = _folder_key(path)
+    for name, folder in broad_folders() if folders is None else folders:
+        if _folder_key(folder) == key:
+            return name
+    return None
+
+
+def broad_folder_problem(path: Path) -> str | None:
+    """The refusal for a grant on ``path``, or None when the folder is not a broad one."""
+    name = broad_folder_name(path)
+    if name is None:
+        return None
+    return (
+        f"aicad will not give design scripts {name}. A grant there reaches every file in it. "
+        "Keep the project, and the programs aicad runs, in folders of their own."
+    )
+
+
+def refuse_broad_folder(path: Path) -> None:
+    problem = broad_folder_problem(path)
+    if problem is not None:
+        raise BroadFolderRefused(problem)
+
+
+def _is_broad_folder(path: Path) -> bool:
+    return broad_folder_name(path) is not None
 
 
 def _cgroup_words(path: Path) -> set[str]:
@@ -1215,6 +1285,12 @@ def _landlock(workspace: Path, network: bool, read_roots: list[Path]) -> None:
     def allow(path: Path, access: int) -> None:
         if not path.exists():
             return
+        problem = broad_folder_problem(path)
+        if problem is not None:
+            raise ScriptError(problem)
+        if not path.is_dir():
+            # Landlock refuses directory rights on a file, such as one script.
+            access &= _FS_EXECUTE | _FS_WRITE | _FS_READ
         descriptor = os.open(path, os.O_PATH | os.O_CLOEXEC)
         try:
             rule = _PathBeneath(access, descriptor)
