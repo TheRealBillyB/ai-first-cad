@@ -129,11 +129,12 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 - **Open an example.** The worked motor-mount example can be opened as its own project folder.
 - **Inspect.** Area, center of mass, and mass are on Inspect. Mass is the volume times a handbook density.
 - **STL import.** A closed STL file can be imported as a part. The mesh has no editable features.
+- **One workspace for Model and Assembly.** Model and Assembly share one workspace and one 3D view. Assembly shows the placed instances to turn and click, moves with its joint sliders, marks driven and fixed joints, and opens an instance's part with Edit part.
 - **Windows sandbox setup survives a reboot.** Checked by hand on a Windows 10 PC with a non-admin account. After `aicad sandbox-setup` and a restart, `aicad sandbox-setup --status` still reported all 8 filters and both rules in place. CI runners cannot restart inside their job, and Windows Sandbox is wiped on close.
 
 Left for 1.0, and not in the tree:
 
-- **One workspace for parts and assemblies.** Modeling and assembly are separate today, and assembly is hard to follow. Version 1.0 merges them into one workspace and redesigns the assembly flow, shaped by preview feedback.
+- **Editing parts in place and a smoother assembly flow.** Model and Assembly are now one workspace with one 3D view. Version 1.0 adds editing a part in place inside an assembly and polishes the assembly flow, shaped by preview feedback.
 
 v1.0 does not add another feature track. CAM and the manufacturing checks stay in the section after this one.
 

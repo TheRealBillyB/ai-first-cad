@@ -12,7 +12,7 @@ Today an assistant writing CAD code (OpenSCAD, CadQuery, build123d) works blind.
 
 Version 0.9.0 is a public preview. It does not invent a geometry kernel. [build123d](https://github.com/gumyr/build123d) (OpenCascade) sits behind one module, `aicad.kernel`, so it can be swapped later. A person and an assistant share one command layer: the workspace app, the in-app chat, the CLI, the Python API, and the MCP server all call the same operations on the same document.
 
-**Preview: feedback wanted.** Model and assembly are separate workspaces today, and the assembly flow can be hard to follow. The work toward 1.0 will bring them into one workspace and redesign that flow. [Tell us what you tried to build and what was confusing](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml). Do not include API keys, personal information, or private design files.
+**Preview: feedback wanted.** Model and Assembly now share one workspace and one 3D view, but the assembly flow is new and still rough. The work toward 1.0 will polish that flow and add editing a part in place inside an assembly. [Tell us what you tried to build and what was confusing](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml). Do not include API keys, personal information, or private design files.
 
 New to CAD, or new to this repo? Read [START_HERE.md](START_HERE.md). It is a plain-language tour: install on Windows or Mac, open the app, connect an assistant, and walk the examples. What this release contains is listed in [docs/reference/changelog.md](docs/reference/changelog.md).
 

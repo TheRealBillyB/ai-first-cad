@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for trying the 0.9.0 public preview. Feedback will help shape 1.0, especially a single workspace for modeling and assemblies.
+        Thanks for trying the 0.9.0 public preview. Feedback will help shape 1.0, especially the assembly flow in the shared Model and Assembly workspace.
         This issue will be public. Remove API keys, personal information, file paths, and private design details from text, screenshots, and attachments.
         For security vulnerabilities, follow SECURITY.md instead of posting here.
   - type: textarea
@@ -19,7 +19,7 @@ body:
     id: confusing
     attributes:
       label: What was confusing or got in the way?
-      description: Where did you get stuck? For assemblies, include how you moved between modeling and assembly, placed parts, or added joints.
+      description: Where did you get stuck? For assemblies, include how the Model and Assembly modes worked for you, how you placed parts, or how you added joints.
     validations:
       required: true
   - type: textarea

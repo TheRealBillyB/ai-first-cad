@@ -4,7 +4,7 @@ Version 0.9.0 is a public preview for feedback before 1.0. These notes describe 
 
 ## 0.9.0 — public preview
 
-Model and assembly are separate workspaces today, and the assembly flow can be hard to follow. Version 1.0 will bring them into one workspace and redesign that flow, shaped by [preview feedback](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml). Joint-sized reducers and a stored catalog mounting orientation remain planned for after 1.0.
+Model and Assembly now share one workspace and one 3D view, but the assembly flow is new and still rough. Version 1.0 will add editing a part in place inside an assembly and polish that flow, shaped by [preview feedback](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml). Joint-sized reducers and a stored catalog mounting orientation remain planned for after 1.0.
 
 ### Windows sandbox
 
@@ -41,7 +41,7 @@ Model and assembly are separate workspaces today, and the assembly flow can be h
 
 ### Known limits
 
-- Model and assembly are separate workspaces; the assembly flow is being reconsidered for 1.0.
+- Parts cannot yet be edited in place inside an assembly; Edit part opens the part in Model. The assembly flow is being polished for 1.0.
 - On Windows, design scripts and solves need a signed-in desktop. Task Scheduler, a Windows service, and an SSH session are not supported. See the README's Limitations.
 
 ### Modeling and sketching

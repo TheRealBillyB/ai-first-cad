@@ -132,7 +132,7 @@ window.ROADMAP_ITEMS = [
   "status": "done",
   "title": "Assemblies and motion",
   "category": "Mechanisms",
-  "desc": "Fixed, revolute, prismatic and cylindrical joints, plus gear and linkage relations. Named poses and motion studies sweep a range and report collisions and joint-limit stops. Model and assembly are separate workspaces today; a single workspace and a clearer assembly flow are planned for 1.0, shaped by preview feedback.",
+  "desc": "Fixed, revolute, prismatic and cylindrical joints, plus gear and linkage relations. Named poses and motion studies sweep a range and report collisions and joint-limit stops. Model and Assembly share one workspace and one 3D view; in-place part editing and a smoother assembly flow are planned for 1.0, shaped by preview feedback.",
   "n": 17
  },
  {
