@@ -21,6 +21,7 @@ Version 1.0.0 is the 1.0 release of the 0.9.0 preview's feature set. The 1.0.0 n
 - The page answers at once and says the project is opening while it loads.
 - One dark theme, with a grid and origin axes in the model view.
 - Model and Assembly are one workspace with one 3D view. Assembly shows the placed, colored instances to turn and click, moves with its joint sliders, and opens an instance's part with Edit part. A click there no longer reports a face reference error, and driven and fixed joints are marked.
+- A joint change in Assembly sends only where each instance sits, and the page moves the parts it already has. A refresh where nothing changed sends no mesh. Moving a part meshes only that part again. On a 38-part finger rig, a slider release went from 4.2 s and 45 MB to 0.13 s and 21 KB, and a move from 10.8 s to 2.2 s.
 - A running Strength solve shows its time, and a failed one says why. Every failed page action shows in the notice bar. Each app command and its result is logged to the console.
 - Clicking a report picture opens it at full size over the app, with zoom, drag, and close.
 - Report pictures named with a full path load. The page buttons stay on screen when the Plan page opens.
