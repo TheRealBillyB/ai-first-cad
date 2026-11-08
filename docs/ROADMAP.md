@@ -130,9 +130,9 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 - **Inspect.** Area, center of mass, and mass are on Inspect. Mass is the volume times a handbook density.
 - **STL import.** A closed STL file can be imported as a part. The mesh has no editable features.
 
-Left for 1.0, and not in the tree:
+Nothing is left for 1.0. The last item was checked by hand:
 
-- **Windows sandbox setup survives a reboot.** A manual check in Windows Sandbox: run `aicad sandbox-setup`, restart, and confirm the filters and rules are still in place and a script's network is still refused. A CI runner cannot restart inside its job.
+- **Windows sandbox setup survives a reboot.** Checked on a Windows 10 PC with a non-admin account, since a CI runner cannot restart inside its job and Windows Sandbox is wiped when it closes. After `aicad sandbox-setup` and a restart, the filters and rules were still in place and a script's network was still refused.
 
 v1.0 does not add another feature track. CAM and the manufacturing checks stay in the section after this one.
 
