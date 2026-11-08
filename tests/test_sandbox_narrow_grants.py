@@ -129,6 +129,53 @@ def test_setup_removes_a_container_grant_from_a_broad_folder(tmp_path, monkeypat
     assert sid not in subprocess.run(["icacls", str(temp)], capture_output=True, text=True).stdout
 
 
+@pytest.mark.parametrize(
+    ("entry", "shares"),
+    [
+        ("(S,X,RA)", False),
+        ("(OI)(CI)(RX)", True),
+        ("(RX)", True),
+        ("(OI)(CI)(IO)(S,X,RA)", True),
+        ("(R)", True),
+        ("(DENY)(W)", False),
+    ],
+)
+def test_only_entries_that_open_the_folder_count_as_sharing_it(entry, shares):
+    from aicad import sandbox_setup_windows as setup
+
+    assert setup.entry_shares_folder(entry) is shares
+
+
+def _entries(folder: Path, sid: str) -> list[str]:
+    out = subprocess.run(["icacls", str(folder)], capture_output=True, text=True).stdout
+    return [line.split(f"{sid}:", 1)[1].strip() for line in out.splitlines() if f"{sid}:" in line]
+
+
+@windows_only
+def test_setup_keeps_the_traverse_entry_a_project_inside_needs(tmp_path, monkeypatch):
+    """The cleanup used to take the traverse entry too. A running aicad remembers writing
+    it, so the next script could not reach its project in Temp."""
+    from aicad import sandbox_setup_windows as setup
+
+    sid = setup._container_sid(setup.PROFILE_NAME)
+    shared = tmp_path / "Temp"
+    passed_through = tmp_path / "Users"
+    for folder in (shared, passed_through):
+        folder.mkdir()
+        subprocess.run(["icacls", str(folder), "/grant", f"*{sid}:(S,X,RA)", "/Q"], check=True, capture_output=True)
+    subprocess.run(["icacls", str(shared), "/grant", f"*{sid}:(OI)(CI)RX", "/Q"], check=True, capture_output=True)
+    monkeypatch.setattr(
+        setup,
+        "broad_folders",
+        lambda: [("your Temp folder", shared.resolve()), ("your user folder", passed_through.resolve())],
+    )
+    lines: list[str] = []
+    setup.remove_broad_container_grants(lines.append)
+    assert lines == [f"Removed {setup.PROFILE_NAME}'s access to your Temp folder. A script container must not share that whole folder."]
+    assert _entries(shared, sid) == ["(S,X,RA)"]
+    assert _entries(passed_through, sid) == ["(S,X,RA)"]
+
+
 def test_the_network_container_name_matches():
     from aicad import sandbox_setup_windows, sandbox_windows
 
