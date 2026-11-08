@@ -947,13 +947,28 @@ def _broken(entry, problem: str) -> PluginOffer:
     )
 
 
-def _core_metadata_dirs() -> frozenset[Path]:
+def _core_metadata_dirs(package_dir: Path | None = None, sites: list[Path] | None = None) -> frozenset[Path]:
     """Metadata directories that belong to this copy of aicad.
 
-    They sit next to this file. A distribution is recognized by that
-    location, not by its package name.
+    A distribution is recognized by its location, never by its package name:
+
+    - a regular install puts them next to this package;
+    - an editable install (``pip install -e``) writes a ``*.dist-info`` into
+      this interpreter's site-packages whose ``direct_url.json`` marks it
+      editable and names this package's project folder.
+
+    A copied or look-alike ``aicad-*.dist-info`` anywhere else, or one that
+    names another source tree, is not core.
     """
-    package_dir = Path(__file__).resolve().parent
+    package_dir = (package_dir or Path(__file__).parent).resolve()
+    if sites is None:
+        sites = _site_package_dirs()
+    found = set(_metadata_next_to(package_dir))
+    found.update(_editable_metadata_for(package_dir, tuple(path.resolve() for path in sites)))
+    return frozenset(found)
+
+
+def _metadata_next_to(package_dir: Path) -> list[Path]:
     parent = package_dir.parent
     version = getattr(sys.modules.get("aicad"), "__version__", None)
     names = ["aicad.egg-info", "aicad.dist-info"]
@@ -965,7 +980,61 @@ def _core_metadata_dirs() -> frozenset[Path]:
         candidate = parent / name
         if candidate.is_dir():
             found.append(candidate.resolve())
-    return frozenset(found)
+    return found
+
+
+def _site_package_dirs() -> list[Path]:
+    """This interpreter's own site-packages folders."""
+    import site
+
+    found = [Path(path) for path in site.getsitepackages()]
+    if site.ENABLE_USER_SITE:
+        found.append(Path(site.getusersitepackages()))
+    return [path for path in found if path.is_dir()]
+
+
+def _editable_metadata_for(package_dir: Path, sites: tuple[Path, ...]) -> list[Path]:
+    """Editable-install metadata in ``sites`` made from the project that holds ``package_dir``.
+
+    pip records the source tree in ``direct_url.json``. It must be the project
+    folder of this package: the folder above it, or above ``src`` in a src layout.
+    """
+    import json
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    projects = {package_dir.parent}
+    if package_dir.parent.name == "src":
+        projects.add(package_dir.parent.parent)
+    found: list[Path] = []
+    for site in sites:
+        try:
+            candidates = sorted(site.glob("*.dist-info"))
+        except OSError:
+            continue
+        for info in candidates:
+            try:
+                record = json.loads((info / "direct_url.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            dir_info = record.get("dir_info")
+            if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+                continue
+            url = record.get("url")
+            if not isinstance(url, str):
+                continue
+            parsed = urlparse(url)
+            if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+                continue
+            try:
+                source = Path(url2pathname(parsed.path)).resolve()
+            except (OSError, ValueError):
+                continue
+            if source in projects and info.is_dir():
+                found.append(info.resolve())
+    return found
 
 
 def _is_core_distribution(dist) -> bool:

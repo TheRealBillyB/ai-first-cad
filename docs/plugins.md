@@ -11,7 +11,7 @@ This is a door, not a framework. Version 1 has one call, `register(host)`, and t
 - Installing a plugin does not run it. aicad can list it first.
 - aicad reads `aicad.plugin.json` as text. It does not import the plugin to learn the publisher or the permissions.
 - The warning is written by aicad. The plugin does not get a hook to replace it.
-- A package named aicad is not, by that name, part of this install. It needs the same allow as any other package. A plugin ships with aicad only when its metadata directory is the one next to this copy of aicad.
+- A package named aicad is not, by that name, part of this install. It needs the same allow as any other package. A plugin ships with aicad only when its metadata directory is this copy's: the one next to this copy of aicad, or, for an editable install (`pip install -e`), the one in this Python's site-packages that pip recorded as made from this copy's project folder.
 - An entry-point file that cannot be read skips that one package and lists a warning. Other plugins are still listed. Nothing from the skipped package is imported.
 
 ## The example
