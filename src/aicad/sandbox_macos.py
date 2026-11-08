@@ -91,6 +91,14 @@ def build_profile(read_paths: Sequence[str], write_paths: Sequence[str], *, netw
     if roots:
         joined = " ".join(f"(subpath {_escape(path)})" for path in roots)
         lines.append(f"(allow file-read* file-map-executable file-ioctl {joined})")
+    from aicad.sandbox import broad_folder_problem
+
+    for path in [*read_paths, *write_paths]:
+        problem = broad_folder_problem(Path(path))
+        if problem is not None:
+            from aicad.errors import ScriptError
+
+            raise ScriptError(problem)
     for path in read_paths:
         lines.append(
             "(allow file-read* file-map-executable file-ioctl "
