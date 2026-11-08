@@ -1,10 +1,10 @@
 # Changelog
 
-Version 1.0.0 is the 1.0 release of the 0.9.0 preview's feature set. The 1.0.0 notes list what changed since the preview. The 0.9.0 notes describe what the tree does. A root `CHANGELOG.md` is not on the software-docs allowlist, so this file is the record.
+Version 0.9.0 is a public preview for feedback before 1.0. These notes describe the current tree, including its stability and safety fixes. A root `CHANGELOG.md` is not on the software-docs allowlist, so this file is the record.
 
-## 1.0.0
+## 0.9.0 — public preview
 
-1.0 is a stability and safety release. It adds no feature track. Joint-sized reducers and a stored catalog mounting orientation were named for 1.0 and moved to after it.
+Model and Assembly now share one workspace and one 3D view, but the assembly flow is new and still rough. Version 1.0 will add editing a part in place inside an assembly and polish that flow, shaped by [preview feedback](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml). Joint-sized reducers and a stored catalog mounting orientation remain planned for after 1.0.
 
 ### Windows sandbox
 
@@ -41,9 +41,8 @@ Version 1.0.0 is the 1.0 release of the 0.9.0 preview's feature set. The 1.0.0 n
 
 ### Known limits
 
+- Parts cannot yet be edited in place inside an assembly; Edit part opens the part in Model. The assembly flow is being polished for 1.0.
 - On Windows, design scripts and solves need a signed-in desktop. Task Scheduler, a Windows service, and an SSH session are not supported. See the README's Limitations.
-
-## 0.9.0
 
 ### Modeling and sketching
 

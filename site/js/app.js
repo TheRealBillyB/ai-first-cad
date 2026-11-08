@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   var items = window.ROADMAP_ITEMS || [];
-  var LABEL = { done: "Done · 1.0", wip: "Finishing for 1.0", next: "Next · CAM", future: "Idea · not built yet" };
+  var LABEL = { done: "In the 0.9.0 preview", wip: "Before 1.0", next: "Next · CAM", future: "Idea · not built yet" };
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   var filter = "all", topic = "all", query = "", current = -1, lastFocus = null;

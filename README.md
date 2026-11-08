@@ -10,7 +10,9 @@ A CAD tool built so an assistant can use it as well as a person can.
 
 Today an assistant writing CAD code (OpenSCAD, CadQuery, build123d) works blind. It emits a script and hopes the solid is the one you described. aicad is the missing perception loop: after each modeling step the assistant can look at the part and check it. The focus is hard-body mechanical parts, the kind you print or bolt onto a robot.
 
-Version 1.0.0 is the 1.0 release. It does not invent a geometry kernel. [build123d](https://github.com/gumyr/build123d) (OpenCascade) sits behind one module, `aicad.kernel`, so it can be swapped later. A person and an assistant share one command layer: the workspace app, the in-app chat, the CLI, the Python API, and the MCP server all call the same operations on the same document.
+Version 0.9.0 is a public preview. It does not invent a geometry kernel. [build123d](https://github.com/gumyr/build123d) (OpenCascade) sits behind one module, `aicad.kernel`, so it can be swapped later. A person and an assistant share one command layer: the workspace app, the in-app chat, the CLI, the Python API, and the MCP server all call the same operations on the same document.
+
+**Preview: feedback wanted.** Model and Assembly now share one workspace and one 3D view, but the assembly flow is new and still rough. The work toward 1.0 will polish that flow and add editing a part in place inside an assembly. [Tell us what you tried to build and what was confusing](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml). Do not include API keys, personal information, or private design files.
 
 New to CAD, or new to this repo? Read [START_HERE.md](START_HERE.md). It is a plain-language tour: install on Windows or Mac, open the app, connect an assistant, and walk the examples. What this release contains is listed in [docs/reference/changelog.md](docs/reference/changelog.md).
 
