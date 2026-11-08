@@ -11,7 +11,7 @@ Where the software work stands. Statuses describe this repository. They are not 
 | **Planned** | The direction after those tracks |
 | **Later** | Far enough out that the shape can still change |
 
-What is already in the tree is listed under Done. The Next release section names the items named for 1.0 that are already in the tree, then what is still left before the 1.0 release. The tracks after that release are the ones that are not in the tree yet.
+What is already in the tree is listed under Done. The Next release section describes the 0.9.0 public preview and what is still left before 1.0. The tracks after that release are the ones that are not in the tree yet.
 
 ## Done
 
@@ -114,7 +114,7 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 
 ## Next release
 
-**1.0.0** is the version in this tree. It is the release of the 0.9 preview's feature set. These items were named for v1 and are already in the tree:
+**0.9.0** is the version in this tree, a public preview for feedback. Version 1.0 follows the preview. [Feedback](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml) will help shape that work, especially the assembly flow. These items were named for v1 and are already in the tree:
 
 - **Arc tool.** Three-point arcs, center-start-end arcs, and a tangent arc that continues a line, with the same snapping, constraints, and dimensions as lines and circles.
 - **Sketch planes.** A sketch on a planar face of a solid, or on an offset or angled datum, including the XY, YZ, and XZ planes. The sketch stays attached when the model rebuilds.
@@ -129,10 +129,11 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 - **Open an example.** The worked motor-mount example can be opened as its own project folder.
 - **Inspect.** Area, center of mass, and mass are on Inspect. Mass is the volume times a handbook density.
 - **STL import.** A closed STL file can be imported as a part. The mesh has no editable features.
+- **Windows sandbox setup survives a reboot.** Checked by hand on a Windows 10 PC with a non-admin account. After `aicad sandbox-setup` and a restart, `aicad sandbox-setup --status` still reported all 8 filters and both rules in place. CI runners cannot restart inside their job, and Windows Sandbox is wiped on close.
 
 Left for 1.0, and not in the tree:
 
-- **Windows sandbox setup survives a reboot.** A manual check in Windows Sandbox: run `aicad sandbox-setup`, restart, and confirm the filters and rules are still in place and a script's network is still refused. A CI runner cannot restart inside its job.
+- **One workspace for parts and assemblies.** Modeling and assembly are separate today, and assembly is hard to follow. Version 1.0 merges them into one workspace and redesigns the assembly flow, shaped by preview feedback.
 
 v1.0 does not add another feature track. CAM and the manufacturing checks stay in the section after this one.
 

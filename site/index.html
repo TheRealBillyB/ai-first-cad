@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>aicad roadmap (draft)</title>
-<meta name="description" content="What is in aicad 1.0, what comes next (CAM), and ideas for later. Free, open source, local CAD that an AI can operate as well as a person.">
+<title>aicad 0.9.0 public preview · roadmap</title>
+<meta name="description" content="Try the aicad 0.9.0 public preview and share feedback to shape 1.0. CAM and other ideas follow. Free, open source, local CAD that an AI can operate as well as a person.">
 <meta name="theme-color" content="#0a1224">
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -12,8 +12,8 @@
 <a class="skip" href="#roadmap">Skip to the roadmap</a>
 <header class="top">
   <a class="brand" href="#top" aria-label="aicad roadmap, top"><span class="brand-mark" aria-hidden="true"></span>aicad <span class="accent">roadmap</span></a>
-  <span class="draft">Draft</span>
-  <nav class="top-nav"><a href="#done">1.0</a><a href="#next">CAM</a><a href="#future">Ideas</a><a href="https://github.com/TheRealBillyB/ai-first-cad" rel="noopener">GitHub</a></nav>
+  <span class="draft">0.9.0 preview</span>
+  <nav class="top-nav"><a href="#done">0.9.0</a><a href="#next">CAM</a><a href="#future">Ideas</a><a href="https://github.com/TheRealBillyB/ai-first-cad" rel="noopener">GitHub</a></nav>
 </header>
 
 <main id="top">
@@ -21,10 +21,11 @@
     <div class="hero-text">
       <p class="eyebrow">ai-first-cad · roadmap</p>
       <h1>CAD an AI can operate as well as a person.</h1>
-      <p class="lede">Free, open source, runs on your own computer, no usage limits. Here is what is in 1.0, what comes next, and the ideas we would like to build after that.</p>
+      <p class="lede">Free, open source, runs on your own computer, no usage limits. Version 0.9.0 is a public preview, not the finished 1.0. Try it and tell us what was confusing so the next version is easier to use.</p>
+      <p><strong>Feedback wanted.</strong> Model and assembly are separate workspaces today. For 1.0, we plan one workspace and a clearer assembly flow, shaped by what you try to build. <a href="https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml">Share preview feedback</a>. Please leave out personal information, API keys, and private design files.</p>
       <ul class="legend" aria-label="Legend">
         <li><span class="dot dot-done"></span>Done in the repository</li>
-        <li><span class="dot dot-wip"></span>Finishing for 1.0</li>
+        <li><span class="dot dot-wip"></span>Before 1.0</li>
         <li><span class="dot dot-next"></span>Next: CAM</li>
         <li><span class="dot dot-future"></span>Idea, not built yet</li>
       </ul>
@@ -32,7 +33,7 @@
     <figure class="hero-fig">
       <picture>
         <source media="(max-width: 640px)" srcset="images/roadmap-overview-9x16.svg">
-        <img src="images/roadmap-overview-16x9.svg" alt="Roadmap overview: 1.0 done, CAM next, then future ideas" width="1920" height="1080">
+        <img src="images/roadmap-overview-16x9.svg" alt="Roadmap overview: 0.9.0 public preview, feedback toward 1.0, then CAM and future ideas" width="1920" height="1080">
       </picture>
     </figure>
   </section>
@@ -41,7 +42,7 @@
     <div class="filters" role="group" aria-label="Status">
       <button type="button" class="chip is-on" data-filter="all" aria-pressed="true">All <span class="n" data-count="all"></span></button>
       <button type="button" class="chip" data-filter="done" aria-pressed="false"><span class="dot dot-done"></span>Done <span class="n" data-count="done"></span></button>
-      <button type="button" class="chip" data-filter="wip" aria-pressed="false"><span class="dot dot-wip"></span>Finishing <span class="n" data-count="wip"></span></button>
+      <button type="button" class="chip" data-filter="wip" aria-pressed="false"><span class="dot dot-wip"></span>Before 1.0 <span class="n" data-count="wip"></span></button>
       <button type="button" class="chip" data-filter="next" aria-pressed="false"><span class="dot dot-next"></span>Next <span class="n" data-count="next"></span></button>
       <button type="button" class="chip" data-filter="future" aria-pressed="false"><span class="dot dot-future"></span>Ideas <span class="n" data-count="future"></span></button>
     </div>
@@ -52,9 +53,9 @@
     <section class="stage" id="done" data-stage="done">
       <div class="stage-head">
         <span class="node node-done" aria-hidden="true"></span>
-        <p class="stage-kicker">1.0</p>
-        <h2>What's in 1.0</h2>
-        <p class="stage-sub">Only things the roadmap in the repository lists as done. Two items are still being finished for 1.0.</p>
+        <p class="stage-kicker">0.9.0 preview</p>
+        <h2>What's in the 0.9.0 preview</h2>
+        <p class="stage-sub">These capabilities are in the repository today. The modeling and assembly interface still needs work before 1.0; a unified workspace is planned, not built yet.</p>
       </div>
       <div class="grid" data-group="done wip"></div>
     </section>
@@ -99,7 +100,7 @@
 <footer class="foot">
   <p><strong>aicad</strong> (ai-first-cad) is free and open source under AGPL-3.0-or-later. It runs locally on Windows, macOS and Linux.</p>
   <p><a href="https://github.com/TheRealBillyB/ai-first-cad" rel="noopener">github.com/TheRealBillyB/ai-first-cad</a></p>
-  <p class="fine">Draft roadmap. Future items are ideas, not promises or dates.</p>
+  <p class="fine">Public preview. Future items are ideas, not promises or dates.</p>
 </footer>
 
 <div class="scrim" hidden></div>

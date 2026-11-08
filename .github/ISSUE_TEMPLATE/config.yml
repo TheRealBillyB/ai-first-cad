@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/TheRealBillyB/ai-first-cad/security/policy
+    about: Follow the private reporting steps in SECURITY.md; do not post vulnerabilities in public issues.

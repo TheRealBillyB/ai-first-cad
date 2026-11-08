@@ -1,0 +1,51 @@
+name: Preview feedback
+description: Tell us what you tried to build and what was confusing in the 0.9 preview.
+title: "[Preview feedback]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying the 0.9.0 public preview. Feedback will help shape 1.0, especially a single workspace for modeling and assemblies.
+        This issue will be public. Remove API keys, personal information, file paths, and private design details from text, screenshots, and attachments.
+        For security vulnerabilities, follow SECURITY.md instead of posting here.
+  - type: textarea
+    id: design
+    attributes:
+      label: What were you trying to build?
+      description: Describe the part or mechanism and what you wanted to do.
+    validations:
+      required: true
+  - type: textarea
+    id: confusing
+    attributes:
+      label: What was confusing or got in the way?
+      description: Where did you get stuck? For assemblies, include how you moved between modeling and assembly, placed parts, or added joints.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+      description: Describe the flow or result that would have made more sense.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: Windows 10, Windows 11, macOS version, or Linux distribution and version
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: aicad version
+      description: The version shown in the app header or by aicad --version.
+      placeholder: 0.9.0
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Steps or screenshots (optional)
+      description: Add steps to repeat the problem or a screenshot with private details removed.
