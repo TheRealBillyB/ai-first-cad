@@ -5713,6 +5713,17 @@ def _remove_job_when_watch_leaves(disk: _DiskWatch, job: Path) -> None:
     shutil.rmtree(job, ignore_errors=True)
 
 
+def _refuse_when_unsupported() -> None:
+    """Refuse a run this computer cannot confine before anything else happens.
+
+    _spawn checks again. A refused run should not wait behind another run, or
+    grant anything, first.
+    """
+    ok, reason = sandbox_supported()
+    if not ok:
+        raise ScriptError(reason)
+
+
 def _spawn(
     workspace: Path,
     kind: str,
@@ -6164,8 +6175,35 @@ def _payload_from_result(
     if not isinstance(payload, dict):
         shutil.rmtree(job, ignore_errors=True)
         raise ScriptError("The script's result was not a report.")
+    notes = _container_notes(stderr)
+    if notes:
+        payload["notes"] = notes
     payload["_job"] = str(job)
     return payload
+
+
+_shown_container_notes: set[str] = set()
+
+
+def _container_notes(stderr: str) -> list[str]:
+    """The script container's note on other app containers, shown once in this console.
+
+    container_folders writes it when a project inherits access for another app
+    container, such as Claude Desktop's, so it is visible and not silent.
+    """
+    from aicad.container_folders import CONTAINER_NOTE, package_name
+
+    notes = []
+    for line in (stderr or "").splitlines():
+        if not line.startswith(CONTAINER_NOTE):
+            continue
+        sids = [sid.strip() for sid in line[len(CONTAINER_NOTE):].split(",") if sid.strip()]
+        notes.append(f"{CONTAINER_NOTE} " + ", ".join(f"{sid} ({package_name(sid)})" for sid in sids))
+    for note in notes:
+        if note not in _shown_container_notes:
+            _shown_container_notes.add(note)
+            print(note, file=sys.stderr, flush=True)
+    return notes
 
 
 def _drop_job(payload: dict) -> None:
@@ -6186,6 +6224,7 @@ def run_part_script(
     is a private directory. The limit cannot be raised past the cap.
     """
     _check_script(code)
+    _refuse_when_unsupported()
     temporary = None
     if workspace is None:
         temporary = tempfile.TemporaryDirectory(prefix="aicad-script-")
@@ -6220,6 +6259,7 @@ def run_design_script(workspace: str | Path, code: str, network: bool = False) -
         status = design_script_status(root)
         raise ScriptError(f"{status['warning']} It is off for this project. Turn it on with: {status['enable']}")
     try:
+        _refuse_when_unsupported()
         payload = _spawn(root, "design", code, network=network)
     except ScriptError as exc:
         _append_log(root, code, False, str(exc))

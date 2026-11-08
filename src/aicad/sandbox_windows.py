@@ -1533,6 +1533,30 @@ def _directory_allows_modify(path: Path, sid: str) -> bool:
         _kernel32().CloseHandle(handle)
 
 
+def withdraw_network_grant(workspace: Path) -> bool:
+    """Take aicad's network container off a project and everything in it. True when it was there.
+
+    A network-on run grants that container the project, with a copy on every
+    file and folder, and the grant stays. An offline run's private folders
+    would then inherit it, and the offline container refuses a folder the
+    network container can open. Our own entry is removed instead.
+    """
+    from aicad.container_folders import container_sid
+
+    sid = container_sid(_NETWORK_PROFILE_NAME)
+    if not sid or not workspace.is_dir():
+        return False
+    listed = subprocess.run(["icacls", str(workspace)], capture_output=True, text=True, check=False)
+    if sid not in (listed.stdout or ""):
+        return False
+    command = ["icacls", str(workspace), "/remove:g", f"*{sid}", "/T", "/C", "/Q"]
+    completed = _run_icacls(command, workspace, recurse=True)
+    if completed.returncode != 0:
+        detail = (completed.stdout or "") + (completed.stderr or "")
+        raise OSError(f"Could not take the network script container off {workspace}. {detail.strip()}")
+    return True
+
+
 def grant_workspace(path: Path, sid: str, package_sid: str | None = None) -> None:
     if not package_sid:
         package_sid = _ALL_APPLICATION_PACKAGES
@@ -2277,6 +2301,9 @@ def spawn(
         # process does not. Adding a deny entry here stopped later scripts
         # from finishing in CI. See SECURITY.md.
         package = _package_sid(mode == "lpac")
+        if not network:
+            # Covers a project that a network run granted before this was fixed.
+            withdraw_network_grant(workspace)
         grant_workspace(workspace, sid_text, package)
         grant_read_paths(read_paths, sid_text, package)
         job = _create_job(cpu_seconds, memory_bytes)
@@ -2365,6 +2392,12 @@ def spawn(
         finally:
             if sid is not None:
                 _release_profile_use(profile)
+            if network and process is not None:
+                # The network container keeps no grant on the project after its run.
+                try:
+                    withdraw_network_grant(workspace)
+                except OSError as exc:
+                    print(f"aicad: {exc}", file=sys.stderr)
 
 
 def _probe_source() -> str:
