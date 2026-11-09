@@ -447,6 +447,12 @@ class Workspace:
                 def build() -> bytes:
                     return _encoded_answer(self.scene_mesh())
 
+            elif kind == "scene_parts":
+                signature = self._scene_signature()
+
+                def build() -> bytes:
+                    return _encoded_answer(self._scene_index())
+
             elif kind == "pieces":
                 _spec, shapes = self.document._assembly_view(name)  # noqa: SLF001
                 signature = tuple(item for pair in shapes.items() for item in pair)
@@ -464,7 +470,7 @@ class Workspace:
                     return _encoded_answer({"assembly": name, "instances": placed_instances(spec)})
 
             else:
-                raise GeometryError(f"Unknown mesh kind {kind!r}. Kinds: part, scene, pieces, pose.")
+                raise GeometryError(f"Unknown mesh kind {kind!r}. Kinds: part, scene, scene_parts, pieces, pose.")
             kept = self._answers.get((kind, name))
             if kept is not None and _same_signature(kept[0], signature):
                 return kept[1], kept[2]
@@ -489,6 +495,23 @@ class Workspace:
                 self._pieces[part] = kept
             encoded.append(_compact(part) + b":" + kept[1])
         return b'{"ok":true,"result":{"assembly":' + _compact(name) + b',"pieces":{' + b",".join(encoded) + b"}}}"
+
+    def _scene_index(self) -> dict:
+        """The model view as a list: each built part's name, color, and the tag of its own mesh.
+
+        The page fetches a part's mesh only when its tag is not the one it holds,
+        so a move sends the moved part and nothing else.
+        """
+        from aicad.studio import part_color
+
+        parts = []
+        unbuilt = []
+        for name, part in self.document._parts.items():  # noqa: SLF001 — names and solids only
+            if part._shape is None:  # noqa: SLF001
+                unbuilt.append(name)
+                continue
+            parts.append({"name": name, "tag": self.mesh_answer("part", name)[0], "color": part_color(len(parts))})
+        return {"scene": True, "parts": parts, "unbuilt": unbuilt}
 
     def _scene_signature(self) -> tuple:
         """Each part's name and solid, in order. The scene is the same while these are."""
@@ -577,7 +600,10 @@ class Workspace:
             restore_plan_files(self.root, snapshot["plans"])
         if "plan_ledger" in snapshot:
             restore_ledger_snapshot(self.root, snapshot["plan_ledger"])
-        self._forget_meshes()
+        # A part the restore kept holds the same solid, so its mesh is still right.
+        # A part it built again holds a new solid, and its mesh is made again when asked.
+        self._mesh_cache.clear()
+        self._drop_meshes_of_removed_names()
         self._requirement_cache.clear()
         self.panels.clear()
 
