@@ -305,7 +305,7 @@ async function meshAnswer(url) {
   const held = meshAnswers.get(url);
   const headers = held ? { "If-None-Match": held.tag } : {};
   const response = await apiFetch(url, { headers, cache: "no-store" });
-  if (response.status === 304 && held) return { ok: true, result: held.result };
+  if (response.status === 304 && held) return { ok: true, result: held.result, tag: held.tag };
   const body = await response.json();
   if (!body.ok) return { ok: false, error: body.error };
   const tag = response.headers.get("ETag");
@@ -317,7 +317,7 @@ async function meshAnswer(url) {
     }
   }
   if (tag) meshAnswers.set(url, { tag, result: body.result });
-  return { ok: true, result: body.result };
+  return { ok: true, result: body.result, tag };
 }
 
 function partMeshUrl(name) {
@@ -329,7 +329,7 @@ function partMeshUrl(name) {
 async function partMesh(entry) {
   const url = partMeshUrl(entry.name);
   const held = meshAnswers.get(url);
-  if (held && held.tag === `"${entry.tag}"`) return { ok: true, result: held.result };
+  if (held && held.tag === `"${entry.tag}"`) return { ok: true, result: held.result, tag: held.tag };
   const answer = await meshAnswer(url);
   if (answer.ok && !(answer.result.positions instanceof Float32Array)) {
     // Kept as typed arrays: half the memory of the parsed numbers, and the scene copies them in one step.
@@ -338,6 +338,33 @@ async function partMesh(entry) {
     answer.result.triangle_face = Int32Array.from(answer.result.triangle_face);
   }
   return answer;
+}
+
+// The scene list and each part it names, read as one snapshot. The model can change
+// between reading the list and reading a part, and the part then answers with a tag the
+// list does not name. The list is read again until every part's tag is the one it names.
+const SCENE_READS = 4;
+
+async function sceneParts() {
+  let index;
+  let parts;
+  let before = null;
+  for (let read = 0; read < SCENE_READS; read += 1) {
+    index = await meshAnswer("/api/mesh?scene=parts");
+    if (!index.ok) return { ok: false, error: index.error };
+    if (ui.mesh && ui.mesh._index === index.result) return { ok: true, index, held: true };
+    // The list names each part's mesh by its tag. Only a part whose tag changed is fetched.
+    parts = await Promise.all(index.result.parts.map((entry) => partMesh(entry)));
+    const failed = parts.find((part) => !part.ok);
+    const matched = !failed && index.result.parts.every((entry, which) => parts[which].tag === `"${entry.tag}"`);
+    if (matched) return { ok: true, index, parts, matched: true };
+    // A part that fails may be one a newer model no longer has. Under an unchanged list it is a real failure.
+    if (failed && (index.result === before || read === SCENE_READS - 1)) return { ok: false, error: failed.error };
+    before = index.result;
+  }
+  // Still changing after every read. The newest parts are shown, but the scene is not
+  // kept under this list, so the next refresh reads them again.
+  return { ok: true, index, parts, matched: false };
 }
 
 function forgetPartMeshesExcept(entries) {
@@ -515,25 +542,19 @@ async function loadMesh(options = {}) {
     const same = ui.mesh && ui.mesh._pieces === pieces.result && ui.mesh._pose === pose.result;
     next = same ? ui.mesh : assembledMesh(pieces.result, pose.result);
   } else {
-    const index = await meshAnswer("/api/mesh?scene=parts");
-    if (!index.ok) {
+    const read = await sceneParts();
+    if (!read.ok) {
       ui.mesh = null;
-      showEmpty(index.error);
+      showEmpty(read.error);
       return;
     }
-    if (ui.mesh && ui.mesh._index === index.result) {
+    if (read.held) {
       next = ui.mesh;
     } else {
-      // The list names each part's mesh by its tag. Only a part whose tag changed is fetched.
-      const parts = await Promise.all(index.result.parts.map((entry) => partMesh(entry)));
-      const failed = parts.find((part) => !part.ok);
-      if (failed) {
-        ui.mesh = null;
-        showEmpty(failed.error);
-        return;
-      }
+      const { index, parts } = read;
       forgetPartMeshesExcept(index.result.parts);
       next = sceneMesh(index.result, parts.map((part) => part.result));
+      if (!read.matched) next._index = null;
     }
   }
   const partKey = (next.parts || [next.part || ""]).join(",");

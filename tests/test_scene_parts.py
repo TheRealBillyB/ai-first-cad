@@ -157,9 +157,12 @@ const listing = () => ({
 });
 const asked = [];
 const parsed = [];
+// Runs once, as the next part request reaches the server: a change made between the two reads.
+let beforePart = null;
 apiFetch = async (url, options) => {
   const held = (options && options.headers && options.headers["If-None-Match"]) || null;
   const name = url.includes("part=") ? url.split("part=")[1] : null;
+  if (name && beforePart) { const change = beforePart; beforePart = null; change(); }
   const answer = name ? meshes[name] : listing();
   const tag = '"' + answer.tag + '"';
   asked.push([url, held]);
@@ -199,6 +202,17 @@ async function probe() {
   out.movedAsked = asked.splice(0);
   out.movedParsed = parsed.splice(0);
   out.moved = look();
+  // b moves to 30. The page reads the list, and before it asks for b, b moves again, to 40.
+  meshes.b = { tag: "b3", body: triangle(30, "b") };
+  beforePart = () => { meshes.b = { tag: "b4", body: triangle(40, "b") }; };
+  await loadMesh();
+  out.racedAsked = asked.splice(0);
+  out.raced = look();
+  // Undo puts b back at 30 before the next refresh. The list is the one the page first read.
+  meshes.b = { tag: "b3", body: triangle(30, "b") };
+  await loadMesh();
+  out.undoneAsked = asked.splice(0);
+  out.undone = look();
   return out;
 }
 probe().then((value) => { report = value; done(); }, (error) => { report = { error: String(error && error.stack || error) }; done(); });
@@ -252,3 +266,19 @@ def test_after_a_move_the_page_reads_only_the_moved_part(page):
     assert page["movedAsked"] == [["/api/mesh?scene=parts", '"list-a1b1"'], ["/api/mesh?part=b", '"b1"']]
     assert page["movedParsed"] == ["/api/mesh?scene=parts", "/api/mesh?part=b"]
     assert page["moved"]["positions"][9:12] == [20, 0, 0]
+
+
+def test_a_part_newer_than_the_list_is_not_kept_under_it(page):
+    # b answered with a tag the list did not name, so the page read the list again.
+    assert page["racedAsked"] == [
+        ["/api/mesh?scene=parts", '"list-a1b2"'],
+        ["/api/mesh?part=b", '"b2"'],
+        ["/api/mesh?scene=parts", '"list-a1b3"'],
+    ]
+    assert page["raced"]["positions"][9:12] == [40, 0, 0]
+
+
+def test_undo_after_a_move_between_the_reads_shows_the_undone_part(page):
+    assert page["undone"]["positions"][9:12] == [30, 0, 0]
+    # The scene at 40 was kept under the list that names b at 40, not the list that names b at 30.
+    assert page["undoneAsked"] == [["/api/mesh?scene=parts", '"list-a1b4"'], ["/api/mesh?part=b", '"b4"']]
