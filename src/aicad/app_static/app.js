@@ -320,6 +320,95 @@ async function meshAnswer(url) {
   return { ok: true, result: body.result };
 }
 
+function partMeshUrl(name) {
+  return "/api/mesh?part=" + encodeURIComponent(name);
+}
+
+// One part's mesh for the model view. The scene list gives its tag, so a part
+// already held under that tag is not asked for at all.
+async function partMesh(entry) {
+  const url = partMeshUrl(entry.name);
+  const held = meshAnswers.get(url);
+  if (held && held.tag === `"${entry.tag}"`) return { ok: true, result: held.result };
+  const answer = await meshAnswer(url);
+  if (answer.ok && !(answer.result.positions instanceof Float32Array)) {
+    // Kept as typed arrays: half the memory of the parsed numbers, and the scene copies them in one step.
+    answer.result.positions = Float32Array.from(answer.result.positions);
+    answer.result.normals = Float32Array.from(answer.result.normals);
+    answer.result.triangle_face = Int32Array.from(answer.result.triangle_face);
+  }
+  return answer;
+}
+
+function forgetPartMeshesExcept(entries) {
+  const keep = new Set(entries.map((entry) => partMeshUrl(entry.name)));
+  for (const key of meshAnswers.keys()) {
+    if (key.startsWith("/api/mesh?part=") && !keep.has(key)) meshAnswers.delete(key);
+  }
+}
+
+// Every part's own mesh, in the list's order and colors, as the one mesh the viewer draws.
+function sceneMesh(index, meshes) {
+  let values = 0;
+  let triangles = 0;
+  meshes.forEach((mesh) => {
+    values += mesh.positions.length;
+    triangles += mesh.triangle_face.length;
+  });
+  const positions = new Float32Array(values);
+  const normals = new Float32Array(values);
+  const colors = new Float32Array(values);
+  const triangleFace = new Int32Array(triangles);
+  const trianglePart = new Array(triangles);
+  const faces = [];
+  const edges = [];
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  let at = 0;
+  let triangle = 0;
+  meshes.forEach((mesh, which) => {
+    const entry = index.parts[which];
+    const name = entry.name;
+    const faceBase = faces.length;
+    positions.set(mesh.positions, at);
+    normals.set(mesh.normals, at);
+    for (let i = 0; i < mesh.positions.length; i += 3) {
+      colors[at + i] = entry.color[0];
+      colors[at + i + 1] = entry.color[1];
+      colors[at + i + 2] = entry.color[2];
+      for (let axis = 0; axis < 3; axis += 1) {
+        const value = mesh.positions[i + axis];
+        if (value < min[axis]) min[axis] = value;
+        if (value > max[axis]) max[axis] = value;
+      }
+    }
+    mesh.faces.forEach((face) => faces.push({ ...face, part: name }));
+    for (let i = 0; i < mesh.triangle_face.length; i += 1) {
+      triangleFace[triangle + i] = faceBase + mesh.triangle_face[i];
+      trianglePart[triangle + i] = name;
+    }
+    mesh.edges.forEach((edge) => edges.push({ ...edge, part: name }));
+    at += mesh.positions.length;
+    triangle += mesh.triangle_face.length;
+  });
+  return {
+    part: null,
+    scene: true,
+    units: "mm",
+    parts: index.parts.map((entry) => entry.name),
+    positions,
+    normals,
+    colors,
+    triangle_face: triangleFace,
+    triangle_part: trianglePart,
+    faces,
+    edges,
+    bounding_box: values ? { min, max } : { min: [0, 0, 0], max: [0, 0, 0] },
+    unbuilt: index.unbuilt || [],
+    _index: index,
+  };
+}
+
 // Each part's piece moved by each instance's matrix, as the one mesh the viewer draws.
 function assembledMesh(pieces, pose) {
   const instances = pose.instances || [];
@@ -426,13 +515,26 @@ async function loadMesh(options = {}) {
     const same = ui.mesh && ui.mesh._pieces === pieces.result && ui.mesh._pose === pose.result;
     next = same ? ui.mesh : assembledMesh(pieces.result, pose.result);
   } else {
-    const scene = await meshAnswer("/api/mesh?scene=1");
-    if (!scene.ok) {
+    const index = await meshAnswer("/api/mesh?scene=parts");
+    if (!index.ok) {
       ui.mesh = null;
-      showEmpty(scene.error);
+      showEmpty(index.error);
       return;
     }
-    next = scene.result;
+    if (ui.mesh && ui.mesh._index === index.result) {
+      next = ui.mesh;
+    } else {
+      // The list names each part's mesh by its tag. Only a part whose tag changed is fetched.
+      const parts = await Promise.all(index.result.parts.map((entry) => partMesh(entry)));
+      const failed = parts.find((part) => !part.ok);
+      if (failed) {
+        ui.mesh = null;
+        showEmpty(failed.error);
+        return;
+      }
+      forgetPartMeshesExcept(index.result.parts);
+      next = sceneMesh(index.result, parts.map((part) => part.result));
+    }
   }
   const partKey = (next.parts || [next.part || ""]).join(",");
   const firstLook = !ui.mesh || ui.mesh._key !== partKey;
