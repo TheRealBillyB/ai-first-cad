@@ -81,6 +81,11 @@ _PART_COLORS = (
 )
 
 
+def part_color(index: int) -> list[int]:
+    """The model view's color for the built part at ``index``, the same in the scene and its list."""
+    return list(_PART_COLORS[index % len(_PART_COLORS)])
+
+
 def recent_path() -> Path:
     override = os.environ.get("AICAD_RECENT")
     if override:
@@ -578,7 +583,7 @@ def build_scene(workspace) -> dict:
         return scene
     for index, info in enumerate(drawable):
         mesh = workspace.mesh(info.name)
-        color = _PART_COLORS[index % len(_PART_COLORS)]
+        color = part_color(index)
         face_base = len(faces)
         names.append(info.name)
         positions.extend(mesh["positions"])
