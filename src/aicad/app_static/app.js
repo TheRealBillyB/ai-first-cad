@@ -297,6 +297,108 @@ async function openWorkedExample() {
   await refresh({ fit: "scene", solid: true });
 }
 
+// What each mesh URL last answered, with its tag. A refresh sends the tag, and a 304
+// means the mesh did not change: nothing is sent again or parsed again.
+const meshAnswers = new Map();
+
+async function meshAnswer(url) {
+  const held = meshAnswers.get(url);
+  const headers = held ? { "If-None-Match": held.tag } : {};
+  const response = await apiFetch(url, { headers, cache: "no-store" });
+  if (response.status === 304 && held) return { ok: true, result: held.result };
+  const body = await response.json();
+  if (!body.ok) return { ok: false, error: body.error };
+  const tag = response.headers.get("ETag");
+  // One assembly at a time: another assembly's pieces would only hold memory.
+  const kind = url.split("?")[1].split("=")[0];
+  if (kind === "assembly" || kind === "pose") {
+    for (const key of meshAnswers.keys()) {
+      if (key !== url && key.startsWith("/api/mesh?" + kind + "=")) meshAnswers.delete(key);
+    }
+  }
+  if (tag) meshAnswers.set(url, { tag, result: body.result });
+  return { ok: true, result: body.result };
+}
+
+// Each part's piece moved by each instance's matrix, as the one mesh the viewer draws.
+function assembledMesh(pieces, pose) {
+  const instances = pose.instances || [];
+  let triangles = 0;
+  instances.forEach((instance) => {
+    const piece = pieces.pieces[instance.part];
+    if (piece) triangles += piece.triangles.length / 3;
+  });
+  const positions = new Float32Array(triangles * 9);
+  const normals = new Float32Array(triangles * 9);
+  const colors = new Float32Array(triangles * 9);
+  const triangleFace = new Int32Array(triangles);
+  const faces = [];
+  const edges = [];
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  let at = 0;
+  instances.forEach((instance, index) => {
+    const piece = pieces.pieces[instance.part];
+    if (!piece) return;
+    const m = instance.matrix;
+    const ref = `instance/${instance.name}`;
+    faces.push({ index, kind: "instance", ref, center_mm: instance.origin_mm });
+    const v = piece.vertices;
+    const n = piece.normals;
+    const count = v.length / 3;
+    const world = new Float32Array(v.length);
+    const turned = new Float32Array(n.length);
+    for (let i = 0; i < count; i += 1) {
+      const x = v[i * 3], y = v[i * 3 + 1], z = v[i * 3 + 2];
+      const nx = n[i * 3], ny = n[i * 3 + 1], nz = n[i * 3 + 2];
+      for (let row = 0; row < 3; row += 1) {
+        const r = m[row];
+        world[i * 3 + row] = r[0] * x + r[1] * y + r[2] * z + r[3];
+        turned[i * 3 + row] = r[0] * nx + r[1] * ny + r[2] * nz;
+      }
+    }
+    const [red, green, blue] = instance.color;
+    const corners = piece.triangles;
+    for (let k = 0; k < corners.length; k += 1) {
+      const from = corners[k] * 3;
+      const to = (at * 3 + k) * 3;
+      for (let axis = 0; axis < 3; axis += 1) {
+        const value = world[from + axis];
+        positions[to + axis] = value;
+        normals[to + axis] = turned[from + axis];
+        if (value < min[axis]) min[axis] = value;
+        if (value > max[axis]) max[axis] = value;
+      }
+      colors[to] = red; colors[to + 1] = green; colors[to + 2] = blue;
+    }
+    triangleFace.fill(index, at, at + corners.length / 3);
+    at += corners.length / 3;
+    piece.edges.forEach((line) => {
+      const points = [];
+      for (let i = 0; i < line.length; i += 3) {
+        const x = line[i], y = line[i + 1], z = line[i + 2];
+        points.push(m.slice(0, 3).map((r) => r[0] * x + r[1] * y + r[2] * z + r[3]));
+      }
+      edges.push({ index: edges.length, kind: "curve", ref, points });
+    });
+  });
+  return {
+    part: pose.assembly,
+    assembly: pose.assembly,
+    units: "mm",
+    positions,
+    normals,
+    colors,
+    triangle_face: triangleFace,
+    faces,
+    edges,
+    bounding_box: triangles ? { min, max } : { min: [0, 0, 0], max: [0, 0, 0] },
+    instances: instances.map((instance) => ({ name: instance.name, origin_mm: instance.origin_mm })),
+    _pieces: pieces,
+    _pose: pose,
+  };
+}
+
 async function loadMesh(options = {}) {
   if (ui.page === "assembly" && !ui.viewAssembly) {
     ui.mesh = null;
@@ -310,19 +412,31 @@ async function loadMesh(options = {}) {
     drawSolid();
     return;
   }
-  const query = ui.viewAssembly
-    ? "assembly=" + encodeURIComponent(ui.viewAssembly)
-    : "scene=1";
-  const response = await apiFetch("/api/mesh?" + query);
-  const body = await response.json();
-  if (!body.ok) {
-    ui.mesh = null;
-    showEmpty(body.error);
-    return;
+  let next;
+  if (ui.viewAssembly) {
+    const name = encodeURIComponent(ui.viewAssembly);
+    const pieces = await meshAnswer("/api/mesh?assembly=" + name);
+    const pose = pieces.ok ? await meshAnswer("/api/mesh?pose=" + name) : pieces;
+    if (!pose.ok) {
+      ui.mesh = null;
+      showEmpty(pose.error);
+      return;
+    }
+    // A joint change sends a new pose and no triangles. The pieces stay as they were read.
+    const same = ui.mesh && ui.mesh._pieces === pieces.result && ui.mesh._pose === pose.result;
+    next = same ? ui.mesh : assembledMesh(pieces.result, pose.result);
+  } else {
+    const scene = await meshAnswer("/api/mesh?scene=1");
+    if (!scene.ok) {
+      ui.mesh = null;
+      showEmpty(scene.error);
+      return;
+    }
+    next = scene.result;
   }
-  const partKey = (body.result.parts || [body.result.part || ""]).join(",");
+  const partKey = (next.parts || [next.part || ""]).join(",");
   const firstLook = !ui.mesh || ui.mesh._key !== partKey;
-  ui.mesh = body.result;
+  ui.mesh = next;
   ui.mesh._key = partKey;
   const hasTriangles = ui.mesh.positions && ui.mesh.positions.length;
   if (hasTriangles) $("empty").hidden = true;

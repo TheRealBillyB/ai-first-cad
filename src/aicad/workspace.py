@@ -9,6 +9,7 @@ Listeners hear the same event whether a person or an assistant ran the command.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import sys
@@ -36,6 +37,22 @@ _PERSON_SOURCES = frozenset({"ui", "cli", "api"})
 _FOLDER_COMMANDS = frozenset({"open_project", "save_project_as", "open_example"})
 
 
+def _same_signature(kept: tuple, now: tuple) -> bool:
+    """Names and counts compare by value. A solid compares by identity: a changed one is a new object."""
+    return len(kept) == len(now) and all(
+        old is new or (isinstance(old, (str, int)) and isinstance(new, (str, int)) and old == new)
+        for old, new in zip(kept, now)
+    )
+
+
+def _compact(value: Any) -> bytes:
+    return json.dumps(value, separators=(",", ":")).encode("utf-8")
+
+
+def _encoded_answer(result: dict) -> bytes:
+    return b'{"ok":true,"result":' + _compact(result) + b"}"
+
+
 @dataclass(frozen=True)
 class Command:
     name: str
@@ -61,7 +78,16 @@ class Workspace:
         self._redo: list[dict] = []
         self.selection: dict[str, Any] = {"part": None, "faces": [], "edges": []}
         self.panels: dict[str, dict] = {}
+        # A mesh is kept with the solid it was made from. A command that leaves a
+        # part's solid alone, such as a joint change, leaves that part's mesh alone,
+        # and a moved part is the only one meshed again. _mesh_cache holds what a
+        # pose changes, so every change clears it.
         self._mesh_cache: dict[tuple, dict] = {}
+        self._part_meshes: dict[str, tuple[kernel.Shape, dict]] = {}
+        self._scene: tuple[tuple, dict] | None = None
+        self._pieces: dict[str, tuple[kernel.Shape, bytes]] = {}
+        # Each /api/mesh answer, encoded once, with the tag the page sends back.
+        self._answers: dict[tuple[str, str], tuple[tuple, str, bytes]] = {}
         self._requirement_cache: dict[str, dict] = {}
         self._requirements: list[dict] = []
         self.requirements_sheet: dict | None = None
@@ -146,6 +172,7 @@ class Workspace:
             if changed:
                 self.geometry_revision += 1
                 self._mesh_cache.clear()
+                self._drop_meshes_of_removed_names()
                 self._requirement_cache.clear()
                 for panel in (
                     "inspect",
@@ -365,7 +392,7 @@ class Workspace:
             self._redo.clear()
             self.selection = {"part": None, "faces": [], "edges": []}
             self.panels.clear()
-            self._mesh_cache.clear()
+            self._forget_meshes()
             self._requirement_cache.clear()
             self._sketch_cache = []
             self._sketch_cache_revision = -1
@@ -376,27 +403,113 @@ class Workspace:
         return {"workspace": workspace, "parts": parts, "problems": list(self.document.problems)}
 
     def mesh(self, name: str) -> dict:
+        """One part's viewport mesh. It is made again only when that part's solid is replaced."""
         with self._lock:
-            key = (name, self.geometry_revision)
-            cached = self._mesh_cache.get(key)
-            if cached is None:
-                shape = self.document._get(name).shape  # noqa: SLF001 — the mesh is a view of the live solid
-                cached = kernel.viewport_mesh(shape)
-                cached["part"] = name
-                self._mesh_cache[key] = cached
-            return cached
+            shape = self.document._get(name).shape  # noqa: SLF001 — the mesh is a view of the live solid
+            kept = self._part_meshes.get(name)
+            if kept is None or kept[0] is not shape:
+                mesh = kernel.viewport_mesh(shape)
+                mesh["part"] = name
+                kept = (shape, mesh)
+                self._part_meshes[name] = kept
+            return kept[1]
 
     def scene_mesh(self) -> dict:
         """Every part in one mesh, for the model view."""
         with self._lock:
-            key = ("scene", self.geometry_revision)
-            cached = self._mesh_cache.get(key)
-            if cached is None:
+            signature = self._scene_signature()
+            if self._scene is None or not _same_signature(self._scene[0], signature):
                 from aicad.studio import build_scene
 
-                cached = build_scene(self)
-                self._mesh_cache[key] = cached
-            return cached
+                self._scene = (signature, build_scene(self))
+            return self._scene[1]
+
+    def mesh_answer(self, kind: str, name: str = "") -> tuple[str, bytes]:
+        """The encoded ``/api/mesh`` answer and its tag. The tag changes only when the bytes do.
+
+        ``kind`` is ``part``, ``scene``, ``pieces`` (each part of an assembly
+        in its own frame), or ``pose`` (where each instance sits). A joint
+        change leaves the pieces as they were, so the page fetches only the pose.
+        """
+        with self._lock:
+            if kind == "part":
+                signature: tuple = (self.document._get(name).shape,)  # noqa: SLF001
+
+                def build() -> bytes:
+                    return _encoded_answer(self.mesh(name))
+
+            elif kind == "scene":
+                signature = self._scene_signature()
+
+                def build() -> bytes:
+                    return _encoded_answer(self.scene_mesh())
+
+            elif kind == "pieces":
+                _spec, shapes = self.document._assembly_view(name)  # noqa: SLF001
+                signature = tuple(item for pair in shapes.items() for item in pair)
+
+                def build() -> bytes:
+                    return self._encoded_pieces(name, shapes)
+
+            elif kind == "pose":
+                signature = (self.geometry_revision,)
+
+                def build() -> bytes:
+                    from aicad.assembly import placed_instances
+
+                    spec, _shapes = self.document._assembly_view(name)  # noqa: SLF001
+                    return _encoded_answer({"assembly": name, "instances": placed_instances(spec)})
+
+            else:
+                raise GeometryError(f"Unknown mesh kind {kind!r}. Kinds: part, scene, pieces, pose.")
+            kept = self._answers.get((kind, name))
+            if kept is not None and _same_signature(kept[0], signature):
+                return kept[1], kept[2]
+            body = build()
+            tag = hashlib.blake2b(body, digest_size=12).hexdigest()
+            self._answers[(kind, name)] = (signature, tag, body)
+            return tag, body
+
+    def mesh_body(self, kind: str, name: str = "", known: str | None = None) -> dict:
+        """``mesh_answer`` for the app process, which already holds the answer tagged ``known``."""
+        tag, body = self.mesh_answer(kind, name)
+        return {"tag": tag} if tag == known else {"tag": tag, "body": body}
+
+    def _encoded_pieces(self, name: str, shapes: dict[str, kernel.Shape]) -> bytes:
+        from aicad.assembly import stored_piece
+
+        encoded = []
+        for part, shape in shapes.items():
+            kept = self._pieces.get(part)
+            if kept is None or kept[0] is not shape:
+                kept = (shape, _compact(stored_piece(shape)))
+                self._pieces[part] = kept
+            encoded.append(_compact(part) + b":" + kept[1])
+        return b'{"ok":true,"result":{"assembly":' + _compact(name) + b',"pieces":{' + b",".join(encoded) + b"}}}"
+
+    def _scene_signature(self) -> tuple:
+        """Each part's name and solid, in order. The scene is the same while these are."""
+        return tuple(item for name, part in self.document._parts.items() for item in (name, part._shape))  # noqa: SLF001
+
+    def _forget_meshes(self) -> None:
+        self._mesh_cache.clear()
+        self._part_meshes.clear()
+        self._scene = None
+        self._pieces.clear()
+        self._answers.clear()
+
+    def _drop_meshes_of_removed_names(self) -> None:
+        """A deleted part or assembly should not keep its solid and its encoded mesh alive."""
+        parts = set(self.document.part_names())
+        assemblies = set(self.document._assemblies)  # noqa: SLF001 — names only
+        for name in [name for name in self._part_meshes if name not in parts]:
+            del self._part_meshes[name]
+        for name in [name for name in self._pieces if name not in parts]:
+            del self._pieces[name]
+        for key in list(self._answers):
+            kind, name = key
+            if (kind == "part" and name not in parts) or (kind in ("pieces", "pose") and name not in assemblies):
+                del self._answers[key]
 
     def assembly_mesh(self, name: str) -> dict:
         with self._lock:
@@ -461,7 +574,7 @@ class Workspace:
             restore_plan_files(self.root, snapshot["plans"])
         if "plan_ledger" in snapshot:
             restore_ledger_snapshot(self.root, snapshot["plan_ledger"])
-        self._mesh_cache.clear()
+        self._forget_meshes()
         self._requirement_cache.clear()
         self.panels.clear()
 

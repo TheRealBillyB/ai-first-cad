@@ -534,16 +534,7 @@ def _handler(session: Workspace):
                 elif path == "/api/commands":
                     self._json({"ok": True, "result": self.workspace.commands()})
                 elif path == "/api/mesh":
-                    query = parse_qs(parsed.query)
-                    scene = query.get("scene", [""])[0]
-                    assembly_name = query.get("assembly", [""])[0]
-                    if scene in ("1", "true"):
-                        self._json({"ok": True, "result": self.workspace.scene_mesh()})
-                    elif assembly_name:
-                        self._json({"ok": True, "result": self.workspace.assembly_mesh(assembly_name)})
-                    else:
-                        name = query.get("part", [""])[0]
-                        self._json({"ok": True, "result": self.workspace.mesh(name)})
+                    self._mesh(parse_qs(parsed.query))
                 elif path == "/api/settings":
                     self._json({"ok": True, "result": public_settings()})
                 elif path == "/api/file":
@@ -859,6 +850,40 @@ def _handler(session: Workspace):
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", cache)
+            self._security_headers()
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _mesh(self, query: dict) -> None:
+            """A mesh for the viewer, encoded once and tagged.
+
+            ``scene=1`` is every part. ``assembly=NAME`` is each part of that
+            assembly in its own frame, and ``pose=NAME`` is where each instance
+            sits, so a joint change sends only the pose. A page that sends the
+            tag it holds in ``If-None-Match`` gets 304 and no body when nothing changed.
+            """
+            if query.get("scene", [""])[0] in ("1", "true"):
+                kind, name = "scene", ""
+            elif query.get("assembly", [""])[0]:
+                kind, name = "pieces", query["assembly"][0]
+            elif query.get("pose", [""])[0]:
+                kind, name = "pose", query["pose"][0]
+            else:
+                kind, name = "part", query.get("part", [""])[0]
+            tag, data = self.workspace.mesh_answer(kind, name)
+            quoted = f'"{tag}"'
+            held = [item.strip() for item in (self.headers.get("If-None-Match") or "").split(",")]
+            unchanged = quoted in held
+            self.send_response(304 if unchanged else 200)
+            self.send_header("ETag", quoted)
+            # The page keeps what it read and asks again with the tag. It is not stored.
+            self.send_header("Cache-Control", "no-store")
+            if unchanged:
+                self._security_headers()
+                self.end_headers()
+                return
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
             self._security_headers()
             self.end_headers()
             self.wfile.write(data)

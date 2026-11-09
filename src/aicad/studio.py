@@ -263,7 +263,7 @@ def switch_project(workspace, path: Path) -> None:
     workspace._redo.clear()
     workspace.selection = {"part": None, "faces": [], "edges": []}
     workspace.panels.clear()
-    workspace._mesh_cache.clear()
+    workspace._forget_meshes()
     workspace._requirement_cache.clear()
     workspace._sketch_cache = []
     workspace._sketch_cache_revision = -1

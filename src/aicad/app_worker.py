@@ -18,7 +18,8 @@ opens the saved project. Undo history and the selection were in the old one.
 ``state`` says the project is opening. Any other request is refused with a
 message that says so, and nothing is changed.
 
-The pipe carries JSON, and it opens only with a key sent over the worker's
+The pipe carries JSON. An encoded mesh follows its reply as a frame of its own,
+so it is not decoded and encoded again. The pipe opens only with a key sent over the worker's
 stdin. The worker stops when that stdin closes, so it cannot outlive the app.
 """
 
@@ -104,6 +105,7 @@ class GeometryWorker:
         self._mesh_lock = threading.Lock()
         self._listeners: list[Callable[[dict], None]] = []
         self._meshes: dict[tuple, tuple[int, dict]] = {}
+        self._answers: dict[tuple[str, str], tuple[int, str, bytes]] = {}
         self._running: tuple[str, float] | None = None
         self._process: subprocess.Popen | None = None
         self._connection: Connection | None = None
@@ -178,6 +180,35 @@ class GeometryWorker:
     def assembly_mesh(self, name: str) -> dict:
         return self._mesh("assembly_mesh", name)
 
+    def mesh_answer(self, kind: str, name: str = "") -> tuple[str, bytes]:
+        """The encoded ``/api/mesh`` answer and its tag, as ``Workspace.mesh_answer``.
+
+        The bytes are the worker's own, so they are not decoded and encoded again.
+        For a revision already read, nothing is asked. Otherwise the worker hears
+        the tag this process holds, and sends the bytes only when they changed.
+        """
+        self._require_open()
+        key = (kind, name)
+        with self._mesh_lock:
+            kept = self._answers.get(key)
+        if kept is not None and kept[0] == self.geometry_revision:
+            return kept[1], kept[2]
+        with self._request_lock:
+            result = self._exchange("the view", "mesh_body", (kind, name, kept[1] if kept else None))
+            # From this reply. Once the lock is released, a command can move the revision on.
+            revision = self.geometry_revision
+        tag = result["tag"]
+        body = result.get("body")
+        if body is None:
+            # The worker answered that this process already holds these bytes.
+            body = kept[2]
+        with self._mesh_lock:
+            self._answers.pop(key, None)
+            while len(self._answers) >= _KEPT_MESHES:
+                self._answers.pop(next(iter(self._answers)))
+            self._answers[key] = (revision, tag, body)
+        return tag, body
+
     def script_status(self) -> dict:
         return self._call("script_status", "script_status")
 
@@ -236,6 +267,9 @@ class GeometryWorker:
                     if "event" not in message:
                         break
                     self._dispatch(message["event"])
+                if message.get("attached"):
+                    # Encoded bytes follow their reply on the pipe, as they are.
+                    message["result"]["body"] = self._connection.recv_bytes()
             except (EOFError, OSError) as exc:
                 raise self._worker_lost(label) from exc
         finally:
@@ -417,6 +451,7 @@ def _serve(start: dict) -> None:
         "mesh": workspace.mesh,
         "scene_mesh": workspace.scene_mesh,
         "assembly_mesh": workspace.assembly_mesh,
+        "mesh_body": workspace.mesh_body,
         "allow_script_network_once": workspace.allow_script_network_once,
         "resume": resume,
     }
@@ -425,13 +460,23 @@ def _serve(start: dict) -> None:
             request = json.loads(connection.recv_bytes().decode("utf-8"))
         except (EOFError, OSError):
             return
+        attachment = None
         try:
             result = methods[request["method"]](*request["args"])
-            data = _encoded(workspace, {"ok": True, "result": result})
+            if isinstance(result, dict) and isinstance(result.get("body"), bytes):
+                # An encoded mesh goes as its own frame, so it is not escaped into a JSON string.
+                result = dict(result)
+                attachment = result.pop("body")
+            data = _encoded(workspace, {"ok": True, "result": result, "attached": attachment is not None})
         except Exception as exc:  # The app decides what a failure means.
+            attachment = None
             data = _encoded(workspace, {"ok": False, "error": _error_payload(exc)})
         try:
-            _send(connection, send_lock, data)
+            with send_lock:
+                # An event cannot come between a reply and its bytes.
+                connection.send_bytes(data)
+                if attachment is not None:
+                    connection.send_bytes(attachment)
         except OSError:
             return
 

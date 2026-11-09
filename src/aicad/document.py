@@ -2607,6 +2607,15 @@ class Document:
             spec = self._get_assembly(name)
             return assembly.preview_mesh(spec, self._assembly_shapes(spec))
 
+    def _assembly_view(self, name: str) -> tuple[dict, dict[str, kernel.Shape]]:
+        """The stored assembly and each part's unplaced solid, for the app's assembly view.
+
+        Nothing is copied, meshed, or placed. The caller only reads them.
+        """
+        with self._lock:
+            spec = self._get_assembly(name)
+            return spec, self._assembly_shapes(spec)
+
     def _commit_assembly(self, spec: dict) -> dict:
         cleaned = normalize_assembly(self._with_resolved_mates(spec))
         self._require_assembly_parts(cleaned)
