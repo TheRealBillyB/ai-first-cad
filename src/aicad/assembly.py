@@ -666,6 +666,39 @@ def preview_mesh(spec: dict, shapes: dict[str, kernel.Shape], overrides: dict | 
     }
 
 
+def placed_instances(spec: dict) -> list[dict]:
+    """Where each instance sits, and its color. Nothing is meshed or moved.
+
+    The app's assembly view keeps one piece per part and moves it by these
+    matrices, so a joint change sends this list and not the triangles.
+    """
+    solved = solve(spec)
+    return [
+        {
+            "name": instance["name"],
+            "part": instance["part"],
+            "matrix": instance["matrix"],
+            "origin_mm": instance["origin_mm"],
+            "color": [round(float(channel), 1) for channel in _instance_color(instance, index)],
+        }
+        for index, instance in enumerate(solved["instances"])
+    ]
+
+
+def stored_piece(shape: kernel.Shape) -> dict:
+    """One part's triangles in its own frame, for every instance of it and every pose.
+
+    Corners are indexed, so each vertex and normal is sent once.
+    """
+    mesh = _stored_mesh(shape)
+    return {
+        "vertices": np.round(mesh.vertices, 4).ravel().tolist(),
+        "normals": np.round(mesh.normals, 4).ravel().tolist(),
+        "triangles": np.asarray(mesh.triangles, dtype=np.int64).ravel().tolist(),
+        "edges": [np.round(edge, 4).ravel().tolist() for edge in mesh.edges],
+    }
+
+
 def motion_by_name(spec: dict, name: str | None, inline: dict | None = None) -> dict | None:
     if inline:
         motion = copy.deepcopy(inline)
