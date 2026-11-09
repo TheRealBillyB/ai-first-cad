@@ -13,6 +13,7 @@ import ctypes
 import io
 import math
 import os
+import re
 import sys
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass
@@ -2062,6 +2063,10 @@ _STEP_EXTERNAL_MARKERS = (
 MAX_STEP_BYTES = 64 * 1024 * 1024
 # A STEP list nested further than this is not given to the reader.
 _MAX_STEP_LIST_DEPTH = 32
+# The STEP scans jump from one of these to the next instead of reading every character.
+_STEP_DEPTH_TOKEN = re.compile(r"/\*|['()]")
+_STEP_CODE_TOKEN = re.compile(r"/\*|'")
+_STEP_SPACE = re.compile(r"[ \t\r\n]*")
 _MAX_TRIANGLES = 1_000_000
 _MAX_FACES = 100_000
 _MIN_ANGULAR = 0.05
@@ -2156,36 +2161,31 @@ def _accepted_step_bytes(path: Path, data: bytes) -> bytes:
     text = data.decode("latin-1")
     depth = 0
     index = 0
-    length = len(text)
-    while index < length:
-        if text.startswith("/*", index):
-            end = text.find("*/", index + 2)
+    search = _STEP_DEPTH_TOKEN.search
+    while True:
+        found = search(text, index)
+        if found is None:
+            return data
+        token = found.group()
+        start = found.start()
+        if token == "/*":
+            end = text.find("*/", start + 2)
             if end < 0:
                 raise GeometryError(f"Could not read STEP file {path}.")
             index = end + 2
-            continue
-        char = text[index]
-        if char == "'":
-            index += 1
-            while index < length:
-                if text[index] == "'":
-                    if index + 1 < length and text[index + 1] == "'":
-                        index += 2
-                        continue
-                    index += 1
-                    break
-                index += 1
-            else:
+        elif token == "'":
+            index = _step_literal_end(text, start)
+            if index < 0:
                 raise GeometryError(f"Could not read STEP file {path}.")
-            continue
-        if char == "(":
+        elif token == "(":
             depth += 1
             if depth > _MAX_STEP_LIST_DEPTH:
                 raise GeometryError(f"Could not read STEP file {path}.")
-        elif char == ")" and depth:
-            depth -= 1
-        index += 1
-    return data
+            index = start + 1
+        else:
+            if depth:
+                depth -= 1
+            index = start + 1
 
 
 def _read_step_bytes(path: Path, data: bytes):
@@ -2240,57 +2240,64 @@ def _step_code_and_strings(text: str) -> tuple[str, list[str]]:
     values: list[str] = []
     index = 0
     length = len(text)
-    while index < length:
-        if text.startswith("/*", index):
-            end = text.find("*/", index + 2)
+    search = _STEP_CODE_TOKEN.search
+    while True:
+        found = search(text, index)
+        if found is None:
+            code.append(text[index:])
+            return "".join(code), values
+        start = found.start()
+        code.append(text[index:start])
+        if found.group() == "/*":
+            end = text.find("*/", start + 2)
             if end < 0:
                 raise ValueError("unclosed comment")
             code.append(" ")
             index = end + 2
             continue
-        if text[index] == "'":
-            raw, index = _read_step_literal(text, index)
-            pieces = [raw]
-            while True:
-                cursor = index
-                while cursor < length and text[cursor] in " \t\r\n":
-                    cursor += 1
-                while cursor < length and text.startswith("/*", cursor):
-                    end = text.find("*/", cursor + 2)
-                    if end < 0:
-                        raise ValueError("unclosed comment")
-                    cursor = end + 2
-                    while cursor < length and text[cursor] in " \t\r\n":
-                        cursor += 1
-                if cursor < length and text[cursor] == "'":
-                    nxt, index = _read_step_literal(text, cursor)
-                    pieces.append(nxt)
-                    continue
-                index = cursor
-                break
-            values.append(_decode_step_string("".join(pieces)))
-            code.append("''")
+        raw, index = _read_step_literal(text, start)
+        pieces = [raw]
+        while True:
+            # Literals with only whitespace and comments between them are one string.
+            cursor = _STEP_SPACE.match(text, index).end()
+            while text.startswith("/*", cursor):
+                end = text.find("*/", cursor + 2)
+                if end < 0:
+                    raise ValueError("unclosed comment")
+                cursor = _STEP_SPACE.match(text, end + 2).end()
+            if cursor < length and text[cursor] == "'":
+                nxt, index = _read_step_literal(text, cursor)
+                pieces.append(nxt)
+                continue
+            index = cursor
+            break
+        values.append(_decode_step_string("".join(pieces)))
+        code.append("''")
+
+
+def _step_literal_end(text: str, index: int) -> int:
+    """Where the quoted literal that opens at ``index`` ends, past its closing quote. -1 when it never closes.
+
+    A doubled quote is an apostrophe inside it.
+    """
+    position = index + 1
+    while True:
+        end = text.find("'", position)
+        if end < 0:
+            return -1
+        if text.startswith("''", end):
+            position = end + 2
             continue
-        code.append(text[index])
-        index += 1
-    return "".join(code), values
+        return end + 1
 
 
 def _read_step_literal(text: str, index: int) -> tuple[str, int]:
     """Content of one quoted literal. A doubled quote is an apostrophe."""
-    index += 1
-    chars: list[str] = []
-    length = len(text)
-    while index < length:
-        if text[index] == "'":
-            if index + 1 < length and text[index + 1] == "'":
-                chars.append("'")
-                index += 2
-                continue
-            return "".join(chars), index + 1
-        chars.append(text[index])
-        index += 1
-    raise ValueError("unterminated string")
+    end = _step_literal_end(text, index)
+    if end < 0:
+        raise ValueError("unterminated string")
+    # Inside a literal every quote is one of a doubled pair, so each pair is one apostrophe.
+    return text[index + 1 : end - 1].replace("''", "'"), end
 
 
 def _step_mentions_external(text: str, code: str | None = None) -> bool:
