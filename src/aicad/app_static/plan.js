@@ -474,8 +474,16 @@
         .join(", ");
       const note = result.note || (asNotice ? "Released." : "");
       ui.notice = [note, dims, progress].filter(Boolean).join(" ");
-      return loadPlan(ui.id);
+      // The plan changed on the server. The shared state is read once now, so the sidebar
+      // summary and Model show it at once. Nothing polls while the Plan page is closed.
+      return Promise.all([refreshShared(), loadPlan(ui.id)]);
     }).catch(showError);
+  }
+
+  function refreshShared() {
+    // The workspace page reads the state and hands its plans to the summary.
+    if (typeof window.aicadRefreshState === "function") return window.aicadRefreshState();
+    return refreshSummaries();
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install);

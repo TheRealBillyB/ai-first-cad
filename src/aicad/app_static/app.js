@@ -83,6 +83,10 @@ async function refresh(options = {}) {
   return run;
 }
 
+// The Plan page sends its own commands, and a page's own events are skipped here. It asks
+// for one refresh after each, so the sidebar and Model show the plan as the server has it.
+globalThis.aicadRefreshState = () => refresh();
+
 async function applyRefresh(options = {}) {
   const response = await apiFetch("/api/state");
   const body = await response.json();
