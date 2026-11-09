@@ -87,10 +87,16 @@
       });
       root.addEventListener("click", onClick);
       window.addEventListener("resize", placeBelowHeader);
+      // The workspace page reads the state on every change and hands the plans
+      // over, so the sidebar summary needs no polling of its own. The open Plan
+      // page still asks every 2.5 seconds, for a plan file changed on disk.
+      window.aicadPlanSummaries = (plans) => {
+        if (ui.editing) return;
+        showSummaries(plans || [], false).catch(() => {});
+      };
       setInterval(() => {
         if (ui.editing) return;
-        const mounted = document.getElementById("plan-body");
-        if ((page() && !page().hidden) || mounted) refreshSummaries().catch(() => {});
+        if (page() && !page().hidden) refreshSummaries().catch(() => {});
       }, 2500);
     }
     refreshSummaries(true).catch(() => {});
@@ -139,7 +145,10 @@
     const response = await fetch("/api/state", { headers: sessionHeaders() });
     const body = await response.json();
     if (!body.ok) throw new Error(body.error || "Could not read the project.");
-    const summaries = body.result.plans || [];
+    await showSummaries(body.result.plans || [], force);
+  }
+
+  async function showSummaries(summaries, force) {
     const previous = JSON.stringify(ui.summaries);
     ui.summaries = summaries;
     const readable = summaries.filter((item) => item.status !== "unreadable");

@@ -26,6 +26,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 - Clicking a report picture opens it at full size over the app, with zoom, drag, and close.
 - Report pictures named with a full path load. The page buttons stay on screen when the Plan page opens.
 - The app warns when another app has the same project open. A page that drops its live connection no longer fills the console.
+- The plan summary beside the model uses the state the page already reads, so an idle page no longer asks for the whole project state every 2.5 seconds. Only the open Plan page still checks for plan files changed on disk.
 
 ### Install
 

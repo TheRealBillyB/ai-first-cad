@@ -89,6 +89,8 @@ async function applyRefresh(options = {}) {
   if (!body.ok) throw new Error(body.error);
   if (renderOpening(body.result.opening)) return;
   ui.state = body.result;
+  // The plan panel shows the same state's plans, so it does not poll for them.
+  if (typeof window.aicadPlanSummaries === "function") window.aicadPlanSummaries(ui.state.plans);
   if (options.solid) {
     ui.viewAssembly = null;
     if (ui.page !== "model") showPage("model");
