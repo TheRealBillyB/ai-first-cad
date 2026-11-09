@@ -857,12 +857,18 @@ def _handler(session: Workspace):
         def _mesh(self, query: dict) -> None:
             """A mesh for the viewer, encoded once and tagged.
 
-            ``scene=1`` is every part. ``assembly=NAME`` is each part of that
+            ``scene=1`` is every part in one mesh. ``scene=parts`` lists the built
+            parts with the tag of each one's ``part=NAME`` mesh. The page reads
+            that list and fetches only a part whose tag it does not hold, so a
+            move sends the moved part. ``assembly=NAME`` is each part of that
             assembly in its own frame, and ``pose=NAME`` is where each instance
             sits, so a joint change sends only the pose. A page that sends the
             tag it holds in ``If-None-Match`` gets 304 and no body when nothing changed.
             """
-            if query.get("scene", [""])[0] in ("1", "true"):
+            scene = query.get("scene", [""])[0]
+            if scene == "parts":
+                kind, name = "scene_parts", ""
+            elif scene in ("1", "true"):
                 kind, name = "scene", ""
             elif query.get("assembly", [""])[0]:
                 kind, name = "pieces", query["assembly"][0]
