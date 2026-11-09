@@ -141,6 +141,41 @@ def _windows_sandbox_lock() -> Iterator[None]:
         handle.close()
 
 
+@pytest.fixture(autouse=True)
+def _mesh_cache_in_a_test_folder(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Each test has its own empty mesh folder, not this account's real one.
+
+    A test that counts meshing then counts its own. The folder is set in the
+    environment, so an app's geometry process started by the test uses it too.
+    """
+    previous = os.environ.get("AICAD_MESH_CACHE")
+    os.environ["AICAD_MESH_CACHE"] = str(tmp_path_factory.mktemp("meshes"))
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("AICAD_MESH_CACHE", None)
+        else:
+            os.environ["AICAD_MESH_CACHE"] = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _catalog_cache_in_a_test_folder(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Built catalog solids go to a folder of this run, not to this account's real one.
+
+    It is set in the environment, so an app's geometry process started by a test uses it too.
+    """
+    previous = os.environ.get("AICAD_CATALOG_CACHE")
+    os.environ["AICAD_CATALOG_CACHE"] = str(tmp_path_factory.mktemp("catalog-cache"))
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("AICAD_CATALOG_CACHE", None)
+        else:
+            os.environ["AICAD_CATALOG_CACHE"] = previous
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _one_windows_sandbox_at_a_time() -> Iterator[None]:
     if sys.platform != "win32":

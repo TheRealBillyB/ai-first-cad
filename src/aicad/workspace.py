@@ -408,7 +408,10 @@ class Workspace:
             shape = self.document._get(name).shape  # noqa: SLF001 — the mesh is a view of the live solid
             kept = self._part_meshes.get(name)
             if kept is None or kept[0] is not shape:
-                mesh = kernel.viewport_mesh(shape)
+                from aicad import mesh_cache
+
+                # Read from this account's mesh folder when this exact solid was meshed before.
+                mesh = mesh_cache.viewport_mesh(shape)
                 mesh["part"] = name
                 kept = (shape, mesh)
                 self._part_meshes[name] = kept

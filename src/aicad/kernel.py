@@ -16,7 +16,7 @@ import os
 import re
 import sys
 from contextlib import contextmanager, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -585,13 +585,19 @@ def _copy_solid(impl):
 
 
 def measure(shape: Shape, material: str | None = None) -> Measurement:
-    """Measure a solid. ``material`` adds mass as volume times that handbook density."""
+    """Measure a solid. ``material`` adds mass as volume times that handbook density.
+
+    What a rigid move leaves alone (validity, the closed-shell check, counts,
+    volume, area) is measured once per solid and kept on it. A solid that
+    ``place`` moved takes those from the solid it was moved from, so moving a
+    part measures only its bounding box.
+    """
     impl = shape.impl
+    facts = _solid_facts(shape)
     bbox = impl.bounding_box()
     low = bbox.min
     high = bbox.max
     size = bbox.size
-    center = impl.center()
     mass_g = None
     material_id = None
     density = None
@@ -602,18 +608,19 @@ def measure(shape: Shape, material: str | None = None) -> Measurement:
         density = float(found["density_g_cm3"])
         material_id = str(found["id"])
         # mm^3 times g/cm^3 is grams after dividing by 1000.
-        mass_g = round_mm(float(impl.volume) * density / 1000.0)
+        mass_g = round_mm(facts.volume * density / 1000.0)
+    center = facts.center
     return Measurement(
         units=UNITS,
-        valid=bool(impl.is_valid),
-        watertight=_is_watertight(impl),
-        solid_count=len(impl.solids()),
-        face_count=len(impl.faces()),
-        edge_count=len(impl.edges()),
-        vertex_count=len(impl.vertices()),
-        volume_mm3=round_mm(impl.volume),
-        area_mm2=round_mm(impl.area),
-        center_of_mass_mm=_vec(center),
+        valid=facts.valid,
+        watertight=facts.watertight,
+        solid_count=facts.solid_count,
+        face_count=facts.face_count,
+        edge_count=facts.edge_count,
+        vertex_count=facts.vertex_count,
+        volume_mm3=round_mm(facts.volume),
+        area_mm2=round_mm(facts.area),
+        center_of_mass_mm=Vec3(round_mm(center[0]), round_mm(center[1]), round_mm(center[2])),
         bounding_box=BoundingBox(
             min=_vec(low),
             max=_vec(high),
@@ -623,6 +630,60 @@ def measure(shape: Shape, material: str | None = None) -> Measurement:
         material=material_id,
         density_g_cm3=density,
     )
+
+
+@dataclass(frozen=True)
+class _SolidFacts:
+    """What a rigid move does not change, and the center of mass in that solid's own frame."""
+
+    valid: bool
+    watertight: bool
+    solid_count: int
+    face_count: int
+    edge_count: int
+    vertex_count: int
+    volume: float
+    area: float
+    center: tuple[float, float, float]
+
+
+def _solid_facts(shape: Shape) -> _SolidFacts:
+    kept = getattr(shape, "_solid_facts", None)
+    if kept is not None:
+        return kept
+    source = getattr(shape, "_placed_from", None)
+    owner_facts = getattr(source[0], "_solid_facts", None) if source is not None else None
+    if owner_facts is not None:
+        facts = replace(owner_facts, center=_moved_point(source[1], owner_facts.center))
+    else:
+        facts = _measure_solid(shape.impl)
+        if source is not None:
+            # The solid it was moved from has the same facts, in its own frame.
+            source[0]._solid_facts = replace(facts, center=_moved_point(source[1].inverse(), facts.center))
+    shape._solid_facts = facts
+    return facts
+
+
+def _measure_solid(impl) -> _SolidFacts:
+    valid = bool(impl.is_valid)
+    volume = float(impl.volume)
+    center = impl.center()
+    return _SolidFacts(
+        valid=valid,
+        watertight=_is_watertight(impl, valid=valid, volume=volume),
+        solid_count=len(impl.solids()),
+        face_count=len(impl.faces()),
+        edge_count=len(impl.edges()),
+        vertex_count=len(impl.vertices()),
+        volume=volume,
+        area=float(impl.area),
+        center=(float(center.X), float(center.Y), float(center.Z)),
+    )
+
+
+def _moved_point(location, point: tuple[float, float, float]) -> tuple[float, float, float]:
+    moved = gp_Pnt(point[0], point[1], point[2]).Transformed(location.wrapped.Transformation())
+    return (float(moved.X()), float(moved.Y()), float(moved.Z()))
 
 
 def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEstimate:
@@ -2502,16 +2563,30 @@ def _tessellate_on_this_thread(shape: Shape) -> TriangleMesh:
     size = box.size
     linear = tessellation_linear(float(size.X), float(size.Y), float(size.Z), diagonal)
     linear = linear_for_surface(_surface_area(impl), linear)
-    vertices, triangles, normals, _uvs = impl.tessellate_with_uvs(
-        linear, angular_tolerance=0.18, atlas_packing=False
-    )
-    if not triangles:
+    # The triangulation build123d's tessellate_with_uvs gives, read straight into
+    # arrays. Its texture coordinates were computed per face and then discarded.
+    impl.mesh(linear, 0.18)
+    point_blocks: list[np.ndarray] = []
+    normal_blocks: list[np.ndarray] = []
+    triangle_blocks: list[np.ndarray] = []
+    offset = 0
+    for face in impl.faces():
+        read = _face_triangulation(face, exact_nodes=False, with_normals=True, reversed_order=(1, 0, 2))
+        if read is None:
+            continue
+        face_points, face_triangles, face_normals = read
+        point_blocks.append(face_points)
+        normal_blocks.append(face_normals)
+        triangle_blocks.append(face_triangles + offset)
+        offset += len(face_points)
+    triangle_count = sum(len(block) for block in triangle_blocks)
+    if not triangle_count:
         raise GeometryError("The solid produced an empty mesh and cannot be rendered.")
-    _refuse_large_mesh(len(triangles))
+    _refuse_large_mesh(triangle_count)
 
-    points = np.array([(v.X, v.Y, v.Z) for v in vertices], dtype=np.float64)
-    norms = np.array([(v.X, v.Y, v.Z) for v in normals], dtype=np.float64)
-    faces = np.array(triangles, dtype=np.int32)
+    points = np.concatenate(point_blocks).astype(np.float64)
+    norms = np.concatenate(normal_blocks).astype(np.float64)
+    faces = np.concatenate(triangle_blocks).astype(np.int32)
     deflection = max(linear, min(0.2, max(0.04, diagonal * 0.0015)))
     edges: list[np.ndarray] = []
     for edge in impl.edges():
@@ -2595,6 +2670,77 @@ def describe_edges(shape: Shape) -> list[dict]:
     return catalog
 
 
+def _mesh_face(face, tolerance: float, angular_tolerance: float) -> None:
+    """Triangulate one face unless it already has a fine enough triangulation, as build123d's ``mesh`` does."""
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRepTools import BRepTools
+
+    if not BRepTools.Triangulation_s(face.wrapped, tolerance):
+        BRepMesh_IncrementalMesh(face.wrapped, tolerance, True, angular_tolerance, True)
+
+
+def _face_triangulation(face, *, exact_nodes: bool, with_normals: bool, reversed_order: tuple[int, int, int]):
+    """One meshed face as arrays: points, zero-based triangles, and per-point normals when asked.
+
+    ``exact_nodes`` moves each node with OpenCascade's own transform, as
+    build123d's ``tessellate`` does. Otherwise the nodes are moved with numpy,
+    as its ``tessellate_with_uvs`` does. ``reversed_order`` is how each of those
+    orders a triangle's corners on a reversed face. None when the face has no triangulation.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    location = TopLoc_Location()
+    poly = BRep_Tool.Triangulation_s(face.wrapped, location)
+    if poly is None:
+        return None
+    count = poly.NbNodes()
+    transform = location.Transformation()
+    reverse = face.wrapped.Orientation() == TopAbs_REVERSED
+    rotation = None
+    if exact_nodes:
+        nodes = (poly.Node(i).Transformed(transform) for i in range(1, count + 1))
+        points = np.array([(node.X(), node.Y(), node.Z()) for node in nodes], dtype=np.float64).reshape(-1, 3)
+    else:
+        part = transform.VectorialPart()
+        shift = transform.TranslationPart()
+        rotation = np.array([[part.Value(row, column) for column in (1, 2, 3)] for row in (1, 2, 3)])
+        array = poly.MapNodeArray()
+        raw = np.array([(node.X(), node.Y(), node.Z()) for node in (array.Value(i) for i in range(1, count + 1))], dtype=np.float64)
+        points = raw.reshape(-1, 3) @ rotation.T + np.array([shift.X(), shift.Y(), shift.Z()])
+    # By index: iterating poly.Triangles() copies the array and is slower per triangle.
+    triangles = np.array([poly.Triangle(i).Get() for i in range(1, poly.NbTriangles() + 1)], dtype=np.int64).reshape(-1, 3) - 1
+    if reverse:
+        triangles = triangles[:, list(reversed_order)]
+    normals = None
+    if with_normals:
+        if not poly.HasNormals():
+            poly.ComputeNormals()
+        raw_normals = np.array(
+            [(direction.X(), direction.Y(), direction.Z()) for direction in (poly.Normal(i) for i in range(1, count + 1))],
+            dtype=np.float64,
+        ).reshape(-1, 3)
+        if rotation is None:
+            part = transform.VectorialPart()
+            rotation = np.array([[part.Value(row, column) for column in (1, 2, 3)] for row in (1, 2, 3)])
+        normals = raw_normals @ rotation.T * (-1.0 if reverse else 1.0)
+    return points, triangles, normals
+
+
+def _rounded_list(values: np.ndarray) -> list[float]:
+    """``[round(value, 4) for value in values]``, in numpy.
+
+    numpy's rounding differs from Python's only next to a half-way value, so
+    those few are rounded by Python.
+    """
+    rounded = np.round(values, 4)
+    scaled = values * 10000.0
+    near = np.abs(scaled - np.floor(scaled) - 0.5) < 1e-6
+    if near.any():
+        rounded[near] = [round(float(value), 4) for value in values[near]]
+    return rounded.tolist()
+
+
 def viewport_mesh(shape: Shape) -> dict:
     """Triangles tagged by face, plus edge polylines, for the workspace viewer.
 
@@ -2606,33 +2752,40 @@ def viewport_mesh(shape: Shape) -> dict:
     _refuse_face_count(len(face_list))
     faces = describe_faces(shape)
     edges = describe_edges(shape)
-    diagonal = float(impl.bounding_box().diagonal) or 1.0
+    bbox = impl.bounding_box()
+    diagonal = float(bbox.diagonal) or 1.0
     base = min(0.28, max(0.08, diagonal * 0.004))
-    positions: list[float] = []
-    normals: list[float] = []
-    triangle_face: list[int] = []
-    remaining = _MAX_TRIANGLES
-    tolerance = base
+    corner_blocks: list[np.ndarray] = []
+    normal_blocks: list[np.ndarray] = []
+    face_blocks: list[np.ndarray] = []
+    count = 0
     for index, face in enumerate(face_list):
-        tolerance = face_linear(_surface_area(face), base, remaining)
-        vertices, triangles = face.tessellate(tolerance)
-        if not triangles:
+        tolerance = face_linear(_surface_area(face), base, _MAX_TRIANGLES - count)
+        # The triangulation build123d's Face.tessellate gives, read straight into arrays.
+        _mesh_face(face, tolerance, 0.1)
+        read = _face_triangulation(face, exact_nodes=True, with_normals=False, reversed_order=(0, 2, 1))
+        if read is None or not len(read[1]):
             continue
-        points = [(float(vertex.X), float(vertex.Y), float(vertex.Z)) for vertex in vertices]
-        for tri in triangles:
-            corners = [points[int(tri[0])], points[int(tri[1])], points[int(tri[2])]]
-            ax, ay, az = corners[1][0] - corners[0][0], corners[1][1] - corners[0][1], corners[1][2] - corners[0][2]
-            bx, by, bz = corners[2][0] - corners[0][0], corners[2][1] - corners[0][1], corners[2][2] - corners[0][2]
-            nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
-            length = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
-            nx, ny, nz = nx / length, ny / length, nz / length
-            for corner in corners:
-                positions.extend(round(component, 4) for component in corner)
-                normals.extend((round(nx, 4), round(ny, 4), round(nz, 4)))
-            triangle_face.append(index)
-            remaining = _MAX_TRIANGLES - len(triangle_face)
-            if len(triangle_face) > _MAX_TRIANGLES:
-                _refuse_large_mesh(len(triangle_face))
+        points, triangles, _normals = read
+        corners = points[triangles]
+        a = corners[:, 1] - corners[:, 0]
+        b = corners[:, 2] - corners[:, 0]
+        # The same products, in the same order, as one triangle at a time.
+        nx = a[:, 1] * b[:, 2] - a[:, 2] * b[:, 1]
+        ny = a[:, 2] * b[:, 0] - a[:, 0] * b[:, 2]
+        nz = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+        length = np.sqrt(nx * nx + ny * ny + nz * nz)
+        length[length == 0] = 1.0
+        flat = np.stack([nx / length, ny / length, nz / length], axis=1)
+        corner_blocks.append(corners.reshape(-1))
+        normal_blocks.append(np.repeat(flat, 3, axis=0).reshape(-1))
+        face_blocks.append(np.full(len(triangles), index, dtype=np.int64))
+        count += len(triangles)
+        if count > _MAX_TRIANGLES:
+            _refuse_large_mesh(_MAX_TRIANGLES + 1)
+    positions = _rounded_list(np.concatenate(corner_blocks)) if corner_blocks else []
+    normals = _rounded_list(np.concatenate(normal_blocks)) if normal_blocks else []
+    triangle_face = np.concatenate(face_blocks).tolist() if face_blocks else []
     edge_payload = []
     for edge, record in zip(impl.edges(), edges):
         samples = edge.positions(deflection=base)
@@ -2646,7 +2799,6 @@ def viewport_mesh(shape: Shape) -> dict:
                 "points": [[round(float(point.X), 4), round(float(point.Y), 4), round(float(point.Z), 4)] for point in samples],
             }
         )
-    bbox = impl.bounding_box()
     return {
         "units": "mm",
         "positions": positions,
@@ -2811,13 +2963,13 @@ def _volume(obj) -> float:
         return 0.0
 
 
-def _is_watertight(impl) -> bool:
-    """A valid manifold solid with volume."""
+def _is_watertight(impl, *, valid: bool | None = None, volume: float | None = None) -> bool:
+    """A valid manifold solid with volume. A caller that already has validity or volume passes it."""
     try:
         return bool(
             len(impl.solids()) >= 1
-            and impl.volume > 0
-            and impl.is_valid
+            and (impl.volume if volume is None else volume) > 0
+            and (impl.is_valid if valid is None else valid)
             and _every_edge_joins_two_faces(impl)
         )
     except Exception:
@@ -3098,8 +3250,12 @@ def place(shape: Shape, position: tuple[float, float, float], rotation_deg: tupl
     rx, ry, rz = finite_vec3(rotation_deg, "rotation_deg", unit="deg")
     if all(abs(value) < 1e-12 for value in (px, py, pz, rx, ry, rz)):
         return shape
-    moved = Pos(px, py, pz) * Rot(rx, ry, rz) * shape.impl
-    return Shape(_require_solid(moved), features=shape.feature_report())
+    location = Pos(px, py, pz) * Rot(rx, ry, rz)
+    moved = location * shape.impl
+    placed = Shape(_require_solid(moved), features=shape.feature_report())
+    # A measurement of either solid gives the other what a move does not change.
+    placed._placed_from = (shape, location)
+    return placed
 
 
 def compound(shapes: list[Shape]) -> Shape:

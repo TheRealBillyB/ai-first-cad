@@ -19,13 +19,16 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 
 - The app's geometry runs in a second process, so the page keeps answering during a long rebuild or solve. Gmsh loads in that process on Windows, so the Strength solve no longer hangs.
 - The page answers at once and says the project is opening while it loads.
+- Meshing for the 3D view reads OpenCascade's triangles straight into arrays, with the same result. On a 38-part finger rig, meshing every part went from 9.1 s to 5.0 s, and the assembly pieces from 4.3 s to 1.8 s.
 - One dark theme, with a grid and origin axes in the model view.
 - Model and Assembly are one workspace with one 3D view. Assembly shows the placed, colored instances to turn and click, moves with its joint sliders, and opens an instance's part with Edit part. A click there no longer reports a face reference error, and driven and fixed joints are marked.
 - A joint change in Assembly sends only where each instance sits, and the page moves the parts it already has. A refresh where nothing changed sends no mesh. Moving a part meshes only that part again. On a 38-part finger rig, a slider release went from 4.2 s and 45 MB to 0.13 s and 21 KB, and a move from 10.8 s to 2.2 s.
 - The model view is sent part by part, so a move sends only the part that moved. Undo builds again only the parts whose saved state changed, and a part that only moved is placed again from the solid it holds. On the same rig, a move went from 2.7 s and 48 MB to 1.3 s and 2.9 MB, and undoing it from 17.6 s to 1.4 s.
 - Turning or panning the 3D view no longer rebuilds and resends the model's arrays each frame. They are made again only when the mesh, the selection, the part, live mode or a drag changes them. On the 38-part finger rig (257 thousand triangles), every frame took a median of 24 ms. Now an orbit frame takes 0.1 ms, a frame with a new face pick 1.6 ms, and a frame of a Move drag 7 ms.
+- The 3D view loads one mesh at a time. A load asked for while another runs waits for it, and loads asked together are one, so a page switch during a refresh neither reads the pose twice nor shows an older view last. Assembly no longer reads the hidden shape editor's numbers after each joint change; Model reads them once when it shows the editor again.
 - A running Strength solve shows its time, and a failed one says why. Every failed page action shows in the notice bar. Each app command and its result is logged to the console.
 - Clicking a report picture opens it at full size over the app, with zoom, drag, and close.
+- Meshes for the model and assembly views are kept in `~/.config/aicad/meshes`, or in `$AICAD_MESH_CACHE`, under a hash of the exact solid, so opening a project again reads them instead of meshing every part. The oldest go past 1 GB. On a 38-part finger rig, opening again with both views ready went from 19.2 s to 7.6 s.
 - Report pictures named with a full path load. The page buttons stay on screen when the Plan page opens.
 - The app warns when another app has the same project open. A page that drops its live connection no longer fills the console.
 - The plan summary beside the model uses the state the page already reads, so an idle page no longer asks for the whole project state every 2.5 seconds. Only the open Plan page still checks for plan files changed on disk.
@@ -40,8 +43,10 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 - The static solve takes a torque load. A CalculiX timeout reports "not solved". A folded quadratic mesh is solved straight-sided before falling back to linear. Each Gmsh mesh runs on one long-lived thread, which fixed a macOS crash.
 - The safety scans of a STEP file before it is read jump between comments, quotes, and brackets instead of reading every character, with the same result. On a 38-part finger rig they went from 1.1 s to 0.3 s, and opening the project from 5.4 s to 4.6 s.
 - New materials: grey cast iron (ASTM A48 Class 30) and TPU 95A. New catalog rows: ISO 15 miniature and flanged miniature bearings, and M1.6, M2, and M2.5 cap screws, nuts, and washers.
+- A built catalog part is kept in `~/.config/aicad/catalog`, or in `$AICAD_CATALOG_CACHE`, and read back the next time, so opening a project does not build each bearing again. A change to the catalog code or the geometry libraries builds it fresh. On a 38-part finger rig with two bearings, opening the project went from 5.5 s to 3.5 s.
 - A fixed joint can turn its child. Tendon wraps stay continuous through a study, and a tendon can be tied off on its own drum and state its line modulus. Cable collision checks skip parts out of reach.
 - A part an assembly uses cannot be deleted. A solid with a sphere pole or a cone apex counts as watertight.
+- A solid's validity is checked once per measurement, and a moved part keeps the validity, closed-shell check, volume, and area of the solid it was moved from, so only its bounding box is measured again. On a 38-part finger rig, the first state after opening went from 2.3 s to 1.4 s, and a move command from 0.50 s to 0.23 s.
 - Clearer messages for an impossible sketch dimension, a refused export path, a hidden project folder, a bolt check without `grip_mm`, and whether this computer can run a design script.
 
 ### Known limits
