@@ -521,7 +521,30 @@ function assembledMesh(pieces, pose) {
   };
 }
 
-async function loadMesh(options = {}) {
+// One mesh load runs at a time. A refresh and a page switch used to load at
+// once: both asked with the same old tag, and both read and parsed the new pose.
+// A load asked for while another runs waits for it, and later asks join it.
+let meshLoadRunning = null;
+let meshLoadWaiting = null;
+
+function loadMesh(options = {}) {
+  if (meshLoadWaiting) {
+    meshLoadWaiting.options = { ...meshLoadWaiting.options, ...options };
+    return meshLoadWaiting.promise;
+  }
+  const waiting = { options };
+  waiting.promise = (meshLoadRunning || Promise.resolve())
+    .catch(() => {})
+    .then(() => {
+      if (meshLoadWaiting === waiting) meshLoadWaiting = null;
+      return loadMeshNow(waiting.options);
+    });
+  meshLoadWaiting = waiting;
+  meshLoadRunning = waiting.promise;
+  return waiting.promise;
+}
+
+async function loadMeshNow(options = {}) {
   if (ui.page === "assembly" && !ui.viewAssembly) {
     ui.mesh = null;
     showEmpty(NO_ASSEMBLY_NOTE);
@@ -2805,6 +2828,8 @@ function showPage(page) {
     else requestAnimationFrame(() => drawSolid());
   } else if (ui.stage === "solid") requestAnimationFrame(() => drawSolid());
   else requestAnimationFrame(() => drawSketch());
+  // The shape editor was not read while Assembly hid it.
+  if (page === "model" && ui.state) renderShape().catch(showError);
 }
 
 // The parts view keeps its own selection. An instance picked in the assembly is not a face.
@@ -2874,6 +2899,8 @@ async function renderShape() {
     ui.parameterKey = "";
     return;
   }
+  // Assembly hides the shape editor. Its numbers are read when Model shows it again.
+  if (ui.page === "assembly") return;
   const key = `${ui.part}:${ui.state.revision}`;
   if (ui.parameterKey !== key) {
     ui.parameters = await command("list_parameters", { name: ui.part });
