@@ -24,6 +24,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 - A joint change in Assembly sends only where each instance sits, and the page moves the parts it already has. A refresh where nothing changed sends no mesh. Moving a part meshes only that part again. On a 38-part finger rig, a slider release went from 4.2 s and 45 MB to 0.13 s and 21 KB, and a move from 10.8 s to 2.2 s.
 - A running Strength solve shows its time, and a failed one says why. Every failed page action shows in the notice bar. Each app command and its result is logged to the console.
 - Clicking a report picture opens it at full size over the app, with zoom, drag, and close.
+- Meshes for the model and assembly views are kept in `~/.config/aicad/meshes`, or in `$AICAD_MESH_CACHE`, under a hash of the exact solid, so opening a project again reads them instead of meshing every part. The oldest go past 1 GB. On a 38-part finger rig, opening again with both views ready went from 19.2 s to 7.6 s.
 - Report pictures named with a full path load. The page buttons stay on screen when the Plan page opens.
 - The app warns when another app has the same project open. A page that drops its live connection no longer fills the console.
 

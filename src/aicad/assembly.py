@@ -830,11 +830,14 @@ def _stored_mesh(shape: kernel.Shape) -> kernel.TriangleMesh:
 
     The solid object does not change when the assembly moves. A second
     instance, or the next pose, only needs the same vertices moved by a
-    new matrix. A replaced solid is a new object, so it is meshed again.
+    new matrix. A replaced solid is a new object, so it is meshed again,
+    unless this account's mesh folder already has that exact solid's.
     """
     mesh = getattr(shape, "_tessellation", None)
     if mesh is None:
-        mesh = kernel.tessellate(shape)
+        from aicad import mesh_cache
+
+        mesh = mesh_cache.tessellate(shape)
         shape._tessellation = mesh
     return mesh
 
