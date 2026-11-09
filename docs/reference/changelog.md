@@ -38,6 +38,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 - New materials: grey cast iron (ASTM A48 Class 30) and TPU 95A. New catalog rows: ISO 15 miniature and flanged miniature bearings, and M1.6, M2, and M2.5 cap screws, nuts, and washers.
 - A fixed joint can turn its child. Tendon wraps stay continuous through a study, and a tendon can be tied off on its own drum and state its line modulus. Cable collision checks skip parts out of reach.
 - A part an assembly uses cannot be deleted. A solid with a sphere pole or a cone apex counts as watertight.
+- A solid's validity is checked once per measurement, and a moved part keeps the validity, closed-shell check, volume, and area of the solid it was moved from, so only its bounding box is measured again. On a 38-part finger rig, the first state after opening went from 2.3 s to 1.4 s, and a move command from 0.50 s to 0.23 s.
 - Clearer messages for an impossible sketch dimension, a refused export path, a hidden project folder, a bolt check without `grip_mm`, and whether this computer can run a design script.
 
 ### Known limits

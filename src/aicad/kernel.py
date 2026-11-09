@@ -15,7 +15,7 @@ import math
 import os
 import sys
 from contextlib import contextmanager, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -584,13 +584,19 @@ def _copy_solid(impl):
 
 
 def measure(shape: Shape, material: str | None = None) -> Measurement:
-    """Measure a solid. ``material`` adds mass as volume times that handbook density."""
+    """Measure a solid. ``material`` adds mass as volume times that handbook density.
+
+    What a rigid move leaves alone (validity, the closed-shell check, counts,
+    volume, area) is measured once per solid and kept on it. A solid that
+    ``place`` moved takes those from the solid it was moved from, so moving a
+    part measures only its bounding box.
+    """
     impl = shape.impl
+    facts = _solid_facts(shape)
     bbox = impl.bounding_box()
     low = bbox.min
     high = bbox.max
     size = bbox.size
-    center = impl.center()
     mass_g = None
     material_id = None
     density = None
@@ -601,18 +607,19 @@ def measure(shape: Shape, material: str | None = None) -> Measurement:
         density = float(found["density_g_cm3"])
         material_id = str(found["id"])
         # mm^3 times g/cm^3 is grams after dividing by 1000.
-        mass_g = round_mm(float(impl.volume) * density / 1000.0)
+        mass_g = round_mm(facts.volume * density / 1000.0)
+    center = facts.center
     return Measurement(
         units=UNITS,
-        valid=bool(impl.is_valid),
-        watertight=_is_watertight(impl),
-        solid_count=len(impl.solids()),
-        face_count=len(impl.faces()),
-        edge_count=len(impl.edges()),
-        vertex_count=len(impl.vertices()),
-        volume_mm3=round_mm(impl.volume),
-        area_mm2=round_mm(impl.area),
-        center_of_mass_mm=_vec(center),
+        valid=facts.valid,
+        watertight=facts.watertight,
+        solid_count=facts.solid_count,
+        face_count=facts.face_count,
+        edge_count=facts.edge_count,
+        vertex_count=facts.vertex_count,
+        volume_mm3=round_mm(facts.volume),
+        area_mm2=round_mm(facts.area),
+        center_of_mass_mm=Vec3(round_mm(center[0]), round_mm(center[1]), round_mm(center[2])),
         bounding_box=BoundingBox(
             min=_vec(low),
             max=_vec(high),
@@ -622,6 +629,60 @@ def measure(shape: Shape, material: str | None = None) -> Measurement:
         material=material_id,
         density_g_cm3=density,
     )
+
+
+@dataclass(frozen=True)
+class _SolidFacts:
+    """What a rigid move does not change, and the center of mass in that solid's own frame."""
+
+    valid: bool
+    watertight: bool
+    solid_count: int
+    face_count: int
+    edge_count: int
+    vertex_count: int
+    volume: float
+    area: float
+    center: tuple[float, float, float]
+
+
+def _solid_facts(shape: Shape) -> _SolidFacts:
+    kept = getattr(shape, "_solid_facts", None)
+    if kept is not None:
+        return kept
+    source = getattr(shape, "_placed_from", None)
+    owner_facts = getattr(source[0], "_solid_facts", None) if source is not None else None
+    if owner_facts is not None:
+        facts = replace(owner_facts, center=_moved_point(source[1], owner_facts.center))
+    else:
+        facts = _measure_solid(shape.impl)
+        if source is not None:
+            # The solid it was moved from has the same facts, in its own frame.
+            source[0]._solid_facts = replace(facts, center=_moved_point(source[1].inverse(), facts.center))
+    shape._solid_facts = facts
+    return facts
+
+
+def _measure_solid(impl) -> _SolidFacts:
+    valid = bool(impl.is_valid)
+    volume = float(impl.volume)
+    center = impl.center()
+    return _SolidFacts(
+        valid=valid,
+        watertight=_is_watertight(impl, valid=valid, volume=volume),
+        solid_count=len(impl.solids()),
+        face_count=len(impl.faces()),
+        edge_count=len(impl.edges()),
+        vertex_count=len(impl.vertices()),
+        volume=volume,
+        area=float(impl.area),
+        center=(float(center.X), float(center.Y), float(center.Z)),
+    )
+
+
+def _moved_point(location, point: tuple[float, float, float]) -> tuple[float, float, float]:
+    moved = gp_Pnt(point[0], point[1], point[2]).Transformed(location.wrapped.Transformation())
+    return (float(moved.X()), float(moved.Y()), float(moved.Z()))
 
 
 def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEstimate:
@@ -2804,13 +2865,13 @@ def _volume(obj) -> float:
         return 0.0
 
 
-def _is_watertight(impl) -> bool:
-    """A valid manifold solid with volume."""
+def _is_watertight(impl, *, valid: bool | None = None, volume: float | None = None) -> bool:
+    """A valid manifold solid with volume. A caller that already has validity or volume passes it."""
     try:
         return bool(
             len(impl.solids()) >= 1
-            and impl.volume > 0
-            and impl.is_valid
+            and (impl.volume if volume is None else volume) > 0
+            and (impl.is_valid if valid is None else valid)
             and _every_edge_joins_two_faces(impl)
         )
     except Exception:
@@ -3091,8 +3152,12 @@ def place(shape: Shape, position: tuple[float, float, float], rotation_deg: tupl
     rx, ry, rz = finite_vec3(rotation_deg, "rotation_deg", unit="deg")
     if all(abs(value) < 1e-12 for value in (px, py, pz, rx, ry, rz)):
         return shape
-    moved = Pos(px, py, pz) * Rot(rx, ry, rz) * shape.impl
-    return Shape(_require_solid(moved), features=shape.feature_report())
+    location = Pos(px, py, pz) * Rot(rx, ry, rz)
+    moved = location * shape.impl
+    placed = Shape(_require_solid(moved), features=shape.feature_report())
+    # A measurement of either solid gives the other what a move does not change.
+    placed._placed_from = (shape, location)
+    return placed
 
 
 def compound(shapes: list[Shape]) -> Shape:
