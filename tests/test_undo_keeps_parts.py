@@ -4,13 +4,19 @@ Undo used to throw every part away and build it again from the saved
 session. On a 38-part finger rig, undoing one move imported 35 STEP files,
 rebuilt two catalog bearings, measured every part again, and meshed every
 part again: about 17 seconds for one part that moved.
+
+The meshes counted are the ones asked for per part, from ``mesh_cache``. A
+solid meshed before, such as the one an Undo restores, is read from disk then,
+and ``kernel`` does not mesh it again.
 """
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from aicad import kernel
+from aicad import kernel, mesh_cache
 from aicad.workspace import Workspace
 
 _BOX = [{"op": "add", "shape": "box", "size": [10, 6, 4]}]
@@ -40,23 +46,28 @@ _PLATE = {
 
 
 class _Counted:
-    """Counts each call that builds or meshes a solid."""
+    """Counts each call that builds a solid, or asks for or makes its mesh.
+
+    ``viewport`` and ``tessellate`` are the meshes asked for per part, from the
+    mesh folder or made fresh. ``meshed`` is a model-view mesh actually made.
+    """
 
     def __init__(self, monkeypatch):
-        self.calls: dict[str, list[int]] = {"viewport": [], "tessellate": [], "ops": [], "measure": []}
-        for attribute, key in (
-            ("viewport_mesh", "viewport"),
-            ("tessellate", "tessellate"),
-            ("prefix_from_ops", "ops"),
-            ("measure", "measure"),
+        self.calls: dict[str, list[int]] = {"viewport": [], "tessellate": [], "meshed": [], "ops": [], "measure": []}
+        for module, attribute, key in (
+            (mesh_cache, "viewport_mesh", "viewport"),
+            (mesh_cache, "tessellate", "tessellate"),
+            (kernel, "viewport_mesh", "meshed"),
+            (kernel, "prefix_from_ops", "ops"),
+            (kernel, "measure", "measure"),
         ):
-            real = getattr(kernel, attribute)
+            real = getattr(module, attribute)
 
             def counted(*args, _real=real, _key=key, **kwargs):
                 self.calls[_key].append(id(args[0]))
                 return _real(*args, **kwargs)
 
-            monkeypatch.setattr(kernel, attribute, counted)
+            monkeypatch.setattr(module, attribute, counted)
 
     def reset(self) -> None:
         for calls in self.calls.values():
@@ -197,3 +208,23 @@ def test_undo_matches_opening_the_restored_session(project, tmp_path):
         assert kept.volume_mm3 == pytest.approx(built.volume_mm3)
         assert kept.bounding_box.min.x == pytest.approx(built.bounding_box.min.x, abs=1e-6)
         assert kept.bounding_box.max.z == pytest.approx(built.bounding_box.max.z, abs=1e-6)
+
+
+def test_undoing_a_move_reads_the_restored_mesh_from_disk(project):
+    """The solid an Undo restores was meshed before. Its mesh is read back, the same as meshing it."""
+    workspace, counted = project
+    workspace.execute("place_part", {"name": "arm", "position": [30, 0, 0], "rotation_deg": [0, 0, 0]}, source="ui")
+    _look(workspace)
+    counted.reset()
+
+    workspace.execute("undo", {}, source="ui")
+    _look(workspace)
+
+    restored = workspace.document._get("arm").shape  # noqa: SLF001
+    assert counted.calls["viewport"] == [id(restored)]
+    # Nothing was meshed: the restored solid's mesh was on disk under its key.
+    assert counted.calls["meshed"] == []
+    assert (mesh_cache.folder() / f"{mesh_cache.content_key(restored)}.viewport.json").is_file()
+    _tag, body = workspace.mesh_answer("part", "arm")
+    fresh = {**kernel.viewport_mesh(restored), "part": "arm"}
+    assert json.loads(body)["result"] == json.loads(json.dumps(fresh))

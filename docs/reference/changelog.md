@@ -27,6 +27,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 - Turning or panning the 3D view no longer rebuilds and resends the model's arrays each frame. They are made again only when the mesh, the selection, the part, live mode or a drag changes them. On the 38-part finger rig (257 thousand triangles), every frame took a median of 24 ms. Now an orbit frame takes 0.1 ms, a frame with a new face pick 1.6 ms, and a frame of a Move drag 7 ms.
 - A running Strength solve shows its time, and a failed one says why. Every failed page action shows in the notice bar. Each app command and its result is logged to the console.
 - Clicking a report picture opens it at full size over the app, with zoom, drag, and close.
+- Meshes for the model and assembly views are kept in `~/.config/aicad/meshes`, or in `$AICAD_MESH_CACHE`, under a hash of the exact solid, so opening a project again reads them instead of meshing every part. The oldest go past 1 GB. On a 38-part finger rig, opening again with both views ready went from 19.2 s to 7.6 s.
 - Report pictures named with a full path load. The page buttons stay on screen when the Plan page opens.
 - The app warns when another app has the same project open. A page that drops its live connection no longer fills the console.
 - The plan summary beside the model uses the state the page already reads, so an idle page no longer asks for the whole project state every 2.5 seconds. Only the open Plan page still checks for plan files changed on disk.
