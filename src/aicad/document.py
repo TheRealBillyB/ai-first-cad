@@ -3007,11 +3007,67 @@ class Document:
     def replace_session(self, payload: dict) -> None:
         """Rebuild every part from a payload previously returned by :meth:`session_payload`."""
         with self._lock:
+            kept = self._parts_to_keep(payload)
             self._parts.clear()
             self._sketches.clear()
             self._assemblies.clear()
-            self._apply_payload(payload)
+            self._apply_payload(payload, kept=kept)
             self._save()
+
+    def _parts_to_keep(self, payload: dict) -> dict[str, _Part]:
+        """Parts whose saved state in ``payload`` is what they hold now, so an undo need not build them again.
+
+        A kept part keeps its solid object, so its mesh and measurement are kept
+        with it. A part whose saved state differs only in where it is placed is
+        kept too, and placed again from the solid it already holds. A part that
+        follows another part, through a mount or a sketch on a face, is built
+        again, as is one that failed to build.
+        """
+        from aicad.sketch_plane import plane_hosts
+
+        sketches = {
+            record.get("name"): record.get("spec")
+            for record in payload.get("sketches", [])
+            if isinstance(record, dict)
+        }
+        kept: dict[str, _Part] = {}
+        for record in payload.get("parts", []):
+            if not isinstance(record, dict):
+                continue
+            part = self._parts.get(record.get("name"))
+            if part is None or part._shape is None or part._base is None or part.rebuild_error or part.script_pending:
+                continue
+            if any(_is_mounted(placement) for placement in (record.get("placement"), part.placement)):
+                continue
+            if part.source == "sketch":
+                sketch = self._sketches.get(part.sketch_name)
+                if (
+                    sketch is None
+                    or plane_hosts(sketch.spec.get("plane"))
+                    or sketches.get(part.sketch_name) != sketch.spec
+                ):
+                    continue
+            now = _part_record(part)
+            if now == record or _same_but_placed(now, record):
+                kept[part.name] = part
+        return kept
+
+    def _kept_part(self, part: _Part, record: dict) -> _Part:
+        """A kept part as ``record`` saved it. Only its placement can differ, so its solid is placed again."""
+        if _part_record(part) == record:
+            return part
+        placement = record.get("placement") or _identity_placement()
+        position = kernel.finite_vec3(placement.get("position", [0.0, 0.0, 0.0]), "position")
+        rotation = kernel.finite_vec3(placement.get("rotation_deg", [0.0, 0.0, 0.0]), "rotation_deg", unit="deg")
+        shape = kernel.place(part.base, position, rotation)
+        if part.source == "script":
+            shape.features = part.base.features
+        part.shape = shape
+        part.placement = {
+            "position": [position[0], position[1], position[2]],
+            "rotation_deg": [rotation[0], rotation[1], rotation[2]],
+        }
+        return part
 
     def _session_path(self) -> Path:
         return self.workspace / "session.json"
@@ -3081,8 +3137,10 @@ class Document:
             raise DocumentError(f"Could not read {path}: the session is not an object.")
         self._apply_payload(payload)
 
-    def _apply_payload(self, payload: dict) -> None:
+    def _apply_payload(self, payload: dict, kept: dict[str, _Part] | None = None) -> None:
+        """Build the document from ``payload``. A part in ``kept`` is used as it is, see ``_parts_to_keep``."""
         self.problems = []
+        kept = kept or {}
         for record in payload.get("sketches", []):
             sketch_name = record.get("name") if isinstance(record, dict) else None
             if not isinstance(sketch_name, str) or _name_has_control_line(sketch_name):
@@ -3094,6 +3152,12 @@ class Document:
             if _name_has_control_line(name):
                 self.problems.append("A part name has to stay on one line.")
                 continue
+            if name in kept:
+                try:
+                    self._parts[name] = self._kept_part(kept[name], record)
+                    continue
+                except (GeometryError, ValueError, TypeError):
+                    pass  # Built below like any other part, which records why it failed.
             source = record.get("source", "script")
             placement = record.get("placement") or _identity_placement()
             script_text = record.get("script") or ""
@@ -3446,6 +3510,17 @@ def _part_record(part: _Part) -> dict:
     if part.edge_ops:
         record["edge_ops"] = copy.deepcopy(part.edge_ops)
     return record
+
+
+def _is_mounted(placement: object) -> bool:
+    return isinstance(placement, dict) and placement.get("mount") is not None
+
+
+def _same_but_placed(now: dict, record: dict) -> bool:
+    """The same saved part except, perhaps, where it is placed."""
+    return {key: value for key, value in now.items() if key != "placement"} == {
+        key: value for key, value in record.items() if key != "placement"
+    }
 
 
 def _stored_edge_ops(record: dict, source: str) -> list[dict] | None:
