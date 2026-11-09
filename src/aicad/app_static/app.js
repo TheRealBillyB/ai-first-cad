@@ -1665,6 +1665,9 @@ const view = {
   program: null,
   edgeProgram: null,
   buffers: new Map(),
+  // What each array was made from, and the array last sent to each buffer.
+  derived: new Map(),
+  uploaded: new Map(),
 };
 
 // Same camera directions as the rendered pictures. The eye sits on this
@@ -1750,16 +1753,59 @@ function drawSolid() {
   const gridSpacing = drawViewportGuides(gl, cameraMatrix(canvas.width / canvas.height), view.target, view.distance);
   $("grid-readout").textContent = `Grid ${gridSpacing} mm`;
   drawOverlay();
-  if (!ui.mesh || !ui.mesh.positions.length) return;
+  if (!ui.mesh || !ui.mesh.positions.length) {
+    // Nothing to draw, so hold no old mesh's arrays.
+    view.derived.clear();
+    view.uploaded.clear();
+    return;
+  }
   const mvp = cameraMatrix(canvas.width / canvas.height);
-  const positions = shiftedPositions();
+  const mesh = ui.mesh;
+  const drag = dragKey();
+  const part = ui.part;
   gl.useProgram(view.program);
-  bindAttr(gl, view.program, "aPos", positions, 3);
-  bindAttr(gl, view.program, "aNormal", new Float32Array(ui.mesh.normals), 3);
-  const vertexCount = ui.mesh.positions.length / 3;
+  bindAttr(gl, view.program, "aPos", derived("solid:aPos", [mesh, drag], shiftedPositions), 3);
+  bindAttr(gl, view.program, "aNormal", derived("solid:aNormal", [mesh], () => new Float32Array(mesh.normals)), 3);
+  bindAttr(gl, view.program, "aColor", derived("solid:aColor", [mesh], () => vertexColors(mesh)), 3);
+  const faces = JSON.stringify(ui.selectedFaces || []);
+  const live = ui.live && ui.livePart ? ui.livePart : "";
+  bindAttr(gl, view.program, "aSelect", derived("solid:aSelect", [mesh, part, faces, live], () => triangleSelect(mesh)), 1);
+  gl.uniformMatrix4fv(gl.getUniformLocation(view.program, "uMvp"), false, mvp);
+  gl.drawArrays(gl.TRIANGLES, 0, mesh.positions.length / 3);
+  gl.useProgram(view.edgeProgram);
+  const edgePositions = derived("edge:aPos", [mesh, drag], () => edgePoints(mesh));
+  if (edgePositions.length) {
+    const edges = JSON.stringify(ui.selectedEdges || []);
+    bindAttr(gl, view.edgeProgram, "aPos", edgePositions, 3);
+    bindAttr(gl, view.edgeProgram, "aSelect", derived("edge:aSelect", [mesh, part, edges], () => edgeSelect(mesh)), 1);
+    gl.uniformMatrix4fv(gl.getUniformLocation(view.edgeProgram, "uMvp"), false, mvp);
+    gl.drawArrays(gl.LINES, 0, edgePositions.length / 3);
+  }
+}
+
+// An orbit or pan frame changes only the camera. Each array the solid is drawn
+// from is made again only when one of the things it is made from changes, and
+// sent to the GPU only when it is a new array.
+function derived(key, inputs, build) {
+  const held = view.derived.get(key);
+  if (held && held.inputs.length === inputs.length && held.inputs.every((value, index) => value === inputs[index])) {
+    return held.data;
+  }
+  const data = build();
+  view.derived.set(key, { inputs, data });
+  return data;
+}
+
+function dragKey() {
+  const offset = ui.dragOffset;
+  return offset ? JSON.stringify([offset.part, offset.delta]) : "";
+}
+
+function vertexColors(mesh) {
+  const vertexCount = mesh.positions.length / 3;
   const colors = new Float32Array(vertexCount * 3);
-  const source = ui.mesh.colors;
-  if (source && source.length === ui.mesh.positions.length) {
+  const source = mesh.colors;
+  if (source && source.length === mesh.positions.length) {
     for (let i = 0; i < source.length; i += 1) colors[i] = source[i] / 255;
   } else {
     for (let i = 0; i < vertexCount; i += 1) {
@@ -1768,36 +1814,64 @@ function drawSolid() {
       colors[i * 3 + 2] = 0.56;
     }
   }
-  bindAttr(gl, view.program, "aColor", colors, 3);
-  const selected = new Float32Array(ui.mesh.triangle_face.length * 3);
-  ui.mesh.triangle_face.forEach((face, index) => {
-    const record = ui.mesh.faces[face] || {};
+  return colors;
+}
+
+function triangleSelect(mesh) {
+  const picked = new Set(ui.selectedFaces || []);
+  const faceOn = (mesh.faces || []).map((face) => {
+    const record = face || {};
     const samePart = !record.part || record.part === ui.part;
-    const picked = samePart && ui.selectedFaces.includes(record.ref) ? 1 : 0;
+    const on = samePart && picked.has(record.ref) ? 1 : 0;
     const live = ui.live && ui.livePart && record.part === ui.livePart ? 0.55 : 0;
-    const on = Math.max(picked, live);
-    selected[index * 3] = on; selected[index * 3 + 1] = on; selected[index * 3 + 2] = on;
+    return Math.max(on, live);
   });
-  bindAttr(gl, view.program, "aSelect", selected, 1);
-  gl.uniformMatrix4fv(gl.getUniformLocation(view.program, "uMvp"), false, mvp);
-  gl.drawArrays(gl.TRIANGLES, 0, ui.mesh.positions.length / 3);
-  gl.useProgram(view.edgeProgram);
-  const edgePositions = [];
-  const edgeSelect = [];
-  ui.mesh.edges.forEach((edge) => {
-    const on = ((!edge.part || edge.part === ui.part) && ui.selectedEdges.includes(edge.ref)) ? 1 : 0;
+  const triangles = mesh.triangle_face;
+  const selected = new Float32Array(triangles.length * 3);
+  for (let index = 0; index < triangles.length; index += 1) {
+    const on = faceOn[triangles[index]] || 0;
+    selected[index * 3] = on; selected[index * 3 + 1] = on; selected[index * 3 + 2] = on;
+  }
+  return selected;
+}
+
+function edgeSegments(mesh) {
+  let count = 0;
+  mesh.edges.forEach((edge) => { if (edge.points.length > 1) count += edge.points.length - 1; });
+  return count;
+}
+
+function edgePoints(mesh) {
+  const points = new Float32Array(edgeSegments(mesh) * 6);
+  let at = 0;
+  mesh.edges.forEach((edge) => {
     const delta = ui.dragOffset && edge.part === ui.dragOffset.part ? ui.dragOffset.delta : null;
+    const dx = delta ? delta[0] : 0;
+    const dy = delta ? delta[1] : 0;
+    const dz = delta ? delta[2] : 0;
     for (let i = 1; i < edge.points.length; i += 1) {
-      edgePositions.push(...shiftPoint(edge.points[i - 1], delta), ...shiftPoint(edge.points[i], delta));
-      edgeSelect.push(on, on);
+      const a = edge.points[i - 1];
+      const b = edge.points[i];
+      points[at] = a[0] + dx; points[at + 1] = a[1] + dy; points[at + 2] = a[2] + dz;
+      points[at + 3] = b[0] + dx; points[at + 4] = b[1] + dy; points[at + 5] = b[2] + dz;
+      at += 6;
     }
   });
-  if (edgePositions.length) {
-    bindAttr(gl, view.edgeProgram, "aPos", new Float32Array(edgePositions), 3);
-    bindAttr(gl, view.edgeProgram, "aSelect", new Float32Array(edgeSelect), 1);
-    gl.uniformMatrix4fv(gl.getUniformLocation(view.edgeProgram, "uMvp"), false, mvp);
-    gl.drawArrays(gl.LINES, 0, edgePositions.length / 3);
-  }
+  return points;
+}
+
+function edgeSelect(mesh) {
+  const picked = new Set(ui.selectedEdges || []);
+  const select = new Float32Array(edgeSegments(mesh) * 2);
+  let at = 0;
+  mesh.edges.forEach((edge) => {
+    const on = (!edge.part || edge.part === ui.part) && picked.has(edge.ref) ? 1 : 0;
+    for (let i = 1; i < edge.points.length; i += 1) {
+      select[at] = on; select[at + 1] = on;
+      at += 2;
+    }
+  });
+  return select;
 }
 
 function bindAttr(gl, program, name, data, size) {
@@ -1808,7 +1882,11 @@ function bindAttr(gl, program, name, data, size) {
     view.buffers.set(key, buffer);
   }
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, data instanceof Float32Array ? data : new Float32Array(data), gl.DYNAMIC_DRAW);
+  // The buffer still holds the array sent last time. Send only a new one.
+  if (view.uploaded.get(key) !== data) {
+    gl.bufferData(gl.ARRAY_BUFFER, data instanceof Float32Array ? data : new Float32Array(data), gl.DYNAMIC_DRAW);
+    view.uploaded.set(key, data);
+  }
   const loc = gl.getAttribLocation(program, name);
   if (loc < 0) return;
   gl.enableVertexAttribArray(loc);
@@ -1922,11 +2000,6 @@ function shiftedPositions() {
     }
   });
   return positions;
-}
-
-function shiftPoint(point, delta) {
-  if (!delta) return point;
-  return [point[0] + delta[0], point[1] + delta[1], point[2] + delta[2]];
 }
 
 function drawOverlay() {
