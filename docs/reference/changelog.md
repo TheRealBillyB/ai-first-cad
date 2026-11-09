@@ -36,6 +36,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 
 - The static solve takes a torque load. A CalculiX timeout reports "not solved". A folded quadratic mesh is solved straight-sided before falling back to linear. Each Gmsh mesh runs on one long-lived thread, which fixed a macOS crash.
 - New materials: grey cast iron (ASTM A48 Class 30) and TPU 95A. New catalog rows: ISO 15 miniature and flanged miniature bearings, and M1.6, M2, and M2.5 cap screws, nuts, and washers.
+- A built catalog part is kept in `~/.config/aicad/catalog`, or in `$AICAD_CATALOG_CACHE`, and read back the next time, so opening a project does not build each bearing again. A change to the catalog code or the geometry libraries builds it fresh. On a 38-part finger rig with two bearings, opening the project went from 5.5 s to 3.5 s.
 - A fixed joint can turn its child. Tendon wraps stay continuous through a study, and a tendon can be tied off on its own drum and state its line modulus. Cable collision checks skip parts out of reach.
 - A part an assembly uses cannot be deleted. A solid with a sphere pole or a cone apex counts as watertight.
 - Clearer messages for an impossible sketch dimension, a refused export path, a hidden project folder, a bolt check without `grip_mm`, and whether this computer can run a design script.

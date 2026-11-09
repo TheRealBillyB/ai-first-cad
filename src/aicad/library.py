@@ -104,7 +104,22 @@ def search(query: str = "") -> dict[str, object]:
 
 
 def build(kind: str, size: str, length: float | None = None, fastener_type: str | None = None):
-    """Return an unplaced build123d solid for a catalog entry."""
+    """Return an unplaced build123d solid for a catalog entry.
+
+    A solid built once is read back from this account's catalog folder. See ``catalog_cache``.
+    """
+    from aicad import catalog_cache
+
+    name = catalog_cache.key(kind, size, length, fastener_type)
+    kept = catalog_cache.read(name)
+    if kept is not None:
+        return kept
+    solid = _build(kind, size, length, fastener_type)
+    catalog_cache.write(name, solid)
+    return solid
+
+
+def _build(kind: str, size: str, length: float | None = None, fastener_type: str | None = None):
     kind = _canonical_kind(kind)
     if kind == "socket_head_cap_screw":
         if length is None or length <= 0:
