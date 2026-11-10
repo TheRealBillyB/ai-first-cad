@@ -589,15 +589,12 @@ def measure(shape: Shape, material: str | None = None) -> Measurement:
 
     What a rigid move leaves alone (validity, the closed-shell check, counts,
     volume, area) is measured once per solid and kept on it. A solid that
-    ``place`` moved takes those from the solid it was moved from, so moving a
-    part measures only its bounding box.
+    ``place`` moved takes those from the solid it was moved from, and its
+    bounding box from the move, so measuring a moved part asks the geometry
+    library for nothing.
     """
-    impl = shape.impl
     facts = _solid_facts(shape)
-    bbox = impl.bounding_box()
-    low = bbox.min
-    high = bbox.max
-    size = bbox.size
+    low, high = _aabb(shape)
     mass_g = None
     material_id = None
     density = None
@@ -622,9 +619,9 @@ def measure(shape: Shape, material: str | None = None) -> Measurement:
         area_mm2=round_mm(facts.area),
         center_of_mass_mm=Vec3(round_mm(center[0]), round_mm(center[1]), round_mm(center[2])),
         bounding_box=BoundingBox(
-            min=_vec(low),
-            max=_vec(high),
-            size=_vec(size),
+            min=Vec3(round_mm(low[0]), round_mm(low[1]), round_mm(low[2])),
+            max=Vec3(round_mm(high[0]), round_mm(high[1]), round_mm(high[2])),
+            size=Vec3(round_mm(high[0] - low[0]), round_mm(high[1] - low[1]), round_mm(high[2] - low[2])),
         ),
         mass_g=mass_g,
         material=material_id,
@@ -867,10 +864,45 @@ def overlap_center(a: Shape, b: Shape) -> tuple[float, Vec3 | None]:
     return overlap, _vec(common.center())
 
 
-def _aabb(shape: Shape) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    box = shape.impl.bounding_box()
+_Box = tuple[tuple[float, float, float], tuple[float, float, float]]
+
+
+def _aabb(shape: Shape) -> _Box:
+    """The low and high corners of the solid's bounding box.
+
+    Found once per solid and kept on it. A rebuilt solid is a new object, so it
+    starts without one. ``place`` gives a moved solid its box without asking.
+    """
+    kept = getattr(shape, "_box", None)
+    if kept is None:
+        kept = _box_of(shape.impl)
+        shape._box = kept
+    return kept
+
+
+def _box_of(impl) -> _Box:
+    box = impl.bounding_box()
     low, high = box.min, box.max
     return (float(low.X), float(low.Y), float(low.Z)), (float(high.X), float(high.Y), float(high.Z))
+
+
+def _turned_box(shape: Shape, turn: tuple[float, float, float]) -> _Box:
+    """The bounding box of the solid turned by ``turn`` degrees and not shifted.
+
+    The box of a turned solid is not the turned box, so a new turn is asked of
+    the geometry library. The last turn is kept on the solid with its angles,
+    so dragging a turned part along asks once and a different turn asks again.
+    """
+    if all(abs(angle) < 1e-12 for angle in turn):
+        return _aabb(shape)
+    kept = getattr(shape, "_turned", None)
+    if kept is not None and kept[0] == turn:
+        return kept[1]
+    from build123d import Rot
+
+    box = _box_of(Rot(*turn) * shape.impl)
+    shape._turned = (turn, box)
+    return box
 
 
 def aabb_bounds(shape: Shape) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
@@ -2926,28 +2958,48 @@ def _require_solid(obj: object):
         raise GeometryError(
             "Expected a 3D solid assigned to `part`. A sketch, curve, or other value has no volume."
         )
-    volume = _volume(obj)
-    if len(obj.solids()) == 0 or not math.isfinite(volume) or volume <= 0:
-        raise GeometryError(
-            "The result has no solid volume. Assign a closed 3D solid to `part` "
-            "(combine bodies with `part = a + b`)."
-        )
+    _require_volume(len(obj.solids()), _volume(obj))
     _require_sane_extent(obj)
     return obj
 
 
+def _require_volume(solid_count: int, volume: float) -> None:
+    if solid_count == 0 or not math.isfinite(volume) or volume <= 0:
+        raise GeometryError(
+            "The result has no solid volume. Assign a closed 3D solid to `part` "
+            "(combine bodies with `part = a + b`)."
+        )
+
+
+def _require_movable(shape: Shape) -> None:
+    """What ``_require_solid`` asks of a solid, short of its extent, once per solid.
+
+    A move changes neither the volume nor the number of solids, so ``place``
+    asks this of the solid it moves and not of each place it is moved to.
+    """
+    if getattr(shape, "_movable", False):
+        return
+    facts = getattr(shape, "_solid_facts", None)
+    if facts is not None:
+        _require_volume(facts.solid_count, facts.volume)
+    else:
+        impl = shape.impl
+        if not hasattr(impl, "solids") or not hasattr(impl, "volume"):
+            raise GeometryError(
+                "Expected a 3D solid assigned to `part`. A sketch, curve, or other value has no volume."
+            )
+        _require_volume(len(impl.solids()), _volume(impl))
+    shape._movable = True
+
+
 def _require_sane_extent(impl) -> None:
     """Reject a solid whose coordinates are not a mechanical part."""
-    box = impl.bounding_box()
-    values = (
-        float(box.min.X),
-        float(box.min.Y),
-        float(box.min.Z),
-        float(box.max.X),
-        float(box.max.Y),
-        float(box.max.Z),
-    )
-    for value in values:
+    low, high = _box_of(impl)
+    _require_sane_box(low, high)
+
+
+def _require_sane_box(low: tuple[float, float, float], high: tuple[float, float, float]) -> None:
+    for value in (*low, *high):
         if not math.isfinite(value) or abs(value) > MAX_MM:
             shown = "not a finite number" if not math.isfinite(value) else f"{value:g} mm"
             raise GeometryError(
@@ -3250,11 +3302,18 @@ def place(shape: Shape, position: tuple[float, float, float], rotation_deg: tupl
     rx, ry, rz = finite_vec3(rotation_deg, "rotation_deg", unit="deg")
     if all(abs(value) < 1e-12 for value in (px, py, pz, rx, ry, rz)):
         return shape
+    _require_movable(shape)
+    # The box of the solid turned, carried by the shift. Adding the shift is
+    # exact to the last bit or two of what the moved solid itself would give.
+    low, high = _turned_box(shape, (rx, ry, rz))
+    low = (low[0] + px, low[1] + py, low[2] + pz)
+    high = (high[0] + px, high[1] + py, high[2] + pz)
+    _require_sane_box(low, high)
     location = Pos(px, py, pz) * Rot(rx, ry, rz)
-    moved = location * shape.impl
-    placed = Shape(_require_solid(moved), features=shape.feature_report())
+    placed = Shape(location * shape.impl, features=shape.feature_report())
     # A measurement of either solid gives the other what a move does not change.
     placed._placed_from = (shape, location)
+    placed._box = (low, high)
     return placed
 
 
