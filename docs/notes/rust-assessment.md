@@ -6,7 +6,7 @@ This is a write-up only. Nothing was rewritten. Version 0.9 ships on Python. The
 
 ## Where the remaining time is
 
-After the four fixes in the profile, one move takes about 220 ms from release to a settled page:
+After the four fixes in the profile, the measured stages of one move add up to about 220 ms from release to a settled page. In the browser the median is 257 ms, because the command's file work is slower in the running app than in a stage test. The split by layer is from the stages:
 
 | Layer | ms | Share | Would Rust change it? |
 |---|---|---|---|
@@ -56,7 +56,7 @@ Python's JSON encoder is already C. A Rust encoder is 2.7 times faster at the sa
 
 | | Move, ms |
 |---|---|
-| Today, after the four fixes | 220 |
+| Today, after the four fixes, by stages | 220 |
 | Python with binary mesh buffers and kept connections | about 130 |
 | A full Rust server doing the same things | about 105 |
 
@@ -83,7 +83,7 @@ Stay on Python. In order:
 2. **Fewer or cheaper requests per action.** About 30 ms. One to two days.
 3. **Look at the start.** Serve the page while the geometry process imports. Two to three days. It does not shorten the import. It shortens the wait for a window.
 
-That is about a week and a half, with no new toolchain. It would bring undo and redo under their 200 ms target.
+That is about a week and a half, with no new toolchain. Undo and redo now take about 280 ms in the browser. The first two steps would bring them to about 190, which is at their 200 ms target and not safely under it.
 
 A rewrite of the server and core in Rust is roughly 9 to 15 person-months before it matches today's features: the server and session code, OpenCascade bindings for what aicad uses, the sandbox on three platforms, and installers. It would still leave the script compatibility question open. Its measured advantage over the plan above is about 25 ms a move and about 6 s at start.
 

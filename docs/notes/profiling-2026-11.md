@@ -77,7 +77,7 @@ Each fix is one pull request with its own regression tests. The server numbers a
 | A moved part keeps its mesh | meshing and describing a solid that only moved | list the scene after a move: 509 | 62 |
 | A move asks for no box and no volume | three OpenCascade questions with known answers | `place_part` 155, undo 143, redo 152 | 50, 81, 74 |
 | The state keeps solved sketches | solving and drawing every sketch after every change | read the state after a move: 65 | 9 |
-| A move is drawn at once | waiting for the server before a typed position shows, and snapping back on a redraw | typed position shown after about 800 | drawn in the same task as the commit, one draw of 17–19 |
+| A move is drawn at once | waiting for the server before a typed position shows, and snapping back on a redraw | typed position shown after about 800 | 12–19, measured in the browser: one draw in the same task as the commit |
 
 ### After the four fixes together, server side
 
@@ -106,6 +106,26 @@ What is left in a move, largest first:
 
 A turn costs more than a shift: it asks OpenCascade for one new bounding box (28) and describes again the faces whose axes the turn changed (38).
 
+### The commands in the running app
+
+The stage medians above are from calls made back to back. In the running app the three commands take longer, and the other steps do not:
+
+| Command | Back to back | With 20 ms pauses between calls | In the app, over HTTP |
+|---|---|---|---|
+| `place_part` | 44 | 57 | 58–67 |
+| Undo | 75 | 94 | 99 |
+| Redo | 68 | 96 | 89–93 |
+
+The difference is not HTTP and not the pipe to the geometry process. Through the pipe alone a move is 41 ms and an undo 65 to 71. It is file work, which is slower on this machine when the process has been idle for a moment, as it always has in the app. A command reads and writes more files than the session:
+
+| File work in one command, with pauses | Move | Undo |
+|---|---|---|
+| Save the session | 23 | 23 |
+| List and read the two notes for the undo copy | 17 | 21 |
+| Write the notes, the requirements, and the plans back, changed or not | none | 31 |
+
+A move changes none of the notes, requirements, or plans. Not reading and writing them again is the next server fix for undo and redo, after the mesh encoding.
+
 ### The move by layer, after
 
 | Layer | ms | Share |
@@ -116,7 +136,33 @@ A turn costs more than a shift: it asks OpenCascade for one new bounding box (28
 | Saving the session | 21 | 10% |
 | OpenCascade and build123d | 6 | 3% |
 
-The total is about 220 ms. The server part is measured. The page part is the page costs measured on the baseline, which these fixes do not change. In the browser, with only the first fix applied, a move settled in 356 to 470 ms.
+These stage medians add up to about 220 ms. The measured time is longer.
+
+### After the four fixes together, in the browser
+
+Measured on a local build with the four fixes merged, from the release or the click to the settled page:
+
+| Interaction | Runs | Range | Median |
+|---|---|---|---|
+| Move a part by dragging | 13 | 217–325 | 257 |
+| Move a part by typing a position | 4 | 234–369 | 249 |
+| Undo a move | 10 | 259–332 | 278 |
+| Redo a move | 10 | 258–341 | 287 |
+
+The steps of those runs, as the page saw them:
+
+| Step | Move | Undo |
+|---|---|---|
+| The command | 55–105 | 100–137 |
+| Read the state | 12–29 | 11–18 |
+| List the scene, which encodes the moved part | 62–82 | 64–73 |
+| Fetch the moved part, 3.08 MB | 6–25 | 9–18 |
+| Parse it | 15–30 | 15–23 |
+| Join the scene | 14–18 | 14–19 |
+| Draw | 14–19 | 15–19 |
+| Read the part's numbers | 5–13 | 5–8 |
+
+The browser medians are 35 to 40 ms above the sum of the stage medians. Most of that is the command, as the table of commands in the running app shows. The rest is time between the steps on the page.
 
 ## Ideas that were checked
 
@@ -130,9 +176,9 @@ The total is about 220 ms. The server part is measured. The page part is the pag
 
 | Target | Before | After the four fixes |
 |---|---|---|
-| A moved part shows in under 100 ms | at release for a drag, with gaps. About 800 for a typed position. | at release for a drag, and it stays. One draw, 17–19, for a typed position. |
-| A move settles in under 300 ms | 802–945 | about 220: server 117 measured, page 62 and requests 40 from the baseline |
-| Undo or redo in under 200 ms | 428–460 | about 250: server 144 measured, page and requests as above. Not met. |
-| Orbit and pan at 60 frames a second | met: 0.2 ms a frame | unchanged |
+| A moved part shows in under 100 ms | at release for a drag, with gaps. About 800 for a typed position. | Met. At release for a drag, and it stays. 12–19 for a typed position. |
+| A move settles in under 300 ms | 802–945 | Met at the median, not on every run: 217–325, median 257, and 12 of 13 runs under 300. |
+| Undo or redo in under 200 ms | 428–460 | Not met. Undo 259–332, median 278. Redo 258–341, median 287. |
+| Orbit and pan at 60 frames a second | met: 0.2 ms a frame | Met. Unchanged. |
 
-Undo and redo miss the target by about 50 ms. The 61 ms spent encoding and parsing the moved part's mesh is the next cost to remove, and binary buffers remove most of it.
+Undo and redo miss the target by about 80 ms. Two costs are next. Encoding and parsing the moved part's mesh is 61 ms, and binary buffers remove most of it. Reading and writing notes, requirements, and plans that the undone move never touched is about 50 ms of an undo.
