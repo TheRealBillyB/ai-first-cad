@@ -23,7 +23,7 @@ from aicad import kernel
 from aicad.document import Document
 from aicad.errors import AICADError, GeometryError
 from aicad.plan import ledger_snapshot, plan_files, restore_ledger_snapshot, restore_plan_files
-from aicad.refs import resolve_edge
+from aicad.refs import canonical_ref, resolve_edge
 from aicad.requirements import evaluate, normalize
 
 _DOC_NAME = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}\.md$")
@@ -1337,8 +1337,9 @@ def _cmd_check_requirements(workspace: Workspace, arguments: dict) -> dict:
 
 def _cmd_set_selection(workspace: Workspace, arguments: dict) -> dict:
     part = arguments.get("part")
-    faces = arguments.get("faces") or []
-    edges = arguments.get("edges") or []
+    # A reference written with -0.000, as earlier versions printed some, names the same face.
+    faces = [canonical_ref(ref) for ref in arguments.get("faces") or []]
+    edges = [canonical_ref(ref) for ref in arguments.get("edges") or []]
     if part:
         catalog = workspace.document.describe_faces(part)["faces"]
         known = {face["ref"] for face in catalog}

@@ -110,7 +110,24 @@ def _point(text: str) -> list[float]:
 
 
 def _fmt_point(point) -> str:
-    return ",".join(f"{float(component):.3f}" for component in point)
+    return ",".join(_fmt_coordinate(component) for component in point)
+
+
+def _fmt_coordinate(value) -> str:
+    """Three decimals. A value that rounds to zero prints 0.000 whatever its sign, since -0.000 is the same place."""
+    text = f"{float(value):.3f}"
+    return "0.000" if text == "-0.000" else text
+
+
+def canonical_ref(ref: str) -> str:
+    """``ref`` as this version prints it. A reference written with -0.000 names the same face as one with 0.000."""
+    if not isinstance(ref, str) or "/" not in ref:
+        return ref
+    head, _slash, at = ref.rpartition("/")
+    pieces = at.split(",")
+    if len(pieces) != 3:
+        return ref
+    return head + "/" + ",".join("0.000" if piece == "-0.000" else piece for piece in pieces)
 
 
 def _distance(a, b) -> float:
