@@ -34,6 +34,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 - Clicking a report picture opens it at full size over the app, with zoom, drag, and close.
 - Meshes for the model and assembly views are kept in `~/.config/aicad/meshes`, or in `$AICAD_MESH_CACHE`, under a hash of the exact solid, so opening a project again reads them instead of meshing every part. The oldest go past 1 GB. On a 38-part finger rig, opening again with both views ready went from 19.2 s to 7.6 s.
 - Report pictures named with a full path load. The page buttons stay on screen when the Plan page opens.
+- A part that was dragged, or given a typed position, is drawn in its new place at once and stays there until the model answers. A move that fails puts it back at once. A typed turn and a mounted part still wait for the model.
 - The app warns when another app has the same project open. A page that drops its live connection no longer fills the console.
 - The plan summary beside the model uses the state the page already reads, so an idle page no longer asks for the whole project state every 2.5 seconds. Only the open Plan page still checks for plan files changed on disk.
 - Undo and redo write back only the notes and the requirement list that differ from what is there, where they wrote every note and the requirements file again each time. An undo copy checks the notes folder once, where it checked it again for each note. On the 38-part finger rig, an undo went from 162 ms to 121 ms on the server, and a move from 155 ms to 138 ms.
