@@ -244,22 +244,16 @@ class Workspace:
         with self._lock:
             checks = evaluate(self.document, self._requirements, cache=self._requirement_cache, run=False)
             if self._sketch_cache_revision != self.geometry_revision:
+                # A solved sketch depends on its name and its stored spec and on nothing
+                # else, so one whose spec is the spec it was solved from is kept as it is.
+                kept = {entry["name"]: entry for entry in self._sketch_cache}
                 sketches = []
                 for name in self.document.list_sketches():
-                    report = self.document.get_sketch(name)
-                    sketches.append(
-                        {
-                            "name": name,
-                            "status": report.status,
-                            "dof": report.dof,
-                            "free": report.free,
-                            "conflicts": report.conflicts,
-                            "dimensions": report.dimensions,
-                            "geometry": report.geometry,
-                            "note": report.note,
-                            "spec": copy.deepcopy(self.document._get_sketch(name).spec),  # noqa: SLF001
-                        }
-                    )
+                    spec = self.document._get_sketch(name).spec  # noqa: SLF001
+                    entry = kept.get(name)
+                    if entry is None or entry["spec"] != spec:
+                        entry = self._sketch_entry(name, spec)
+                    sketches.append(entry)
                 self._sketch_cache = sketches
                 self._sketch_cache_revision = self.geometry_revision
             sketches = self._sketch_cache
@@ -296,6 +290,21 @@ class Workspace:
                 "plans": self.document.list_plans()["plans"],
 
             }
+
+    def _sketch_entry(self, name: str, spec: dict) -> dict:
+        """What the state says about one sketch, with a copy of the spec it was solved from."""
+        report = self.document.get_sketch(name)
+        return {
+            "name": name,
+            "status": report.status,
+            "dof": report.dof,
+            "free": report.free,
+            "conflicts": report.conflicts,
+            "dimensions": report.dimensions,
+            "geometry": report.geometry,
+            "note": report.note,
+            "spec": copy.deepcopy(spec),
+        }
 
     def _record(self, name: str, arguments: dict, result: dict, source: str) -> None:
         try:
