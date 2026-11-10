@@ -20,12 +20,14 @@ import pytest
 from aicad import kernel
 from aicad.app import make_server
 from aicad.errors import AICADError
+from aicad.refs import ref_to_selector
 from aicad.workspace import Workspace, read_part_answer
 
 STATIC = Path(__file__).resolve().parents[1] / "src" / "aicad" / "app_static"
 _BOX = [{"op": "add", "shape": "box", "size": [10, 6, 4]}]
 _PIN = [{"op": "add", "shape": "cylinder", "radius": 2, "height": 12}]
 _ARRAYS = {"positions": "<f4", "normals": "<f4", "triangle_face": "<i4"}
+_CLOSE = 1e-3
 
 
 def _two(execute) -> None:
@@ -42,8 +44,35 @@ def workspace(tmp_path, monkeypatch):
     return opened
 
 
+def _same(got, want) -> bool:
+    """Equal, with each decimal number within a thousandth."""
+    if isinstance(want, dict):
+        return isinstance(got, dict) and set(got) == set(want) and all(_same(got[key], want[key]) for key in want)
+    if isinstance(want, list):
+        return isinstance(got, list) and len(got) == len(want) and all(_same(*pair) for pair in zip(got, want))
+    if isinstance(want, float) or isinstance(got, float):
+        return got == pytest.approx(want, abs=_CLOSE)
+    if isinstance(want, str) and isinstance(got, str) and got != want and "/" in want:
+        # A reference names a point, and 0.000 and -0.000 are the same point.
+        return _same(ref_to_selector(got), ref_to_selector(want))
+    return got == want
+
+
+def _corners(positions, normals) -> np.ndarray:
+    """Each corner of each triangle once: where it is and which way its surface faces."""
+    both = np.hstack([np.asarray(positions, dtype="<f4").reshape(-1, 3), np.asarray(normals, dtype="<f4").reshape(-1, 3)])
+    return np.unique(both, axis=0)
+
+
 def _is_the_mesh_of(body: bytes, shape, name: str) -> None:
-    """The bytes hold this solid's mesh, made fresh: every array to the last bit, and every other field."""
+    """The bytes hold a mesh of this solid as it is now: the corners of a fresh mesh, and every other field.
+
+    The corners are compared and not the order of the triangles, because a fresh
+    mesh can cut a flat face into other triangles than a mesh the server kept and
+    moved. Lengths are compared to a thousandth of a millimeter, because the
+    numbers are kept to four decimal places. The moves in these tests are 5 mm
+    and more.
+    """
     fresh = {**kernel.viewport_mesh(shape), "part": name}
     answer = read_part_answer(body)
     assert answer["ok"] is True
@@ -51,9 +80,14 @@ def _is_the_mesh_of(body: bytes, shape, name: str) -> None:
     assert set(result) == set(fresh)
     for key, kind in _ARRAYS.items():
         assert result[key].dtype == np.dtype(kind)
-        assert np.array_equal(result[key], np.asarray(fresh[key], dtype=kind))
+    assert len(result["positions"]) == len(result["normals"]) == 9 * len(result["triangle_face"])
+    assert len(result["triangle_face"]) == len(fresh["triangle_face"])
+    sent, made = _corners(result["positions"], result["normals"]), _corners(fresh["positions"], fresh["normals"])
+    apart = np.abs(sent[:, None, :] - made[None, :, :]).max(axis=2)
+    assert apart.min(axis=1).max() < _CLOSE, "a corner that was sent is not in the fresh mesh"
+    assert apart.min(axis=0).max() < _CLOSE, "a corner of the fresh mesh was not sent"
     rest = {key: value for key, value in fresh.items() if key not in _ARRAYS}
-    assert {key: result[key] for key in rest} == json.loads(json.dumps(rest))
+    assert _same({key: result[key] for key in rest}, json.loads(json.dumps(rest)))
 
 
 def _live(workspace, name: str):
