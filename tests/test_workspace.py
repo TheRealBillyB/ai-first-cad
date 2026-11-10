@@ -16,7 +16,7 @@ from aicad.fea import select_faces
 from aicad.kernel import describe_faces
 from aicad.llm import public_settings, run_turn, save_settings, tool_specs
 from aicad.refs import ref_to_selector
-from aicad.workspace import Workspace
+from aicad.workspace import Workspace, read_part_answer
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -172,10 +172,10 @@ def test_http_command_and_mesh_share_the_document(tmp_path, monkeypatch):
             "/api/mesh?part=plate",
             headers={"Origin": f"http://127.0.0.1:{port}", "X-Aicad-Token": server.page_token},
         )
-        body = json.loads(connection.getresponse().read().decode("utf-8"))
+        body = read_part_answer(connection.getresponse().read())
         connection.close()
         assert body["ok"] is True
-        assert body["result"]["triangle_face"]
+        assert len(body["result"]["triangle_face"])
         assert any(face["ref"].startswith("plane/") for face in body["result"]["faces"])
         state = client.execute("get_state")
         assert state["parts"][0]["name"] == "plate"

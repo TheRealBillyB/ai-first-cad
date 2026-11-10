@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 from aicad import kernel, mesh_cache
-from aicad.workspace import Workspace
+from aicad.workspace import Workspace, read_part_answer
 
 _BOX = [{"op": "add", "shape": "box", "size": [10, 6, 4]}]
 
@@ -227,4 +228,9 @@ def test_undoing_a_move_reads_the_restored_mesh_from_disk(project):
     assert (mesh_cache.folder() / f"{mesh_cache.content_key(restored)}.viewport.json").is_file()
     _tag, body = workspace.mesh_answer("part", "arm")
     fresh = {**kernel.viewport_mesh(restored), "part": "arm"}
-    assert json.loads(body)["result"] == json.loads(json.dumps(fresh))
+    sent = read_part_answer(body)["result"]
+    # The long arrays are sent as 32-bit numbers. Everything else is JSON.
+    arrays = {key: sent.pop(key) for key in ("positions", "normals", "triangle_face")}
+    for key, array in arrays.items():
+        assert np.array_equal(array, np.asarray(fresh.pop(key), dtype=array.dtype))
+    assert sent == json.loads(json.dumps(fresh))
