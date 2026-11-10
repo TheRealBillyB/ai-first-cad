@@ -312,7 +312,8 @@ async function meshAnswer(url) {
   const headers = held ? { "If-None-Match": held.tag } : {};
   const response = await apiFetch(url, { headers, cache: "no-store" });
   if (response.status === 304 && held) return { ok: true, result: held.result, tag: held.tag };
-  const body = await response.json();
+  const binary = (response.headers.get("Content-Type") || "").startsWith("application/octet-stream");
+  const body = binary ? meshFromBytes(await response.arrayBuffer()) : await response.json();
   if (!body.ok) return { ok: false, error: body.error };
   const tag = response.headers.get("ETag");
   // One assembly at a time: another assembly's pieces would only hold memory.
@@ -324,6 +325,22 @@ async function meshAnswer(url) {
   }
   if (tag) meshAnswers.set(url, { tag, result: body.result });
   return { ok: true, result: body.result, tag };
+}
+
+// A part's mesh comes as bytes: the header's length, a JSON header, then each number
+// array the header names, as 4-byte little-endian numbers. The arrays are read where
+// they lie, with no parse and no copy. Bytes shorter than the header says throw here,
+// so a cut-off answer is an error and never a part with some of its triangles.
+function meshFromBytes(buffer) {
+  const length = new DataView(buffer).getUint32(0, true);
+  const body = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, length)));
+  let offset = 4 + length;
+  for (const [name, kind, count] of body.arrays) {
+    body.result[name] = kind === "i4" ? new Int32Array(buffer, offset, count) : new Float32Array(buffer, offset, count);
+    offset += 4 * count;
+  }
+  if (offset !== buffer.byteLength) throw new Error("A part's mesh came with more bytes than its header names.");
+  return body;
 }
 
 function partMeshUrl(name) {

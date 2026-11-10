@@ -53,6 +53,53 @@ def _encoded_answer(result: dict) -> bytes:
     return b'{"ok":true,"result":' + _compact(result) + b"}"
 
 
+# The three long arrays of a part's mesh, in the order their bytes are sent.
+_PART_ARRAYS = (("positions", "<f4"), ("normals", "<f4"), ("triangle_face", "<i4"))
+
+
+def _encoded_part(mesh: dict) -> bytes:
+    """One part's ``/api/mesh`` answer as bytes: a header length, a JSON header, then the number arrays.
+
+    The header is the JSON answer without the three long arrays, and ``arrays``
+    names each one, its type, and its count in the order their bytes follow.
+    Every array is 4-byte little-endian numbers, the same 32-bit values the
+    page drew from the JSON numbers. The header is padded with spaces to a
+    multiple of 4 bytes, so the page reads each array where it lies.
+    """
+    import numpy as np
+
+    blocks = [np.asarray(mesh[name], dtype=kind) for name, kind in _PART_ARRAYS]
+    sent = {name for name, _kind in _PART_ARRAYS}
+    header = _compact(
+        {
+            "ok": True,
+            "result": {key: value for key, value in mesh.items() if key not in sent},
+            "arrays": [[name, kind[1:], int(block.size)] for (name, kind), block in zip(_PART_ARRAYS, blocks)],
+        }
+    )
+    header += b" " * (-len(header) % 4)
+    return len(header).to_bytes(4, "little") + header + b"".join(block.tobytes() for block in blocks)
+
+
+def read_part_answer(body: bytes) -> dict:
+    """The answer ``_encoded_part`` wrote, with each array as a numpy array. Raises ``ValueError`` on other bytes."""
+    import numpy as np
+
+    length = int.from_bytes(body[:4], "little")
+    if len(body) < 4 or length % 4 or 4 + length > len(body):
+        raise ValueError("These bytes are not a part's mesh answer.")
+    answer = json.loads(body[4 : 4 + length].decode("utf-8"))
+    offset = 4 + length
+    for name, kind, count in answer.pop("arrays"):
+        if kind not in ("f4", "i4") or offset + 4 * count > len(body):
+            raise ValueError("These bytes are not a part's mesh answer.")
+        answer["result"][name] = np.frombuffer(body, dtype="<" + kind, count=count, offset=offset)
+        offset += 4 * count
+    if offset != len(body):
+        raise ValueError("These bytes are not a part's mesh answer.")
+    return answer
+
+
 @dataclass(frozen=True)
 class Command:
     name: str
@@ -444,13 +491,14 @@ class Workspace:
         ``kind`` is ``part``, ``scene``, ``pieces`` (each part of an assembly
         in its own frame), or ``pose`` (where each instance sits). A joint
         change leaves the pieces as they were, so the page fetches only the pose.
+        A ``part`` answer is bytes that ``read_part_answer`` reads. The others are JSON.
         """
         with self._lock:
             if kind == "part":
                 signature: tuple = (self.document._get(name).shape,)  # noqa: SLF001
 
                 def build() -> bytes:
-                    return _encoded_answer(self.mesh(name))
+                    return _encoded_part(self.mesh(name))
 
             elif kind == "scene":
                 signature = self._scene_signature()
