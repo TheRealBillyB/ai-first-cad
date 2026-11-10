@@ -5,7 +5,7 @@ This note records where the time goes in each app interaction, from the click to
 ## What was measured
 
 - **Project:** the 38-part finger rig. Its model view is 257 thousand triangles, 35.8 MB as JSON. Its `session.json` is 329 KB.
-- **Machine:** one Windows 10 desktop with 24 logical cores and a 240 Hz display. Every number here is from that machine.
+- **Machine:** one Windows desktop. Every number here is from that machine.
 - **Baseline:** main at `86c2a20`, which includes pull requests #481 to #490.
 - **The moved part:** `proximal`, the largest link. Its mesh is 3.08 MB as JSON.
 
@@ -246,7 +246,7 @@ The page's numbers are higher than the stage medians, and the earlier guess was 
 | The scene list when nothing changed, asked from the page | 1.4–2.7 | 7–20 |
 | `place_part` over HTTP | 49 | 88 |
 
-The cause was not traced. The processor has 8 fast cores and 16 slow ones, the power plan is Balanced, and Windows 10 is older than that kind of processor, so a thread that wakes on a slow core at a low clock is the likely one. No code in aicad causes it, and none was changed for it.
+The cause was not traced. No code in aicad causes it, and none was changed for it.
 
 It matters for reading the numbers. A click always follows a pause, so the browser numbers carry this cost and the stage medians do not. The targets are judged on the browser numbers.
 

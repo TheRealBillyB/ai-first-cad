@@ -54,8 +54,6 @@ EXACT = frozenset(
 PREFIXES = (
     "docs/decisions/",
     "docs/guides/",
-    # Engineering write-ups of measurements. The top-level notes/ folder stays local only.
-    "docs/notes/",
     "docs/reference/",
     "docs/roadmap/",
     "docs/security/",
