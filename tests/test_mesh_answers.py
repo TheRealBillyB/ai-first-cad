@@ -106,16 +106,22 @@ def test_a_joint_change_meshes_nothing_and_changes_only_the_pose(rig):
     assert instances["arm"]["matrix"][0][0] == pytest.approx(np.cos(np.radians(40)), abs=1e-6)
 
 
-def test_a_move_meshes_only_the_part_that_moved(rig):
+def test_a_move_meshes_nothing_and_names_each_face_where_it_now_is(rig):
     workspace, counted, tags = rig
+    before = workspace.mesh("arm")
+    counted.reset()
     workspace.execute("place_part", {"name": "arm", "position": [30, 0, 0], "rotation_deg": [0, 0, 0]}, source="ui")
     scene_tag, scene = workspace.mesh_answer("scene")
     pieces_tag, _pieces = workspace.mesh_answer("pieces", "rig")
     arm = workspace.document._get("arm")  # noqa: SLF001
-    # A face reference names where the face is, so the moved part is meshed again. Only it.
-    assert counted.viewport == [id(arm.shape)]
+    # A move changes no face, so the mesh is carried there and nothing is meshed.
+    assert counted.viewport == []
     assert counted.tessellate == []
     assert scene_tag != tags["scene"]
+    # A face reference names where the face is, so each one is the moved solid's own.
+    moved = workspace.mesh("arm")
+    assert [face["ref"] for face in moved["faces"]] == [face["ref"] for face in kernel.describe_faces(arm.shape)]
+    assert [face["ref"] for face in moved["faces"]] != [face["ref"] for face in before["faces"]]
     # The assembly places each part's own solid, which a move in Model leaves alone.
     assert pieces_tag == tags["pieces"]
     box = json.loads(scene)["result"]["bounding_box"]
