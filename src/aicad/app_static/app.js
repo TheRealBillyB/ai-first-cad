@@ -312,7 +312,8 @@ async function meshAnswer(url) {
   const headers = held ? { "If-None-Match": held.tag } : {};
   const response = await apiFetch(url, { headers, cache: "no-store" });
   if (response.status === 304 && held) return { ok: true, result: held.result, tag: held.tag };
-  const body = await response.json();
+  const binary = (response.headers.get("Content-Type") || "").startsWith("application/octet-stream");
+  const body = binary ? meshFromBytes(await response.arrayBuffer()) : await response.json();
   if (!body.ok) return { ok: false, error: body.error };
   const tag = response.headers.get("ETag");
   // One assembly at a time: another assembly's pieces would only hold memory.
@@ -324,6 +325,22 @@ async function meshAnswer(url) {
   }
   if (tag) meshAnswers.set(url, { tag, result: body.result });
   return { ok: true, result: body.result, tag };
+}
+
+// A part's mesh comes as bytes: the header's length, a JSON header, then each number
+// array the header names, as 4-byte little-endian numbers. The arrays are read where
+// they lie, with no parse and no copy. Bytes shorter than the header says throw here,
+// so a cut-off answer is an error and never a part with some of its triangles.
+function meshFromBytes(buffer) {
+  const length = new DataView(buffer).getUint32(0, true);
+  const body = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, length)));
+  let offset = 4 + length;
+  for (const [name, kind, count] of body.arrays) {
+    body.result[name] = kind === "i4" ? new Int32Array(buffer, offset, count) : new Float32Array(buffer, offset, count);
+    offset += 4 * count;
+  }
+  if (offset !== buffer.byteLength) throw new Error("A part's mesh came with more bytes than its header names.");
+  return body;
 }
 
 function partMeshUrl(name) {
@@ -1948,9 +1965,37 @@ function derived(key, inputs, build) {
   return data;
 }
 
-function dragKey() {
+// The shift one part is drawn with before the model has it: while the part is
+// dragged, and from the moment a move is sent until the model answers. A move
+// that was sent belongs to the mesh on screen when it was sent, so the moved
+// mesh the server sends back is drawn as it is and never shifted again.
+function shownShift(mesh) {
   const offset = ui.dragOffset;
+  if (!offset || (offset.over && offset.over !== mesh)) return null;
+  return offset;
+}
+
+function dragKey() {
+  const offset = shownShift(ui.mesh);
   return offset ? JSON.stringify([offset.part, offset.delta]) : "";
+}
+
+// Draw a part shifted now, send the move, and keep the part drawn there until the
+// model answers. An orbit in between draws it in the same place. When the moved
+// mesh arrives it is drawn in place of this one. A move that fails, or that
+// leaves the same mesh on screen, puts the part back where the model has it at once.
+async function showMoved(part, delta, send) {
+  const shown = { part, delta, over: ui.mesh };
+  ui.dragOffset = shown;
+  drawSolid();
+  try {
+    await send();
+  } finally {
+    if (ui.dragOffset === shown) {
+      ui.dragOffset = null;
+      if (ui.mesh === shown.over) drawSolid();
+    }
+  }
 }
 
 function vertexColors(mesh) {
@@ -1996,8 +2041,9 @@ function edgeSegments(mesh) {
 function edgePoints(mesh) {
   const points = new Float32Array(edgeSegments(mesh) * 6);
   let at = 0;
+  const shift = shownShift(mesh);
   mesh.edges.forEach((edge) => {
-    const delta = ui.dragOffset && edge.part === ui.dragOffset.part ? ui.dragOffset.delta : null;
+    const delta = shift && edge.part === shift.part ? shift.delta : null;
     const dx = delta ? delta[0] : 0;
     const dy = delta ? delta[1] : 0;
     const dz = delta ? delta[2] : 0;
@@ -2140,10 +2186,11 @@ function viewScale() {
 
 function shiftedPositions() {
   const positions = new Float32Array(ui.mesh.positions);
-  if (!ui.dragOffset || !ui.mesh.triangle_part) return positions;
-  const delta = ui.dragOffset.delta;
+  const shift = shownShift(ui.mesh);
+  if (!shift || !ui.mesh.triangle_part) return positions;
+  const delta = shift.delta;
   ui.mesh.triangle_part.forEach((name, index) => {
-    if (name !== ui.dragOffset.part) return;
+    if (name !== shift.part) return;
     for (let vertex = 0; vertex < 3; vertex += 1) {
       const offset = (index * 3 + vertex) * 3;
       positions[offset] += delta[0];
@@ -2267,18 +2314,15 @@ async function onPointerUp(event) {
   }
   if (drag.mode === "move") {
     const offset = ui.dragOffset;
-    ui.dragOffset = null;
-    if (drag.moved && offset) {
+    if (drag.moved && offset && !offset.over) {
       const position = add(drag.origin, offset.delta).map((value) => Math.round(value * 1000) / 1000);
-      try {
+      await showMoved(drag.part, offset.delta, async () => {
         await command("place_part", { name: drag.part, position, rotation_deg: drag.rotation });
         ui.parameterKey = "";
         await refresh();
-      } catch (error) {
-        drawSolid();
-        throw error;
-      }
+      });
     } else {
+      if (offset && !offset.over) ui.dragOffset = null;
       drawSolid();
     }
     return;
@@ -3075,14 +3119,36 @@ async function commitPlacement() {
     await restoreShape();
     throw new Error("Placement needs numbers.");
   }
+  const name = ui.part;
+  const shift = placementShift(name, position, rotation);
+  let placed = false;
+  const send = async () => {
+    await command("place_part", { name, position, rotation_deg: rotation });
+    placed = true;
+    ui.parameterKey = "";
+    await refresh();
+  };
   try {
-    await command("place_part", { name: ui.part, position, rotation_deg: rotation });
+    if (shift) await showMoved(name, shift, send);
+    else await send();
   } catch (error) {
-    await restoreShape();
+    if (!placed) await restoreShape();
     throw error;
   }
-  ui.parameterKey = "";
-  await refresh();
+}
+
+// How far a typed position shifts a part that keeps its turn. Null when the move
+// is more than a shift (a new turn, or a mount given up) or when the numbers the
+// editor holds are not this part's at this revision, so the page waits for the model.
+function placementShift(name, position, rotation) {
+  if (ui.page !== "model" || ui.viewAssembly || !ui.mesh || !ui.mesh.triangle_part) return null;
+  if (!ui.state || ui.parameterKey !== `${name}:${ui.state.revision}`) return null;
+  const placement = ui.parameters && ui.parameters.placement;
+  if (!placement || placement.mount || !Array.isArray(placement.position)) return null;
+  const turn = placement.rotation_deg || [0, 0, 0];
+  if (rotation.some((value, index) => value !== Number(turn[index] || 0))) return null;
+  const delta = position.map((value, index) => value - Number(placement.position[index]));
+  return delta.every(Number.isFinite) ? delta : null;
 }
 
 async function addMeasurePoint(hit) {

@@ -53,6 +53,53 @@ def _encoded_answer(result: dict) -> bytes:
     return b'{"ok":true,"result":' + _compact(result) + b"}"
 
 
+# The three long arrays of a part's mesh, in the order their bytes are sent.
+_PART_ARRAYS = (("positions", "<f4"), ("normals", "<f4"), ("triangle_face", "<i4"))
+
+
+def _encoded_part(mesh: dict) -> bytes:
+    """One part's ``/api/mesh`` answer as bytes: a header length, a JSON header, then the number arrays.
+
+    The header is the JSON answer without the three long arrays, and ``arrays``
+    names each one, its type, and its count in the order their bytes follow.
+    Every array is 4-byte little-endian numbers, the same 32-bit values the
+    page drew from the JSON numbers. The header is padded with spaces to a
+    multiple of 4 bytes, so the page reads each array where it lies.
+    """
+    import numpy as np
+
+    blocks = [np.asarray(mesh[name], dtype=kind) for name, kind in _PART_ARRAYS]
+    sent = {name for name, _kind in _PART_ARRAYS}
+    header = _compact(
+        {
+            "ok": True,
+            "result": {key: value for key, value in mesh.items() if key not in sent},
+            "arrays": [[name, kind[1:], int(block.size)] for (name, kind), block in zip(_PART_ARRAYS, blocks)],
+        }
+    )
+    header += b" " * (-len(header) % 4)
+    return len(header).to_bytes(4, "little") + header + b"".join(block.tobytes() for block in blocks)
+
+
+def read_part_answer(body: bytes) -> dict:
+    """The answer ``_encoded_part`` wrote, with each array as a numpy array. Raises ``ValueError`` on other bytes."""
+    import numpy as np
+
+    length = int.from_bytes(body[:4], "little")
+    if len(body) < 4 or length % 4 or 4 + length > len(body):
+        raise ValueError("These bytes are not a part's mesh answer.")
+    answer = json.loads(body[4 : 4 + length].decode("utf-8"))
+    offset = 4 + length
+    for name, kind, count in answer.pop("arrays"):
+        if kind not in ("f4", "i4") or offset + 4 * count > len(body):
+            raise ValueError("These bytes are not a part's mesh answer.")
+        answer["result"][name] = np.frombuffer(body, dtype="<" + kind, count=count, offset=offset)
+        offset += 4 * count
+    if offset != len(body):
+        raise ValueError("These bytes are not a part's mesh answer.")
+    return answer
+
+
 @dataclass(frozen=True)
 class Command:
     name: str
@@ -212,8 +259,9 @@ class Workspace:
         with self._lock:
             if not self._undo:
                 raise GeometryError("Nothing to undo.")
-            self._redo.append(self._snapshot())
-            self._restore(self._undo.pop())
+            now = self._snapshot()
+            self._redo.append(now)
+            self._restore(self._undo.pop(), now)
             self.geometry_revision += 1
             self.event_id += 1
             result = {"undone": True, "revision": self.geometry_revision}
@@ -228,8 +276,9 @@ class Workspace:
         with self._lock:
             if not self._redo:
                 raise GeometryError("Nothing to redo.")
-            self._undo.append(self._snapshot())
-            self._restore(self._redo.pop())
+            now = self._snapshot()
+            self._undo.append(now)
+            self._restore(self._redo.pop(), now)
             self.geometry_revision += 1
             self.event_id += 1
             result = {"redone": True, "revision": self.geometry_revision}
@@ -442,13 +491,14 @@ class Workspace:
         ``kind`` is ``part``, ``scene``, ``pieces`` (each part of an assembly
         in its own frame), or ``pose`` (where each instance sits). A joint
         change leaves the pieces as they were, so the page fetches only the pose.
+        A ``part`` answer is bytes that ``read_part_answer`` reads. The others are JSON.
         """
         with self._lock:
             if kind == "part":
                 signature: tuple = (self.document._get(name).shape,)  # noqa: SLF001
 
                 def build() -> bytes:
-                    return _encoded_answer(self.mesh(name))
+                    return _encoded_part(self.mesh(name))
 
             elif kind == "scene":
                 signature = self._scene_signature()
@@ -581,29 +631,36 @@ class Workspace:
     def _snapshot(self) -> dict:
         return {
             "session": self.document.session_payload(),
-            "documents": {
-                name: self._read_note(name)
-                for name in self._document_names()
-            },
+            "documents": self._note_texts(),
             "requirements": copy.deepcopy(self._requirements),
             "selection": copy.deepcopy(self.selection),
             "plans": plan_files(self.root),
             "plan_ledger": ledger_snapshot(self.root),
         }
 
-    def _restore(self, snapshot: dict) -> None:
+    def _restore(self, snapshot: dict, now: dict) -> None:
+        """Put the model, the notes, the requirements, and the plans back as ``snapshot`` holds them.
+
+        ``now`` is the snapshot just taken of how they are. A note whose text is the
+        same in both is not written again, and neither is a requirement list that is
+        the same in both. Undoing a move then writes the session and nothing else.
+        """
         from aicad.paths import publish_text
 
         self.document.replace_session(snapshot["session"])
-        documents = self._notes_dir()
-        keep = set(snapshot["documents"])
-        for path in documents.glob("*.md"):
-            if path.name not in keep:
-                path.unlink()
-        for name, text in snapshot["documents"].items():
-            publish_text(documents / name, text)
+        if snapshot["documents"] != now["documents"]:
+            documents = self._notes_dir()
+            keep = set(snapshot["documents"])
+            for path in documents.glob("*.md"):
+                if path.name not in keep:
+                    path.unlink()
+            for name, text in snapshot["documents"].items():
+                if now["documents"].get(name) != text:
+                    publish_text(documents / name, text)
+        requirements_changed = snapshot["requirements"] != now["requirements"]
         self._requirements = copy.deepcopy(snapshot["requirements"])
-        self._write_requirements()
+        if requirements_changed:
+            self._write_requirements()
         self.selection = copy.deepcopy(snapshot["selection"])
         if "plans" in snapshot:
             restore_plan_files(self.root, snapshot["plans"])
@@ -666,12 +723,24 @@ class Workspace:
             return []
         return sorted(path.name for path in self._notes_dir().glob("*.md"))
 
-    def _document_path(self, name: str) -> Path:
+    def _note_texts(self) -> dict[str, str]:
+        """Every note's text, for undo.
+
+        The notes folder is checked once for all of them. Each note is still read
+        through its own check, which does not follow a link.
+        """
+        documents = self.root / "documents"
+        if not documents.exists() and not documents.is_symlink():
+            return {}
+        folder = self._notes_dir()
+        return {name: self._read_note(name, folder) for name in sorted(path.name for path in folder.glob("*.md"))}
+
+    def _document_path(self, name: str, folder: Path | None = None) -> Path:
         if not isinstance(name, str) or not _DOC_NAME.match(name):
             raise GeometryError("A document name looks like decisions.md: letters, numbers, underscore, hyphen.")
-        return self._notes_dir() / name
+        return (folder if folder is not None else self._notes_dir()) / name
 
-    def _read_note(self, name: str) -> str:
+    def _read_note(self, name: str, folder: Path | None = None) -> str:
         from aicad.paths import read_checked_text
 
         from aicad.labels import strip_hidden
@@ -679,7 +748,7 @@ class Workspace:
         return strip_hidden(
             read_checked_text(
                 self.root,
-                self._document_path(name),
+                self._document_path(name, folder),
                 maximum=_MAX_TEXT_FILE,
                 label="Note",
                 error=GeometryError,
