@@ -899,7 +899,8 @@ def _handler(session: Workspace):
             ``scene=1`` is every part in one mesh. ``scene=parts`` lists the built
             parts with the tag of each one's ``part=NAME`` mesh. The page reads
             that list and fetches only a part whose tag it does not hold, so a
-            move sends the moved part. ``assembly=NAME`` is each part of that
+            move sends the moved part. A part's mesh is sent as bytes: a header
+            length, a JSON header, and its number arrays. ``assembly=NAME`` is each part of that
             assembly in its own frame, and ``pose=NAME`` is where each instance
             sits, so a joint change sends only the pose. A page that sends the
             tag it holds in ``If-None-Match`` gets 304 and no body when nothing changed.
@@ -927,7 +928,9 @@ def _handler(session: Workspace):
                 self._security_headers()
                 self.end_headers()
                 return
-            self.send_header("Content-Type", "application/json; charset=utf-8")
+            # A part's mesh is a JSON header and then its number arrays as bytes.
+            binary = kind == "part"
+            self.send_header("Content-Type", "application/octet-stream" if binary else "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self._security_headers()
             self.end_headers()

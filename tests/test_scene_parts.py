@@ -18,7 +18,7 @@ import pytest
 from aicad import kernel
 from aicad.app import make_server
 from aicad.studio import part_color
-from aicad.workspace import Workspace
+from aicad.workspace import Workspace, read_part_answer
 
 STATIC = Path(__file__).resolve().parents[1] / "src" / "aicad" / "app_static"
 _BOX = [{"op": "add", "shape": "box", "size": [10, 6, 4]}]
@@ -47,9 +47,10 @@ def test_the_scene_list_names_each_part_mesh_by_its_tag(tmp_path, monkeypatch):
     _tag, moved_body = workspace.mesh_answer("scene_parts")
     moved = {entry["name"]: entry["tag"] for entry in json.loads(moved_body)["result"]["parts"]}
     before = {entry["name"]: entry["tag"] for entry in listed["parts"]}
-    # Only the moved part has a new tag, and only it was meshed.
+    # Only the moved part has a new tag. Its mesh is carried to the new place, so nothing was meshed.
     assert [name for name in moved if moved[name] != before[name]] == ["arm"]
-    assert meshed == [id(workspace.document._get("arm").shape)]  # noqa: SLF001
+    assert meshed == []
+    assert workspace.mesh("arm")["bounding_box"]["min"][0] == pytest.approx(15)
 
 
 def _get(server, path, tag=None):
@@ -101,7 +102,7 @@ def test_after_a_move_only_the_moved_part_is_sent(server):
     # The page asks only for lid. The others, asked anyway, are 304 with no body.
     assert _get(server, "/api/mesh?part=frame", held["frame"])[:3:2] == (304, b"")
     lid_status, _tag, lid = _get(server, "/api/mesh?part=lid", held["lid"])
-    assert lid_status == 200 and json.loads(lid)["result"]["bounding_box"]["min"][2] == pytest.approx(10)
+    assert lid_status == 200 and read_part_answer(lid)["result"]["bounding_box"]["min"][2] == pytest.approx(10)
 
 
 _PROBE = r"""

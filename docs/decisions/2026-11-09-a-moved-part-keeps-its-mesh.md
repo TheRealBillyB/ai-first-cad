@@ -1,0 +1,7 @@
+---
+date: 2026-11-09
+---
+
+# A moved part keeps its mesh
+
+A move was the one change that meshed a part without changing a face of it: the placed solid is a new solid, so its triangles, its face and edge records, and its key in the mesh folder were all made again, which on a 38-part finger rig was 0.52 s of the 0.8 s a move took, plus a new 3 MB file in the mesh folder for every place the part had ever been. The mesh of a placed solid is now the mesh of the solid it was placed from, carried by the same rotation and translation, with each face and edge record and each reference moved the same way, so a move meshes nothing, describes nothing, and writes nothing, and the mesh answer after a move takes 0.06 s. The carried arrays are kept on the solid they were made from and nowhere else, so a rebuilt part, which is a new solid, starts without them, and a rebuild that fails leaves the stored solid and its mesh as they were. Two things are still read from the moved solid, because carrying them would be a guess: the bounding box of a turned solid, and the faces of a solid turned so that an axis lies evenly between two coordinate axes, where the sign and the name of the axis in a reference come from rounding noise. The stored numbers are already rounded, so a carried coordinate can differ from one read off the moved solid by one step of that rounding, 0.0001 mm in a triangle and 0.000001 mm in a record, which a reference tolerates because it is matched to the nearest face.

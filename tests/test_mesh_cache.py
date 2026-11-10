@@ -81,18 +81,23 @@ def test_opening_the_project_again_meshes_nothing(tmp_path, monkeypatch, counted
     assert counted == {"viewport": 0, "tessellate": 0}
 
 
-def test_a_moved_part_is_meshed_where_it_now_is(tmp_path, monkeypatch, counted):
+def test_a_moved_part_is_shown_where_it_now_is(tmp_path, monkeypatch, counted):
+    """A move changes no face, so the mesh is carried to the new place. The stored one is not shown there."""
     workspace = _project(tmp_path / "project", monkeypatch)
-    _meshes(workspace)
+    before = json.loads(_meshes(workspace)["pin"])
     counted.update(viewport=0, tessellate=0)
     workspace.execute("place_part", {"name": "pin", "position": [-9, 0, 3], "rotation_deg": [0, 0, 0]}, source="ui")
     moved = workspace.mesh("pin")
-    assert counted["viewport"] >= 1
+    assert counted["viewport"] == 0
     assert moved["bounding_box"]["min"][0] == pytest.approx(-11)
-    # Moved back, it is the solid that was meshed before.
-    counted.update(viewport=0, tessellate=0)
+    assert min(moved["positions"][0::3]) == pytest.approx(-11, abs=1e-3)
+    assert min(before["positions"][0::3]) == pytest.approx(3, abs=1e-3)
+    assert moved["faces"] != before["faces"]
+    # Moved back, it is where it was meshed before.
     workspace.execute("place_part", {"name": "pin", "position": [5, 0, 3], "rotation_deg": [0, 0, 0]}, source="ui")
-    assert workspace.mesh("pin")["bounding_box"]["min"][0] == pytest.approx(3)
+    again = workspace.mesh("pin")
+    assert again["bounding_box"]["min"][0] == pytest.approx(3)
+    assert min(again["positions"][0::3]) == pytest.approx(3, abs=1e-3)
     assert counted["viewport"] == 0
 
 
