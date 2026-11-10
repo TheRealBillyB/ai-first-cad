@@ -20,6 +20,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 - The app's geometry runs in a second process, so the page keeps answering during a long rebuild or solve. Gmsh loads in that process on Windows, so the Strength solve no longer hangs.
 - The page answers at once and says the project is opening while it loads.
 - Meshing for the 3D view reads OpenCascade's triangles straight into arrays, with the same result. On a 38-part finger rig, meshing every part went from 9.1 s to 5.0 s, and the assembly pieces from 4.3 s to 1.8 s.
+- Moving a part no longer meshes it again. Its mesh, and each face and edge reference, is carried to the new place from the mesh the part already has. On the 38-part finger rig, the server's mesh answer after a move went from 0.52 s to 0.06 s.
 - One dark theme, with a grid and origin axes in the model view.
 - Model and Assembly are one workspace with one 3D view. Assembly shows the placed, colored instances to turn and click, moves with its joint sliders, and opens an instance's part with Edit part. A click there no longer reports a face reference error, and driven and fixed joints are marked.
 - A joint change in Assembly sends only where each instance sits, and the page moves the parts it already has. A refresh where nothing changed sends no mesh. Moving a part meshes only that part again. On a 38-part finger rig, a slider release went from 4.2 s and 45 MB to 0.13 s and 21 KB, and a move from 10.8 s to 2.2 s.
