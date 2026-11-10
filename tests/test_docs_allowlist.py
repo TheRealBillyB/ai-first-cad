@@ -37,6 +37,7 @@ def test_future_software_docs_are_allowed():
         [
             ("docs/guides/install.md", "Install from a virtualenv.\n"),
             ("docs/reference/cli.md", "The command list.\n"),
+            ("docs/notes/profiling-2026-11.md", "Measured times.\n"),
             ("docs/roadmap/motion.md", "Motion is queued.\n"),
             ("docs/decisions/2026-10-24-example.md", "A decision.\n"),
             ("docs/tools/inspect-part.md", "A tool.\n"),
@@ -92,8 +93,9 @@ def test_private_and_notes_cannot_be_committed():
     errors = _check().scan_files(
         [
             ("private/plan.md", "local only\n"),
+            ("notes/profiling.md", "local only\n"),
             ("notes/todo.txt", "local only\n"),
         ]
     )
-    assert len(errors) == 2
+    assert len(errors) == 3
     assert all("cannot be committed" in error for error in errors)

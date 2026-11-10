@@ -1,0 +1,138 @@
+# Profile of the app, November 2026
+
+This note records where the time goes in each app interaction, from the click to the settled page. It was measured before any fix, and again after four fixes that each have their own pull request.
+
+## What was measured
+
+- **Project:** the 38-part finger rig. Its model view is 257 thousand triangles, 35.8 MB as JSON. Its `session.json` is 329 KB.
+- **Machine:** one Windows 10 desktop with 24 logical cores and a 240 Hz display. Every number here is from that machine.
+- **Baseline:** main at `86c2a20`, which includes pull requests #481 to #490.
+- **The moved part:** `proximal`, the largest link. Its mesh is 3.08 MB as JSON.
+
+Three tools were used:
+
+- **Server stages.** Each stage function was wrapped with a `time.perf_counter` pair and run in process, seven runs each. The tables give medians. Stage times are inclusive, so a stage that calls another includes it.
+- **cProfile,** to find which functions to wrap. Its times are not used here. It made pure-Python work look two to four times slower than it is: it showed the session save at 50 ms where the wall clock says 21 to 29 ms.
+- **The page.** The page's own functions and `fetch` were wrapped with `performance.now()`, and the Performance panel confirmed the frame times. "Shown" is the end of the first draw that has the server's answer in it. "Settled" is when the side panel and its numbers are also done.
+
+## The original complaint
+
+Moving one part used to hold Python at about 90% of a core for about 30 seconds. On the baseline, one move costs 0.75 CPU-seconds in the worker and 0.80 to 0.95 s on the wall clock. The busiest second is 74% of one core. The 30-second case was fixed by #481 to #490. What was left is the 0.8 s below.
+
+## Before: main at `86c2a20`
+
+Times are in milliseconds. A range is the spread over runs in the browser.
+
+| Interaction | Total | Top costs |
+|---|---|---|
+| Move a part (settled) | 802–945 | mesh the moved solid again 392, three bounding boxes of the moved solid 108, write its mesh as JSON 91, solve and draw every sketch 56, describe its faces again 40 |
+| Undo a move (settled) | 432–449 | place the part again 71 (bounding box 36, volume 14), solve and draw every sketch 55, write its mesh as JSON 44, bounding box for the part list 35, read the stored mesh back from disk 29 |
+| Redo a move (settled) | 428–460 | the same five as undo: 70, 56, 43, 35, 31 |
+| Orbit, one frame | 0.2 (worst 2.0) | no frame of 240 took longer than 16.7 ms |
+| Pan, one frame | 0.2 (worst 1.5) | no frame of 240 took longer than 16.7 ms |
+| Drag a part, one frame | 5.4 (worst 9.7) | shift the part's corners 4.4, upload them 1.0 |
+| Open the project, cold, to the first frame | about 19,000 | import the geometry libraries 6,553, open the workspace 5,621, mesh 38 parts 4,557, measure 38 parts 1,160, write 35 MB of mesh as JSON 1,144 |
+| Open the project, page side, server warm | 234–271 | fetch and parse 42 mesh answers 190, read the state 38, draw 23, join the parts into one scene 16 |
+| Add a catalog part (M3 screw) | 181–272 | the insert command 54–92, read the state 69–88 (sketches 56), draw 22–26, join the scene 15–20, list the scene 6–28 |
+| Release a joint slider | 186–194 | read the state 66–83 (sketches 56), `set_joint` 55–68, pose the pieces 20–21, draw 12–19, fetch the pose 5–7 |
+| Switch to Assembly, first time | 292 | fetch the pieces 213 (6.5 MB), parse them 51, pose them 23, draw 18, fetch the pose 10 |
+| Switch to Assembly, again | 47 | pose the pieces 24, draw 15, two answers of "not changed" 8 |
+| Switch to Model | 39 | join the scene 17, draw 16, one answer of "not changed" 6 |
+
+### One move on main, step by step
+
+| Step | ms | Where the time is |
+|---|---|---|
+| `place_part` command | 155 | bounding box asked twice 72, volume 14, session save 29, copy for undo 18, the move itself under 10 |
+| Read the state | 65 | solve and draw every sketch 56 |
+| List the scene | 509 | mesh the moved solid 392, write its mesh as JSON 91, describe its faces 40, bounding box 36 |
+| Fetch the moved part | 9–19 | 3.08 MB over the loopback |
+| Parse it | 17 | `JSON.parse` |
+| Join the scene | 17 | copy 38 parts into one set of arrays |
+| Draw | 19 | upload the arrays and draw |
+| Read the part's numbers | 9 | `list_parameters` |
+
+### The same move by layer
+
+| Layer | ms | Share |
+|---|---|---|
+| OpenCascade and build123d: mesh, describe faces, bounding boxes, volume | 554 | 64% |
+| JSON and HTTP: encode, parse, five requests | 150 | 17% |
+| Python code in aicad: sketches, undo copy, bookkeeping | 85 | 10% |
+| Browser JavaScript: join the scene, draw, side panel | 55 | 6% |
+| Saving the session | 29 | 3% |
+
+Nearly two thirds of a move was OpenCascade doing work whose answer was already known. A move changes where a solid is. It does not change its triangles, its faces, its volume, or the size of its box.
+
+### Where a dragged part is first seen
+
+While a part is dragged, the page draws it shifted on every frame, at 5.4 ms a frame. At release, the last drag frame is still on the canvas, so the part is seen in its new place at once. The baseline had two gaps. Any redraw before the server answered, such as an orbit, drew the part back where it started. And a position typed into the panel was not drawn at all until the server's mesh came back, about 0.8 s later.
+
+## The fixes
+
+Each fix is one pull request with its own regression tests. The server numbers are stage medians in process.
+
+| Fix | What it stops | Before | After |
+|---|---|---|---|
+| A moved part keeps its mesh | meshing and describing a solid that only moved | list the scene after a move: 509 | 62 |
+| A move asks for no box and no volume | three OpenCascade questions with known answers | `place_part` 155, undo 143, redo 152 | 50, 81, 74 |
+| The state keeps solved sketches | solving and drawing every sketch after every change | read the state after a move: 65 | 9 |
+| A move is drawn at once | waiting for the server before a typed position shows, and snapping back on a redraw | typed position shown after about 800 | drawn in the same task as the commit, one draw of 17–19 |
+
+### After the four fixes together, server side
+
+| Step | Move | Undo | Redo | Turn |
+|---|---|---|---|---|
+| The command | 46 | 74 | 76 | 80 |
+| Read the state | 9 | 9 | 9 | 8 |
+| List the scene and encode the moved part | 62 | 61 | 61 | 104 |
+| Server total | 117 | 144 | 146 | 192 |
+| Server total on main | 730 | 339 | 351 | 705 |
+
+What is left in a move, largest first:
+
+| Cost | ms |
+|---|---|
+| Write the moved part's mesh as JSON (server) | 43 |
+| Save the session, of which writing the file is 13 | 21 |
+| Parse the moved part's mesh (page) | 18 |
+| Join the 38 parts into one scene (page) | 18 |
+| Copy the session for undo | 17 |
+| Draw (page) | 17 |
+| Carry the mesh to its new place with numpy | 13 |
+| Read the state | 9 |
+| Read the part's numbers | 9 |
+| The move itself in OpenCascade | 6 |
+
+A turn costs more than a shift: it asks OpenCascade for one new bounding box (28) and describes again the faces whose axes the turn changed (38).
+
+### The move by layer, after
+
+| Layer | ms | Share |
+|---|---|---|
+| JSON and HTTP: encode, parse, five requests | 105 | 48% |
+| Python code in aicad | 44 | 20% |
+| Browser JavaScript | 45 | 20% |
+| Saving the session | 21 | 10% |
+| OpenCascade and build123d | 6 | 3% |
+
+The total is about 220 ms. The server part is measured. The page part is the page costs measured on the baseline, which these fixes do not change. In the browser, with only the first fix applied, a move settled in 356 to 470 ms.
+
+## Ideas that were checked
+
+- **Show a move at once with a transform.** Done for a drag and for a typed position. A typed turn, a mounted part, and parts mounted on the moved part are not previewed: the page waits for the model for those.
+- **Never mesh or measure again for a move alone.** Done. A shift now asks OpenCascade for nothing but the move.
+- **Skip work for parts that did not change.** The server already sent only the changed part. The state now keeps its sketches. The page still joins all 38 parts into one scene (18 ms) and uploads all of it (17 ms) when one part changes.
+- **Binary buffers instead of JSON number arrays.** Not done yet, and now the largest single cost. A moved part's mesh costs 43 ms to write as JSON and 18 ms to parse. The page already turns those numbers into `Float32Array`. Sending the same arrays as bytes would cost about 2 ms on each side, cut the answer from 3.08 MB to under half, and take about 1.1 s off a cold open.
+- **Stop saving the full session on every action.** Checked and left alone. The save is 21 ms, and the file write is 13 of that. Saving later would put a crash between the user's action and the disk for a gain of about 15 ms.
+
+## Targets
+
+| Target | Before | After the four fixes |
+|---|---|---|
+| A moved part shows in under 100 ms | at release for a drag, with gaps. About 800 for a typed position. | at release for a drag, and it stays. One draw, 17–19, for a typed position. |
+| A move settles in under 300 ms | 802–945 | about 220: server 117 measured, page 62 and requests 40 from the baseline |
+| Undo or redo in under 200 ms | 428–460 | about 250: server 144 measured, page and requests as above. Not met. |
+| Orbit and pan at 60 frames a second | met: 0.2 ms a frame | unchanged |
+
+Undo and redo miss the target by about 50 ms. The 61 ms spent encoding and parsing the moved part's mesh is the next cost to remove, and binary buffers remove most of it.
