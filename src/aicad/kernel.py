@@ -589,15 +589,12 @@ def measure(shape: Shape, material: str | None = None) -> Measurement:
 
     What a rigid move leaves alone (validity, the closed-shell check, counts,
     volume, area) is measured once per solid and kept on it. A solid that
-    ``place`` moved takes those from the solid it was moved from, so moving a
-    part measures only its bounding box.
+    ``place`` moved takes those from the solid it was moved from, and its
+    bounding box from the move, so measuring a moved part asks the geometry
+    library for nothing.
     """
-    impl = shape.impl
     facts = _solid_facts(shape)
-    bbox = impl.bounding_box()
-    low = bbox.min
-    high = bbox.max
-    size = bbox.size
+    low, high = _aabb(shape)
     mass_g = None
     material_id = None
     density = None
@@ -622,9 +619,9 @@ def measure(shape: Shape, material: str | None = None) -> Measurement:
         area_mm2=round_mm(facts.area),
         center_of_mass_mm=Vec3(round_mm(center[0]), round_mm(center[1]), round_mm(center[2])),
         bounding_box=BoundingBox(
-            min=_vec(low),
-            max=_vec(high),
-            size=_vec(size),
+            min=Vec3(round_mm(low[0]), round_mm(low[1]), round_mm(low[2])),
+            max=Vec3(round_mm(high[0]), round_mm(high[1]), round_mm(high[2])),
+            size=Vec3(round_mm(high[0] - low[0]), round_mm(high[1] - low[1]), round_mm(high[2] - low[2])),
         ),
         mass_g=mass_g,
         material=material_id,
@@ -867,10 +864,45 @@ def overlap_center(a: Shape, b: Shape) -> tuple[float, Vec3 | None]:
     return overlap, _vec(common.center())
 
 
-def _aabb(shape: Shape) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    box = shape.impl.bounding_box()
+_Box = tuple[tuple[float, float, float], tuple[float, float, float]]
+
+
+def _aabb(shape: Shape) -> _Box:
+    """The low and high corners of the solid's bounding box.
+
+    Found once per solid and kept on it. A rebuilt solid is a new object, so it
+    starts without one. ``place`` gives a moved solid its box without asking.
+    """
+    kept = getattr(shape, "_box", None)
+    if kept is None:
+        kept = _box_of(shape.impl)
+        shape._box = kept
+    return kept
+
+
+def _box_of(impl) -> _Box:
+    box = impl.bounding_box()
     low, high = box.min, box.max
     return (float(low.X), float(low.Y), float(low.Z)), (float(high.X), float(high.Y), float(high.Z))
+
+
+def _turned_box(shape: Shape, turn: tuple[float, float, float]) -> _Box:
+    """The bounding box of the solid turned by ``turn`` degrees and not shifted.
+
+    The box of a turned solid is not the turned box, so a new turn is asked of
+    the geometry library. The last turn is kept on the solid with its angles,
+    so dragging a turned part along asks once and a different turn asks again.
+    """
+    if all(abs(angle) < 1e-12 for angle in turn):
+        return _aabb(shape)
+    kept = getattr(shape, "_turned", None)
+    if kept is not None and kept[0] == turn:
+        return kept[1]
+    from build123d import Rot
+
+    box = _box_of(Rot(*turn) * shape.impl)
+    shape._turned = (turn, box)
+    return box
 
 
 def aabb_bounds(shape: Shape) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
@@ -2813,6 +2845,164 @@ def viewport_mesh(shape: Shape) -> dict:
     }
 
 
+@dataclass
+class ViewportArrays:
+    """A viewport mesh held as arrays, so the mesh of the same solid moved is arithmetic on them."""
+
+    units: str
+    positions: np.ndarray
+    normals: np.ndarray
+    triangle_face: np.ndarray
+    faces: list[dict]
+    edges: list[dict]
+    edge_points: np.ndarray
+    edge_counts: list[int]
+    box_min: np.ndarray
+    box_max: np.ndarray
+
+
+def viewport_arrays(mesh: dict) -> ViewportArrays:
+    """Hold what :func:`viewport_mesh` returned as arrays, for :func:`moved_viewport_mesh`."""
+    polylines = [edge["points"] for edge in mesh["edges"]]
+    points = [point for polyline in polylines for point in polyline]
+    return ViewportArrays(
+        units=mesh["units"],
+        positions=np.asarray(mesh["positions"], dtype=np.float64).reshape(-1, 3),
+        normals=np.asarray(mesh["normals"], dtype=np.float64).reshape(-1, 3),
+        triangle_face=np.asarray(mesh["triangle_face"], dtype=np.int64),
+        faces=mesh["faces"],
+        edges=[{key: value for key, value in edge.items() if key != "points"} for edge in mesh["edges"]],
+        edge_points=np.asarray(points, dtype=np.float64).reshape(-1, 3),
+        edge_counts=[len(polyline) for polyline in polylines],
+        box_min=np.asarray(mesh["bounding_box"]["min"], dtype=np.float64),
+        box_max=np.asarray(mesh["bounding_box"]["max"], dtype=np.float64),
+    )
+
+
+def moved_from(shape: Shape) -> tuple[Shape, np.ndarray, np.ndarray] | None:
+    """The solid ``shape`` was placed from, and the rotation and translation that carry it there.
+
+    A solid placed from a placed solid gives the first one and the two moves
+    combined. None when ``shape`` was not made by :func:`place`.
+    """
+    source = getattr(shape, "_placed_from", None)
+    if source is None:
+        return None
+    rotation = np.eye(3)
+    translation = np.zeros(3)
+    base = shape
+    while source is not None:
+        base, location = source
+        transform = location.wrapped.Transformation()
+        turn = np.array([[transform.Value(row, column) for column in (1, 2, 3)] for row in (1, 2, 3)])
+        shift = np.array([transform.Value(row, 4) for row in (1, 2, 3)])
+        translation = rotation @ shift + translation
+        rotation = rotation @ turn
+        source = getattr(base, "_placed_from", None)
+    return base, rotation, translation
+
+
+def _carried(points: np.ndarray, rotation: np.ndarray, translation: np.ndarray, turned: bool) -> np.ndarray:
+    """``points`` after the move.
+
+    A shift leaves a coordinate it does not move exactly as stored. Adding 0.0
+    would turn a stored -0.0 into 0.0, and a reference prints that sign.
+    """
+    if turned:
+        return points @ rotation.T + translation
+    return np.where(translation == 0.0, points, points + translation)
+
+
+def _evenly_split(direction: np.ndarray) -> bool:
+    """Whether the two largest components are the same size, so which one leads is rounding noise."""
+    sizes = np.sort(np.abs(direction))
+    return bool(sizes[2] - sizes[1] < 1e-6)
+
+
+def _moved_faces(faces: list[dict], rotation: np.ndarray, translation: np.ndarray, turned: bool) -> list[dict] | None:
+    """Each face record after the move. None when a turned axis has no clear leading component."""
+    if not faces:
+        return []
+    centers = _carried(np.asarray([face["center_mm"] for face in faces], dtype=np.float64), rotation, translation, turned)
+    moved = []
+    for face, center in zip(faces, centers.tolist()):
+        record = dict(face)
+        record["center_mm"] = [round_mm(value) for value in center]
+        if face["axis_origin_mm"] is not None:
+            origin = _carried(np.asarray(face["axis_origin_mm"], dtype=np.float64), rotation, translation, turned)
+            record["axis_origin_mm"] = [round_mm(value) for value in origin.tolist()]
+        if turned:
+            if face["normal"] is not None:
+                normal = rotation @ np.asarray(face["normal"], dtype=np.float64)
+                if face["kind"] == "plane" and _evenly_split(normal):
+                    return None
+                record["normal"] = normal.tolist()
+            if face["axis_direction"] is not None:
+                axis = rotation @ np.asarray(face["axis_direction"], dtype=np.float64)
+                if _evenly_split(axis):
+                    return None
+                record["axis_direction"] = [round_mm(value, 6) for value in _flip_axis(axis.tolist())]
+        record["ref"] = face_ref(record)
+        moved.append(record)
+    return moved
+
+
+def moved_viewport_mesh(base: ViewportArrays, rotation: np.ndarray, translation: np.ndarray, shape: Shape) -> dict:
+    """:func:`viewport_mesh` of ``shape``, from the mesh of the solid it was placed from.
+
+    A move changes where a solid is and nothing about its faces, so the
+    triangles, the edge lines, and each face and edge record are the stored
+    ones carried by the same rotation and translation. Nothing is meshed or
+    described again. The stored numbers are already rounded, so a carried
+    coordinate can differ from one read off the moved solid by one step of
+    that rounding: 0.0001 mm in a triangle, 0.000001 mm in a record.
+
+    Two things are still read from the moved solid. A turned solid's bounding
+    box is not the turned box. And a turned axis that lies evenly between two
+    coordinate axes gets its sign and its reference from rounding noise, so
+    those faces are described again instead of guessed.
+    """
+    turned = not np.allclose(rotation, np.eye(3), rtol=0.0, atol=1e-15)
+    positions = _rounded_list(_carried(base.positions, rotation, translation, turned).reshape(-1))
+    if turned:
+        normals = _rounded_list((base.normals @ rotation.T).reshape(-1))
+        box = shape.impl.bounding_box()
+        box_min = [round_mm(box.min.X), round_mm(box.min.Y), round_mm(box.min.Z)]
+        box_max = [round_mm(box.max.X), round_mm(box.max.Y), round_mm(box.max.Z)]
+    else:
+        normals = base.normals.reshape(-1).tolist()
+        box_min = [round_mm(value) for value in _carried(base.box_min, rotation, translation, turned).tolist()]
+        box_max = [round_mm(value) for value in _carried(base.box_max, rotation, translation, turned).tolist()]
+    faces = _moved_faces(base.faces, rotation, translation, turned)
+    if faces is None:
+        faces = describe_faces(shape)
+    edge_points = _rounded_list(_carried(base.edge_points, rotation, translation, turned).reshape(-1))
+    midpoints = (
+        _carried(np.asarray([edge["midpoint_mm"] for edge in base.edges], dtype=np.float64), rotation, translation, turned)
+        if base.edges
+        else np.zeros((0, 3))
+    )
+    edges = []
+    start = 0
+    for edge, midpoint, count in zip(base.edges, midpoints.tolist(), base.edge_counts):
+        record = dict(edge)
+        record["midpoint_mm"] = [round_mm(value) for value in midpoint]
+        record["ref"] = edge_ref(record["kind"], record["midpoint_mm"])
+        flat = edge_points[start * 3 : (start + count) * 3]
+        record["points"] = [flat[at : at + 3] for at in range(0, len(flat), 3)]
+        start += count
+        edges.append(record)
+    return {
+        "units": base.units,
+        "positions": positions,
+        "normals": normals,
+        "triangle_face": base.triangle_face.tolist(),
+        "faces": faces,
+        "edges": edges,
+        "bounding_box": {"min": box_min, "max": box_max},
+    }
+
+
 def face_pressure_triangles(
     shape: Shape, face_index: int, deflection: float
 ) -> list[tuple[float, tuple[float, float, float], tuple[tuple[float, float, float], ...]]]:
@@ -2926,28 +3116,48 @@ def _require_solid(obj: object):
         raise GeometryError(
             "Expected a 3D solid assigned to `part`. A sketch, curve, or other value has no volume."
         )
-    volume = _volume(obj)
-    if len(obj.solids()) == 0 or not math.isfinite(volume) or volume <= 0:
-        raise GeometryError(
-            "The result has no solid volume. Assign a closed 3D solid to `part` "
-            "(combine bodies with `part = a + b`)."
-        )
+    _require_volume(len(obj.solids()), _volume(obj))
     _require_sane_extent(obj)
     return obj
 
 
+def _require_volume(solid_count: int, volume: float) -> None:
+    if solid_count == 0 or not math.isfinite(volume) or volume <= 0:
+        raise GeometryError(
+            "The result has no solid volume. Assign a closed 3D solid to `part` "
+            "(combine bodies with `part = a + b`)."
+        )
+
+
+def _require_movable(shape: Shape) -> None:
+    """What ``_require_solid`` asks of a solid, short of its extent, once per solid.
+
+    A move changes neither the volume nor the number of solids, so ``place``
+    asks this of the solid it moves and not of each place it is moved to.
+    """
+    if getattr(shape, "_movable", False):
+        return
+    facts = getattr(shape, "_solid_facts", None)
+    if facts is not None:
+        _require_volume(facts.solid_count, facts.volume)
+    else:
+        impl = shape.impl
+        if not hasattr(impl, "solids") or not hasattr(impl, "volume"):
+            raise GeometryError(
+                "Expected a 3D solid assigned to `part`. A sketch, curve, or other value has no volume."
+            )
+        _require_volume(len(impl.solids()), _volume(impl))
+    shape._movable = True
+
+
 def _require_sane_extent(impl) -> None:
     """Reject a solid whose coordinates are not a mechanical part."""
-    box = impl.bounding_box()
-    values = (
-        float(box.min.X),
-        float(box.min.Y),
-        float(box.min.Z),
-        float(box.max.X),
-        float(box.max.Y),
-        float(box.max.Z),
-    )
-    for value in values:
+    low, high = _box_of(impl)
+    _require_sane_box(low, high)
+
+
+def _require_sane_box(low: tuple[float, float, float], high: tuple[float, float, float]) -> None:
+    for value in (*low, *high):
         if not math.isfinite(value) or abs(value) > MAX_MM:
             shown = "not a finite number" if not math.isfinite(value) else f"{value:g} mm"
             raise GeometryError(
@@ -3250,11 +3460,18 @@ def place(shape: Shape, position: tuple[float, float, float], rotation_deg: tupl
     rx, ry, rz = finite_vec3(rotation_deg, "rotation_deg", unit="deg")
     if all(abs(value) < 1e-12 for value in (px, py, pz, rx, ry, rz)):
         return shape
+    _require_movable(shape)
+    # The box of the solid turned, carried by the shift. Adding the shift is
+    # exact to the last bit or two of what the moved solid itself would give.
+    low, high = _turned_box(shape, (rx, ry, rz))
+    low = (low[0] + px, low[1] + py, low[2] + pz)
+    high = (high[0] + px, high[1] + py, high[2] + pz)
+    _require_sane_box(low, high)
     location = Pos(px, py, pz) * Rot(rx, ry, rz)
-    moved = location * shape.impl
-    placed = Shape(_require_solid(moved), features=shape.feature_report())
+    placed = Shape(location * shape.impl, features=shape.feature_report())
     # A measurement of either solid gives the other what a move does not change.
     placed._placed_from = (shape, location)
+    placed._box = (low, high)
     return placed
 
 

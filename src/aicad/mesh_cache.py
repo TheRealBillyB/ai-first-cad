@@ -50,7 +50,28 @@ def folder() -> Path:
 
 
 def viewport_mesh(shape: kernel.Shape) -> dict:
-    """``kernel.viewport_mesh``, read from disk when this exact solid was meshed before."""
+    """``kernel.viewport_mesh``, read from disk when this exact solid was meshed before.
+
+    A placed solid is not meshed or looked up at all. Its mesh is the mesh of
+    the solid it was placed from, carried by the same move.
+    """
+    placed = kernel.moved_from(shape)
+    if placed is not None:
+        base, rotation, translation = placed
+        return kernel.moved_viewport_mesh(_viewport_arrays(base), rotation, translation, shape)
+    return _stored_viewport_mesh(shape)
+
+
+def _viewport_arrays(shape: kernel.Shape) -> kernel.ViewportArrays:
+    """The solid's mesh as arrays. Kept on the solid, so a rebuilt solid, a new object, starts without one."""
+    kept = getattr(shape, "_viewport_arrays", None)
+    if kept is None:
+        kept = kernel.viewport_arrays(_stored_viewport_mesh(shape))
+        shape._viewport_arrays = kept
+    return kept
+
+
+def _stored_viewport_mesh(shape: kernel.Shape) -> dict:
     key = content_key(shape)
     path = folder() / f"{key}.viewport.json"
     try:
