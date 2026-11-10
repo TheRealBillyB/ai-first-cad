@@ -1,6 +1,6 @@
 # Profile of the app, November 2026
 
-This note records where the time goes in each app interaction, from the click to the settled page. It was measured before any fix, after four fixes, and again after two more. Each of the six fixes has its own pull request.
+This note records where the time goes in each app interaction, from the click to the settled page. It was measured before any fix, after four fixes, after two more, and after a seventh. Each fix has its own pull request.
 
 ## What was measured
 
@@ -250,6 +250,25 @@ The cause was not traced. The processor has 8 fast cores and 16 slow ones, the p
 
 It matters for reading the numbers. A click always follows a pause, so the browser numbers carry this cost and the stage medians do not. The targets are judged on the browser numbers.
 
+## A seventh fix: fewer requests per action
+
+After an undo, a redo, a move, or a joint change, the page asked for the state and then the scene list, each in a request of its own, right after the command answered. The command now carries both, read by the server once the command has run, so each of those actions makes three requests instead of five. A carried state older than the one on screen is not used, and a carried list that a newer change overtook is read again.
+
+Measured in the browser on the six-fix build, without and with this fix, on the same project one after the other: 24 runs of each, a 0.6 s pause before each action, and the time from the click to the settled page. These runs time a typed move, not a drag, and include reading the part's numbers at the end, so they are not the same measure as the tables above.
+
+| | Without | With |
+|---|---|---|
+| Requests per action | 5 | 3 |
+| Undo, median and range | 206, 162–304 | 188, 152–292 |
+| Undo, runs under 200 | 11 of 24 | 18 of 24 |
+| Redo, median and range | 203, 135–384 | 189, 129–301 |
+| Redo, runs under 200 | 11 of 24 | 16 of 24 |
+| Typed move, median | 207 | 190 |
+
+### Opening the page at `localhost`
+
+The page answers at both `http://127.0.0.1:PORT/` and `http://localhost:PORT/`, but the server listens on IPv4 only. At `localhost`, the browser tries IPv6 first and falls back to IPv4 about 300 ms later, and the server closes each connection after one answer, so every request pays it. On this machine, after an undo, fetching the moved part took 342 ms at `localhost` and 6 ms at `127.0.0.1`, and reading its numbers 336 ms and 9 ms. An undo took 1.16 s instead of 0.19. The app opens the browser at `127.0.0.1` and prints that address, so this costs only someone who types `localhost`. All the numbers in this note are at `127.0.0.1`.
+
 ## Ideas that were checked
 
 - **Show a move at once with a transform.** Done for a drag and for a typed position. A typed turn, a mounted part, and parts mounted on the moved part are not previewed: the page waits for the model for those.
@@ -260,11 +279,11 @@ It matters for reading the numbers. A click always follows a pause, so the brows
 
 ## Targets
 
-| Target | Before | After the six fixes |
+| Target | Before | After the fixes |
 |---|---|---|
 | A moved part shows in under 100 ms | at release for a drag, with gaps. About 800 for a typed position. | Met. 0.1 to 1.9 after release for a drag, and it stays. 12–19 for a typed position, measured with the first four fixes. |
 | A move settles in under 300 ms | 802–945 | Met. 134–280, median 173, and 12 of 12 runs under 300. |
-| Undo or redo in under 200 ms | 428–460 | Undo: not met. 175–221, median 201, and 5 of 10 runs under 200. Redo: met at the median, not on every run. 163–267, median 193, and 7 of 10 runs under 200. |
+| Undo or redo in under 200 ms | 428–460 | Met at the median, not on every run. With six fixes, undo was 175–221, median 201, and redo 163–267, median 193. With the seventh, in 24 runs each, undo is 152–292, median 188, with 18 under 200, and redo is 129–301, median 189, with 16 under 200. |
 | Orbit and pan at 60 frames a second | met: 0.2 ms a frame | Met. Unchanged. |
 
-Undo is at its line and redo is just under it. An undo is a command of 91 ms in the app, four more requests that take 60 ms together, and 33 ms of joining and drawing on the page. Three things would take it clearly under 200, and none is done: answering the command with the state and the scene list, so that one request does the work of three; taking one copy of the session for an undo where it now takes one and builds one; and joining and uploading only the part that changed.
+Undo and redo are now under 200 ms at the median, and a quarter to a third of the runs are still over it. The slow runs are spread across the steps, and the first work after a pause is part of each. Two things would take more off, and neither is done: taking one copy of the session for an undo where it now takes one and builds one, about 12 ms; and joining and uploading only the part that changed on the page, about 20 ms.

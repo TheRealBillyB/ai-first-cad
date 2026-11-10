@@ -90,7 +90,7 @@ Stay on Python. In order:
 2. **Keep meshes as arrays, and send the assembly pieces as bytes.** A mesh is still held as lists and stored on disk as JSON. Arrays from the mesher to the wire would take about 5 ms off a move and about 25 off an undo, which reads a stored mesh back. The pieces are 6.5 MB of JSON on the first switch to Assembly. Two to three days.
 3. **Look at the start.** Serve the page while the geometry process imports. Two to three days. It does not shorten the import. It shortens the wait for a window.
 
-That is about a week and a half, with no new toolchain. Binary mesh buffers for parts were the first step of this list when it was written, and they are done. Undo is now 201 ms at the median in the browser and redo is 193, against a target of 200. The first step would put both under it with room.
+That is about a week and a half, with no new toolchain. Binary mesh buffers for parts were the first step of this list when it was written, and they are done. So is the first step above: a command now carries the state and the scene list, and undo went from a median of 206 ms to 188 in the browser, and redo from 203 to 189.
 
 A rewrite of the server and core in Rust is roughly 9 to 15 person-months before it matches today's features: the server and session code, OpenCascade bindings for what aicad uses, the sandbox on three platforms, and installers. It would still leave the script compatibility question open. Its estimated advantage over the plan above is about 30 ms a move and about 6 s at start.
 
