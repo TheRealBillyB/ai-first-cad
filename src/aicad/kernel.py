@@ -2845,6 +2845,164 @@ def viewport_mesh(shape: Shape) -> dict:
     }
 
 
+@dataclass
+class ViewportArrays:
+    """A viewport mesh held as arrays, so the mesh of the same solid moved is arithmetic on them."""
+
+    units: str
+    positions: np.ndarray
+    normals: np.ndarray
+    triangle_face: np.ndarray
+    faces: list[dict]
+    edges: list[dict]
+    edge_points: np.ndarray
+    edge_counts: list[int]
+    box_min: np.ndarray
+    box_max: np.ndarray
+
+
+def viewport_arrays(mesh: dict) -> ViewportArrays:
+    """Hold what :func:`viewport_mesh` returned as arrays, for :func:`moved_viewport_mesh`."""
+    polylines = [edge["points"] for edge in mesh["edges"]]
+    points = [point for polyline in polylines for point in polyline]
+    return ViewportArrays(
+        units=mesh["units"],
+        positions=np.asarray(mesh["positions"], dtype=np.float64).reshape(-1, 3),
+        normals=np.asarray(mesh["normals"], dtype=np.float64).reshape(-1, 3),
+        triangle_face=np.asarray(mesh["triangle_face"], dtype=np.int64),
+        faces=mesh["faces"],
+        edges=[{key: value for key, value in edge.items() if key != "points"} for edge in mesh["edges"]],
+        edge_points=np.asarray(points, dtype=np.float64).reshape(-1, 3),
+        edge_counts=[len(polyline) for polyline in polylines],
+        box_min=np.asarray(mesh["bounding_box"]["min"], dtype=np.float64),
+        box_max=np.asarray(mesh["bounding_box"]["max"], dtype=np.float64),
+    )
+
+
+def moved_from(shape: Shape) -> tuple[Shape, np.ndarray, np.ndarray] | None:
+    """The solid ``shape`` was placed from, and the rotation and translation that carry it there.
+
+    A solid placed from a placed solid gives the first one and the two moves
+    combined. None when ``shape`` was not made by :func:`place`.
+    """
+    source = getattr(shape, "_placed_from", None)
+    if source is None:
+        return None
+    rotation = np.eye(3)
+    translation = np.zeros(3)
+    base = shape
+    while source is not None:
+        base, location = source
+        transform = location.wrapped.Transformation()
+        turn = np.array([[transform.Value(row, column) for column in (1, 2, 3)] for row in (1, 2, 3)])
+        shift = np.array([transform.Value(row, 4) for row in (1, 2, 3)])
+        translation = rotation @ shift + translation
+        rotation = rotation @ turn
+        source = getattr(base, "_placed_from", None)
+    return base, rotation, translation
+
+
+def _carried(points: np.ndarray, rotation: np.ndarray, translation: np.ndarray, turned: bool) -> np.ndarray:
+    """``points`` after the move.
+
+    A shift leaves a coordinate it does not move exactly as stored. Adding 0.0
+    would turn a stored -0.0 into 0.0, and a reference prints that sign.
+    """
+    if turned:
+        return points @ rotation.T + translation
+    return np.where(translation == 0.0, points, points + translation)
+
+
+def _evenly_split(direction: np.ndarray) -> bool:
+    """Whether the two largest components are the same size, so which one leads is rounding noise."""
+    sizes = np.sort(np.abs(direction))
+    return bool(sizes[2] - sizes[1] < 1e-6)
+
+
+def _moved_faces(faces: list[dict], rotation: np.ndarray, translation: np.ndarray, turned: bool) -> list[dict] | None:
+    """Each face record after the move. None when a turned axis has no clear leading component."""
+    if not faces:
+        return []
+    centers = _carried(np.asarray([face["center_mm"] for face in faces], dtype=np.float64), rotation, translation, turned)
+    moved = []
+    for face, center in zip(faces, centers.tolist()):
+        record = dict(face)
+        record["center_mm"] = [round_mm(value) for value in center]
+        if face["axis_origin_mm"] is not None:
+            origin = _carried(np.asarray(face["axis_origin_mm"], dtype=np.float64), rotation, translation, turned)
+            record["axis_origin_mm"] = [round_mm(value) for value in origin.tolist()]
+        if turned:
+            if face["normal"] is not None:
+                normal = rotation @ np.asarray(face["normal"], dtype=np.float64)
+                if face["kind"] == "plane" and _evenly_split(normal):
+                    return None
+                record["normal"] = normal.tolist()
+            if face["axis_direction"] is not None:
+                axis = rotation @ np.asarray(face["axis_direction"], dtype=np.float64)
+                if _evenly_split(axis):
+                    return None
+                record["axis_direction"] = [round_mm(value, 6) for value in _flip_axis(axis.tolist())]
+        record["ref"] = face_ref(record)
+        moved.append(record)
+    return moved
+
+
+def moved_viewport_mesh(base: ViewportArrays, rotation: np.ndarray, translation: np.ndarray, shape: Shape) -> dict:
+    """:func:`viewport_mesh` of ``shape``, from the mesh of the solid it was placed from.
+
+    A move changes where a solid is and nothing about its faces, so the
+    triangles, the edge lines, and each face and edge record are the stored
+    ones carried by the same rotation and translation. Nothing is meshed or
+    described again. The stored numbers are already rounded, so a carried
+    coordinate can differ from one read off the moved solid by one step of
+    that rounding: 0.0001 mm in a triangle, 0.000001 mm in a record.
+
+    Two things are still read from the moved solid. A turned solid's bounding
+    box is not the turned box. And a turned axis that lies evenly between two
+    coordinate axes gets its sign and its reference from rounding noise, so
+    those faces are described again instead of guessed.
+    """
+    turned = not np.allclose(rotation, np.eye(3), rtol=0.0, atol=1e-15)
+    positions = _rounded_list(_carried(base.positions, rotation, translation, turned).reshape(-1))
+    if turned:
+        normals = _rounded_list((base.normals @ rotation.T).reshape(-1))
+        box = shape.impl.bounding_box()
+        box_min = [round_mm(box.min.X), round_mm(box.min.Y), round_mm(box.min.Z)]
+        box_max = [round_mm(box.max.X), round_mm(box.max.Y), round_mm(box.max.Z)]
+    else:
+        normals = base.normals.reshape(-1).tolist()
+        box_min = [round_mm(value) for value in _carried(base.box_min, rotation, translation, turned).tolist()]
+        box_max = [round_mm(value) for value in _carried(base.box_max, rotation, translation, turned).tolist()]
+    faces = _moved_faces(base.faces, rotation, translation, turned)
+    if faces is None:
+        faces = describe_faces(shape)
+    edge_points = _rounded_list(_carried(base.edge_points, rotation, translation, turned).reshape(-1))
+    midpoints = (
+        _carried(np.asarray([edge["midpoint_mm"] for edge in base.edges], dtype=np.float64), rotation, translation, turned)
+        if base.edges
+        else np.zeros((0, 3))
+    )
+    edges = []
+    start = 0
+    for edge, midpoint, count in zip(base.edges, midpoints.tolist(), base.edge_counts):
+        record = dict(edge)
+        record["midpoint_mm"] = [round_mm(value) for value in midpoint]
+        record["ref"] = edge_ref(record["kind"], record["midpoint_mm"])
+        flat = edge_points[start * 3 : (start + count) * 3]
+        record["points"] = [flat[at : at + 3] for at in range(0, len(flat), 3)]
+        start += count
+        edges.append(record)
+    return {
+        "units": base.units,
+        "positions": positions,
+        "normals": normals,
+        "triangle_face": base.triangle_face.tolist(),
+        "faces": faces,
+        "edges": edges,
+        "bounding_box": {"min": box_min, "max": box_max},
+    }
+
+
 def face_pressure_triangles(
     shape: Shape, face_index: int, deflection: float
 ) -> list[tuple[float, tuple[float, float, float], tuple[tuple[float, float, float], ...]]]:
