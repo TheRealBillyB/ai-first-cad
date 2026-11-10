@@ -2906,7 +2906,7 @@ def _carried(points: np.ndarray, rotation: np.ndarray, translation: np.ndarray, 
     """``points`` after the move.
 
     A shift leaves a coordinate it does not move exactly as stored. Adding 0.0
-    would turn a stored -0.0 into 0.0, and a reference prints that sign.
+    would turn a stored -0.0 into 0.0, and the mesh would then differ by that sign.
     """
     if turned:
         return points @ rotation.T + translation
