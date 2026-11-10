@@ -1,6 +1,6 @@
 # Profile of the app, November 2026
 
-This note records where the time goes in each app interaction, from the click to the settled page. It was measured before any fix, and again after four fixes that each have their own pull request.
+This note records where the time goes in each app interaction, from the click to the settled page. It was measured before any fix, after four fixes, and again after two more. Each of the six fixes has its own pull request.
 
 ## What was measured
 
@@ -78,6 +78,10 @@ Each fix is one pull request with its own regression tests. The server numbers a
 | A move asks for no box and no volume | three OpenCascade questions with known answers | `place_part` 155, undo 143, redo 152 | 50, 81, 74 |
 | The state keeps solved sketches | solving and drawing every sketch after every change | read the state after a move: 65 | 9 |
 | A move is drawn at once | waiting for the server before a typed position shows, and snapping back on a redraw | typed position shown after about 800 | 12–19, measured in the browser: one draw in the same task as the commit |
+| A part's mesh is sent as bytes | writing a mesh as JSON text and parsing it on the page | write the largest part's answer 45, read it on the page 8.3 | 7.6, 0.5 |
+| Undo writes back only what changed | writing every note and the requirements file on each undo, and checking the notes folder once per note | undo 162, redo 158, move 155 | 121, 119, 138 |
+
+The last two fixes came after the tables that follow, which are of the first four. The section "After all six fixes" has the numbers with all of them.
 
 ### After the four fixes together, server side
 
@@ -116,7 +120,7 @@ The stage medians above are from calls made back to back. In the running app the
 | Undo | 75 | 94 | 99 |
 | Redo | 68 | 96 | 89–93 |
 
-The difference is not HTTP and not the pipe to the geometry process. Through the pipe alone a move is 41 ms and an undo 65 to 71. It is file work, which is slower on this machine when the process has been idle for a moment, as it always has in the app. A command reads and writes more files than the session:
+The difference is not HTTP and not the pipe to the geometry process. Through the pipe alone a move is 41 ms and an undo 65 to 71. It is the pause: on this machine the first work after an idle moment is slower, and in the app a command always follows one. "The first work after a pause" below has the check. A command also reads and writes more files than the session:
 
 | File work in one command, with pauses | Move | Undo |
 |---|---|---|
@@ -124,7 +128,7 @@ The difference is not HTTP and not the pipe to the geometry process. Through the
 | List and read the two notes for the undo copy | 17 | 21 |
 | Write the notes, the requirements, and the plans back, changed or not | none | 31 |
 
-A move changes none of the notes, requirements, or plans. Not reading and writing them again is the next server fix for undo and redo, after the mesh encoding.
+A move changes none of the notes, requirements, or plans. Both this and the mesh encoding were fixed next.
 
 ### The move by layer, after
 
@@ -164,21 +168,103 @@ The steps of those runs, as the page saw them:
 
 The browser medians are 35 to 40 ms above the sum of the stage medians. Most of that is the command, as the table of commands in the running app shows. The rest is time between the steps on the page.
 
+## After all six fixes
+
+These numbers are from a local build with the six fixes merged together.
+
+### Server side
+
+Stage medians in process, 11 runs, with a 20 ms pause before each step:
+
+| Step | Move | Undo | Redo |
+|---|---|---|---|
+| The command | 48 | 57 | 55 |
+| Read the state | 11 | 10 | 9 |
+| List the scene and pack the moved part | 25 | 25 | 24 |
+| Server total | 84 | 92 | 88 |
+| Server total on main | 730 | 339 | 351 |
+
+An undo's command is two things: copying the session for redo, 22, and putting the older copy back, 36, of which saving the session is 21. Listing the scene is mostly carrying the mesh to its new place with numpy, 14.
+
+### In the browser
+
+Measured with the page on screen, from the release or the click to the settled page:
+
+| Interaction | Runs | Range | Median | On main |
+|---|---|---|---|---|
+| Move a part by dragging | 12 | 134–280 | 173 | 802–945 |
+| Undo a move | 10 | 175–221 | 201 | 432–449 |
+| Redo a move | 10 | 163–267 | 193 | 428–460 |
+
+A dragged part is in its new place 0.1 to 1.9 ms after release. The steps of those runs, as the page saw them, range and median:
+
+| Step | Move | Undo | Redo |
+|---|---|---|---|
+| The command | 43–88, 64 | 69–107, 91 | 58–104, 89 |
+| Read the state | 12–31, 23 | 11–23, 15 | 11–24, 13 |
+| List the scene | 23–31, 25 | 28–39, 31 | 23–30, 26 |
+| Fetch the moved part, 1.86 MB | 4–22, 4 | 5–24, 8 | 4–11, 9 |
+| Read the answers | 4–23, 5 | 4–11, 5 | 4–6, 4 |
+| Join the scene | 14–21, 15 | 12–20, 18 | 14–17, 15 |
+| Draw | 14–17, 16 | 13–21, 15 | 14–25, 17 |
+| Read the part's numbers | 5–95, 9 | 5–12, 7 | 5–96, 10 |
+
+### The move by layer, with all six
+
+This split of the 173 ms is an estimate. It takes the browser medians, subtracts the stage medians, and puts what is left under requests and the pause.
+
+| Layer | ms | Share |
+|---|---|---|
+| Browser JavaScript: read, join, draw, and the time between steps | 45 | 26% |
+| Python code in aicad: the undo copy, the state, the scene list, bookkeeping | 44 | 25% |
+| Five requests, the pipe, and the first work after a pause | 35 | 20% |
+| numpy: carrying the mesh and packing it as bytes | 22 | 13% |
+| Saving the session, of which writing the file is 13 | 21 | 12% |
+| OpenCascade and build123d | 6 | 3% |
+
+### The other interactions
+
+| Interaction | On main | With all six | What changed |
+|---|---|---|---|
+| Open the project, page side, server warm | 234–271 | about 160, one run, from the first request to the last answer | 43 mesh answers, 21.8 MB, arrive in 44 ms. It was 190 ms for 35 MB. |
+| Add a catalog part (M3 screw) | 181–272 | 162–297, 4 runs | Reading the state is 20–26 where it was 69–88. The insert command itself ran from 42 to 178, so the total is no better. |
+| Release a joint slider | 186–194 | 105–154, median 143, 5 runs | Reading the state is 12–23 where it was 66–83. |
+| Switch to Assembly, first time on the page | 292 | 228, one run | none of the fixes touch it |
+| Switch to Assembly, again | 47 | 59–68, 4 runs | none of the fixes touch it |
+| Switch to Model | 39 | 47–61 in 2 of 5 runs | none of the fixes touch it |
+| Orbit and pan, one frame | 0.2 | not measured again | none of the fixes touch it |
+
+Two rows need a note. The two repeat switches are slower than on main though their code did not change. Their runs were half a second apart, and their two requests took 10 to 20 ms where the same requests back to back take 2: see the next section. And in three of the five switches to Model, the side panel read the selected part's numbers again and finished 0.24 to 0.31 s after the click. The scene was drawn in the same time in all five. The single run on main did not show that, and it was not traced.
+
+### The first work after a pause
+
+The page's numbers are higher than the stage medians, and the earlier guess was file work. A check showed that all work is slower after a pause on this machine, with no files involved:
+
+| The same work | Back to back | After a pause of 0.5 s |
+|---|---|---|
+| A Python loop of 200 thousand additions, no server | 2.6 | 14.3 |
+| The scene list when nothing changed, asked from the page | 1.4–2.7 | 7–20 |
+| `place_part` over HTTP | 49 | 88 |
+
+The cause was not traced. The processor has 8 fast cores and 16 slow ones, the power plan is Balanced, and Windows 10 is older than that kind of processor, so a thread that wakes on a slow core at a low clock is the likely one. No code in aicad causes it, and none was changed for it.
+
+It matters for reading the numbers. A click always follows a pause, so the browser numbers carry this cost and the stage medians do not. The targets are judged on the browser numbers.
+
 ## Ideas that were checked
 
 - **Show a move at once with a transform.** Done for a drag and for a typed position. A typed turn, a mounted part, and parts mounted on the moved part are not previewed: the page waits for the model for those.
 - **Never mesh or measure again for a move alone.** Done. A shift now asks OpenCascade for nothing but the move.
-- **Skip work for parts that did not change.** The server already sent only the changed part. The state now keeps its sketches. The page still joins all 38 parts into one scene (18 ms) and uploads all of it (17 ms) when one part changes.
-- **Binary buffers instead of JSON number arrays.** Not done yet, and now the largest single cost. A moved part's mesh costs 43 ms to write as JSON and 18 ms to parse. The page already turns those numbers into `Float32Array`. Sending the same arrays as bytes would cost about 2 ms on each side, cut the answer from 3.08 MB to under half, and take about 1.1 s off a cold open.
-- **Stop saving the full session on every action.** Checked and left alone. The save is 21 ms, and the file write is 13 of that. Saving later would put a crash between the user's action and the disk for a gain of about 15 ms.
+- **Skip work for parts that did not change.** The server already sent only the changed part. The state now keeps its sketches. Undo and redo now write back only the notes and the requirement list that differ. The page still joins all 38 parts into one scene (15 ms) and uploads all of it (16 ms) when one part changes.
+- **Binary buffers instead of JSON number arrays.** Done for a part's mesh, which was the largest single cost after the first four fixes. Writing the largest part's answer went from 45 ms to 7.6, reading it on the page from 8.3 to 0.5, and its size from 3.08 MB to 1.85. The 38 parts sent when a project opens went from 35.3 MB to 21.5. The scene list, the assembly pieces, and the pose are still JSON. The pieces are 6.5 MB, fetched once per page, and are the next candidate.
+- **Stop saving the full session on every action.** Checked and left alone. The save is 21 ms, and the file write is 13 of that. Notes and requirements that did not change are no longer written at all. Saving later would put a crash between the user's action and the disk for a gain of about 15 ms.
 
 ## Targets
 
-| Target | Before | After the four fixes |
+| Target | Before | After the six fixes |
 |---|---|---|
-| A moved part shows in under 100 ms | at release for a drag, with gaps. About 800 for a typed position. | Met. At release for a drag, and it stays. 12–19 for a typed position. |
-| A move settles in under 300 ms | 802–945 | Met at the median, not on every run: 217–325, median 257, and 12 of 13 runs under 300. |
-| Undo or redo in under 200 ms | 428–460 | Not met. Undo 259–332, median 278. Redo 258–341, median 287. |
+| A moved part shows in under 100 ms | at release for a drag, with gaps. About 800 for a typed position. | Met. 0.1 to 1.9 after release for a drag, and it stays. 12–19 for a typed position, measured with the first four fixes. |
+| A move settles in under 300 ms | 802–945 | Met. 134–280, median 173, and 12 of 12 runs under 300. |
+| Undo or redo in under 200 ms | 428–460 | Undo: not met. 175–221, median 201, and 5 of 10 runs under 200. Redo: met at the median, not on every run. 163–267, median 193, and 7 of 10 runs under 200. |
 | Orbit and pan at 60 frames a second | met: 0.2 ms a frame | Met. Unchanged. |
 
-Undo and redo miss the target by about 80 ms. Two costs are next. Encoding and parsing the moved part's mesh is 61 ms, and binary buffers remove most of it. Reading and writing notes, requirements, and plans that the undone move never touched is about 50 ms of an undo.
+Undo is at its line and redo is just under it. An undo is a command of 91 ms in the app, four more requests that take 60 ms together, and 33 ms of joining and drawing on the page. Three things would take it clearly under 200, and none is done: answering the command with the state and the scene list, so that one request does the work of three; taking one copy of the session for an undo where it now takes one and builds one; and joining and uploading only the part that changed.
