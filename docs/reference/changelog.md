@@ -32,6 +32,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 - Report pictures named with a full path load. The page buttons stay on screen when the Plan page opens.
 - The app warns when another app has the same project open. A page that drops its live connection no longer fills the console.
 - The plan summary beside the model uses the state the page already reads, so an idle page no longer asks for the whole project state every 2.5 seconds. Only the open Plan page still checks for plan files changed on disk.
+- An undo, a redo, a move, or a joint change answers with the state and the scene list the page reads next, so the page makes three requests for it instead of five. On a 38-part finger rig, an undo in the browser went from a median of 206 ms to 188.
 
 ### Install
 

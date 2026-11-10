@@ -54,15 +54,42 @@ function apiFetch(url, options = {}) {
   return fetch(url, { ...options, headers });
 }
 
-async function command(name, args = {}) {
+// With ``reads``, the answer also carries what ``reads.then`` names, and they are put in ``reads``.
+async function command(name, args = {}, reads = null) {
+  const request = { name, arguments: args };
+  if (reads) request.then = reads.then;
   const response = await apiFetch("/api/command", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, arguments: args }),
+    body: JSON.stringify(request),
   });
   const body = await response.json();
   if (!body.ok) throw new Error(body.error || "Command failed");
+  if (reads) {
+    reads.state = body.state || null;
+    reads.scene = body.scene || null;
+  }
   return body.result;
+}
+
+// A command the page refreshes after at once. Its answer carries what that refresh
+// reads: the state and, on the model view, the scene list with its tag, read by the
+// server right after the command. Pass them on as refresh({ reads }), and the refresh
+// does not ask for them again. Without them it asks, as before.
+async function changeCommand(name, args = {}) {
+  const solidView = ui.page === "model" && ui.stage === "solid" && !ui.viewAssembly;
+  const reads = { then: solidView ? ["state", "scene"] : ["state"], state: null, scene: null };
+  await command(name, args, reads);
+  return reads;
+}
+
+// The reads a command carried, unless the page already shows a newer state, as when an
+// assistant's change was refreshed in between. Then the refresh asks, so it never steps back.
+function usableReads(reads) {
+  if (!reads || !reads.state) return null;
+  const shown = ui.state && typeof ui.state.event === "number" ? ui.state.event : null;
+  if (shown !== null && !(typeof reads.state.event === "number" && reads.state.event >= shown)) return null;
+  return reads;
 }
 
 function fileUrl(path) {
@@ -88,8 +115,15 @@ async function refresh(options = {}) {
 globalThis.aicadRefreshState = () => refresh();
 
 async function applyRefresh(options = {}) {
-  const response = await apiFetch("/api/state");
-  const body = await response.json();
+  const given = usableReads(options.reads);
+  options = { ...options, reads: null, sceneList: given && given.scene ? given.scene : null };
+  let body;
+  if (given) {
+    body = { ok: true, result: given.state };
+  } else {
+    const response = await apiFetch("/api/state");
+    body = await response.json();
+  }
   if (!body.ok) throw new Error(body.error);
   if (renderOpening(body.result.opening)) return;
   ui.state = body.result;
@@ -351,12 +385,24 @@ async function partMesh(entry) {
 // list does not name. The list is read again until every part's tag is the one it names.
 const SCENE_READS = 4;
 
-async function sceneParts() {
+const SCENE_LIST_URL = "/api/mesh?scene=parts";
+
+// A scene list a command's answer carried, kept as if it had been read. Under the tag
+// already held it is the held list, so an unchanged scene is not joined again.
+function givenSceneList(given) {
+  const held = meshAnswers.get(SCENE_LIST_URL);
+  if (held && held.tag === given.tag) return { ok: true, result: held.result, tag: held.tag };
+  meshAnswers.set(SCENE_LIST_URL, { tag: given.tag, result: given.result });
+  return { ok: true, result: given.result, tag: given.tag };
+}
+
+async function sceneParts(given = null) {
   let index;
   let parts;
   let before = null;
   for (let read = 0; read < SCENE_READS; read += 1) {
-    index = await meshAnswer("/api/mesh?scene=parts");
+    // The first read is the list a command carried, when it did. Any read again asks.
+    index = read === 0 && given ? givenSceneList(given) : await meshAnswer(SCENE_LIST_URL);
     if (!index.ok) return { ok: false, error: index.error };
     if (ui.mesh && ui.mesh._index === index.result) return { ok: true, index, held: true };
     // The list names each part's mesh by its tag. Only a part whose tag changed is fetched.
@@ -529,7 +575,8 @@ let meshLoadWaiting = null;
 
 function loadMesh(options = {}) {
   if (meshLoadWaiting) {
-    meshLoadWaiting.options = { ...meshLoadWaiting.options, ...options };
+    // A scene list a command carried is only as new as the latest ask. A later ask without one reads the list.
+    meshLoadWaiting.options = { ...meshLoadWaiting.options, ...options, sceneList: options.sceneList || null };
     return meshLoadWaiting.promise;
   }
   const waiting = { options };
@@ -571,7 +618,7 @@ async function loadMeshNow(options = {}) {
     const same = ui.mesh && ui.mesh._pieces === pieces.result && ui.mesh._pose === pose.result;
     next = same ? ui.mesh : assembledMesh(pieces.result, pose.result);
   } else {
-    const read = await sceneParts();
+    const read = await sceneParts(options.sceneList || null);
     if (!read.ok) {
       ui.mesh = null;
       showEmpty(read.error);
@@ -2271,9 +2318,9 @@ async function onPointerUp(event) {
     if (drag.moved && offset) {
       const position = add(drag.origin, offset.delta).map((value) => Math.round(value * 1000) / 1000);
       try {
-        await command("place_part", { name: drag.part, position, rotation_deg: drag.rotation });
+        const reads = await changeCommand("place_part", { name: drag.part, position, rotation_deg: drag.rotation });
         ui.parameterKey = "";
-        await refresh();
+        await refresh({ reads });
       } catch (error) {
         drawSolid();
         throw error;
@@ -2655,9 +2702,9 @@ function renderAssemblies() {
 // An empty box is not zero. A number input reads empty for text it cannot parse.
 async function applyJoint(joint, text) {
   const value = requiredNumber(String(text == null ? "" : text).trim(), `Enter a number for joint ${joint}.`);
-  await command("set_joint", { name: ui.assembly, joint, value });
+  const reads = await changeCommand("set_joint", { name: ui.assembly, joint, value });
   ui.assemblySignature = "";
-  await refresh();
+  await refresh({ reads });
 }
 
 // The excitation is the speed that was typed. A blank or zero box is not 120 rpm,
@@ -3037,9 +3084,9 @@ async function mountFromHit(hit) {
     return;
   }
   $("selection-readout").textContent = request.mount.ref;
-  await command("place_part", { name: request.name, mount: request.mount });
+  const reads = await changeCommand("place_part", { name: request.name, mount: request.mount });
   ui.parameterKey = "";
-  await refresh();
+  await refresh({ reads });
 }
 
 async function commitMount() {
@@ -3056,14 +3103,15 @@ async function commitMount() {
     flip,
   };
   if (current.mate) mount.mate = current.mate;
+  let reads;
   try {
-    await command("place_part", { name: ui.part, mount });
+    reads = await changeCommand("place_part", { name: ui.part, mount });
   } catch (error) {
     await restoreShape();
     throw error;
   }
   ui.parameterKey = "";
-  await refresh();
+  await refresh({ reads });
 }
 
 async function commitPlacement() {
@@ -3075,14 +3123,15 @@ async function commitPlacement() {
     await restoreShape();
     throw new Error("Placement needs numbers.");
   }
+  let reads;
   try {
-    await command("place_part", { name: ui.part, position, rotation_deg: rotation });
+    reads = await changeCommand("place_part", { name: ui.part, position, rotation_deg: rotation });
   } catch (error) {
     await restoreShape();
     throw error;
   }
   ui.parameterKey = "";
-  await refresh();
+  await refresh({ reads });
 }
 
 async function addMeasurePoint(hit) {
@@ -3282,8 +3331,8 @@ async function boot() {
       showError(error);
     }
   };
-  $("undo").onclick = async () => { await command("undo"); ui.parameterKey = ""; await refresh({ fit: "scene" }); };
-  $("redo").onclick = async () => { await command("redo"); ui.parameterKey = ""; await refresh({ fit: "scene" }); };
+  $("undo").onclick = async () => { const reads = await changeCommand("undo"); ui.parameterKey = ""; await refresh({ fit: "scene", reads }); };
+  $("redo").onclick = async () => { const reads = await changeCommand("redo"); ui.parameterKey = ""; await refresh({ fit: "scene", reads }); };
   $("fit").onclick = () => { view.fit(); drawSolid(); };
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.onclick = () => setStandardView(button.dataset.view);
@@ -3439,7 +3488,7 @@ async function boot() {
   window.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
-      command(event.shiftKey ? "redo" : "undo").then(refresh).catch(showError);
+      changeCommand(event.shiftKey ? "redo" : "undo").then((reads) => refresh({ reads })).catch(showError);
       return;
     }
     const named = viewShortcut(event);

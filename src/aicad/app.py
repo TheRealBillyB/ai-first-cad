@@ -426,6 +426,18 @@ def _log_command(who: str, name: str, outcome: str) -> None:
     print(f"{stamp} {_LOG_WHO.get(who, who)} {label} {outcome}", flush=True)
 
 
+_THEN = ("state", "scene")
+
+
+def _then(value) -> tuple[str, ...]:
+    """The reads a command's answer should carry: none, ``state``, ``scene``, or both. Checked before the command runs."""
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) and item in _THEN for item in value):
+        raise GeometryError('"then" lists what to read after the command: "state", "scene", or both.')
+    return tuple(value)
+
+
 def _second_app_warning(port: int) -> str:
     return (
         f"This project is also open in another aicad app at http://127.0.0.1:{port}/. "
@@ -527,10 +539,7 @@ def _handler(session: Workspace):
                 elif path.startswith("/static/"):
                     self._static(path[len("/static/") :])
                 elif path == "/api/state":
-                    state = self.workspace.state()
-                    other = self.server.project_also_open_at(self.workspace.root)
-                    state["project_warning"] = _second_app_warning(other) if other is not None else ""
-                    self._json({"ok": True, "result": state})
+                    self._json({"ok": True, "result": self._state()})
                 elif path == "/api/commands":
                     self._json({"ok": True, "result": self.workspace.commands()})
                 elif path == "/api/mesh":
@@ -559,13 +568,16 @@ def _handler(session: Workspace):
                     self._require_person()
                 body = self._read_json()
                 if parsed.path == "/api/command":
+                    then = _then(body.get("then"))
                     # ``source`` in the body is ignored. The token says who called.
                     result = self._run_command(
                         str(body.get("name") or ""),
                         body.get("arguments") or {},
                         self._caller(),
                     )
-                    self._json({"ok": True, "revision": self.workspace.geometry_revision, "result": result})
+                    answer = {"ok": True, "revision": self.workspace.geometry_revision, "result": result}
+                    answer.update(self._next_reads(then))
+                    self._json(answer)
                 elif parsed.path == "/api/settings":
                     self._json({"ok": True, "result": save_settings(body)})
                 elif parsed.path == "/api/chat":
@@ -587,6 +599,33 @@ def _handler(session: Workspace):
             except Exception as exc:
                 self._discard_unread_body()
                 self._error(500, str(exc))
+
+        def _state(self) -> dict:
+            state = self.workspace.state()
+            other = self.server.project_also_open_at(self.workspace.root)
+            state["project_warning"] = _second_app_warning(other) if other is not None else ""
+            return state
+
+        def _next_reads(self, then: tuple[str, ...]) -> dict:
+            """What the page reads after a command, read here, so it needs no request of its own.
+
+            ``state`` is what ``/api/state`` answers. ``scene`` is the scene list
+            ``/api/mesh?scene=parts`` answers, with its tag. The command already
+            ran, so a read that fails is left out and the page asks for it as before.
+            """
+            reads: dict = {}
+            if "state" in then:
+                try:
+                    reads["state"] = self._state()
+                except Exception:  # the command ran; the page reads the state itself
+                    pass
+            if "scene" in then:
+                try:
+                    tag, data = self.workspace.mesh_answer("scene_parts", "")
+                    reads["scene"] = {"tag": f'"{tag}"', "result": json.loads(data)["result"]}
+                except Exception:  # the command ran; the page reads the list itself
+                    pass
+            return reads
 
         def _run_command(self, name: str, arguments, source: str):
             if not self.server.log_commands:
