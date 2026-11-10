@@ -18,7 +18,7 @@ import pytest
 from aicad import kernel
 from aicad.app import make_server
 from aicad.studio import part_color
-from aicad.workspace import Workspace
+from aicad.workspace import Workspace, read_part_answer
 
 STATIC = Path(__file__).resolve().parents[1] / "src" / "aicad" / "app_static"
 _BOX = [{"op": "add", "shape": "box", "size": [10, 6, 4]}]
@@ -102,7 +102,7 @@ def test_after_a_move_only_the_moved_part_is_sent(server):
     # The page asks only for lid. The others, asked anyway, are 304 with no body.
     assert _get(server, "/api/mesh?part=frame", held["frame"])[:3:2] == (304, b"")
     lid_status, _tag, lid = _get(server, "/api/mesh?part=lid", held["lid"])
-    assert lid_status == 200 and json.loads(lid)["result"]["bounding_box"]["min"][2] == pytest.approx(10)
+    assert lid_status == 200 and read_part_answer(lid)["result"]["bounding_box"]["min"][2] == pytest.approx(10)
 
 
 _PROBE = r"""
