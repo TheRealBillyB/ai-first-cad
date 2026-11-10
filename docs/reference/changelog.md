@@ -37,6 +37,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 - A part that was dragged, or given a typed position, is drawn in its new place at once and stays there until the model answers. A move that fails puts it back at once. A typed turn and a mounted part still wait for the model.
 - The app warns when another app has the same project open. A page that drops its live connection no longer fills the console.
 - The plan summary beside the model uses the state the page already reads, so an idle page no longer asks for the whole project state every 2.5 seconds. Only the open Plan page still checks for plan files changed on disk.
+- The app also answers on `::1`, the IPv6 loopback, so a page opened at `localhost` no longer waits for the browser to fall back to IPv4 on every request. That socket is bound to `::1` alone and passes the same host, origin, and token checks. In the browser, one request at `localhost` went from 310 ms to 3.6 ms.
 - Undo and redo write back only the notes and the requirement list that differ from what is there, where they wrote every note and the requirements file again each time. An undo copy checks the notes folder once, where it checked it again for each note. On the 38-part finger rig, an undo went from 162 ms to 121 ms on the server, and a move from 155 ms to 138 ms.
 
 ### Install

@@ -29,6 +29,7 @@ import os
 import queue
 import secrets
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -312,14 +313,89 @@ class _WorkspaceServer(ThreadingHTTPServer):
         prepare_geometry_thread_stack()
         super().process_request(request, client_address)
 
+    # The same app on ::1, so a page opened at localhost does not wait for the
+    # browser to give up on IPv6. None when this computer has no IPv6 loopback.
+    _twin: _LoopbackTwin | None = None
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        twin = self._twin
+        if twin is not None:
+            threading.Thread(target=twin.serve_forever, args=(poll_interval,), name="aicad-ipv6", daemon=True).start()
+        try:
+            super().serve_forever(poll_interval)
+        finally:
+            if twin is not None:
+                twin.shutdown()
+
     def server_close(self) -> None:
         port = int(self.server_address[1])
+        if self._twin is not None:
+            self._twin.server_close()
         super().server_close()
         close = getattr(self.workspace, "close", None)
         if close is not None:
             close()
         remove_agent_token(port)
         _open_project_path(port).unlink(missing_ok=True)
+
+
+class _LoopbackTwin(_WorkspaceServer):
+    """The app's server on ``::1`` and the same port: the same handler, tokens, and project.
+
+    A browser asks ``localhost`` for ``::1`` first. With nothing there it falls
+    back to 127.0.0.1 about 300 ms later, on every request, because each request
+    is a new connection. This socket is bound to ``::1`` alone, never to every
+    interface, and its requests pass the same host, origin, and token checks.
+    """
+
+    address_family = socket.AF_INET6
+
+    def __init__(self, primary: _WorkspaceServer) -> None:
+        self._primary = primary
+        super().__init__(("::1", int(primary.server_address[1])), primary.RequestHandlerClass)
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind asks DNS for this address's name. The primary already has one.
+        if hasattr(socket, "IPV6_V6ONLY"):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self._primary.server_name
+        self.server_port = int(self.server_address[1])
+
+    @property
+    def workspace(self):
+        return self._primary.workspace
+
+    @property
+    def page_token(self) -> str:  # type: ignore[override]
+        return self._primary.page_token
+
+    @property
+    def agent_token(self) -> str:  # type: ignore[override]
+        return self._primary.agent_token
+
+    @property
+    def log_commands(self) -> bool:  # type: ignore[override]
+        return self._primary.log_commands
+
+    def project_also_open_at(self, root: Path) -> int | None:
+        return self._primary.project_also_open_at(root)
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        ThreadingHTTPServer.serve_forever(self, poll_interval)
+
+    def server_close(self) -> None:
+        ThreadingHTTPServer.server_close(self)
+
+
+def _loopback_twin(primary: _WorkspaceServer) -> _LoopbackTwin | None:
+    """The ``::1`` socket for a server on 127.0.0.1, or None when ``::1`` cannot be bound here."""
+    if primary.server_address[0] != "127.0.0.1" or not socket.has_ipv6:
+        return None
+    try:
+        return _LoopbackTwin(primary)
+    except OSError:
+        return None
 
 
 class HttpCommandClient:
@@ -504,6 +580,7 @@ def make_server(
     server.agent_token = secrets.token_urlsafe(32)
     write_agent_token(int(server.server_address[1]), server.agent_token)
     server.project_also_open_at(session.root)
+    server._twin = _loopback_twin(server)
     return server
 
 
