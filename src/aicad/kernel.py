@@ -2957,8 +2957,9 @@ def moved_viewport_mesh(base: ViewportArrays, rotation: np.ndarray, translation:
     coordinate can differ from one read off the moved solid by one step of
     that rounding: 0.0001 mm in a triangle, 0.000001 mm in a record.
 
-    Two things are still read from the moved solid. A turned solid's bounding
-    box is not the turned box. And a turned axis that lies evenly between two
+    Two things are still taken from the moved solid. A turned solid's bounding
+    box is not the turned box, so it is the box :func:`place` found for the
+    move, kept on the solid. And a turned axis that lies evenly between two
     coordinate axes gets its sign and its reference from rounding noise, so
     those faces are described again instead of guessed.
     """
@@ -2966,9 +2967,9 @@ def moved_viewport_mesh(base: ViewportArrays, rotation: np.ndarray, translation:
     positions = _rounded_list(_carried(base.positions, rotation, translation, turned).reshape(-1))
     if turned:
         normals = _rounded_list((base.normals @ rotation.T).reshape(-1))
-        box = shape.impl.bounding_box()
-        box_min = [round_mm(box.min.X), round_mm(box.min.Y), round_mm(box.min.Z)]
-        box_max = [round_mm(box.max.X), round_mm(box.max.Y), round_mm(box.max.Z)]
+        low, high = _aabb(shape)
+        box_min = [round_mm(value) for value in low]
+        box_max = [round_mm(value) for value in high]
     else:
         normals = base.normals.reshape(-1).tolist()
         box_min = [round_mm(value) for value in _carried(base.box_min, rotation, translation, turned).tolist()]
