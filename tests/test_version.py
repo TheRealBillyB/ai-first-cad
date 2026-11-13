@@ -1,4 +1,4 @@
-"""The reported version is 0.9.0 in every place that prints it."""
+"""The reported version is 0.1.0 in every place that prints it."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ def test_package_version_matches_pyproject():
     from aicad._version import __version__ as source
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert project["project"]["version"] == "0.9.0"
-    assert source == "0.9.0"
+    assert project["project"]["version"] == "0.1.0"
+    assert source == "0.1.0"
     assert __version__ == source
 
 
@@ -28,7 +28,7 @@ def test_cli_version_flag():
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "aicad 0.9.0"
+    assert completed.stdout.strip() == "aicad 0.1.0"
 
 
 def test_mcp_server_reports_the_package_version(tmp_path):
@@ -37,4 +37,4 @@ def test_mcp_server_reports_the_package_version(tmp_path):
 
     server = build_server(tmp_path / "project")
     assert server.name == "aicad"
-    assert server.version == __version__ == "0.9.0"
+    assert server.version == __version__ == "0.1.0"

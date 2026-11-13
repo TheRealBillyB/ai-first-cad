@@ -1,10 +1,12 @@
 # Changelog
 
-Version 0.9.0 is a public preview for feedback before 1.0. These notes describe the current tree, including its stability and safety fixes. A root `CHANGELOG.md` is not on the software-docs allowlist, so this file is the record.
+Version 0.1.0 is the first public early release. It works for real designs, but expect rough edges, missing features, and performance gaps. Feedback is welcome. These notes describe the current tree, including its stability and safety fixes. A root `CHANGELOG.md` is not on the software-docs allowlist, so this file is the record.
 
-## 0.9.0 — public preview
+## 0.1.0 — early release
 
-Model and Assembly now share one workspace and one 3D view, but the assembly flow is new and still rough. Version 1.0 will add editing a part in place inside an assembly and polish that flow, shaped by [preview feedback](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml). Joint-sized reducers and a stored catalog mounting orientation remain planned for after 1.0.
+This is the first public early release. It works for real designs, but expect rough edges, missing features, and performance gaps. Feedback is welcome.
+
+Model and Assembly now share one workspace and one 3D view, but the assembly flow is new and still rough. Version 1.0 will add editing a part in place inside an assembly and polish that flow, shaped by [feedback](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml). Joint-sized reducers and a stored catalog mounting orientation remain planned for after 1.0.
 
 ### Windows sandbox
 
