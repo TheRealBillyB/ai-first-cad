@@ -474,7 +474,9 @@ def test_shipped_metadata_is_the_directory_next_to_this_install(tmp_path):
     for path in roots:
         assert path.is_dir()
         assert path.parent == package_dir.parent or path.parent in sites
-    copied = tmp_path / "aicad-0.9.0.dist-info"
+    from aicad import __version__
+
+    copied = tmp_path / f"aicad-{__version__}.dist-info"
     copied.mkdir()
     assert copied.resolve() not in plugins._core_metadata_dirs()
     # Even a copy that claims to be this project's editable install is not core outside site-packages.
@@ -498,7 +500,7 @@ def test_a_regular_install_finds_the_metadata_next_to_the_package(tmp_path):
     package_dir.mkdir(parents=True)
     info = site / f"aicad-{__version__}.dist-info"
     info.mkdir()
-    (site / "aicad-0.1.0.dist-info").mkdir()
+    (site / "aicad-9.9.9.dist-info").mkdir()
     assert plugins._core_metadata_dirs(package_dir, [site]) == {info.resolve()}
 
 

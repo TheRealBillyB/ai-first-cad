@@ -11,7 +11,7 @@ Where the software work stands. Statuses describe this repository. They are not 
 | **Planned** | The direction after those tracks |
 | **Later** | Far enough out that the shape can still change |
 
-What is already in the tree is listed under Done. The Next release section describes the 0.9.0 public preview and what is still left before 1.0. The tracks after that release are the ones that are not in the tree yet.
+What is already in the tree is listed under Done. The Next release section describes the 0.1.0 early release and what is still left before 1.0. The tracks after that release are the ones that are not in the tree yet.
 
 ## Done
 
@@ -114,7 +114,7 @@ A third-angle sheet of a posed assembly, as PDF and DXF, with the overall box, a
 
 ## Next release
 
-**0.9.0** is the version in this tree, a public preview for feedback. Version 1.0 follows the preview. [Feedback](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml) will help shape that work, especially the assembly flow. These items were named for v1 and are already in the tree:
+**0.1.0** is the version in this tree, the first public early release. It works for real designs, but expect rough edges, missing features, and performance gaps. Feedback is welcome. Version 1.0 follows. [Feedback](https://github.com/TheRealBillyB/ai-first-cad/issues/new?template=feedback.yml) will help shape that work, especially the assembly flow. These items were named for v1 and are already in the tree:
 
 - **Arc tool.** Three-point arcs, center-start-end arcs, and a tangent arc that continues a line, with the same snapping, constraints, and dimensions as lines and circles.
 - **Sketch planes.** A sketch on a planar face of a solid, or on an offset or angled datum, including the XY, YZ, and XZ planes. The sketch stays attached when the model rebuilds.

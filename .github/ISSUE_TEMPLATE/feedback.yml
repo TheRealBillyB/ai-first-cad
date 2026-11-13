@@ -1,11 +1,11 @@
-name: Preview feedback
-description: Tell us what you tried to build and what was confusing in the 0.9 preview.
-title: "[Preview feedback]: "
+name: Feedback
+description: Tell us what you tried to build and what was confusing in the 0.1.0 early release.
+title: "[Feedback]: "
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for trying the 0.9.0 public preview. Feedback will help shape 1.0, especially the assembly flow in the shared Model and Assembly workspace.
+        Thanks for trying the 0.1.0 early release. It works for real designs, but expect rough edges. Feedback will help shape later versions, especially the assembly flow in the shared Model and Assembly workspace.
         This issue will be public. Remove API keys, personal information, file paths, and private design details from text, screenshots, and attachments.
         For security vulnerabilities, follow SECURITY.md instead of posting here.
   - type: textarea
@@ -41,7 +41,7 @@ body:
     attributes:
       label: aicad version
       description: The version shown in the app header or by aicad --version.
-      placeholder: 0.9.0
+      placeholder: 0.1.0
     validations:
       required: true
   - type: textarea
