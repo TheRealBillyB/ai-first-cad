@@ -1254,6 +1254,22 @@ def _coarser_mesh_size(mesh_size: float, equations: int) -> float:
 
 # Words CalculiX, SPOOLES, or the C library print when an allocation fails.
 _ALLOCATION_FAILED = ("allocat", "out of memory", "not enough memory", "bad_alloc")
+# Windows exit codes of a process that crashed: an access violation, no memory,
+# and a stack overflow. A failed allocation in the solver ends in one of these.
+_WINDOWS_CRASHES = frozenset({0xC0000005, 0xC0000017, 0xC00000FD})
+
+
+def _died_in_a_crash(code: int) -> bool:
+    """Whether the exit code is a crash, not a program that ran and stopped.
+
+    Elsewhere a crash is a death by signal, a negative code. On Windows a
+    negative code is any NTSTATUS, including a program that could not start
+    (0xC0000135, a missing DLL), so only the crash codes count there.
+    """
+    code = int(code)
+    if sys.platform == "win32":
+        return (code & 0xFFFFFFFF) in _WINDOWS_CRASHES
+    return code < 0
 
 
 def _ccx_stop(completed) -> str | None:
@@ -1263,10 +1279,11 @@ def _ccx_stop(completed) -> str | None:
     failed. The Linux helper has no memory cap of its own, so there the
     limit is the computer's or a container's memory: the kernel may kill the
     solver, which the helper sees, or an allocation fails, which it does not.
-    ``crash`` is a stop with
-    no error line of CalculiX's own, which is how a failed allocation in the
-    solver often ends. ``None`` is an error CalculiX reported, such as a bad
-    input deck, which another solver would not fix.
+    ``crash`` is a crash with no error line of CalculiX's own (a signal, or a
+    Windows crash code), which is how a failed allocation in the solver often
+    ends. ``None`` is anything else: an error CalculiX reported, such as a bad
+    input deck, or a run that never started, such as the sandbox refusing it
+    (exit 126 or 127) or a missing DLL. Another solver would not fix those.
     """
     if getattr(completed, "limit_hit", False):
         return "limit"
@@ -1275,7 +1292,9 @@ def _ccx_stop(completed) -> str | None:
         return "limit"
     if any("ERROR" in line for line in str(completed.stdout or "").splitlines()):
         return None
-    return "crash"
+    if _died_in_a_crash(completed.returncode):
+        return "crash"
+    return None
 
 
 def _solve_too_big(what: str, equations: int, node_count: int, mesh_size: float) -> str:
