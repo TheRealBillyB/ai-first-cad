@@ -562,3 +562,46 @@ def test_a_gear_pair_collision_sweep_of_thirteen_frames_finishes(tmp_path):
     assert hit["interference_volume_mm3"] > 1
     assert hit["gap_mm"] == pytest.approx(0)
     assert hit["at_mm"] is not None
+
+
+def _rod_and_nut(overlap_mm: float):
+    """A grooved rod in a nut whose ribs reach ``overlap_mm`` into the rod's 4 mm core."""
+    rod = [{"op": "add", "shape": "cylinder", "radius": 5, "height": 30, "center": [0, 0, 15]}]
+    for index in range(12):
+        rod.append({"op": "cut", "shape": "cylinder", "radius": 6, "height": 1, "center": [0, 0, 2 + 2.2 * index]})
+    rod.append({"op": "add", "shape": "cylinder", "radius": 4.0, "height": 30, "center": [0, 0, 15]})
+    nut = [
+        {"op": "add", "shape": "box", "size": [20, 20, 28], "center": [0, 0, 15]},
+        {"op": "cut", "shape": "cylinder", "radius": 5.1, "height": 40, "center": [0, 0, 15]},
+    ]
+    for index in range(12):
+        nut.append({"op": "add", "shape": "cylinder", "radius": 5.5, "height": 0.8, "center": [0, 0, 2 + 2.2 * index]})
+        nut.append({"op": "cut", "shape": "cylinder", "radius": 4.0 - overlap_mm, "height": 0.8, "center": [0, 0, 2 + 2.2 * index]})
+    return make_from_ops(rod), make_from_ops(nut)
+
+
+def test_a_thin_overlap_of_a_rod_in_a_nut_reads_as_thin():
+    """The hull of a nut holds the whole rod, so the hull depth was most of its diameter."""
+    rod, nut = _rod_and_nut(0.1)
+    depth = penetration_depth(rod, nut)
+    assert depth["depth_method"] == "overlap_thickness"
+    assert 0.06 < depth["penetration_depth_mm"] < 0.11
+    # The hull reading is still there, as an upper bound.
+    assert depth["hull_depth_mm"] > 9
+
+
+def test_a_deeper_overlap_reads_deeper():
+    thin = penetration_depth(*_rod_and_nut(0.1))["penetration_depth_mm"]
+    deep = penetration_depth(*_rod_and_nut(0.5))["penetration_depth_mm"]
+    assert deep > 3 * thin
+    assert deep < 0.6
+
+
+def test_a_motion_study_hit_carries_the_hull_depth(monkeypatch):
+    from aicad import motion_study
+
+    rod, nut = _rod_and_nut(0.1)
+    hit = motion_study._narrow(rod, nut, 0.0)
+    assert hit["kind"] == "interference"
+    assert hit["depth_method"] == "overlap_thickness"
+    assert hit["penetration_depth_mm"] < 0.11 and hit["hull_depth_mm"] > 9
