@@ -21,6 +21,7 @@ from aicad.sandbox import (
     WALL_SECONDS,
     cpu_seconds,
     memory_bytes,
+    script_cores,
     run_part_script,
     wall_seconds,
 )
@@ -33,7 +34,7 @@ def test_script_caps_cannot_be_raised(monkeypatch):
     monkeypatch.setenv("AICAD_SCRIPT_CPU_SECONDS", "999999")
     monkeypatch.setenv("AICAD_SCRIPT_MEMORY_MB", "999999")
     assert wall_seconds() == WALL_SECONDS
-    assert cpu_seconds() == CPU_SECONDS
+    assert cpu_seconds() == CPU_SECONDS * script_cores()
     assert memory_bytes() == MEMORY_BYTES
 
 
