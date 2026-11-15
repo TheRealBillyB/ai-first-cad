@@ -74,7 +74,8 @@ _NEEDS_SUPPORT = re.compile(
     r"floating (?:regions?|parts?|objects?)|"
     r"low bed adhesion|"
     r"print stability issues|"
-    r"unsupported extrusions?",
+    r"unsupported extrusions?|"
+    r"floating cantilever",
     re.IGNORECASE,
 )
 _TIME = re.compile(r"estimated printing time[^=]*=\s*([^\n]+)", re.IGNORECASE)
@@ -159,6 +160,7 @@ def analyze_print(
             Path(out_dir or "."),
             price_per_kg=setup.get("price_per_kg"),
             layer_height_mm=layer_height,
+            printer_id=printer["id"] if printer is not None else None,
         )
     status = "pass"
     if focus and not focus["fits"]:
@@ -254,6 +256,7 @@ def slice_mesh(
     out_dir: Path,
     price_per_kg=None,
     layer_height_mm=None,
+    printer_id: str | None = None,
 ) -> dict:
     executables = find_slicers()
     if not executables:
@@ -261,8 +264,8 @@ def slice_mesh(
             "status": "skipped",
             "slicer": None,
             "note": (
-                "OrcaSlicer and PrusaSlicer are not on PATH. "
-                "Install one and the same check will report time and filament. "
+                "No slicer was found. OrcaSlicer and PrusaSlicer are not on PATH, and Bambu Studio is not on PATH "
+                "or in its usual install folder. Install one and the same check will report time and filament. "
                 "The overhang map and the printer fit do not need a slicer."
             ),
             "assumptions": ["No slicer ran. Time and grams are not estimated."],
@@ -288,6 +291,12 @@ def slice_mesh(
         held_write_bytes(work, "oriented.stl", _stl_bytes(vertices, triangles))
         for executable in executables:
             last_name = Path(executable).name
+            if is_bambu(executable):
+                bambu = _bambu_slice_report(executable, work, printer_id, layer_height_mm, price_per_kg)
+                if bambu.get("status") == "sliced":
+                    return bambu
+                last = bambu.get("note") or last
+                continue
             for export in (True, False):
                 from aicad.sandbox import program_environment, run_confined_helper
 
@@ -368,20 +377,243 @@ def slice_mesh(
     }
 
 
+def _bambu_slice_report(executable: str, work, printer_id, layer_height_mm, price_per_kg) -> dict:
+    """Slice with Bambu Studio, again with supports when it warns they are needed."""
+    from aicad.labels import plain_line
+
+    parsed, log = _slice_bambu(executable, work, printer_id, layer_height_mm, supports=False)
+    if parsed is None:
+        return {"status": "failed", "note": plain_line("Bambu Studio did not slice the part. " + (log or ""))}
+    first_warning = parsed.get("warning")
+    supports_state = None
+    if first_warning and _needs_supports(first_warning):
+        retried, _retry_log = _slice_bambu(executable, work, printer_id, layer_height_mm, supports=True)
+        if retried is not None:
+            parsed = retried
+            supports_state = "on"
+        else:
+            supports_state = "warned"
+    parsed["status"] = "sliced"
+    parsed["slicer"] = Path(executable).name
+    parsed["slicer_warning"] = first_warning
+    parsed["supports"] = supports_state
+    if parsed.get("grams") and price_per_kg is not None:
+        parsed["cost"] = round(float(parsed["grams"]) * float(price_per_kg) / 1000.0, 2)
+        parsed["cost_source"] = "price_per_kg"
+    note = _slicer_note(parsed, price_per_kg)
+    if first_warning:
+        note += f" Bambu Studio warned: {first_warning}"
+    if supports_state == "on":
+        note += " It was sliced again with supports on."
+    parsed["note"] = plain_line(note)
+    profiles = parsed["profiles"]
+    parsed["layer_height_mm"] = layer_height_mm
+    parsed["assumptions"] = [
+        f"Sliced by Bambu Studio with its {profiles['machine']} machine, {profiles['process']} process, "
+        f"and {profiles['filament']} filament profiles."
+        + (
+            ""
+            if parsed["printer_matched"]
+            else " No printer was named, so the A1 profiles were used."
+            if printer_id is None
+            else f" {printer_id} has no Bambu profile here, so the A1 profiles were used."
+        ),
+        "Time and grams come from the result.json Bambu Studio writes. Cost is grams times price_per_kg / 1000.",
+        "A warning Bambu Studio gives, such as a floating cantilever, is reported as slicer_warning.",
+    ]
+    parsed.pop("warning", None)
+    return parsed
+
+
 def find_slicer() -> str | None:
     found = find_slicers()
     return found[0] if found else None
 
 
 def find_slicers() -> list[str]:
+    """OrcaSlicer, then PrusaSlicer, then Bambu Studio, as far as each is installed."""
     from aicad.prereqs import find_program
 
     found = []
-    for name in _SLICERS:
+    for name in (*_SLICERS, *_BAMBU_NAMES):
         path = find_program(name)
         if path and path not in found:
             found.append(path)
+    for path in _bambu_installs():
+        if path not in found:
+            found.append(path)
     return found
+
+
+# Bambu Studio's command line, after OrcaSlicer and PrusaSlicer. It is often
+# not on PATH, so its usual install folders are looked in too.
+_BAMBU_NAMES = ("bambu-studio", "BambuStudio", "bambu_studio")
+_BAMBU_INSTALLS = (
+    (r"%ProgramFiles%\Bambu Studio\bambu-studio.exe",),
+    ("/Applications/BambuStudio.app/Contents/MacOS/BambuStudio",),
+)
+# The Bambu machine, process, and filament profiles for each printer the app
+# knows. Another printer is sliced as an A1 and the result says so.
+_BAMBU_PROFILES = {
+    "bambu_a1": ("Bambu Lab A1 0.4 nozzle", "0.20mm Standard @BBL A1", "Bambu PLA Basic @BBL A1"),
+    "bambu_a1_mini": ("Bambu Lab A1 mini 0.4 nozzle", "0.20mm Standard @BBL A1M", "Bambu PLA Basic @BBL A1M"),
+    "bambu_p1": ("Bambu Lab P1P 0.4 nozzle", "0.20mm Standard @BBL P1P", "Bambu PLA Basic @BBL X1C"),
+    "bambu_x1": ("Bambu Lab X1 Carbon 0.4 nozzle", "0.20mm Standard @BBL X1C", "Bambu PLA Basic @BBL X1C"),
+}
+_BAMBU_DEFAULT = "bambu_a1"
+_PROFILE_MAX_BYTES = 4 * 1024 * 1024
+
+
+def is_bambu(executable: str) -> bool:
+    return "bambu" in Path(executable).name.lower()
+
+
+def _bambu_installs() -> list[str]:
+    import os
+
+    found = []
+    for (pattern,) in _BAMBU_INSTALLS:
+        path = Path(os.path.expandvars(pattern))
+        if "%" in str(path):
+            continue
+        try:
+            if path.is_file() and os.access(path, os.X_OK):
+                found.append(str(path.resolve()))
+        except OSError:
+            continue
+    return found
+
+
+def _bambu_profile_root(executable: str) -> Path | None:
+    """The BBL profile folder that ships beside the program."""
+    program = Path(executable).resolve()
+    for candidate in (
+        program.parent / "resources" / "profiles" / "BBL",
+        program.parent.parent / "Resources" / "profiles" / "BBL",
+    ):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _bambu_profile(root: Path, kind: str, name: str, extra: dict | None = None, depth: int = 0) -> dict:
+    """One Bambu system profile with its parents folded in, as the command line needs it.
+
+    The command line does not follow ``inherits`` for a file it is given, so
+    each parent is read and the child laid over it.
+    """
+    import json
+
+    if depth > 16:
+        raise GeometryError(f"Bambu profile {name!r} inherits too deeply.")
+    path = root / kind / f"{name}.json"
+    with open(path, "rb") as handle:
+        raw = handle.read(_PROFILE_MAX_BYTES + 1)
+    if len(raw) > _PROFILE_MAX_BYTES:
+        raise GeometryError(f"Bambu profile {name!r} is larger than expected.")
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise GeometryError(f"Bambu profile {name!r} is not an object.")
+    parent = data.get("inherits")
+    if isinstance(parent, str) and parent:
+        merged = _bambu_profile(root, kind, parent, depth=depth + 1)
+        merged.update(data)
+        data = merged
+    data.pop("inherits", None)
+    data["from"] = "system"
+    if extra:
+        data.update(extra)
+    return data
+
+
+def _bambu_command(executable: str, supports: bool) -> list[str]:
+    return [
+        executable,
+        "--allow-newer-file",
+        "--slice", "0",
+        "--arrange", "1",
+        "--orient", "0",
+        "--load-settings", "machine.json;process.json",
+        "--load-filaments", "filament.json",
+        "--outputdir", ".",
+        "--export-3mf", "sliced.3mf",
+        "oriented.stl",
+    ]
+
+
+def _bambu_result(data: dict) -> dict:
+    """Time, grams, and any warning from the result.json Bambu Studio writes."""
+    plates = data.get("sliced_plates") if isinstance(data, dict) else None
+    if not isinstance(plates, list) or not plates:
+        return {"seconds": None, "time": None, "grams": None, "cost": None, "cost_source": None, "warning": None}
+    seconds = 0.0
+    grams = 0.0
+    warnings = []
+    for plate in plates:
+        if not isinstance(plate, dict):
+            continue
+        seconds += float(plate.get("total_predication") or 0.0)
+        for filament in plate.get("filaments") or []:
+            if isinstance(filament, dict):
+                grams += float(filament.get("total_used_g") or 0.0)
+        message = str(plate.get("warning_message") or "").strip()
+        if message:
+            warnings.append(message)
+    whole = int(round(seconds))
+    hours, rest = divmod(whole, 3600)
+    minutes, secs = divmod(rest, 60)
+    text = (f"{hours}h " if hours else "") + f"{minutes}m {secs}s"
+    return {
+        "seconds": whole,
+        "time": text,
+        "grams": round(grams, 2),
+        "cost": None,
+        "cost_source": None,
+        "warning": "; ".join(warnings) or None,
+    }
+
+
+def _slice_bambu(executable: str, work, printer_id: str | None, layer_height_mm, supports: bool):
+    """Slice the oriented STL already in ``work`` with Bambu Studio. The parsed result and the log tail."""
+    import json
+
+    from aicad.sandbox import program_environment, run_confined_helper
+    from aicad.tool_directory import held_is_file, held_read_bytes, held_run_kwargs, held_write_bytes
+
+    root = _bambu_profile_root(executable)
+    if root is None:
+        return None, "Bambu Studio's profile folder was not found beside the program."
+    chosen = printer_id if printer_id in _BAMBU_PROFILES else _BAMBU_DEFAULT
+    machine, process, filament = _BAMBU_PROFILES[chosen]
+    overrides = {"enable_support": "1" if supports else "0"}
+    if layer_height_mm is not None:
+        overrides["layer_height"] = f"{float(layer_height_mm):g}"
+    try:
+        files = {
+            "machine.json": _bambu_profile(root, "machine", machine),
+            "process.json": _bambu_profile(root, "process", process, overrides),
+            "filament.json": _bambu_profile(root, "filament", filament),
+        }
+    except (OSError, ValueError, GeometryError) as exc:
+        return None, f"Bambu Studio's {chosen} profiles could not be read: {exc}"
+    for name, data in files.items():
+        held_write_bytes(work, name, json.dumps(data).encode("utf-8"))
+    completed = run_confined_helper(
+        _bambu_command(executable, supports), env=program_environment(), timeout=300, **held_run_kwargs(work)
+    )
+    log = ((completed.stdout or "") + "\n" + (completed.stderr or ""))[-800:]
+    if not held_is_file(work, "result.json"):
+        return None, log
+    try:
+        data = json.loads(held_read_bytes(work, "result.json", maximum=8 * 1024 * 1024).decode("utf-8"))
+    except (OSError, ValueError):
+        return None, log
+    parsed = _bambu_result(data)
+    if parsed["seconds"] is None and parsed["grams"] is None:
+        return None, log + "\n" + str(data.get("error_string") or "")
+    parsed["profiles"] = {"printer": chosen, "machine": machine, "process": process, "filament": filament}
+    parsed["printer_matched"] = chosen == printer_id
+    return parsed, log
 
 
 def parse_gcode(text: str) -> dict:
