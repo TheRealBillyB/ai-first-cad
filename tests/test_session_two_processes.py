@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from aicad.errors import DocumentError
+from aicad.errors import DocumentError, GeometryError
 from aicad.workspace import Workspace
 
 _BOX = [{"op": "add", "shape": "box", "size": [10, 10, 10]}]
@@ -71,11 +71,37 @@ def test_a_document_refuses_to_write_over_a_newer_session(tmp_path):
     assert second.document._reload_if_changed() is False
 
 
-def test_undo_after_another_copy_saved_is_not_refused(tmp_path):
+def test_undo_after_another_copy_deleted_a_part_does_not_bring_it_back(tmp_path):
+    first = Workspace(tmp_path)
+    first.execute("create_part_from_ops", {"name": "a", "ops": _BOX}, source="agent")
+    first.execute("create_part_from_ops", {"name": "b", "ops": _BOX}, source="agent")
+    second = Workspace(tmp_path)
+    second.execute("create_part_from_ops", {"name": "x", "ops": _BOX}, source="agent")
+    first.execute("delete_part", {"name": "b"}, source="agent")
+    assert _saved_parts(tmp_path) == ["a", "x"]
+
+    # The second copy's undo step is a copy of the project from before the
+    # delete; restoring it would bring b back and lose x.
+    with pytest.raises(GeometryError, match="Nothing to undo. Another program changed session.json"):
+        second.undo("agent")
+    assert _saved_parts(tmp_path) == ["a", "x"]
+    assert _names(second) == ["a", "x"]
+    assert second.state()["can_undo"] is False
+
+    # Work done after picking up the change can be undone as usual.
+    second.execute("create_part_from_ops", {"name": "y", "ops": _BOX}, source="agent")
+    second.undo("agent")
+    assert _saved_parts(tmp_path) == ["a", "x"]
+    assert _names(second) == ["a", "x"]
+
+
+def test_redo_after_another_copy_saved_is_dropped(tmp_path):
     first = Workspace(tmp_path)
     first.execute("create_part_from_ops", {"name": "a", "ops": _BOX}, source="agent")
     second = Workspace(tmp_path)
-    second.execute("create_part_from_ops", {"name": "b", "ops": _BOX}, source="agent")
-    first.execute("create_part_from_ops", {"name": "c", "ops": _BOX}, source="agent")
+    second.execute("create_part_from_ops", {"name": "x", "ops": _BOX}, source="agent")
     second.undo("agent")
-    assert _saved_parts(tmp_path) == _names(second)
+    first.execute("create_part_from_ops", {"name": "c", "ops": _BOX}, source="agent")
+    with pytest.raises(GeometryError, match="Nothing to redo"):
+        second.redo("agent")
+    assert _saved_parts(tmp_path) == ["a", "c"]
