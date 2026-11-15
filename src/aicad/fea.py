@@ -1241,6 +1241,30 @@ def _coarser_mesh_size(mesh_size: float, equations: int) -> float:
     return math.ceil(size * 10.0 - 1e-9) / 10.0
 
 
+# Words CalculiX, SPOOLES, or the C library print when an allocation fails.
+_ALLOCATION_FAILED = ("allocat", "out of memory", "not enough memory", "bad_alloc")
+
+
+def _ccx_stop(completed) -> str | None:
+    """Why a CalculiX run that left no result stopped, when it may be the solver's size.
+
+    ``limit`` is a memory or CPU limit: the helper saw it, or an allocation
+    failed. On Linux the memory cap makes an allocation fail rather than
+    killing the process, so the helper cannot tell. ``crash`` is a stop with
+    no error line of CalculiX's own, which is how a failed allocation in the
+    solver often ends. ``None`` is an error CalculiX reported, such as a bad
+    input deck, which another solver would not fix.
+    """
+    if getattr(completed, "limit_hit", False):
+        return "limit"
+    text = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    if any(word in text.lower() for word in _ALLOCATION_FAILED):
+        return "limit"
+    if any("ERROR" in line for line in str(completed.stdout or "").splitlines()):
+        return None
+    return "crash"
+
+
 def _solve_too_big(what: str, equations: int, node_count: int, mesh_size: float) -> str:
     text = f"CalculiX {what} while solving {equations:,} equations ({node_count:,} nodes"
     if mesh_size > 0:
@@ -1323,8 +1347,8 @@ def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
                 f"did not finish in {_CCX_TIMEOUT_S} s", equations, len(points), mesh_size
             )
         failed = completed.returncode != 0 or not held_entry_is_file(path, "job.frd")
-        limit_hit = failed and getattr(completed, "limit_hit", False)
-        if not limit_hit:
+        stop = _ccx_stop(completed) if failed else None
+        if stop is None:
             if failed:
                 detail = _ccx_error(completed.stdout)
                 return None, None, detail or "CalculiX stopped without a result file."
@@ -1335,6 +1359,12 @@ def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
         # The direct solver's memory grows much faster than the system it
         # solves. The iterative one may still fit, so it gets one try.
         return _run_ccx(mesh, fixed_nodes, forces, material, method="iterative")
+    if stop == "crash":
+        return None, None, (
+            f"CalculiX stopped without a result file or an error of its own (exit code {completed.returncode}), "
+            f"with the iterative solver, on {equations:,} equations. "
+            "A failed allocation can end this way; a larger mesh_size_mm needs less memory."
+        )
     from aicad.sandbox import memory_bytes
 
     return None, None, _solve_too_big(

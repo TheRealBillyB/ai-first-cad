@@ -802,7 +802,8 @@ def test_calculix_is_started_with_stdin_closed(monkeypatch):
     fea._run_ccx(mesh, np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3})
     monkeypatch.setattr(modal, "_frequency_deck", lambda *_args: "*HEADING\n")
     modal._frequency_once([], [], [], 1, 5)
-    assert len(seen) == 2
+    # The static solve stopped with no error of its own, so the iterative solver was tried as well.
+    assert len(seen) == 3
     assert all(item.get("stdin") is subprocess.DEVNULL for item in seen)
 
 
@@ -926,3 +927,69 @@ def test_every_mesh_runs_on_one_gmsh_thread_whatever_thread_asks(monkeypatch):
     assert len(started) == 4
     assert len(set(started)) == 1
     assert started[0] not in callers
+
+
+def _run_one_tet_with(monkeypatch, answers):
+    """Run the one-tet solve with each helper answer in turn. The decks the solver was given, and the warning."""
+    from aicad import fea
+    from aicad.sandbox import _HelperResult
+
+    decks: list[str] = []
+    real_deck = fea.solver_deck
+
+    def deck(lines):
+        text = real_deck(lines)
+        decks.append(text)
+        return text
+
+    queue = list(answers)
+
+    def helper(_command, **_kwargs):
+        return _HelperResult(*queue.pop(0))
+
+    monkeypatch.setattr(fea, "solver_deck", deck)
+    monkeypatch.setattr("aicad.sandbox.run_confined_helper", helper)
+    monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "ccx")
+    forces = np.zeros((4, 3))
+    forces[1, 0] = 1.0
+    disp, _stress, warning = fea._run_ccx(
+        _one_tet_mesh(), np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3}
+    )
+    assert disp is None
+    return decks, warning
+
+
+def test_a_failed_allocation_tries_the_iterative_solver_where_no_limit_signal_is_seen(monkeypatch):
+    """On Linux the memory cap fails an allocation; the process exits with an error, not a kill."""
+    decks, warning = _run_one_tet_with(
+        monkeypatch,
+        [
+            (16, "*ERROR in u_malloc: error allocating memory\n", ""),
+            (16, "*ERROR in u_malloc: error allocating memory\n", ""),
+        ],
+    )
+    assert len(decks) == 2 and "SOLVER=ITERATIVE CHOLESKY" in decks[1]
+    assert "9 equations" in warning and "mesh_size_mm" in warning
+
+
+def test_a_solver_that_crashes_without_an_error_tries_the_iterative_solver(monkeypatch):
+    """A failed allocation in SPOOLES often ends in a crash with no error line."""
+    decks, warning = _run_one_tet_with(
+        monkeypatch,
+        [
+            (-11, "Factoring the system of equations using the symmetric spooles solver\n", ""),
+            (-11, "", ""),
+        ],
+    )
+    assert len(decks) == 2 and "SOLVER=ITERATIVE CHOLESKY" in decks[1]
+    assert "without a result file or an error of its own (exit code -11)" in warning
+    assert "9 equations" in warning
+
+
+def test_an_error_calculix_reports_is_not_retried(monkeypatch):
+    decks, warning = _run_one_tet_with(
+        monkeypatch,
+        [(201, "*ERROR reading *MATERIAL: no elastic constants\n", "")],
+    )
+    assert len(decks) == 1
+    assert "no elastic constants" in warning
