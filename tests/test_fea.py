@@ -632,6 +632,93 @@ def test_a_calculix_timeout_is_reported_not_raised(monkeypatch):
         modal._run_frequency([], [], [], 1, 5)
 
 
+
+def _one_tet_mesh(mesh_size: float = 2.0) -> dict:
+    return {
+        "points": np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        "elements": np.array([[0, 1, 2, 3]]),
+        "order": 1,
+        "mesh_size_mm": mesh_size,
+    }
+
+
+def test_a_solver_stopped_by_its_limit_tries_the_iterative_solver_then_names_the_equations(monkeypatch):
+    """The direct solver ran out of memory near 250,000 equations with only a truncated log."""
+    from aicad import fea
+    from aicad.sandbox import _HelperResult
+
+    decks: list[str] = []
+    real_deck = fea.solver_deck
+
+    def deck(lines):
+        text = real_deck(lines)
+        decks.append(text)
+        return text
+
+    def stopped(_command, **_kwargs):
+        return _HelperResult(-1, "Factoring the system of equations using the symmetric spooles solver", "", limit_hit=True)
+
+    monkeypatch.setattr(fea, "solver_deck", deck)
+    monkeypatch.setattr("aicad.sandbox.run_confined_helper", stopped)
+    monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "ccx")
+    mesh = _one_tet_mesh()
+    forces = np.zeros((4, 3))
+    forces[1, 0] = 1.0
+    disp, stress, warning = fea._run_ccx(
+        mesh, np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3}
+    )
+    assert disp is None and stress is None
+    assert len(decks) == 2
+    assert "\n*STATIC\n" in decks[0]
+    assert "\n*STATIC, SOLVER=ITERATIVE CHOLESKY\n" in decks[1]
+    assert "ran out of" in warning and "9 equations" in warning and "mesh_size_mm" in warning
+    assert mesh["equations"] == 9 and mesh["linear_solver"] == "iterative"
+
+
+def test_a_large_system_goes_to_the_iterative_solver(monkeypatch):
+    from aicad import fea
+
+    decks: list[str] = []
+    monkeypatch.setattr(fea, "solver_deck", lambda lines: decks.append("\n".join(lines)) or "")
+    monkeypatch.setattr("aicad.paths.publish_text", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: None)
+    forces = np.zeros((4, 3))
+    forces[1, 0] = 1.0
+    material = {"youngs_modulus_mpa": 2000.0, "poisson": 0.3}
+    fea._run_ccx(_one_tet_mesh(), np.array([0], dtype=np.int32), forces, material)
+    monkeypatch.setattr(fea, "_DIRECT_SOLVER_EQUATIONS", 8)
+    fea._run_ccx(_one_tet_mesh(), np.array([0], dtype=np.int32), forces, material)
+    assert "\n*STATIC\n" in decks[0] and "SOLVER=" not in decks[0]
+    assert "*STATIC, SOLVER=ITERATIVE CHOLESKY" in decks[1]
+
+
+def test_the_suggested_mesh_brings_the_solve_within_reach():
+    from aicad import fea
+
+    # Equations go as 1 / size cubed; the suggestion is never finer than the mesh that failed.
+    assert fea._coarser_mesh_size(2.2, 367_740) == 2.8
+    assert fea._coarser_mesh_size(1.7, 900_000) == 2.0
+    assert fea._equation_count(10, np.array([0, 0, 1])) == 24
+    text = fea._solve_too_big("did not finish in 180 s", 900_000, 300_000, 1.7)
+    assert "900,000 equations" in text and "mesh_size_mm 2 or larger" in text
+
+
+@needs_solver
+def test_the_iterative_solver_agrees_with_the_direct_one(monkeypatch):
+    from aicad import fea
+    from aicad.fea import solve_part
+
+    direct = solve_part(_beam(), _cantilever(2.0), part_name="beam")
+    monkeypatch.setattr(fea, "_DIRECT_SOLVER_EQUATIONS", 0)
+    iterative = solve_part(_beam(), _cantilever(2.0), part_name="beam")
+    assert direct.status == iterative.status == "solved"
+    assert direct.mesh["linear_solver"] == "direct" and iterative.mesh["linear_solver"] == "iterative"
+    assert iterative.mesh["equations"] == direct.mesh["equations"] > 0
+    assert any("iterative Cholesky" in line for line in iterative.assumptions)
+    assert not any("iterative Cholesky" in line for line in direct.assumptions)
+    assert abs(iterative.max_displacement_mm - direct.max_displacement_mm) <= 0.01 * direct.max_displacement_mm
+    assert abs(iterative.max_von_mises_mpa - direct.max_von_mises_mpa) <= 0.01 * direct.max_von_mises_mpa
+
 def test_calculix_is_started_with_stdin_closed(monkeypatch):
     import sys
 
