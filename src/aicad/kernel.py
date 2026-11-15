@@ -2628,6 +2628,23 @@ def _tessellate_on_this_thread(shape: Shape) -> TriangleMesh:
     return TriangleMesh(vertices=points, normals=norms, triangles=faces, edges=edges)
 
 
+def face_distances(shape: Shape, indexes, point) -> dict[int, float]:
+    """The shortest distance, in mm, from ``point`` to each face named by its describe_faces index."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    faces = shape.impl.faces()
+    vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(float(point[0]), float(point[1]), float(point[2]))).Vertex()
+    distances: dict[int, float] = {}
+    for index in indexes:
+        if not 0 <= index < len(faces):
+            continue
+        measure = BRepExtrema_DistShapeShape(vertex, faces[index].wrapped)
+        if measure.IsDone() and measure.NbSolution() > 0:
+            distances[index] = float(measure.Value())
+    return distances
+
+
 def describe_faces(shape: Shape) -> list[dict]:
     """Describe each face so a load or a support can name it without a click.
 
