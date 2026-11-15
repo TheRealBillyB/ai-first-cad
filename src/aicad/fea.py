@@ -1337,8 +1337,10 @@ def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
         return _run_ccx(mesh, fixed_nodes, forces, material, method="iterative")
     from aicad.sandbox import memory_bytes
 
+    # The helper says a limit stopped it, not which one.
     return None, None, _solve_too_big(
-        f"ran out of the {memory_bytes() // (1024 * 1024)} MiB of memory or {_CCX_TIMEOUT_S} s of CPU it may use",
+        "was stopped at the memory or CPU limit "
+        f"({memory_bytes() // (1024 * 1024)} MiB of memory, {_CCX_TIMEOUT_S} s of CPU time)",
         equations,
         len(points),
         mesh_size,
