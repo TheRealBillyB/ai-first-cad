@@ -4348,6 +4348,8 @@ def _section_wall_thickness(shape: Shape) -> tuple[float | None, int, bool]:
     measured: list[float] = []
     missed: list[float] = []
     count = 0
+    # One classifier for all nine slices, as for the rays.
+    inside = _InsideTest(impl)
     for normal, low, high in axes:
         span = high - low
         if span < 1e-6:
@@ -4362,7 +4364,7 @@ def _section_wall_thickness(shape: Shape) -> tuple[float | None, int, bool]:
             count += 1
             if not sketch.faces():
                 continue
-            thickness, capped = _sketch_thickness(sketch, solid=impl)
+            thickness, capped = _sketch_thickness(sketch, solid=impl, inside=inside)
             if thickness is None:
                 continue
             if capped:
@@ -4434,10 +4436,66 @@ def _strictly_on_face(face, point) -> bool:
     return classifier.State() == TopAbs_IN
 
 
-def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | None, bool]:
-    """Minimum width between roughly parallel edges of a planar section."""
+def _ray_meets_box(origin, direction, box) -> bool:
+    """Whether the ray from ``origin`` along ``direction`` can touch the box ``(low, high)``."""
+    near = 0.0
+    far = math.inf
+    for start, step, low, high in zip(
+        (origin.X, origin.Y, origin.Z), (direction.X, direction.Y, direction.Z), box[0], box[1]
+    ):
+        if abs(step) < 1e-12:
+            if start < low or start > high:
+                return False
+            continue
+        first = (low - start) / step
+        second = (high - start) / step
+        if first > second:
+            first, second = second, first
+        near = max(near, first)
+        far = min(far, second)
+        if near > far:
+            return False
+    return True
+
+
+def _section_edges(edges) -> list[tuple]:
+    """Each edge of a section face with its mid tangent and a box around it, read once.
+
+    A section's edges are checked against every probe of every other edge, so
+    these were read again thousands of times on a drilled plate. The box is
+    grown so that a hit OpenCascade finds on the edge's border is never skipped.
+    """
+    prepared = []
+    for edge in edges:
+        try:
+            tangent = edge.tangent_at(0.5)
+        except Exception:
+            continue
+        if tangent.length < 1e-9:
+            continue
+        try:
+            box = edge.bounding_box()
+            pad = 1e-3 + 1e-6 * float(box.diagonal)
+            bounds = (
+                (float(box.min.X) - pad, float(box.min.Y) - pad, float(box.min.Z) - pad),
+                (float(box.max.X) + pad, float(box.max.Y) + pad, float(box.max.Z) + pad),
+            )
+        except Exception:
+            bounds = None
+        prepared.append((edge, tangent.normalized(), bounds))
+    return prepared
+
+
+def _sketch_thickness(sketch, samples: int = 3, solid=None, inside=None) -> tuple[float | None, bool]:
+    """Minimum width between roughly parallel edges of a planar section.
+
+    ``inside`` is a loaded ``_InsideTest`` of ``solid``, for a caller that slices
+    the same solid more than once.
+    """
     from build123d import Axis, Vector
 
+    if solid is not None and inside is None:
+        inside = _InsideTest(solid)
     measured: list[float] = []
     missed: list[float] = []
     for face in sketch.faces():
@@ -4446,6 +4504,7 @@ def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | Non
         except Exception:
             continue
         edges = list(face.edges())
+        others = _section_edges(edges)
         for edge in edges:
             if edge.length < 0.3:
                 continue
@@ -4492,14 +4551,11 @@ def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | Non
                 axis = Axis(origin, inward)
                 floor = max(_WALL_HIT_FLOOR_MM, probe * 0.05)
                 nearest: float | None = None
-                for other in edges:
-                    try:
-                        other_tangent = other.tangent_at(0.5)
-                    except Exception:
+                for other, other_tangent, bounds in others:
+                    if abs(other_tangent.dot(tangent)) < 0.7:
                         continue
-                    if other_tangent.length < 1e-9:
-                        continue
-                    if abs(other_tangent.normalized().dot(tangent)) < 0.7:
+                    # Only a hit ahead of the probe counts, so an edge the ray cannot reach is skipped.
+                    if bounds is not None and not _ray_meets_box(origin, inward, bounds):
                         continue
                     hits = other.intersect(axis)
                     if not hits:
@@ -4509,8 +4565,8 @@ def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | Non
                         if distance <= floor:
                             continue
                         midpoint = origin + inward * (distance * 0.5)
-                        if solid is not None:
-                            if not _strictly_inside(solid, midpoint):
+                        if inside is not None:
+                            if not inside(midpoint):
                                 continue
                         elif not face.is_inside(midpoint):
                             continue
