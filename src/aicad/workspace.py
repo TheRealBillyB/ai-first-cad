@@ -123,6 +123,8 @@ class Workspace:
         self.event_id = 0
         self._undo: list[dict] = []
         self._redo: list[dict] = []
+        # True once undo steps were dropped because session.json changed elsewhere.
+        self._history_dropped = False
         self.selection: dict[str, Any] = {"part": None, "faces": [], "edges": []}
         self.panels: dict[str, dict] = {}
         # A mesh is kept with the solid it was made from. A command that leaves a
@@ -187,6 +189,7 @@ class Workspace:
                 "Only the person at this workspace can open a project folder or save a copy."
             )
         with self._lock:
+            self._pick_up_outside_changes()
             if command.undo:
                 self._undo.append(self._snapshot())
                 if len(self._undo) > _UNDO_LIMIT:
@@ -255,10 +258,41 @@ class Workspace:
             listener(event)
         return result
 
+    def _pick_up_outside_changes(self) -> None:
+        """Read session.json again if another program with this project open wrote it.
+
+        Called under the lock before a command, an undo, or a state read, so
+        a command starts from the saved project and does not write back an
+        older copy of it.
+
+        The undo and redo steps are dropped. Each is a whole copy of the
+        project from before the other program's change, so restoring one would
+        undo that change too: a part it deleted would come back.
+        """
+        if not self.document._reload_if_changed():  # noqa: SLF001
+            return
+        if self._undo or self._redo:
+            self._history_dropped = True
+        self._undo.clear()
+        self._redo.clear()
+        self.geometry_revision += 1
+        self._mesh_cache.clear()
+        self._drop_meshes_of_removed_names()
+        self._requirement_cache.clear()
+
+    def _history_dropped_note(self) -> str:
+        if not self._history_dropped:
+            return ""
+        return (
+            " Another program changed session.json, so the earlier undo steps were"
+            " dropped; undoing them would have reverted its change."
+        )
+
     def undo(self, source: str = "ui") -> dict:
         with self._lock:
+            self._pick_up_outside_changes()
             if not self._undo:
-                raise GeometryError("Nothing to undo.")
+                raise GeometryError("Nothing to undo." + self._history_dropped_note())
             now = self._snapshot()
             self._redo.append(now)
             self._restore(self._undo.pop(), now)
@@ -274,8 +308,9 @@ class Workspace:
 
     def redo(self, source: str = "ui") -> dict:
         with self._lock:
+            self._pick_up_outside_changes()
             if not self._redo:
-                raise GeometryError("Nothing to redo.")
+                raise GeometryError("Nothing to redo." + self._history_dropped_note())
             now = self._snapshot()
             self._undo.append(now)
             self._restore(self._redo.pop(), now)
@@ -291,6 +326,7 @@ class Workspace:
 
     def state(self) -> dict:
         with self._lock:
+            self._pick_up_outside_changes()
             checks = evaluate(self.document, self._requirements, cache=self._requirement_cache, run=False)
             if self._sketch_cache_revision != self.geometry_revision:
                 # A solved sketch depends on its name and its stored spec and on nothing
@@ -448,6 +484,7 @@ class Workspace:
             self.requirements_path = self.root / "requirements.json"
             self._undo.clear()
             self._redo.clear()
+            self._history_dropped = False
             self.selection = {"part": None, "faces": [], "edges": []}
             self.panels.clear()
             self._forget_meshes()
@@ -1643,7 +1680,7 @@ def _cmd_run_design_script(workspace: Workspace, arguments: dict) -> dict:
     except Exception:
         # A killed script may have written session.json. Put the previous document back.
         _give_back()
-        workspace.document._save()  # noqa: SLF001
+        workspace.document._save(replace_newer=True)  # noqa: SLF001
         raise
     if not payload.get("ok"):
         _give_back()

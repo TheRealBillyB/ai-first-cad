@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
 import threading
 from dataclasses import replace
@@ -184,6 +185,9 @@ class Document:
         self._lock = threading.RLock()
         self.actor = "user"
         self._writes = 0
+        # session.json as this document last read or wrote it. Another program
+        # with the same project open (the app, a script) can write it too.
+        self._disk_stamp: tuple[int, int, int] | None = None
         self._load()
 
     def create_part_from_script(self, name: str, script: str) -> PartInfo:
@@ -3082,7 +3086,47 @@ class Document:
             "assemblies": [copy.deepcopy(spec) for spec in self._assemblies.values()],
         }
 
-    def _save(self) -> None:
+    def _session_stamp(self) -> tuple[int, int, int] | None:
+        """Identify the session file on disk. A replaced file has a new identity."""
+        try:
+            info = os.stat(self._session_path(), follow_symlinks=False)
+        except OSError:
+            return None
+        return (int(info.st_mtime_ns), int(info.st_size), int(info.st_ino))
+
+    def _changed_on_disk(self) -> bool:
+        """True when another program wrote session.json after this document read or wrote it."""
+        current = self._session_stamp()
+        return current is not None and current != self._disk_stamp
+
+    def _reload_if_changed(self) -> bool:
+        """Read session.json again when another program wrote it since this document last did.
+
+        A project can be open in two processes at once: the app and a script,
+        or two scripts. Without this, the next save from the one holding the
+        older copy wrote that copy back, and a part the other had deleted came
+        back. Parts whose saved record is unchanged keep their solids.
+        """
+        with self._lock:
+            if not self._changed_on_disk():
+                return False
+            payload = self._read_payload()
+            if payload is None:
+                return False
+            kept = self._parts_to_keep(payload)
+            self._parts.clear()
+            self._sketches.clear()
+            self._assemblies.clear()
+            self._apply_payload(payload, kept=kept)
+            return True
+
+    def _save(self, *, replace_newer: bool = False) -> None:
+        """Write session.json.
+
+        A file another program wrote after this document last read it is not
+        overwritten: that would put back what the other program changed. Pass
+        ``replace_newer`` only where this process knows who wrote it.
+        """
         from aicad.paths import publish_text
 
         payload = self._payload()
@@ -3093,7 +3137,14 @@ class Document:
             raise DocumentError(
                 "The session has a number that is not finite, so it was not saved."
             ) from exc
+        if not replace_newer and self._changed_on_disk():
+            raise DocumentError(
+                "session.json was changed by another program with this project open (the app or a script) "
+                "after this one read it, so this change was not saved. Run the command again: "
+                "it starts from the saved project."
+            )
         publish_text(path, text)
+        self._disk_stamp = self._session_stamp()
         self._writes += 1
 
     def _reload(self) -> None:
@@ -3111,12 +3162,22 @@ class Document:
         return relative
 
     def _load(self) -> None:
+        payload = self._read_payload()
+        if payload is not None:
+            self._apply_payload(payload)
+
+    def _read_payload(self) -> dict | None:
+        """The saved session, or ``None`` when there is no session file."""
         path = self._session_path()
         if not path.exists() and not path.is_symlink():
-            return
+            self._disk_stamp = None
+            return None
         if path.is_dir() and not path.is_symlink():
-            return
+            return None
         from aicad.paths import read_checked_text
+
+        # Taken before the read: a write in between shows up as a change later.
+        self._disk_stamp = self._session_stamp()
 
         text = read_checked_text(
             self.workspace,
@@ -3135,7 +3196,7 @@ class Document:
             raise DocumentError("The session is nested too deeply, so it was not read.") from exc
         if not isinstance(payload, dict):
             raise DocumentError(f"Could not read {path}: the session is not an object.")
-        self._apply_payload(payload)
+        return payload
 
     def _apply_payload(self, payload: dict, kept: dict[str, _Part] | None = None) -> None:
         """Build the document from ``payload``. A part in ``kept`` is used as it is, see ``_parts_to_keep``."""
