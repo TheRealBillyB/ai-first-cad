@@ -80,7 +80,7 @@ def solve_modal(
     for index, item in enumerate(fixes):
         if not isinstance(item, dict):
             raise GeometryError(f"Fix {index} must be an object with select.")
-        held.extend(select_faces(catalog, item.get("select") or {}))
+        held.extend(select_faces(catalog, item.get("select") or {}, shape))
     if not held:
         raise GeometryError("The support selector did not match a face.")
 
@@ -98,7 +98,7 @@ def solve_modal(
         "material": material,
         "offset": 0,
     }
-    frequencies, vectors, log = _run_frequency([body], fixed, [], nmodes, _timeout(setup, 180))
+    frequencies, vectors, log = _run_frequency([body], fixed, [], nmodes, _timeout(setup, 180), mesh_size=mesh_size)
     if body.get("straight_sided"):
         warnings.append(STRAIGHT_EDGE_NOTE)
     if int(body["order"]) != used_order:
@@ -236,7 +236,9 @@ def solve_modal_assembly(spec: dict, shapes: dict, setup: dict | None, out_dir: 
         raise GeometryError(
             "No support nodes were found. Name a face on a grounded instance, or use a finer mesh so the bottom face has nodes."
         )
-    frequencies, vectors, log = _run_frequency(bodies, np.array(sorted(set(fixed)), dtype=np.int32), equations, nmodes, _timeout(setup, 300))
+    frequencies, vectors, log = _run_frequency(
+        bodies, np.array(sorted(set(fixed)), dtype=np.int32), equations, nmodes, _timeout(setup, 300), mesh_size=mesh_size
+    )
     if any(body.get("straight_sided") for body in bodies):
         warnings.append(STRAIGHT_EDGE_NOTE)
     if int(bodies[0]["order"]) != order:
@@ -711,15 +713,15 @@ def demote_if_simplified(resonance: dict, degraded: bool) -> dict:
     return updated
 
 
-def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
-    warning = _frequency_once(bodies, fixed_nodes, equations, nmodes, timeout)
+def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int, *, mesh_size: float = 0.0):
+    warning = _frequency_once(bodies, fixed_nodes, equations, nmodes, timeout, mesh_size=mesh_size)
     if warning[0] is None and warning[2] and "nonpositive jacobian" in warning[2].lower():
         quadratic = [body for body in bodies if int(body["order"]) == 2]
         if quadratic:
             curved = {id(body): body["points"] for body in quadratic}
             for body in quadratic:
                 body["points"] = straight_sided(body["points"], body["elements"])
-            warning = _frequency_once(bodies, fixed_nodes, equations, nmodes, timeout)
+            warning = _frequency_once(bodies, fixed_nodes, equations, nmodes, timeout, mesh_size=mesh_size)
             if warning[2] is None:
                 for body in quadratic:
                     body["straight_sided"] = True
@@ -731,7 +733,7 @@ def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
             for body in bodies:
                 body["elements"] = np.array(body["elements"])[:, :4]
                 body["order"] = 1
-            warning = _frequency_once(bodies, fixed_nodes, equations, nmodes, timeout)
+            warning = _frequency_once(bodies, fixed_nodes, equations, nmodes, timeout, mesh_size=mesh_size)
             if warning[2] is None:
                 warning = (warning[0], warning[1], "linear-fallback")
     frequencies, vectors, detail = warning
@@ -742,9 +744,19 @@ def _run_frequency(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
     return frequencies, vectors, detail or ""
 
 
-def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
+def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int, mesh_size: float = 0.0):
+    """One CalculiX frequency solve: frequencies, mode shapes, and the log, or None and why.
+
+    A solve stopped by the helper's memory or CPU limit, or by the clock,
+    names its size and a mesh that brings it within reach, as a static
+    solve does. The frequency solve has no iterative solver to fall back on:
+    its eigenvalue method factorises the matrix directly.
+    """
+    from aicad.fea import _equation_count, _solve_too_big
     from aicad.paths import held_entry_is_file, held_subprocess_kwargs, held_tool_directory, publish_text
 
+    node_count = sum(len(body["points"]) for body in bodies)
+    unknowns = _equation_count(node_count, fixed_nodes)
     with held_tool_directory() as path:
         publish_text(
             path / "job.inp",
@@ -769,22 +781,31 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int):
                 **held_subprocess_kwargs(path),
             )
         except subprocess.TimeoutExpired:
-            return None, None, f"CalculiX did not finish in {timeout} s. Use a larger mesh_size_mm, or raise timeout_s."
+            return None, None, _solve_too_big(f"did not finish in {timeout} s", unknowns, node_count, mesh_size) + " Or raise timeout_s."
         stdout = completed.stdout or ""
         if "nonpositive jacobian" in stdout.lower():
             return None, None, "nonpositive jacobian"
         if completed.returncode != 0 or not held_entry_is_file(path, "job.dat"):
+            if getattr(completed, "limit_hit", False):
+                from aicad.sandbox import memory_bytes
+
+                return None, None, _solve_too_big(
+                    "was stopped at the memory or CPU limit "
+                    f"({memory_bytes() // (1024 * 1024)} MiB of memory, {timeout} s of CPU time)",
+                    unknowns,
+                    node_count,
+                    mesh_size,
+                )
             return None, None, _ccx_error(stdout)
         dat = path / "job.dat"
         frd = path / "job.frd"
-        node_count = sum(len(body["points"]) for body in bodies)
         try:
             from aicad.file_access import read_text
 
             frequencies = _parse_dat(read_text(dat, maximum=64 * 1024 * 1024, errors="replace"), nmodes)
         except GeometryError as exc:
             return None, None, str(exc)
-        vectors = _parse_mode_shapes(frd, node_count) if held_entry_is_file(path, "job.frd") else []
+        vectors = _parse_mode_shapes(frd, node_count, nmodes) if held_entry_is_file(path, "job.frd") else []
         while len(vectors) < len(frequencies):
             vectors.append(np.zeros((node_count, 3), dtype=np.float64))
         vectors = vectors[: len(frequencies)]
@@ -878,7 +899,7 @@ def _parse_dat(text: str, nmodes: int) -> list[dict]:
     return found[:nmodes]
 
 
-def _parse_mode_shapes(path: Path, node_count: int) -> list[np.ndarray]:
+def _parse_mode_shapes(path: Path, node_count: int, nmodes: int = 1) -> list[np.ndarray]:
     if path is None or not Path(path).is_file():
         return []
     modes: list[np.ndarray] = []
@@ -886,7 +907,10 @@ def _parse_mode_shapes(path: Path, node_count: int) -> list[np.ndarray]:
     seen = 0
     from aicad.file_access import read_text
 
-    for line in read_text(path, maximum=64 * 1024 * 1024, errors="replace").splitlines():
+    # About 80 bytes a node for each mode shape. A fixed 64 MiB cap refused
+    # the shapes of a fine mesh, as it refused a fine static result.
+    maximum = max(64 * 1024 * 1024, 200 * int(node_count) * (max(1, int(nmodes)) + 1))
+    for line in read_text(path, maximum=maximum, errors="replace").splitlines():
         head = line.strip().upper()
         if "PMODE" in head:
             if current is not None and seen > 0:

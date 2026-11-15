@@ -1560,7 +1560,9 @@ def test_a_child_that_survives_the_kill_does_not_hold_the_parent(monkeypatch):
 def test_cpu_or_memory_limit_stops_the_script(tmp_path, config_home, monkeypatch):
     monkeypatch.setenv("AICAD_SCRIPT_CPU_SECONDS", "1")
     monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "30")
-    with pytest.raises(ScriptError, match="memory or CPU"):
+    # Windows and SIGXCPU say it was the CPU cap. A plain SIGKILL cannot tell, and names both.
+    expected = "used all of its CPU time" if sys.platform == "win32" else "used all of its CPU time|memory or CPU"
+    with pytest.raises(ScriptError, match=expected):
         run_part_script("while True:\n    pass\n", tmp_path)
 
 
@@ -1659,7 +1661,7 @@ def test_memory_limit_stops_a_huge_allocation(tmp_path, config_home, monkeypatch
     monkeypatch.setenv("AICAD_SCRIPT_MEMORY_MB", "256")
     monkeypatch.setenv("AICAD_SCRIPT_WALL_SECONDS", "60")
     monkeypatch.setenv("AICAD_SCRIPT_CPU_SECONDS", "30")
-    with pytest.raises(ScriptError, match="MemoryError|memory or CPU"):
+    with pytest.raises(ScriptError, match="MemoryError|hit the memory limit|memory or CPU"):
         run_part_script("blob = bytearray(800 * 1024 * 1024)\npart = Box(1, 1, 1)\n", tmp_path)
 
 

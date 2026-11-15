@@ -34,7 +34,7 @@ def _solve(monkeypatch, method: str) -> dict:
 
     monkeypatch.setattr("aicad.sandbox.run_confined_helper", helper)
     monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "ccx")
-    monkeypatch.setattr(fea.os, "cpu_count", lambda: 24)
+    monkeypatch.setattr("aicad.sandbox.script_cores", lambda: 24)
     forces = np.zeros((4, 3))
     forces[1, 0] = 1.0
     fea._run_ccx(
@@ -62,10 +62,16 @@ def test_the_direct_solver_factorises_on_one_thread(monkeypatch):
 
 
 def test_a_small_computer_uses_the_cores_it_has(monkeypatch):
-    monkeypatch.setattr(fea.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr("aicad.sandbox.script_cores", lambda: 2)
     assert fea.ccx_threads() == 2
-    monkeypatch.setattr(fea.os, "cpu_count", lambda: None)
-    assert fea.ccx_threads() == 1
+
+
+def test_the_thread_count_follows_the_cpu_affinity(monkeypatch):
+    from aicad import sandbox
+
+    monkeypatch.setattr(sandbox.os, "sched_getaffinity", lambda _pid: {0, 1, 2}, raising=False)
+    monkeypatch.setattr(sandbox.os, "cpu_count", lambda: 24)
+    assert fea.ccx_threads() == 3
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the Windows helper")

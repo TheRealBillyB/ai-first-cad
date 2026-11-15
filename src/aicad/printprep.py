@@ -60,6 +60,8 @@ _ORIENTATIONS = {
 _SLICERS = ("orca-slicer", "orcaslicer", "OrcaSlicer", "prusa-slicer", "prusaslicer", "PrusaSlicer")
 # Faces this close to the lowest point are the bed, not an overhang.
 _BED_MM = 0.05
+# A face whose normal is this close to straight up or down is flat.
+_FLAT = 0.999
 # A down-facing span no wider than this, held along an edge, prints as a bridge.
 _DEFAULT_BRIDGE_MM = 5.0
 # Vertices closer than this are the same point when a mesh splits a shared edge.
@@ -471,17 +473,77 @@ def _threshold(value) -> float:
 
 
 def _classify(vertices, triangles, normals, threshold: float, bridge_mm: float):
-    """Bed faces, down-facing faces, and the down-facing faces that are bridges."""
+    """Faces held from below, down-facing faces, and the down-facing faces that are bridges.
+
+    A face is held from below when it is on the bed, or when it is flat and
+    sits on a flat up-facing face of another body: a part on a slab, or one
+    part stacked on another. The bed is the lowest point of everything
+    checked, so before this a slab under a plate of parts made every part's
+    underside an overhang.
+    """
     areas = _areas(vertices, triangles)
     min_z = float(vertices[:, 2].min()) if len(vertices) else 0.0
     centroids = vertices[triangles].mean(axis=1)
     on_bed = centroids[:, 2] <= min_z + _BED_MM
+    held = on_bed | _resting(vertices, triangles, normals, centroids, ~on_bed)
     # A face that leans phi from vertical has normal z of -sin(phi).
     # Straight down is 90 degrees and a vertical wall is 0.
     limit = -math.sin(math.radians(threshold))
-    overhang = (normals[:, 2] < limit) & ~on_bed
-    bridge = _bridge_mask(vertices, triangles, overhang, on_bed, bridge_mm)
-    return areas, on_bed, overhang, bridge
+    overhang = (normals[:, 2] < limit) & ~held
+    bridge = _bridge_mask(vertices, triangles, overhang, held, bridge_mm)
+    return areas, held, overhang, bridge
+
+
+def _resting(vertices, triangles, normals, centroids, candidates) -> np.ndarray:
+    """Flat down-facing faces that sit wholly on flat up-facing faces, within the bed band.
+
+    One solid never has such a pair: they would be a wall of no thickness.
+    So the face below belongs to another body, which holds this one up. A
+    face only partly over the body below is not held: its corners, the
+    middles of its edges, and its center must all be on that body.
+    """
+    resting = np.zeros(len(triangles), dtype=bool)
+    down = np.flatnonzero(candidates & (normals[:, 2] < -_FLAT))
+    up = np.flatnonzero(normals[:, 2] > _FLAT)
+    if not len(down) or not len(up):
+        return resting
+    corners = vertices[triangles[up]]
+    heights = corners[:, :, 2].mean(axis=1)
+    order = np.argsort(heights, kind="stable")
+    heights = heights[order]
+    corners = corners[order][:, :, :2]
+    for index in down:
+        z = float(centroids[index, 2])
+        low = int(np.searchsorted(heights, z - _BED_MM, side="left"))
+        high = int(np.searchsorted(heights, z + _BED_MM, side="right"))
+        if low >= high:
+            continue
+        below = corners[low:high]
+        own = vertices[triangles[index]][:, :2]
+        middle = centroids[index, :2]
+        # Pulled a little toward the center, so a corner on the edge of the face below is on it.
+        probes = [0.98 * point + 0.02 * middle for point in (*own, *((own + np.roll(own, -1, axis=0)) / 2))]
+        if all(_inside_any(point, below) for point in [middle, *probes]):
+            resting[index] = True
+    return resting
+
+
+def _inside_any(point, triangles) -> bool:
+    """Whether the 2D point is in any of the 2D triangles, edges included."""
+    a = triangles[:, 0]
+    b = triangles[:, 1]
+    c = triangles[:, 2]
+
+    def side(p, q, r):
+        return (q[:, 0] - p[:, 0]) * (r[1] - p[:, 1]) - (q[:, 1] - p[:, 1]) * (r[0] - p[:, 0])
+
+    first = side(a, b, point)
+    second = side(b, c, point)
+    third = side(c, a, point)
+    tolerance = 1e-9
+    has_negative = (first < -tolerance) | (second < -tolerance) | (third < -tolerance)
+    has_positive = (first > tolerance) | (second > tolerance) | (third > tolerance)
+    return bool(np.any(~(has_negative & has_positive)))
 
 
 def _bridge_mask(vertices, triangles, overhang, on_bed, bridge_mm: float) -> np.ndarray:

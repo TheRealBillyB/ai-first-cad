@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>aicad 0.1.0 early release · roadmap</title>
-<meta name="description" content="Try the aicad 0.1.0 early release and share feedback. It works for real designs, but expect rough edges. CAM and other ideas follow. Free, open source, local CAD that an AI can operate as well as a person.">
+<meta name="description" content="Try the aicad 0.1.0 early release and share feedback. It works for real designs, but expect rough edges. CAM and other ideas are planned. Free, open source, local CAD that an AI can operate as well as a person.">
 <meta name="theme-color" content="#0a1224">
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -26,14 +26,14 @@
       <ul class="legend" aria-label="Legend">
         <li><span class="dot dot-done"></span>Done in the repository</li>
         <li><span class="dot dot-wip"></span>Before 1.0</li>
-        <li><span class="dot dot-next"></span>Next: CAM</li>
+        <li><span class="dot dot-next"></span>Planned: CAM</li>
         <li><span class="dot dot-future"></span>Idea, not built yet</li>
       </ul>
     </div>
     <figure class="hero-fig">
       <picture>
         <source media="(max-width: 640px)" srcset="images/roadmap-overview-9x16.svg">
-        <img src="images/roadmap-overview-16x9.svg" alt="Roadmap overview: 0.1.0 early release, feedback toward 1.0, then CAM and future ideas" width="1920" height="1080">
+        <img src="images/roadmap-overview-16x9.svg" alt="Roadmap overview: 0.1.0 early release, feedback toward 1.0, planned CAM, and future ideas" width="1920" height="1080">
       </picture>
     </figure>
   </section>
@@ -43,7 +43,7 @@
       <button type="button" class="chip is-on" data-filter="all" aria-pressed="true">All <span class="n" data-count="all"></span></button>
       <button type="button" class="chip" data-filter="done" aria-pressed="false"><span class="dot dot-done"></span>Done <span class="n" data-count="done"></span></button>
       <button type="button" class="chip" data-filter="wip" aria-pressed="false"><span class="dot dot-wip"></span>Before 1.0 <span class="n" data-count="wip"></span></button>
-      <button type="button" class="chip" data-filter="next" aria-pressed="false"><span class="dot dot-next"></span>Next <span class="n" data-count="next"></span></button>
+      <button type="button" class="chip" data-filter="next" aria-pressed="false"><span class="dot dot-next"></span>Planned <span class="n" data-count="next"></span></button>
       <button type="button" class="chip" data-filter="future" aria-pressed="false"><span class="dot dot-future"></span>Ideas <span class="n" data-count="future"></span></button>
     </div>
     <label class="search"><span class="sr">Search</span><input type="search" id="q" placeholder="Search, e.g. gears, PCB" autocomplete="off"></label>
@@ -63,9 +63,9 @@
     <section class="stage" id="next" data-stage="next">
       <div class="stage-head">
         <span class="node node-next" aria-hidden="true"></span>
-        <p class="stage-kicker">Next</p>
+        <p class="stage-kicker">Planned</p>
         <h2>CAM: from model to machine</h2>
-        <p class="stage-sub">The first track after 1.0. Toolpaths will come from an existing open-source engine rather than a new one (none is chosen yet). 3D printing stays with PrusaSlicer and OrcaSlicer.</p>
+        <p class="stage-sub">CAM is planned; it may land before or after 1.0. Toolpaths will come from an existing open-source engine rather than a new one (none is chosen yet). 3D printing stays with PrusaSlicer and OrcaSlicer.</p>
       </div>
       <div class="grid" data-group="next"></div>
     </section>

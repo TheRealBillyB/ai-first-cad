@@ -99,6 +99,9 @@ raise SystemExit(main([str(job)]))
 # A file in the project, the environment, and a script cannot raise it.
 WALL_SECONDS = 120
 WALL_SECONDS_CAP = 600
+# CPU time for each core a script can run on. The operating system counts the
+# CPU time of every thread, and OpenCascade runs a boolean on all cores, so a
+# flat 60 s stopped a 5 s build on a 24-core computer.
 CPU_SECONDS = 60
 MEMORY_BYTES = 4 * 1024 * 1024 * 1024
 FILE_BYTES = 512 * 1024 * 1024
@@ -512,8 +515,61 @@ def _wall_for_run(workspace: Path, wall_seconds_limit: int | None) -> int:
     return _capped("AICAD_SCRIPT_WALL_SECONDS", chosen, chosen)
 
 
+def script_cores() -> int:
+    """Cores a script's threads can run on."""
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cores = os.cpu_count() or 1
+    return max(1, int(cores))
+
+
 def cpu_seconds() -> int:
-    return _capped("AICAD_SCRIPT_CPU_SECONDS", CPU_SECONDS, CPU_SECONDS)
+    """CPU time one script may use, summed over its threads: CPU_SECONDS for each core.
+
+    The wall clock still stops a script that runs too long. The environment
+    can lower this and cannot raise it.
+    """
+    ceiling = CPU_SECONDS * script_cores()
+    return _capped("AICAD_SCRIPT_CPU_SECONDS", ceiling, ceiling)
+
+
+def _limit_stop_text(which: str = "") -> str:
+    """Why a script stopped at its memory or CPU cap.
+
+    ``which`` is ``"cpu"`` or ``"memory"`` when the platform said which cap it
+    was, and empty when it did not; then both caps are named.
+    """
+    cpu = cpu_seconds()
+    cores = script_cores()
+    if cpu == CPU_SECONDS * cores and cores > 1:
+        cpu_text = f"{cpu} s of CPU time ({CPU_SECONDS} s for each of {cores} cores)"
+    else:
+        cpu_text = f"{cpu} s of CPU time"
+    memory_text = f"{memory_bytes() // (1024 * 1024)} MiB of memory"
+    if which == "cpu":
+        return (
+            f"The script was stopped because it used all of its CPU time ({cpu_text}). "
+            "The time of every thread adds up, so a script that keeps many cores busy "
+            "reaches it before the wall clock does."
+        )
+    if which == "memory":
+        return f"The script was stopped because it hit the memory limit ({memory_text})."
+    return f"The script was stopped because it hit the memory or CPU limit ({memory_text}, {cpu_text})."
+
+
+def _limit_kind(memory_killed, code: int) -> str:
+    """``"cpu"`` or ``"memory"`` when it is known which cap stopped the script, else ``""``.
+
+    Windows says which in ``memory_killed``. Elsewhere SIGXCPU is the CPU
+    cap and the parent's memory watch is the memory cap. A plain SIGKILL can
+    be either, or the parent's own kill.
+    """
+    if isinstance(memory_killed, str) and memory_killed in ("cpu", "memory"):
+        return memory_killed
+    if not memory_killed and code < 0 and -code == getattr(signal, "SIGXCPU", None):
+        return "cpu"
+    return ""
 
 
 def memory_bytes() -> int:
@@ -3229,6 +3285,10 @@ def _child_env(
     _copy_set(env, _SCRIPT_LOCALE)
     _copy_set(env, _SCRIPT_TEXT)
     _copy_set(env, _SCRIPT_LIMITS)
+    # The child is told the cap the parent counted, so a limit message names
+    # the cap that was set. The child still counts its own cores and keeps the
+    # lower of the two (cpu_seconds), so this variable cannot raise the cap.
+    env["AICAD_SCRIPT_CPU_SECONDS"] = str(cpu_seconds())
     _copy_set(env, _SCRIPT_HOME)
     if sys.platform == "win32":
         # The network check reads the receivers the parent is listening on.
@@ -6135,7 +6195,7 @@ def _spawn(
             proc.returncode if proc.returncode is not None else -1,
             stdout_b.decode("utf-8", "replace"),
             stderr_b.decode("utf-8", "replace"),
-            memory_killed=memory_hit.is_set(),
+            memory_killed="memory" if memory_hit.is_set() else False,
             process_killed=process_hit.is_set(),
         )
         if design_record is not None:
@@ -6263,7 +6323,7 @@ def _payload_from_result(
         raise ScriptError(_PROCESS_LIMIT)
     if memory_killed:
         shutil.rmtree(job, ignore_errors=True)
-        raise ScriptError("The script was stopped because it hit the memory or CPU limit.")
+        raise ScriptError(_limit_stop_text(_limit_kind(memory_killed, code)))
     result_path = job / "result.json"
     try:
         result_text = _result_text(result_path)
@@ -6286,10 +6346,7 @@ def _payload_from_result(
                 except (ValueError, OSError):
                     signame = str(-code)
                 detail = (detail + f"\nstopped by signal {-code} ({signame})").strip()
-            raise ScriptError(
-                "The script was stopped because it hit the memory or CPU limit."
-                + (f"\n{detail}" if detail else "")
-            )
+            raise ScriptError(_limit_stop_text(_limit_kind(memory_killed, code)) + (f"\n{detail}" if detail else ""))
         detail = tail.strip() or stdout[-2000:].strip()
         if code < 0:
             try:

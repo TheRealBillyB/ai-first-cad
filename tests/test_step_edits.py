@@ -11,7 +11,15 @@ import pytest
 from aicad.app import make_server
 from aicad.errors import GeometryError, ScriptError
 from aicad.llm import _SYSTEM, tool_specs
-from aicad.sandbox import CPU_SECONDS, MEMORY_BYTES, WALL_SECONDS, cpu_seconds, memory_bytes, wall_seconds
+from aicad.sandbox import (
+    CPU_SECONDS,
+    MEMORY_BYTES,
+    WALL_SECONDS,
+    cpu_seconds,
+    memory_bytes,
+    script_cores,
+    wall_seconds,
+)
 from aicad.script_params import rewrite_script_size, script_sizes
 from aicad.workspace import Workspace
 
@@ -236,7 +244,7 @@ def test_a_script_size_rebuild_stays_inside_the_sandbox(tmp_path, monkeypatch):
         (dot / "config.json").write_text(json.dumps(claims) + "\n", encoding="utf-8")
         (project / ".env").write_text("AICAD_SCRIPT_NETWORK=1\n", encoding="utf-8")
         assert wall_seconds(project) == WALL_SECONDS
-        assert cpu_seconds() == CPU_SECONDS
+        assert cpu_seconds() == CPU_SECONDS * script_cores()
         assert memory_bytes() == MEMORY_BYTES
         workspace.execute("create_part_from_script", {"name": "block", "script": script}, source="ui")
         workspace.execute(

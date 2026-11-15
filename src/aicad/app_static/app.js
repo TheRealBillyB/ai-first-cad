@@ -48,11 +48,43 @@ function sessionToken() {
   return meta ? meta.getAttribute("content") || "" : "";
 }
 
+// A browser opens at most six connections to one host. A command, and a mesh the app
+// has not kept, wait for a command that is running, and each holds a connection while
+// it waits. A few clicks during a long solve once took all six, so even the state read
+// that shows the busy note could not be sent, and the page froze until the solve ended.
+// The geometry runs one request at a time anyway, so at most this many such requests
+// are sent at once. The rest wait here, holding no connection.
+const WAITING_REQUESTS = 2;
+let waitingRequests = 0;
+const waitingQueue = [];
+
+function mayWaitForCommand(url) {
+  const path = String(url).split("?")[0];
+  return path === "/api/command" || path === "/api/mesh";
+}
+
+async function limitedFetch(url, options) {
+  // A request let out of the queue takes the place the finished one leaves.
+  if (waitingRequests >= WAITING_REQUESTS) await new Promise((resolve) => waitingQueue.push(resolve));
+  else waitingRequests += 1;
+  try {
+    return await fetch(url, options);
+  } finally {
+    const next = waitingQueue.shift();
+    if (next) next();
+    else waitingRequests -= 1;
+  }
+}
+
 function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-Aicad-Token", sessionToken());
+  if (mayWaitForCommand(url)) return limitedFetch(url, { ...options, headers });
   return fetch(url, { ...options, headers });
 }
+
+// The Plan page sends its commands through the same limit.
+globalThis.aicadApiFetch = (url, options) => apiFetch(url, options);
 
 // With ``reads``, the answer also carries what ``reads.then`` names, and they are put in ``reads``.
 async function command(name, args = {}, reads = null) {

@@ -214,7 +214,8 @@ def test_calculix_and_ffmpeg_receive_the_scrubbed_environment(monkeypatch):
     fea._run_ccx(mesh, np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3})
     monkeypatch.setattr(modal, "_frequency_deck", lambda *_args: "*HEADING\n")
     modal._frequency_once([], [], [], 1, 5)
-    assert len(seen) == 2
+    # The static solve failed with no error of its own, so the iterative solver was tried as well.
+    assert len(seen) == 3
     for item in seen:
         assert item.get("stdin") is subprocess.DEVNULL
         env = item.get("env") or {}
