@@ -95,3 +95,22 @@ def test_the_app_busy_note_carries_the_progress(tmp_path):
 def test_the_page_shows_the_progress_on_the_busy_note():
     script = (ROOT / "src" / "aicad" / "app_static" / "app.js").read_text(encoding="utf-8")
     assert "busy.progress.text" in script
+
+
+def test_a_new_stage_within_a_second_is_not_dropped(monkeypatch):
+    """Meshing took under a second, so "solving" was dropped and "meshing" stayed up for the whole solve."""
+    heard: list[dict] = []
+    clock = iter([10.0, 10.3, 10.5, 10.6, 10.7])
+    monkeypatch.setattr(progress.time, "monotonic", lambda: next(clock))
+    with progress.listening(heard.append):
+        progress.report("meshing at 0.7 mm")
+        progress.report("solving 579,474 equations with the iterative solver")
+        progress.report("frame 1 of 48", 0, 48)
+        progress.report("frame 2 of 48", 1, 48)
+        progress.report("reading results")
+    assert [entry["text"] for entry in heard] == [
+        "meshing at 0.7 mm",
+        "solving 579,474 equations with the iterative solver",
+        "frame 1 of 48",
+        "reading results",
+    ]
