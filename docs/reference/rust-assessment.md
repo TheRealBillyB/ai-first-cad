@@ -1,6 +1,6 @@
 # Would Rust make the app faster? An assessment, November 2026
 
-This is a write-up only. Nothing was rewritten. Version 0.9 ships on Python. The numbers come from [the November profile](profiling-2026-11.md), measured on the 38-part finger rig on one Windows desktop.
+This is a write-up only. Nothing was rewritten. Version 0.1.0 ships on Python. The numbers come from [the November profile](profiling-2026-11.md), measured on the 38-part finger rig on one Windows desktop.
 
 **Recommendation: stay on Python, and add no native code yet.** The profile shows no loop that Rust would speed up by an amount a user could notice. The largest cost after the first fixes was writing meshes as JSON text, and numpy, which aicad already depends on, removed that cost more completely than a Rust encoder would have.
 

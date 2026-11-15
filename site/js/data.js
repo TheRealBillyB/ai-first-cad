@@ -448,4 +448,4 @@ window.ROADMAP_ITEMS = [
   "n": 56
  }
 ];
-window.ROADMAP_SECTIONS = {"done": ["0.9.0", "What's in the preview"], "wip": ["1.0", "Before 1.0"], "next": ["Next", "CAM: from model to machine"], "future": ["Future", "Ideas board"]};
+window.ROADMAP_SECTIONS = {"done": ["0.1.0", "What's in the early release"], "wip": ["1.0", "Before 1.0"], "next": ["Next", "CAM: from model to machine"], "future": ["Future", "Ideas board"]};
