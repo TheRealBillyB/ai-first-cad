@@ -1,6 +1,6 @@
 # Dependency license audit
 
-Audited 2026-10-21, against aicad `AGPL-3.0-or-later`. Updated 2026-11-06: lib3mf's license, CalculiX's two license statements, and what a commercial license from the owner can cover. The list of outside software with links is [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+Audited 2026-10-21, against aicad `AGPL-3.0-or-later`. Updated 2026-11-06: lib3mf's license, CalculiX's two license statements, and what a commercial license from the owner can cover. Updated 2026-11-14: ptyprocess, the MuJoCo 4.x packages, and the current dev extras. The list of outside software with links is [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 This is a compatibility check of the packages aicad installs or runs, not a legal opinion. There is no lockfile. Versions are the newest PyPI release on that date that satisfies `pyproject.toml`, and the direct dependencies of those releases. "Imported" means aicad loads it in the same Python process. "Separate program" means aicad only launches an executable and exchanges files.
 
@@ -78,7 +78,7 @@ The Open CASCADE README also offers a commercial license as an alternative for O
 | bd_materials | 0.2.4 | Apache-2.0 | PyPI license field is empty. Upstream `LICENSE` is Apache-2.0. | Yes |
 | threejs-materials | 1.2.5 | Apache-2.0 | Python material data. The browser app does not load three.js. | Yes |
 
-IPython 9.17.1 also installs these, all permissive:
+IPython 9.17.1 also installs these, all permissive. pexpect and ptyprocess are installed on Linux and macOS only.
 
 | Package | Version | SPDX |
 | --- | --- | --- |
@@ -88,6 +88,7 @@ IPython 9.17.1 also installs these, all permissive:
 | wcwidth | 0.9.3 | MIT |
 | traitlets | 5.16.1 | BSD-3-Clause |
 | pexpect | 4.9.0 | ISC |
+| ptyprocess | 0.7.0 | ISC |
 | psutil | 7.2.2 | BSD-3-Clause |
 | pygments | 2.21.0 | BSD-2-Clause |
 | ipython-pygments-lexers | 1.1.1 | BSD (generic PyPI classifier) |
@@ -136,9 +137,18 @@ IPython 9.17.1 also installs these, all permissive:
 | packaging | 26.3 | via pytest | Apache-2.0 OR BSD-2-Clause | | Yes |
 | pluggy | 1.7.0 | via pytest | MIT | | Yes |
 | pygments | 2.21.0 | via pytest | BSD-2-Clause | | Yes |
-| mujoco | 3.16.0 | robot | Apache-2.0 | Imported only when the extra is installed (`aicad.robot`) | Yes |
-| absl-py | 2.5.1 | via mujoco | Apache-2.0 | | Yes |
-| etils | 1.14.0 | via mujoco | Apache-2.0 | | Yes |
+| pytest-xdist | 3.8.0 | dev | MIT | Parallel test runner | Yes |
+| execnet | 2.1.2 | via pytest-xdist | MIT | | Yes |
+| matplotlib | 3.11.2 | dev | PSF-based Matplotlib license | Tests only | Yes |
+| contourpy | 1.3.3 | via matplotlib | BSD | | Yes |
+| cycler | 0.12.1 | via matplotlib | BSD | | Yes |
+| kiwisolver | 1.5.1 | via matplotlib | BSD | | Yes |
+| python-dateutil | 4.0.0 | via matplotlib | BSD-3-Clause | | Yes |
+| tzdata | 2026.6 | via matplotlib | Apache-2.0 | | Yes |
+| mujoco | 4.0.1 | robot | Apache-2.0 | Imported only when the extra is installed (`aicad.robot`). `mujoco>=3.1` now installs 4.x. | Yes |
+| mujoco-core | 4.0.1 | via mujoco | Apache-2.0 | | Yes |
+| mujoco-studio | 4.0.1 | via mujoco | Apache-2.0 | | Yes |
+| mujoco-studio-wasm | 4.0.1 | via mujoco | Apache-2.0 | | Yes |
 | glfw | 2.11.0 | via mujoco | MIT | | Yes |
 | PyOpenGL | 3.1.10 | via mujoco | BSD | | Yes |
 | websockets | 17.3 | via mujoco | BSD-3-Clause | | Yes |

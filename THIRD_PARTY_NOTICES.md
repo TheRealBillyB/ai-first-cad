@@ -80,10 +80,12 @@ aicad's direct dependencies are build123d, bd_warehouse, gmsh, mcp, numpy, pillo
 | opentelemetry-api | Apache-2.0 | [PyPI](https://pypi.org/project/opentelemetry-api/) |
 | packaging | Apache-2.0 OR BSD-2-Clause | [PyPI](https://pypi.org/project/packaging/) |
 | parso | MIT | [PyPI](https://pypi.org/project/parso/) |
+| pexpect (Linux, macOS) | ISC | [PyPI](https://pypi.org/project/pexpect/) |
 | pillow | MIT-CMU | [PyPI](https://pypi.org/project/pillow/) |
 | platformdirs | MIT | [PyPI](https://pypi.org/project/platformdirs/) |
 | prompt_toolkit | BSD-3-Clause | [PyPI](https://pypi.org/project/prompt-toolkit/) |
 | psutil | BSD-3-Clause | [PyPI](https://pypi.org/project/psutil/) |
+| ptyprocess (Linux, macOS) | ISC | [PyPI](https://pypi.org/project/ptyprocess/) |
 | pure_eval | MIT | [PyPI](https://pypi.org/project/pure-eval/) |
 | pycparser | BSD-3-Clause | [PyPI](https://pypi.org/project/pycparser/) |
 | pydantic | MIT | [PyPI](https://pypi.org/project/pydantic/) |
@@ -128,8 +130,9 @@ Installed only with the `robot` extra, for example `pip install -e ".[robot]"`. 
 | Package | License | Link |
 | --- | --- | --- |
 | mujoco | Apache-2.0 | [PyPI](https://pypi.org/project/mujoco/) |
-| absl-py | Apache-2.0 | [PyPI](https://pypi.org/project/absl-py/) |
-| etils | Apache-2.0 | [PyPI](https://pypi.org/project/etils/) |
+| mujoco-core | Apache-2.0 | [PyPI](https://pypi.org/project/mujoco-core/) |
+| mujoco-studio | Apache-2.0 | [PyPI](https://pypi.org/project/mujoco-studio/) |
+| mujoco-studio-wasm | Apache-2.0 | [PyPI](https://pypi.org/project/mujoco-studio-wasm/) |
 | glfw | MIT | [PyPI](https://pypi.org/project/glfw/) |
 | PyOpenGL | BSD | [PyPI](https://pypi.org/project/PyOpenGL/) |
 | websockets | BSD-3-Clause | [PyPI](https://pypi.org/project/websockets/) |
