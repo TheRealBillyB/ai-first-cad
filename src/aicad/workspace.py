@@ -918,6 +918,11 @@ def _cmd_update_ops(workspace: Workspace, arguments: dict) -> dict:
     return {"part": info.to_dict(), "next": "Call inspect_part and look at the model before the next edit."}
 
 
+def _cmd_delete_assembly(workspace: Workspace, arguments: dict) -> dict:
+    workspace.document.delete_assembly(arguments["name"])
+    return {"deleted": arguments["name"], "note": "Its parts stay in the project. Undo brings the assembly back."}
+
+
 def _cmd_delete_part(workspace: Workspace, arguments: dict) -> dict:
     workspace.document.delete_part(arguments["name"])
     if workspace.selection.get("part") == arguments["name"]:
@@ -2168,6 +2173,13 @@ _add(Command(
     "Replace an assembly spec. Parts it names must already be in the document.",
     _obj({"spec": {"type": "object"}}, ["spec"]),
     _cmd_update_assembly,
+    undo=True,
+))
+_add(Command(
+    "delete_assembly",
+    "Delete an assembly. Its parts stay in the project, and undo brings it back.",
+    _ASSEMBLY,
+    _cmd_delete_assembly,
     undo=True,
 ))
 _add(Command("list_assemblies", "List assemblies with joint values, poses, motion names, and motion studies. Does not test collisions.", _obj({}, []), _cmd_list_assemblies))

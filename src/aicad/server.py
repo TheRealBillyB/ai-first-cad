@@ -519,6 +519,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("delete_part", name=name))
 
     @mcp.tool()
+    def delete_assembly(name: str) -> dict:
+        """Delete an assembly. Its parts stay in the project, and undo brings it back."""
+        return guard(lambda: run("delete_assembly", name=name))
+
+    @mcp.tool()
     def get_part_source(name: str) -> dict:
         """Return the script, operations, or STEP note that rebuilds this part."""
         return guard(lambda: run("get_part_source", name=name))
