@@ -80,7 +80,7 @@ def solve_modal(
     for index, item in enumerate(fixes):
         if not isinstance(item, dict):
             raise GeometryError(f"Fix {index} must be an object with select.")
-        held.extend(select_faces(catalog, item.get("select") or {}))
+        held.extend(select_faces(catalog, item.get("select") or {}, shape))
     if not held:
         raise GeometryError("The support selector did not match a face.")
 

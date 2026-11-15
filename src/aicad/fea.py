@@ -266,20 +266,26 @@ def lookup_material(name: str) -> dict[str, object]:
     return {"id": key, **_MATERIALS[key]}
 
 
-def select_faces(catalog: list[dict], selector: dict) -> list[dict]:
+def select_faces(catalog: list[dict], selector: dict, shape: kernel.Shape | None = None) -> list[dict]:
     """Pick faces from :func:`aicad.kernel.describe_faces` output.
 
     ``kind`` is ``plane``, ``cylinder``, ``nearest``, or ``index``.
 
     A plane selector uses the outward ``normal``. Pass ``at`` to take the
     matching plane closest to that point; omit ``at`` to take every matching
-    plane. When several faces lie in that plane, ``at`` takes the one whose
-    center is closest to the point. A cylinder selector matches ``radius``
-    (millimeters, default tolerance 0.05) and an optional ``axis``; faces on
-    one axis are told apart the same way. Omit ``at`` to take every match,
-    which is how "the four frame holes" is one selector. ``nearest`` needs
-    ``at`` and returns the face whose center is closest. ``all: true`` forces
-    every match instead of the single closest face.
+    plane. When several faces lie in that plane, ``at`` takes the one nearest
+    the point. A cylinder selector matches ``radius`` (millimeters, default
+    tolerance 0.05) and an optional ``axis``; faces on one axis are told apart
+    the same way. Omit ``at`` to take every match, which is how "the four
+    frame holes" is one selector. ``nearest`` needs ``at`` and returns the face
+    nearest the point. ``all: true`` forces every match instead of the single
+    closest face.
+
+    With ``shape``, the catalog's solid, "nearest the point" is the distance
+    from the point to the face itself, so a point on an L-shaped or ring face
+    takes that face even when another face's center is closer. Without it, or
+    for a viewport ref, whose point is the face's own center, it is the
+    distance to each face's center.
     """
     if not isinstance(selector, dict):
         raise GeometryError(
@@ -292,6 +298,8 @@ def select_faces(catalog: list[dict], selector: dict) -> list[dict]:
         if expanded.get("kind") == "edge":
             raise GeometryError(f"Reference {selector['ref']!r} is an edge. A load or a support needs a face.")
         selector = {**expanded, **{key: value for key, value in selector.items() if key not in ("ref",)}}
+        # A ref's point is the center of the face it names, so centers tell it apart exactly.
+        shape = None
     if "kind" not in selector:
         raise GeometryError(
             "A face selector needs kind: plane, cylinder, nearest, or index, or a ref from the viewport."
@@ -305,7 +313,10 @@ def select_faces(catalog: list[dict], selector: dict) -> list[dict]:
         return matches
     if kind == "nearest":
         point = _vec(selector.get("at"), "nearest at")
-        return [min(catalog, key=lambda face: _distance(face["center_mm"], point))]
+        if not catalog:
+            return []
+        apart = _face_distances(shape, catalog, point)
+        return [min(catalog, key=lambda face: (round(apart(face), 6), _distance(face["center_mm"], point)))]
     if kind == "plane":
         direction = _unit(_vec(selector.get("normal"), "plane normal"))
         matches = [
@@ -315,7 +326,7 @@ def select_faces(catalog: list[dict], selector: dict) -> list[dict]:
             and face.get("normal")
             and _dot(face["normal"], direction) > 0.9
         ]
-        return _narrow(matches, selector, _plane_distance, direction)
+        return _narrow(matches, selector, _plane_distance, direction, shape)
     if kind == "cylinder":
         tolerance = _optional_float(selector.get("tolerance"), 0.05)
         axis = _unit(_vec(selector["axis"], "cylinder axis")) if selector.get("axis") else None
@@ -329,7 +340,7 @@ def select_faces(catalog: list[dict], selector: dict) -> list[dict]:
             if axis is not None and abs(_dot(face["axis_direction"], axis)) < 0.9:
                 continue
             matches.append(face)
-        return _narrow(matches, selector, _axis_distance, axis)
+        return _narrow(matches, selector, _axis_distance, axis, shape)
     raise GeometryError(
         f"Unknown face selector {kind!r}. Use plane, cylinder, nearest, or index."
     )
@@ -377,8 +388,8 @@ def solve_part(
             "The solid is not watertight. The mesh can come out wrong, and a stress number from it is not evidence."
         )
 
-    fixes = [_bind_support(item, catalog, index) for index, item in enumerate(fixes_in)]
-    loads = [_bind_load(item, catalog, index) for index, item in enumerate(loads_in)]
+    fixes = [_bind_support(item, catalog, index, shape) for index, item in enumerate(fixes_in)]
+    loads = [_bind_load(item, catalog, index, shape) for index, item in enumerate(loads_in)]
     available, reason = fea_available()
     if not available:
         raise GeometryError(reason)
@@ -617,22 +628,22 @@ def _probe_nodes(points: np.ndarray, displacement: np.ndarray, probes: list[list
     return rows
 
 
-def _bind_support(item: dict, catalog: list[dict], index: int) -> dict:
+def _bind_support(item: dict, catalog: list[dict], index: int, shape: kernel.Shape | None = None) -> dict:
     if not isinstance(item, dict):
         raise GeometryError(f"Fix {index} must be an object with a select.")
     name = item.get("name") or f"fix_{index + 1}"
-    faces = select_faces(catalog, item.get("select") or {})
+    faces = select_faces(catalog, item.get("select") or {}, shape)
     return {"kind": "fix", "name": name, "faces": faces, "zero": False, "spec": item}
 
 
-def _bind_load(item: dict, catalog: list[dict], index: int) -> dict:
+def _bind_load(item: dict, catalog: list[dict], index: int, shape: kernel.Shape | None = None) -> dict:
     if not isinstance(item, dict):
         raise GeometryError(f"Load {index} must be an object with type, select, and a magnitude.")
     kind = item.get("type")
     name = item.get("name") or f"load_{index + 1}"
     if kind not in ("force", "pressure", "bolt", "torque"):
         raise GeometryError(f"Load {name!r} has type {kind!r}. Use force, pressure, bolt, or torque.")
-    faces = select_faces(catalog, item.get("select") or {})
+    faces = select_faces(catalog, item.get("select") or {}, shape)
     zero = False
     if kind == "force":
         vector = _vec(item.get("vector"), f"{name} vector")
@@ -1337,8 +1348,10 @@ def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
         return _run_ccx(mesh, fixed_nodes, forces, material, method="iterative")
     from aicad.sandbox import memory_bytes
 
+    # The helper says a limit stopped it, not which one.
     return None, None, _solve_too_big(
-        f"ran out of the {memory_bytes() // (1024 * 1024)} MiB of memory or {_CCX_TIMEOUT_S} s of CPU it may use",
+        "was stopped at the memory or CPU limit "
+        f"({memory_bytes() // (1024 * 1024)} MiB of memory, {_CCX_TIMEOUT_S} s of CPU time)",
         equations,
         len(points),
         mesh_size,
@@ -1883,7 +1896,15 @@ def _ccx_error(stdout: str) -> str:
     return "CalculiX failed. " + " ".join(lines[-3:])[:500]
 
 
-def _narrow(matches: list[dict], selector: dict, score, direction) -> list[dict]:
+def _face_distances(shape: kernel.Shape | None, faces: list[dict], point):
+    """How far the point is from each face: from the face itself with a shape, else from its center."""
+    if shape is None:
+        return lambda face: _distance(face["center_mm"], point)
+    measured = kernel.face_distances(shape, [face["index"] for face in faces], point)
+    return lambda face: measured.get(face["index"], _distance(face["center_mm"], point))
+
+
+def _narrow(matches: list[dict], selector: dict, score, direction, shape: kernel.Shape | None = None) -> list[dict]:
     if not matches:
         return []
     explicit = selector.get("all")
@@ -1891,17 +1912,20 @@ def _narrow(matches: list[dict], selector: dict, score, direction) -> list[dict]
     if point is None:
         return matches if explicit is not False else matches[:1]
     # Faces in one plane, or on one cylinder, are the same distance from the
-    # point along the normal or from the axis. Among those, the face whose
-    # center is closest to the point is the one it names.
+    # point along the normal or from the axis. Among those, the face nearest
+    # the point is the one it names, and a tie goes to the nearer center.
     offsets = [score(face, point, direction) for face in matches]
     nearest = min(offsets)
+    tied = [face for face, offset in zip(matches, offsets) if offset <= nearest + _SAME_SURFACE_MM]
+    apart = _face_distances(shape, tied, point)
 
-    def rank(position: int) -> tuple[int, float, float]:
+    def rank(position: int) -> tuple[int, float, float, float]:
         offset = offsets[position]
-        apart = _distance(matches[position]["center_mm"], point)
+        face = matches[position]
+        center = _distance(face["center_mm"], point)
         if offset <= nearest + _SAME_SURFACE_MM:
-            return (0, 0.0, apart)
-        return (1, offset, apart)
+            return (0, 0.0, round(apart(face), 6), center)
+        return (1, offset, 0.0, center)
 
     ranked = [matches[position] for position in sorted(range(len(matches)), key=rank)]
     if explicit:
