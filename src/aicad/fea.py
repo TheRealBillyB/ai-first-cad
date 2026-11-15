@@ -364,6 +364,11 @@ def solve_part(
     ``probes_mm`` is one point, or three points, in the part frame. Each probe
     reports the displacement of the nearest mesh node. Three points are enough
     for a caller to fit a small rotation. The points do not change the solve.
+
+    ``setup["relative"]`` lists pairs of faces, ``{"name", "a": select, "b": select}``.
+    Each reports how far face b moved relative to face a: the mean displacement
+    of each face's nodes, their difference, and gap_change_mm, the part of the
+    difference along the line from a's nodes to b's (positive: apart).
     """
     probe_points = _probe_points(probes_mm)
     if not isinstance(setup, dict):
@@ -390,6 +395,7 @@ def solve_part(
 
     fixes = [_bind_support(item, catalog, index, shape) for index, item in enumerate(fixes_in)]
     loads = [_bind_load(item, catalog, index, shape) for index, item in enumerate(loads_in)]
+    relative_in = _bind_relative(setup.get("relative"), catalog, shape)
     available, reason = fea_available()
     if not available:
         raise GeometryError(reason)
@@ -575,6 +581,7 @@ def solve_part(
         )
     note = _summary(material, peak, safety, magnitude[move_index], review, warnings)
     probes = None if probe_points is None else tuple(_probe_nodes(mesh["points"], disp, probe_points))
+    relative = None if relative_in is None else [_relative_motion(mesh, disp, pair) for pair in relative_in]
     return FeaReport(
         part=part_name,
         status="solved",
@@ -596,7 +603,58 @@ def solve_part(
         views=views,
         note=note,
         probes=probes,
+        relative=relative,
     )
+
+
+def _bind_relative(value, catalog: list[dict], shape) -> list[dict] | None:
+    """The face pairs whose relative motion a solve reports, resolved before the mesh is made."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value:
+        raise GeometryError("relative is a list of {name, a, b}, each a face select.")
+    pairs = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or not isinstance(item.get("a"), dict) or not isinstance(item.get("b"), dict):
+            raise GeometryError(f"relative {index} needs a and b, each a face select.")
+        name = item.get("name") or f"pair_{index + 1}"
+        faces_a = select_faces(catalog, item["a"], shape)
+        faces_b = select_faces(catalog, item["b"], shape)
+        if not faces_a or not faces_b:
+            raise GeometryError(f"relative {name!r}: a select matched no face.")
+        pairs.append({"name": str(name), "a": faces_a, "b": faces_b})
+    return pairs
+
+
+def _relative_motion(mesh: dict, disp: np.ndarray, pair: dict) -> dict:
+    """How far face b moved relative to face a, from the mean displacement of each face's nodes."""
+    nodes_a = _nodes_for(mesh, [face["index"] for face in pair["a"]])
+    nodes_b = _nodes_for(mesh, [face["index"] for face in pair["b"]])
+    row: dict = {
+        "name": pair["name"],
+        "a_faces": [face["index"] for face in pair["a"]],
+        "b_faces": [face["index"] for face in pair["b"]],
+    }
+    if len(nodes_a) == 0 or len(nodes_b) == 0:
+        row["note"] = "A face has no mesh nodes, so its motion is not known."
+        return row
+    points = mesh["points"]
+    move_a = disp[nodes_a].mean(axis=0)
+    move_b = disp[nodes_b].mean(axis=0)
+    relative = move_b - move_a
+    line = points[nodes_b].mean(axis=0) - points[nodes_a].mean(axis=0)
+    length = float(np.linalg.norm(line))
+    row.update(
+        {
+            "a_mean_displacement_mm": [round(float(value), 6) for value in move_a],
+            "b_mean_displacement_mm": [round(float(value), 6) for value in move_b],
+            "relative_mm": [round(float(value), 6) for value in relative],
+            "relative_magnitude_mm": round(float(np.linalg.norm(relative)), 6),
+            "gap_change_mm": None if length < 1e-9 else round(float(relative @ line) / length, 6),
+            "distance_between_mm": round(length, 6),
+        }
+    )
+    return row
 
 
 def _probe_points(value) -> list[list[float]] | None:

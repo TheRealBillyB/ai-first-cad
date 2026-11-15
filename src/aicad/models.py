@@ -675,6 +675,8 @@ class FeaReport:
     views: list[RenderedView]
     note: str
     probes: tuple | None = None
+    # How far each requested face pair moved relative to each other.
+    relative: list | None = None
 
     def to_dict(self) -> dict[str, object]:
         def _point(value: Vec3 | None) -> dict[str, float] | None:
@@ -726,6 +728,7 @@ class FeaReport:
                 "views": [view.to_dict() for view in self.views],
                 "note": self.note,
                 **({} if self.probes is None else {"probes": list(self.probes)}),
+                **({} if self.relative is None else {"relative": list(self.relative)}),
             },
             kind=ROUGH_ESTIMATE,
             name="Strength",
