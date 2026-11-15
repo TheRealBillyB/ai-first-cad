@@ -872,10 +872,13 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
         setup needs material (a name from list_materials), fixes, and loads.
         Optional mesh_size_mm and target_safety_factor (default 2). A fix is
-        {"name", "select"}. A load adds "type" of force, pressure, bolt, or torque:
+        {"name", "select"}. A load adds "type" of force, pressure, bolt, torque, or remote:
         force has vector [x, y, z] in newtons, pressure has magnitude in MPa
         (positive pushes into the face), bolt has axial newtons along the hole,
-        torque has torque_nm about axis [x, y, z] as a couple with no net force.
+        torque has torque_nm about axis [x, y, z] as a couple with no net force,
+        remote has vector [x, y, z] in newtons acting at at [x, y, z] in millimetres,
+        a point off the part such as the end of a handle, and optional moment_nm
+        [x, y, z]; it is carried to the selected faces with its lever arm.
         select is {"kind": "plane", "normal": [x, y, z]},
         {"kind": "cylinder", "radius": r, "axis": [x, y, z]},
         {"kind": "nearest", "at": [x, y, z]}, {"kind": "index", "index": n}, or
