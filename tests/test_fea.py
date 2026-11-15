@@ -73,6 +73,49 @@ def test_face_selectors_name_planes_and_holes():
     assert select_faces(faces, {"kind": "cylinder", "radius": 1.7, "axis": [0, 0, 1]}) == []
 
 
+
+def test_at_picks_the_face_nearest_the_point_among_faces_in_one_plane():
+    """Two tongues share their top plane. Each ``at`` must land on its own tongue."""
+    shape = kernel.make_from_ops(
+        [
+            {"op": "add", "shape": "box", "size": [60, 10, 4], "center": [0, 0, 2]},
+            {"op": "add", "shape": "box", "size": [10, 10, 6], "center": [-24, 0, 7]},
+            {"op": "add", "shape": "box", "size": [10, 10, 6], "center": [24, 0, 7]},
+            {"op": "cut", "shape": "cylinder", "radius": 1.5, "height": 20, "center": [-24, 0, 5]},
+            {"op": "cut", "shape": "cylinder", "radius": 1.5, "height": 20, "center": [24, 0, 5]},
+        ]
+    )
+    faces = kernel.describe_faces(shape)
+    tops = select_faces(faces, {"kind": "plane", "normal": [0, 0, 1]})
+    assert len([face for face in tops if face["center_mm"][2] == 10]) == 2
+    left = select_faces(faces, {"kind": "plane", "normal": [0, 0, 1], "at": [-22, 1, 10]})
+    right = select_faces(faces, {"kind": "plane", "normal": [0, 0, 1], "at": [22, -1, 10]})
+    assert left[0]["center_mm"][0] < 0 < right[0]["center_mm"][0]
+    # A point above the tongues still takes the top plane, then the nearer tongue.
+    above = select_faces(faces, {"kind": "plane", "normal": [0, 0, 1], "at": [20, 0, 30]})
+    assert above[0]["center_mm"][2] == 10 and above[0]["center_mm"][0] > 0
+    # The two holes are one radius on parallel axes; each point takes its own hole.
+    hole = select_faces(faces, {"kind": "cylinder", "radius": 1.5, "axis": [0, 0, 1], "at": [24, 0, 3]})
+    assert hole[0]["axis_origin_mm"][0] == 24
+    # all: true keeps every match, with the named face first.
+    every = select_faces(faces, {"kind": "plane", "normal": [0, 0, 1], "at": [22, 0, 10], "all": True})
+    assert every[0]["index"] == right[0]["index"] and len(every) == len(tops)
+
+
+def test_every_face_ref_names_its_own_face():
+    """A viewport ref carries the face center, so coplanar faces must not resolve to the first one."""
+    shape = kernel.make_from_ops(
+        [
+            {"op": "add", "shape": "box", "size": [60, 10, 4], "center": [0, 0, 2]},
+            {"op": "add", "shape": "box", "size": [10, 10, 6], "center": [-24, 0, 7]},
+            {"op": "add", "shape": "box", "size": [10, 10, 6], "center": [0, 0, 7]},
+            {"op": "add", "shape": "box", "size": [10, 10, 6], "center": [24, 0, 7]},
+        ]
+    )
+    faces = kernel.describe_faces(shape)
+    for face in faces:
+        assert [item["index"] for item in select_faces(faces, {"ref": face["ref"]})] == [face["index"]], face["ref"]
+
 def test_bracket_frame_holes_are_one_selector():
     script = (ROOT / "examples" / "motor_mount.py").read_text(encoding="utf-8")
     faces = kernel.describe_faces(kernel.make_from_script(script))
