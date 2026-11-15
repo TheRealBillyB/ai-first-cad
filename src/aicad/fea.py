@@ -28,6 +28,15 @@ from aicad.render import render_scalar_views
 
 _SOLVER = "CalculiX (ccx) + Gmsh"
 _CCX_TIMEOUT_S = 180
+# Above this many equations the direct solver (SPOOLES) can need more memory
+# than a helper may use: it ran out of 4 GiB near 233,000 equations. The
+# iterative Cholesky solver needs a small part of that and gives the same
+# answer on a linear static case.
+_DIRECT_SOLVER_EQUATIONS = 150_000
+# About what the iterative solver finishes inside the time limit on a desktop
+# (780,000 equations took 130 s on one core). A coarser mesh is suggested
+# towards this size when a solve does not fit.
+_ITERATIVE_SOLVER_EQUATIONS = 600_000
 # Two selector matches this close along the normal, or from the axis, share a
 # plane or a cylinder. Face records are rounded to 0.001 mm.
 _SAME_SURFACE_MM = 0.01
@@ -1169,6 +1178,7 @@ def _execute(mesh, fixed_nodes, forces, material, order: int):
         straight = dict(mesh)
         straight["points"] = straight_sided(mesh["points"], mesh["elements"])
         disp, stress, warning = _run_ccx(straight, fixed_nodes, forces, material)
+        _keep_solver_record(mesh, straight)
         if warning is None:
             mesh["points"] = straight["points"]
             mesh.setdefault("mesh_notes", []).append(STRAIGHT_EDGE_NOTE)
@@ -1178,6 +1188,7 @@ def _execute(mesh, fixed_nodes, forces, material, order: int):
         linear["elements"] = mesh["elements"][:, :4]
         linear["order"] = 1
         disp, stress, warning = _run_ccx(linear, fixed_nodes, forces, material)
+        _keep_solver_record(mesh, linear)
         if warning is None:
             mesh["elements"] = linear["elements"]
             mesh["order"] = 1
@@ -1186,6 +1197,12 @@ def _execute(mesh, fixed_nodes, forces, material, order: int):
     if warning:
         return False, None, None, warning, order
     return True, disp, stress, None, order
+
+
+def _keep_solver_record(mesh: dict, attempt: dict) -> None:
+    for key in ("equations", "linear_solver"):
+        if key in attempt:
+            mesh[key] = attempt[key]
 
 
 def solver_deck(lines: list[str]) -> str:
@@ -1207,10 +1224,42 @@ def solver_deck(lines: list[str]) -> str:
     return "\n".join(rendered) + "\n"
 
 
-def _run_ccx(mesh, fixed_nodes, forces, material):
+def _equation_count(node_count: int, fixed_nodes) -> int:
+    """Unknowns in the stiffness system: three per node that is not held."""
+    held = len(np.unique(np.asarray(fixed_nodes, dtype=np.int64))) if len(fixed_nodes) else 0
+    return 3 * max(int(node_count) - held, 0)
+
+
+def _linear_solver(equations: int) -> str:
+    return "direct" if equations <= _DIRECT_SOLVER_EQUATIONS else "iterative"
+
+
+def _coarser_mesh_size(mesh_size: float, equations: int) -> float:
+    """A mesh size that brings the solve within reach. Equations go as 1 / size cubed."""
+    target = _ITERATIVE_SOLVER_EQUATIONS if equations > _ITERATIVE_SOLVER_EQUATIONS else equations / 2.0
+    size = mesh_size * (equations / max(target, 1.0)) ** (1.0 / 3.0)
+    return math.ceil(size * 10.0 - 1e-9) / 10.0
+
+
+def _solve_too_big(what: str, equations: int, node_count: int, mesh_size: float) -> str:
+    text = f"CalculiX {what} while solving {equations:,} equations ({node_count:,} nodes"
+    if mesh_size > 0:
+        text += f" at a {mesh_size:g} mm mesh). Use mesh_size_mm {_coarser_mesh_size(mesh_size, equations):g} or larger"
+    else:
+        text += "). Use a larger mesh_size_mm"
+    return text + ", or solve a smaller region of the part."
+
+
+def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
     points = mesh["points"]
     elements = mesh["elements"]
     order = mesh["order"]
+    equations = _equation_count(len(points), fixed_nodes)
+    if method is None:
+        method = _linear_solver(equations)
+    mesh["equations"] = equations
+    mesh["linear_solver"] = method
+    mesh_size = float(mesh.get("mesh_size_mm") or 0.0)
     element_type = "C3D10" if order == 2 else "C3D4"
     width = 10 if order == 2 else 4
     from aicad.paths import held_entry_is_file, held_subprocess_kwargs, held_tool_directory
@@ -1234,7 +1283,8 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
         ]
         for node in fixed_nodes:
             lines.append(f"{int(node) + 1}, 1, 3, 0.")
-        lines += ["*STEP", "*STATIC", "*CLOAD"]
+        static = "*STATIC" if method == "direct" else "*STATIC, SOLVER=ITERATIVE CHOLESKY"
+        lines += ["*STEP", static, "*CLOAD"]
         loaded = np.nonzero(np.linalg.norm(forces, axis=1) > 1e-15)[0]
         if len(loaded) == 0:
             return None, None, "The load produced no nodal forces."
@@ -1269,16 +1319,30 @@ def _run_ccx(mesh, fixed_nodes, forces, material):
                 **held_subprocess_kwargs(path),
             )
         except subprocess.TimeoutExpired:
-            return None, None, (
-                f"CalculiX did not finish in {_CCX_TIMEOUT_S} s on {len(elements)} elements. "
-                "Use a larger mesh_size_mm."
+            return None, None, _solve_too_big(
+                f"did not finish in {_CCX_TIMEOUT_S} s", equations, len(points), mesh_size
             )
-        if completed.returncode != 0 or not held_entry_is_file(path, "job.frd"):
-            detail = _ccx_error(completed.stdout)
-            return None, None, detail or "CalculiX stopped without a result file."
-        if "nonpositive jacobian" in completed.stdout.lower():
-            return None, None, "nonpositive jacobian"
-        return _parse_frd(path / "job.frd", len(points)) + (None,)
+        failed = completed.returncode != 0 or not held_entry_is_file(path, "job.frd")
+        limit_hit = failed and getattr(completed, "limit_hit", False)
+        if not limit_hit:
+            if failed:
+                detail = _ccx_error(completed.stdout)
+                return None, None, detail or "CalculiX stopped without a result file."
+            if "nonpositive jacobian" in completed.stdout.lower():
+                return None, None, "nonpositive jacobian"
+            return _parse_frd(path / "job.frd", len(points)) + (None,)
+    if method == "direct":
+        # The direct solver's memory grows much faster than the system it
+        # solves. The iterative one may still fit, so it gets one try.
+        return _run_ccx(mesh, fixed_nodes, forces, material, method="iterative")
+    from aicad.sandbox import memory_bytes
+
+    return None, None, _solve_too_big(
+        f"ran out of the {memory_bytes() // (1024 * 1024)} MiB of memory or {_CCX_TIMEOUT_S} s of CPU it may use",
+        equations,
+        len(points),
+        mesh_size,
+    )
 
 
 def _parse_frd(path: Path, node_count: int):
@@ -1289,7 +1353,9 @@ def _parse_frd(path: Path, node_count: int):
     seen_stress = 0
     from aicad.file_access import read_text
 
-    for line in read_text(path, maximum=64 * 1024 * 1024, errors="replace").splitlines():
+    # About 300 bytes a node for coordinates, elements, displacement, and stress.
+    maximum = max(64 * 1024 * 1024, 600 * int(node_count))
+    for line in read_text(path, maximum=maximum, errors="replace").splitlines():
         if line.startswith(" -4"):
             if "DISP" in line:
                 mode = "disp"
@@ -1662,6 +1728,15 @@ def _assumptions(material, mesh, fixes, loads, target, mesh_size) -> list[str]:
             "the reported maximum is the highest nodal value."
         ),
         "Units are millimeters and newtons, so stress is in megapascals.",
+        *(
+            [
+                f"The {int(mesh['equations']):,} equations were solved with CalculiX's iterative Cholesky solver, "
+                "which needs far less memory than the direct solver used for smaller meshes. "
+                "On a linear static case the two agree to well under 1 %."
+            ]
+            if mesh.get("linear_solver") == "iterative" and mesh.get("equations")
+            else []
+        ),
         f"The design review uses a target safety factor of {target:g} on this load case, not on a factored copy of it.",
         "A total force or bolt load is shared equally by the nodes on the selected faces. "
         "Positive pressure pushes into the face, opposite the outward normal. "
@@ -1770,6 +1845,8 @@ def _public_mesh(mesh: dict, mesh_size: float) -> dict[str, object]:
         "kind": "quadratic tetrahedra" if order == 2 else "linear tetrahedra" if order == 1 else None,
         "degraded": bool(mesh.get("degraded")),
         "thin_feature": bool(mesh.get("thin_feature")),
+        "equations": mesh.get("equations"),
+        "linear_solver": mesh.get("linear_solver"),
         "notes": list(mesh.get("mesh_notes") or []),
         "simplifications": list(mesh.get("simplifications") or []),
     }

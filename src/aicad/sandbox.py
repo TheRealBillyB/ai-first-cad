@@ -2844,12 +2844,16 @@ def program_environment() -> dict[str, str]:
 
 
 class _HelperResult:
-    """The return code and text from one confined helper."""
+    """The return code and text from one confined helper.
 
-    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+    ``limit_hit`` is true when the helper's memory or CPU cap stopped it.
+    """
+
+    def __init__(self, returncode: int, stdout: str, stderr: str, limit_hit: bool = False) -> None:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+        self.limit_hit = bool(limit_hit)
 
 
 _HELPER_BOOT = """
@@ -2964,7 +2968,12 @@ def run_confined_helper(command: list[str], *, env: dict[str, str], timeout: flo
     if preexec_fn is not None:
         kwargs["preexec_fn"] = preexec_fn
     completed = subprocess.run(boot, **kwargs)
-    return _HelperResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+    return _HelperResult(
+        completed.returncode,
+        completed.stdout or "",
+        completed.stderr or "",
+        limit_hit=_died_from_limit_signal(completed.returncode),
+    )
 
 
 def _helper_write_root(cwd: Path, pass_fds) -> Path:
@@ -3039,7 +3048,12 @@ def _run_confined_helper_macos(command, *, env, timeout, cwd: Path, reads: list[
         from aicad.paths import remove_tree
 
         remove_tree(directory, ignore_errors=True)
-    return _HelperResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+    return _HelperResult(
+        completed.returncode,
+        completed.stdout or "",
+        completed.stderr or "",
+        limit_hit=_died_from_limit_signal(completed.returncode),
+    )
 
 
 def _windows_helper_command(command: list[str]) -> list[str]:
@@ -3083,7 +3097,7 @@ def _run_confined_helper_windows(command, *, env, timeout, cwd: Path, reads: lis
     env = _windows_helper_environment(env, cwd)
     stdout_path = cwd / "helper-stdout.txt"
     stderr_path = cwd / "helper-stderr.txt"
-    code, stdout, stderr, timed_out, _memory, _mechanism = spawn(
+    code, stdout, stderr, timed_out, limit_hit, _mechanism = spawn(
         list(command),
         cwd=str(cwd),
         env=env,
@@ -3098,7 +3112,7 @@ def _run_confined_helper_windows(command, *, env, timeout, cwd: Path, reads: lis
     )
     if timed_out:
         raise subprocess.TimeoutExpired(command, timeout)
-    return _HelperResult(code, stdout or "", stderr or "")
+    return _HelperResult(code, stdout or "", stderr or "", limit_hit=limit_hit)
 
 
 # Locale and clock names a script needs in order to format text and time.
