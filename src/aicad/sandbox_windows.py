@@ -2222,19 +2222,22 @@ def _job_stop_was_a_limit(
     cpu_reached: bool,
     exit_code: int,
     memory_peak: bool,
-) -> bool:
-    """True when the job's CPU or memory cap stopped the script.
+) -> str:
+    """Which cap stopped the script: ``"cpu"``, ``"memory"``, or ``""`` for neither.
 
     A wall-clock timeout is separate. User time at the cap counts even when
-    the exit code is 0. A memory peak counts only on a failed exit, so a
-    script that finishes is not reported as a memory stop.
+    the exit code is 0. The violation record carries the memory bits, not the
+    CPU one. A memory peak counts only on a failed exit, so a script that
+    finishes is not reported as a memory stop.
     """
 
     if timed_out:
-        return False
-    if violated or cpu_reached:
-        return True
-    return exit_code != 0 and memory_peak
+        return ""
+    if cpu_reached:
+        return "cpu"
+    if violated:
+        return "memory"
+    return "memory" if exit_code != 0 and memory_peak else ""
 
 
 def _job_limit_violated(job: wintypes.HANDLE) -> bool:
