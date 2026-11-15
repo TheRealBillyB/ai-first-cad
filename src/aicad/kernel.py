@@ -79,6 +79,7 @@ _keep_opencascade_on_the_calling_thread()
 from build123d import (
     Axis,
     Box,
+    Cone,
     Cylinder,
     Face,
     Plane,
@@ -3448,13 +3449,69 @@ def _primitive(op: dict, index: int):
         direction = tuple(component / length for component in axis)
         solid = Plane(origin=center, z_dir=direction) * Cylinder(radius, height)
         return solid
+    if kind in ("counterbore", "countersink"):
+        if op.get("op") != "cut":
+            raise GeometryError(f"Operation {index}: a {kind} is a hole. Use it with op cut.")
+        return hole_tool(op, f"Operation {index}")
     if kind == "thread":
         from aicad.threads import thread_op
 
         return thread_op(op, f"Operation {index}")
     raise GeometryError(
-        f"Operation {index}: unknown shape {kind!r}. Use 'box', 'cylinder', or 'thread'."
+        f"Operation {index}: unknown shape {kind!r}. Use 'box', 'cylinder', 'thread', 'counterbore', or 'countersink'."
     )
+
+
+# A hole tool reaches this far above the surface it starts on, so the cut
+# does not leave a face in the plane of the part's own face.
+_HOLE_CLEAR_MM = 0.5
+
+
+def hole_tool(spec: dict, label: str = "Hole"):
+    """The solid a counterbore or countersink hole cuts away.
+
+    ``at`` is the point on the surface where the hole starts, and ``axis``
+    the direction it is drilled, into the material (default down, [0, 0, -1]).
+    ``diameter`` and ``depth`` are the plain hole's, measured from ``at``.
+    A counterbore adds ``counterbore_diameter`` and ``counterbore_depth``.
+    A countersink adds ``countersink_diameter`` at the surface and
+    ``countersink_angle`` (degrees, included; default 90, as for ISO 10642
+    and most metric flat-head screws).
+    """
+    kind = spec.get("shape")
+    at = finite_vec3(spec.get("at", [0, 0, 0]), f"{label} at")
+    axis = finite_vec3(spec.get("axis", [0, 0, -1]), f"{label} axis")
+    length = math.sqrt(sum(component * component for component in axis))
+    if length < 1e-9:
+        raise GeometryError(f"{label}: the hole axis must be non-zero.")
+    out = tuple(-component / length for component in axis)
+    radius = finite_number(spec.get("diameter"), f"{label} diameter", positive=True) / 2.0
+    depth = finite_number(spec.get("depth"), f"{label} depth", positive=True)
+    clear = _HOLE_CLEAR_MM
+    # Built along +Z, out of the material, with the surface at z = 0.
+    tool = Pos(0, 0, (clear - depth) / 2.0) * Cylinder(radius, depth + clear)
+    if kind == "counterbore":
+        wide = finite_number(spec.get("counterbore_diameter"), f"{label} counterbore_diameter", positive=True) / 2.0
+        deep = finite_number(spec.get("counterbore_depth"), f"{label} counterbore_depth", positive=True)
+        if wide <= radius:
+            raise GeometryError(f"{label}: counterbore_diameter must be larger than diameter.")
+        if deep >= depth:
+            raise GeometryError(f"{label}: counterbore_depth must be less than the hole depth.")
+        tool = tool + Pos(0, 0, (clear - deep) / 2.0) * Cylinder(wide, deep + clear)
+    else:
+        wide = finite_number(spec.get("countersink_diameter"), f"{label} countersink_diameter", positive=True) / 2.0
+        angle = finite_number(spec.get("countersink_angle", 90.0), f"{label} countersink_angle", positive=True)
+        if not 0 < angle < 180:
+            raise GeometryError(f"{label}: countersink_angle is the included angle, above 0 and below 180 degrees.")
+        if wide <= radius:
+            raise GeometryError(f"{label}: countersink_diameter must be larger than diameter.")
+        sink = (wide - radius) / math.tan(math.radians(angle) / 2.0)
+        if sink >= depth:
+            raise GeometryError(f"{label}: the countersink is deeper than the hole. Make the hole deeper.")
+        cone = Pos(0, 0, -sink / 2.0) * Cone(radius, wide, sink)
+        collar = Pos(0, 0, clear / 2.0) * Cylinder(wide, clear)
+        tool = tool + cone + collar
+    return Plane(origin=at, z_dir=out) * tool
 
 
 def _vec3_field(value, label: str) -> tuple[float, float, float]:

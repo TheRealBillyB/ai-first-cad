@@ -502,6 +502,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         Each operation is `{"op": "add"|"cut", "shape": "box"|"cylinder", ...}`.
         A box needs `size` [x, y, z]. A cylinder needs `radius` and `height`.
         Optional `center` [x, y, z] and, for cylinders, `axis` [x, y, z].
+        A cut can also be a `counterbore` or `countersink` hole: `at` is the point on
+        the surface where it starts, `axis` the drilling direction (default
+        [0, 0, -1]), `diameter` and `depth` the plain hole; a counterbore adds
+        `counterbore_diameter` and `counterbore_depth`, a countersink
+        `countersink_diameter` and `countersink_angle` (default 90).
         A `thread` shape is a threaded rod with op add or a tapped hole with op cut:
         `diameter`, `pitch`, `length`, optional `starts`, `profile` (trapezoidal or
         iso), `angle` (30, or 29 for ACME), `clearance_mm` for a printed fit, `hand`,
