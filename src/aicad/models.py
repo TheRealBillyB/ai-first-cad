@@ -675,6 +675,8 @@ class FeaReport:
     views: list[RenderedView]
     note: str
     probes: tuple | None = None
+    # A printed material with an across-layer strength: the safety factor against it.
+    min_safety_factor_across_layers: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         def _point(value: Vec3 | None) -> dict[str, float] | None:
@@ -695,7 +697,8 @@ class FeaReport:
             )
         limits = [
             "No plasticity, contact, buckling, or fatigue.",
-            "A printed material is not given a weaker across-layer strength in the solve.",
+            "The solve does not know the print direction. A printed material with an across-layer strength "
+            "gets a second safety factor against it; the others are in-plane numbers only.",
             "A force is shared by the nodes on the selected faces. A bolt load is an axial force, not a thread.",
             "CalculiX runs as a separate program. It is not linked into aicad.",
         ]
@@ -720,6 +723,11 @@ class FeaReport:
                 "max_displacement_at_mm": _point(self.max_displacement_at_mm),
                 "min_safety_factor": self.min_safety_factor,
                 "min_safety_factor_at_mm": _point(self.min_safety_factor_at_mm),
+                **(
+                    {}
+                    if self.min_safety_factor_across_layers is None
+                    else {"min_safety_factor_across_layers": self.min_safety_factor_across_layers}
+                ),
                 "warnings": self.warnings,
                 "assumptions": self.assumptions,
                 "review": self.review,
