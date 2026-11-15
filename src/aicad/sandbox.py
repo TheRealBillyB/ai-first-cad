@@ -99,6 +99,9 @@ raise SystemExit(main([str(job)]))
 # A file in the project, the environment, and a script cannot raise it.
 WALL_SECONDS = 120
 WALL_SECONDS_CAP = 600
+# CPU time for each core a script can run on. The operating system counts the
+# CPU time of every thread, and OpenCascade runs a boolean on all cores, so a
+# flat 60 s stopped a 5 s build on a 24-core computer.
 CPU_SECONDS = 60
 MEMORY_BYTES = 4 * 1024 * 1024 * 1024
 FILE_BYTES = 512 * 1024 * 1024
@@ -512,8 +515,37 @@ def _wall_for_run(workspace: Path, wall_seconds_limit: int | None) -> int:
     return _capped("AICAD_SCRIPT_WALL_SECONDS", chosen, chosen)
 
 
+def script_cores() -> int:
+    """Cores a script's threads can run on."""
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cores = os.cpu_count() or 1
+    return max(1, int(cores))
+
+
 def cpu_seconds() -> int:
-    return _capped("AICAD_SCRIPT_CPU_SECONDS", CPU_SECONDS, CPU_SECONDS)
+    """CPU time one script may use, summed over its threads: CPU_SECONDS for each core.
+
+    The wall clock still stops a script that runs too long. The environment
+    can lower this and cannot raise it.
+    """
+    ceiling = CPU_SECONDS * script_cores()
+    return _capped("AICAD_SCRIPT_CPU_SECONDS", ceiling, ceiling)
+
+
+def _limit_stop_text() -> str:
+    """Why a script stopped at its memory or CPU cap, with both caps."""
+    cpu = cpu_seconds()
+    cores = script_cores()
+    if cpu == CPU_SECONDS * cores and cores > 1:
+        cpu_text = f"{cpu} s of CPU time ({CPU_SECONDS} s for each of {cores} cores)"
+    else:
+        cpu_text = f"{cpu} s of CPU time"
+    return (
+        "The script was stopped because it hit the memory or CPU limit "
+        f"({memory_bytes() // (1024 * 1024)} MiB of memory, {cpu_text})."
+    )
 
 
 def memory_bytes() -> int:
@@ -3198,6 +3230,9 @@ def _child_env(
     _copy_set(env, _SCRIPT_LOCALE)
     _copy_set(env, _SCRIPT_TEXT)
     _copy_set(env, _SCRIPT_LIMITS)
+    # The child applies the cap the parent counted. It may not be able to
+    # count the cores itself once it is confined.
+    env["AICAD_SCRIPT_CPU_SECONDS"] = str(cpu_seconds())
     _copy_set(env, _SCRIPT_HOME)
     if sys.platform == "win32":
         # The network check reads the receivers the parent is listening on.
@@ -6232,7 +6267,7 @@ def _payload_from_result(
         raise ScriptError(_PROCESS_LIMIT)
     if memory_killed:
         shutil.rmtree(job, ignore_errors=True)
-        raise ScriptError("The script was stopped because it hit the memory or CPU limit.")
+        raise ScriptError(_limit_stop_text())
     result_path = job / "result.json"
     try:
         result_text = _result_text(result_path)
@@ -6255,10 +6290,7 @@ def _payload_from_result(
                 except (ValueError, OSError):
                     signame = str(-code)
                 detail = (detail + f"\nstopped by signal {-code} ({signame})").strip()
-            raise ScriptError(
-                "The script was stopped because it hit the memory or CPU limit."
-                + (f"\n{detail}" if detail else "")
-            )
+            raise ScriptError(_limit_stop_text() + (f"\n{detail}" if detail else ""))
         detail = tail.strip() or stdout[-2000:].strip()
         if code < 0:
             try:
