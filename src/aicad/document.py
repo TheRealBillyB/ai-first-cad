@@ -9,6 +9,7 @@ is millimeters.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -165,6 +166,73 @@ class _Sketch:
     def __init__(self, name: str, spec: dict):
         self.name = name
         self.spec = spec
+
+
+# How long a save waits for another program's save of the same project.
+_SESSION_LOCK_SECONDS = 15.0
+
+
+@contextlib.contextmanager
+def _session_write_lock(workspace: Path):
+    """Hold the project's save lock: ``.aicad/session.lock``, locked by the operating system.
+
+    Two programs with one project open each checked that session.json had
+    not changed and then wrote it. Both checks could pass before either
+    wrote, and the second write then put back what the first had removed.
+    The lock is released when the program ends, however it ends.
+    """
+    import time
+
+    from aicad.file_access import open_write
+    from aicad.paths import ensure_real_directory
+
+    folder = ensure_real_directory(Path(workspace) / ".aicad")
+    descriptor = open_write(folder, "session.lock")
+    deadline = time.monotonic() + _SESSION_LOCK_SECONDS
+    try:
+        while not _try_lock(descriptor):
+            if time.monotonic() > deadline:
+                raise DocumentError(
+                    "Another program with this project open is still saving it, so this change was not saved. "
+                    "Run the command again."
+                )
+            time.sleep(0.02)
+        try:
+            yield
+        finally:
+            _unlock(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _try_lock(descriptor: int) -> bool:
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(descriptor: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 class Document:
@@ -3137,14 +3205,16 @@ class Document:
             raise DocumentError(
                 "The session has a number that is not finite, so it was not saved."
             ) from exc
-        if not replace_newer and self._changed_on_disk():
-            raise DocumentError(
-                "session.json was changed by another program with this project open (the app or a script) "
-                "after this one read it, so this change was not saved. Run the command again: "
-                "it starts from the saved project."
-            )
-        publish_text(path, text)
-        self._disk_stamp = self._session_stamp()
+        # Another program's check and write cannot come between this one's.
+        with _session_write_lock(self.workspace):
+            if not replace_newer and self._changed_on_disk():
+                raise DocumentError(
+                    "session.json was changed by another program with this project open (the app or a script) "
+                    "after this one read it, so this change was not saved. Run the command again: "
+                    "it starts from the saved project."
+                )
+            publish_text(path, text)
+            self._disk_stamp = self._session_stamp()
         self._writes += 1
 
     def _reload(self) -> None:
