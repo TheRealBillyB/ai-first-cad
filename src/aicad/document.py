@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -180,6 +181,10 @@ def _session_write_lock(workspace: Path):
     not changed and then wrote it. Both checks could pass before either
     wrote, and the second write then put back what the first had removed.
     The lock is released when the program ends, however it ends.
+
+    A file system that cannot lock at all, such as some network and FUSE
+    mounts, saves without the lock, as before it existed: waiting there would
+    only fail every save after 15 s.
     """
     import time
 
@@ -190,7 +195,14 @@ def _session_write_lock(workspace: Path):
     descriptor = open_write(folder, "session.lock")
     deadline = time.monotonic() + _SESSION_LOCK_SECONDS
     try:
-        while not _try_lock(descriptor):
+        while True:
+            try:
+                held = _try_lock(descriptor)
+            except _LockUnsupported:
+                yield
+                return
+            if held:
+                break
             if time.monotonic() > deadline:
                 raise DocumentError(
                     "Another program with this project open is still saving it, so this change was not saved. "
@@ -205,21 +217,39 @@ def _session_write_lock(workspace: Path):
         os.close(descriptor)
 
 
+class _LockUnsupported(Exception):
+    """This file system cannot lock the file at all."""
+
+
+# The errors that mean another holder has the lock. Any other error means
+# the file system cannot lock, such as ENOLCK or EOPNOTSUPP on some mounts.
+_LOCK_BUSY = frozenset(
+    code
+    for code in (
+        getattr(errno, "EWOULDBLOCK", None),
+        getattr(errno, "EAGAIN", None),
+        getattr(errno, "EACCES", None),
+        getattr(errno, "EDEADLOCK", None) if os.name == "nt" else None,
+    )
+    if code is not None
+)
+
+
 def _try_lock(descriptor: int) -> bool:
-    if os.name == "nt":
-        import msvcrt
-
-        try:
-            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-        except OSError:
-            return False
-        return True
-    import fcntl
-
+    """True when this holds the lock, False when another holder has it."""
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return False
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in _LOCK_BUSY:
+            return False
+        raise _LockUnsupported() from exc
     return True
 
 

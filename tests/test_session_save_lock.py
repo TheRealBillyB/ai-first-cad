@@ -94,3 +94,49 @@ def test_the_lock_file_is_a_plain_file_in_the_project_folder(tmp_path):
     Document(tmp_path).create_part_from_ops("a", _BOX)
     lock = tmp_path / ".aicad" / "session.lock"
     assert lock.is_file() and not lock.is_symlink()
+
+
+def _lock_call(monkeypatch, error_number: int) -> None:
+    """Make the operating system's lock call fail with ``error_number``."""
+    import os
+
+    def refuse(*_args, **_kwargs):
+        raise OSError(error_number, os.strerror(error_number))
+
+    if os.name == "nt":
+        import msvcrt
+
+        real = msvcrt.locking
+
+        def locking(descriptor, mode, count):
+            if mode == msvcrt.LK_NBLCK:
+                refuse()
+            return real(descriptor, mode, count)
+
+        monkeypatch.setattr(msvcrt, "locking", locking)
+    else:
+        import fcntl
+
+        monkeypatch.setattr(fcntl, "flock", refuse)
+
+
+def test_a_file_system_that_cannot_lock_saves_without_waiting(tmp_path, monkeypatch):
+    """ENOLCK or EOPNOTSUPP on a network mount is not another program saving."""
+    import errno
+
+    doc = Document(tmp_path)
+    _lock_call(monkeypatch, errno.ENOLCK)
+    started = time.monotonic()
+    doc.create_part_from_ops("a", _BOX)
+    assert time.monotonic() - started < 5
+    assert _saved_parts(tmp_path) == ["a"]
+
+
+def test_a_busy_lock_still_waits(tmp_path, monkeypatch):
+    import errno
+
+    doc = Document(tmp_path)
+    monkeypatch.setattr(document_module, "_SESSION_LOCK_SECONDS", 0.2)
+    _lock_call(monkeypatch, errno.EACCES)
+    with pytest.raises(DocumentError, match="still saving it"):
+        doc.create_part_from_ops("a", _BOX)
