@@ -11,7 +11,7 @@ Where the software work stands. Statuses describe this repository. They are not 
 | **Planned** | The direction after those tracks |
 | **Later** | Far enough out that the shape can still change |
 
-What is already in the tree is listed under Done. The Next release section describes the 0.1.0 early release and what is still left before 1.0. The tracks after that release are the ones that are not in the tree yet.
+What is already in the tree is listed under Done. The Next release section describes the 0.1.0 early release and what is still left before 1.0. Tracks that are not in the tree yet are listed after that section.
 
 ## Done
 
@@ -102,7 +102,7 @@ Natural frequencies come from a CalculiX frequency solve, for one solid or for a
 **In progress.** The printing checks are in. The other manufacturing checks are not.
 
 - **Printing.** An overhang map for the six axis orientations, the support area after the bed face is excluded, and fit against the build volumes in the printer table (Bambu Lab A1, A1 mini, P1, and X1, Prusa MK4, and Ender 3). A requirement kind `fits_printer` is that fit. When PrusaSlicer or OrcaSlicer is on PATH, the report also reads time and filament grams from the slicer comments. A missing slicer is reported, and the overhang and fit checks still stand. A diagonal orientation is not searched, and the slicer runs its default profile.
-- **CNC machining and sheet metal.** Not in the tree. They are the first feature track after v1.0.
+- **CNC machining and sheet metal.** Not in the tree. They are the planned CAM track, and may land before or after 1.0.
 
 ### Robot export
 
@@ -136,13 +136,13 @@ Left for 1.0, and not in the tree:
 
 - **Editing parts in place and a smoother assembly flow.** Model and Assembly are now one workspace with one 3D view. Version 1.0 adds editing a part in place inside an assembly and polishes the assembly flow, shaped by preview feedback.
 
-v1.0 does not add another feature track. CAM and the manufacturing checks stay in the section after this one.
+CAM and the manufacturing checks are planned, and may land before or after 1.0. They are described in the section after this one.
 
-## After v1.0
+## Planned work
 
 Power and fluid estimates, hose routing with bend-radius and pinch checks, and robot export (URDF and MJCF) were planned for after v1.0. They are already in the tree and are described under Done.
 
-The first track after v1.0 is CAM and manufacturing checks. A part designed here should be able to go to a machine.
+CAM and manufacturing checks are planned. They may land before or after 1.0. A part designed here should be able to go to a machine.
 
 Catalog parts carrying mass and the moment loads used by the checks are planned after v1.
 
@@ -155,7 +155,7 @@ These two were named for 1.0. They ship after it.
 
 ### CAM and manufacturing checks
 
-**Next.** Taking a part from the model to a machine.
+**Next.** Taking a part from the model to a machine. This track may land before or after 1.0.
 
 - **CNC checks.** Checks aimed at CNC machining, such as tool reach, internal corner radii, and features a cutter cannot get to.
 - **Sheet-metal checks.** Bend radius, bend allowance, and a flat pattern.
@@ -167,7 +167,7 @@ These two were named for 1.0. They ship after it.
 
 ### Workspace app interface
 
-The interface ideas for the app, with their order, estimates, and pull request splits, are in [the interface list](roadmap/post-1.0-ui.md). That list is 1.0.x polish for the app, and it does not replace CAM and manufacturing checks as the first track after v1.0.
+The interface ideas for the app, with their order, estimates, and pull request splits, are in [the interface list](roadmap/post-1.0-ui.md). That list is 1.0.x polish for the app, and it is separate from the CAM and manufacturing checks track.
 
 ### Motion simulation with MuJoCo
 

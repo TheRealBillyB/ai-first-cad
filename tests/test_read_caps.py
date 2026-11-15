@@ -27,9 +27,10 @@ def test_adjacent_step_strings_stay_one_value():
 def test_save_as_does_not_copy_a_session_past_the_cap(tmp_path, monkeypatch):
     monkeypatch.setenv("AICAD_RECENT", str(tmp_path / "recent.json"))
     source = tmp_path / "project"
-    workspace = Workspace(source)
+    source.mkdir()
     session = source / "session.json"
     session.write_bytes(b'{"units": "mm"}' + b" " * 80)
+    workspace = Workspace(source)
     monkeypatch.setattr("aicad.document._MAX_SESSION_BYTES", 64)
     destination = tmp_path / "copy"
     with pytest.raises(GeometryError, match="too large"):
