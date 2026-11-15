@@ -429,7 +429,10 @@ def solve_part(
             "Nothing was solved. The load does not land on the part.",
         )
 
+    from aicad.progress import report
+
     order = 2
+    report(f"meshing at {mesh_size:g} mm")
     mesh = _mesh_solid(shape, mesh_size, order)
     for note in mesh.get("mesh_notes") or []:
         if note not in warnings:
@@ -1252,6 +1255,41 @@ def _coarser_mesh_size(mesh_size: float, equations: int) -> float:
     return math.ceil(size * 10.0 - 1e-9) / 10.0
 
 
+# Threads CalculiX may use. On a 24-core computer a 580,000-equation iterative
+# solve took 198 s on one thread, 167 s on 4, and 149 s on 8, and ran out of
+# its 4 GiB on 24: each thread holds its own working memory.
+_CCX_MAX_THREADS = 8
+
+
+def ccx_threads() -> int:
+    """Threads for one CalculiX run: the cores this process may run on, at most _CCX_MAX_THREADS.
+
+    The count is the process's CPU affinity where the system has one, as for
+    a design script, so a container limited to two cores gets two threads.
+    """
+    from aicad.sandbox import script_cores
+
+    return max(1, min(_CCX_MAX_THREADS, script_cores()))
+
+
+def ccx_thread_environment(threads: int, *, equation_solver: bool = True) -> dict[str, str]:
+    """The variables CalculiX reads for its thread count.
+
+    Without ``equation_solver``, the direct (SPOOLES) solver stays on one
+    thread: on this computer more threads saved about a tenth of its time
+    and made it run out of memory on a system it solved on one. Building the
+    stiffness matrix and the stresses still use every thread.
+    """
+    count = str(max(1, int(threads)))
+    return {
+        "OMP_NUM_THREADS": count,
+        "NUMBER_OF_CPUS": count,
+        "CCX_NPROC_STIFFNESS": count,
+        "CCX_NPROC_RESULTS": count,
+        "CCX_NPROC_EQUATION_SOLVER": count if equation_solver else "1",
+    }
+
+
 # Words CalculiX, SPOOLES, or the C library print when an allocation fails.
 _ALLOCATION_FAILED = ("allocat", "out of memory", "not enough memory", "bad_alloc")
 # Windows exit codes of a process that crashed: an access violation, no memory,
@@ -1315,6 +1353,9 @@ def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
         method = _linear_solver(equations)
     mesh["equations"] = equations
     mesh["linear_solver"] = method
+    from aicad.progress import report
+
+    report(f"solving {equations:,} equations with the {method} solver")
     mesh_size = float(mesh.get("mesh_size_mm") or 0.0)
     element_type = "C3D10" if order == 2 else "C3D4"
     width = 10 if order == 2 else 4
@@ -1367,11 +1408,15 @@ def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
 
         from aicad.sandbox import program_environment, run_confined_helper
 
+        threads = ccx_threads()
+        environment = program_environment()
+        environment.update(ccx_thread_environment(threads, equation_solver=method == "iterative"))
         try:
             completed = run_confined_helper(
                 [solver, "-i", "job"],
-                env=program_environment(),
+                env=environment,
                 timeout=_CCX_TIMEOUT_S,
+                threads=threads,
                 **held_subprocess_kwargs(path),
             )
         except subprocess.TimeoutExpired:

@@ -164,20 +164,24 @@ def render_clip(
     ssaa = 2 if max(picture_w, view_h) <= 400 else 1
     scale = frame_scale(meshes, bases, picture_w, view_h, ssaa)
     centers = sequence_centers(meshes, bases)
-    images = [
-        render_frame(
-            mesh,
-            basis,
-            scale,
-            picture_w,
-            picture_h,
-            background=paper,
-            overlay=_drawn(text) if clock["overlay"] != "none" else "",
-            ssaa=ssaa,
-            center=center,
+    from aicad.progress import report
+
+    images = []
+    for number, (mesh, basis, text, center) in enumerate(zip(meshes, bases, texts, centers, strict=True)):
+        report(f"frame {number + 1} of {len(meshes)}", number, len(meshes))
+        images.append(
+            render_frame(
+                mesh,
+                basis,
+                scale,
+                picture_w,
+                picture_h,
+                background=paper,
+                overlay=_drawn(text) if clock["overlay"] != "none" else "",
+                ssaa=ssaa,
+                center=center,
+            )
         )
-        for mesh, basis, text, center in zip(meshes, bases, texts, centers, strict=True)
-    ]
     stem = _clip_stem(spec["name"], chosen_kind, clock.get("study_name"))
     targets = _targets(root, path, stem, formats)
     # GIF delay is a whole number of centiseconds. Half-up, and never zero.

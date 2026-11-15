@@ -813,7 +813,11 @@ def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEsti
     the estimate. A reading that could not step into the solid is an upper bound
     and is marked capped, so a later threshold cannot treat it as a pass.
     """
+    from aicad.progress import report
+
+    report("rays from each face")
     ray_mm, accepted, used, point, ray_capped = _ray_wall_thickness(shape, samples_per_edge)
+    report("planar sections")
     section_mm, section_count, section_capped = _section_wall_thickness(shape)
     minimum, capped, method = _thinnest(ray_mm, ray_capped, section_mm, section_capped)
     if method != "ray" and method != "ray+section":
@@ -1072,6 +1076,8 @@ def _clearance_between_on_this_thread(a: Shape, b: Shape) -> tuple[float, float,
         if overlap < 0:
             overlap = 0.0
     if overlap > _INTERFERENCE_VOLUME and common is not None:
+        global _last_overlap
+        _last_overlap = (a, b, common)
         center = common.center()
         point = _vec(center)
         return round_mm(overlap), 0.0, point, point
@@ -1101,33 +1107,80 @@ _PENETRATION_SAMPLES = 96
 
 
 def penetration_depth(a: Shape, b: Shape) -> dict:
-    """Minimum translation that separates two solids, in millimeters.
+    """How deep two solids overlap, in millimeters.
 
     Convex polyhedra use the separating-axis theorem on their exact faces and
-    edges, so the depth is the real interference. Any other solid uses the
-    same theorem on the convex hull of its vertices or of a tessellation, which
-    can be deeper than a local notch. ``direction`` is a unit vector that moves
-    the second solid out of the first.
+    edges, so the depth is the minimum translation that separates them.
+
+    Any other pair has only that theorem on convex hulls, which measures the
+    hulls, not the overlap: a screw in a nut is inside the nut's hull, so a
+    0.1 mm flank overlap read as most of the screw's diameter. Such a pair
+    also gets ``overlap_thickness_mm``, twice the overlap's volume over its
+    surface: a thin overlap of area A and thickness t has volume tA and about
+    2A of surface. When that is under a quarter of the hull depth, the
+    overlap is a thin sheet the hulls cannot see, and it is the depth
+    (``overlap_thickness``). Otherwise the hull depth stands: for a chunky
+    overlap, such as a block pushed 2 mm into the end of an L, it is exact,
+    and 2V/A reads short (1.43). ``hull_depth_mm`` has the hull reading
+    whenever the thickness replaced it. ``direction`` is a unit vector that
+    moves the second solid out of the first; for a non-convex pair it is the
+    hulls' direction.
     """
     first = _solid_axes(a)
     second = _solid_axes(b)
     depth, direction, sampled = _separating_depth(first, second)
     convex = bool(first["convex"] and second["convex"] and not first["meshed"] and not second["meshed"])
+    hull_depth = None
+    thickness = None
     if depth <= 1e-9:
         depth = _intersection_extent(a, b)
         direction = [0.0, 0.0, 1.0]
         method = "intersection_extent"
     elif convex and not sampled:
         method = "separating_axis"
-    elif sampled:
-        method = "separating_axis_sampled"
     else:
-        method = "convex_hull"
-    return {
+        method = "separating_axis_sampled" if sampled else "convex_hull"
+        thickness = _overlap_thickness(a, b)
+        if thickness is not None and thickness < _THIN_OVERLAP * depth:
+            hull_depth = depth
+            depth = thickness
+            method = "overlap_thickness"
+    result = {
         "penetration_depth_mm": round_mm(max(0.0, depth)),
         "direction": [round_mm(component) for component in direction],
         "depth_method": method,
     }
+    if thickness is not None:
+        result["overlap_thickness_mm"] = round_mm(thickness)
+    if hull_depth is not None:
+        result["hull_depth_mm"] = round_mm(max(0.0, hull_depth))
+    return result
+
+
+# An overlap thinner than this share of the hull depth is a sheet the hulls cannot see.
+_THIN_OVERLAP = 0.25
+# The last overlap solid clearance_between made, kept so penetration_depth on the
+# same pair does not run the boolean again: (first shape, second shape, solid).
+_last_overlap: tuple | None = None
+
+
+def _overlap_thickness(a: Shape, b: Shape) -> float | None:
+    """Twice the overlap's volume over its surface area: its thickness when it is thin."""
+    kept = _last_overlap
+    try:
+        if kept is not None and kept[0] is a and kept[1] is b:
+            common = kept[2]
+        else:
+            common = a.impl & b.impl
+        if common is None:
+            return None
+        volume = float(common.volume)
+        area = float(common.area)
+    except Exception:
+        return None
+    if volume <= 0 or area <= 0:
+        return None
+    return 2.0 * volume / area
 
 
 def _solid_axes(shape: Shape) -> dict:
