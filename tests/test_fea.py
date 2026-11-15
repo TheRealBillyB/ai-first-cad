@@ -486,7 +486,7 @@ def test_a_folded_quadratic_body_is_tried_straight_sided_in_a_modal_solve(monkey
 
     calls = []
 
-    def once(bodies, _fixed, _equations, _nmodes, _timeout):
+    def once(bodies, _fixed, _equations, _nmodes, _timeout, **_size):
         body = bodies[0]
         calls.append(np.asarray(body["elements"]).shape[1])
         if int(body["order"]) == 2 and not _is_straight(body["points"], np.asarray(body["elements"])):
