@@ -283,7 +283,8 @@ function renderOpening(opening) {
 function renderBusyNote() {
   const box = $("busy-note");
   const busy = ui.state && ui.state.busy;
-  box.textContent = busy ? `Still working on ${busy.command}. You can keep looking around.` : "";
+  const step = busy && busy.progress && busy.progress.text ? `: ${busy.progress.text}` : "";
+  box.textContent = busy ? `Still working on ${busy.command}${step}. You can keep looking around.` : "";
   box.hidden = !busy;
   // No event marks the end when another request took the slot, so check again.
   if (busy && !busyCheck) {

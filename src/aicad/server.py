@@ -7,6 +7,7 @@ should call ``inspect_part`` and look at the pictures, not only the numbers.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -423,6 +424,8 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         from aicad.workspace import Workspace
 
         client = Workspace(workspace)
+        # stdout carries the JSON-RPC stream. A long command says how far it has got on stderr.
+        client.progress_stream = sys.stderr
     mcp = MCPServer(
         "aicad",
         instructions=_INSTRUCTIONS,

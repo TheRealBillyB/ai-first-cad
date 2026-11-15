@@ -248,7 +248,10 @@ def run_study(
     narrow = 0
     reused = 0
     seen: dict = {}
+    from aicad.progress import report
+
     for index, time_s in enumerate(times):
+        report(f"step {index + 1} of {len(times)}", index, len(times))
         posed, commands = _study_pose(spec, chosen, time_s)
         solved, placed = posed_shapes(posed, shapes, commands)
         limits = [_limit_hit(joint) for joint in solved["joints"]]
