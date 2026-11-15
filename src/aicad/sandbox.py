@@ -2922,12 +2922,27 @@ def _helper_read_paths(command: list[str]) -> list[Path]:
     return roots
 
 
-def run_confined_helper(command: list[str], *, env: dict[str, str], timeout: float, cwd=None, preexec_fn=None, pass_fds=(), close_fds=True):
+def run_confined_helper(
+    command: list[str],
+    *,
+    env: dict[str, str],
+    timeout: float,
+    cwd=None,
+    preexec_fn=None,
+    pass_fds=(),
+    close_fds=True,
+    threads: int = 1,
+):
     """Run one helper under the same file limits as a design script.
 
     The helper may read the locations needed to start the program. It may
     read and write ``cwd``. It is not started when those limits cannot be
     applied.
+
+    ``threads`` is how many threads the helper was told to use. Where the
+    helper has a CPU cap, it is ``timeout`` seconds for each of them: the
+    cap counts every thread's time, and the wall clock still stops it at
+    ``timeout``.
     """
 
     import subprocess
@@ -2937,7 +2952,9 @@ def run_confined_helper(command: list[str], *, env: dict[str, str], timeout: flo
     work = Path(cwd) if cwd is not None else Path.cwd()
     reads = _helper_read_paths(command)
     if sys.platform == "win32":
-        return _run_confined_helper_windows(command, env=env, timeout=timeout, cwd=work, reads=reads)
+        return _run_confined_helper_windows(
+            command, env=env, timeout=timeout, cwd=work, reads=reads, threads=threads
+        )
     if sys.platform == "darwin":
         return _run_confined_helper_macos(
             command,
@@ -3088,7 +3105,7 @@ def _windows_helper_environment(env: dict[str, str], cwd: Path) -> dict[str, str
     return merged
 
 
-def _run_confined_helper_windows(command, *, env, timeout, cwd: Path, reads: list[Path]):
+def _run_confined_helper_windows(command, *, env, timeout, cwd: Path, reads: list[Path], threads: int = 1):
     import subprocess
 
     from aicad.sandbox_windows import spawn
@@ -3103,7 +3120,7 @@ def _run_confined_helper_windows(command, *, env, timeout, cwd: Path, reads: lis
         env=env,
         read_paths=reads,
         workspace=cwd,
-        cpu_seconds=max(1, int(timeout)),
+        cpu_seconds=max(1, int(timeout)) * max(1, int(threads)),
         memory_bytes=memory_bytes(),
         network=False,
         timeout_seconds=float(timeout),

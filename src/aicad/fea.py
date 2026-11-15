@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import math
+import os
 import re
 import signal
 import sys
@@ -1241,6 +1242,35 @@ def _coarser_mesh_size(mesh_size: float, equations: int) -> float:
     return math.ceil(size * 10.0 - 1e-9) / 10.0
 
 
+# Threads CalculiX may use. On a 24-core computer a 580,000-equation iterative
+# solve took 198 s on one thread, 167 s on 4, and 149 s on 8, and ran out of
+# its 4 GiB on 24: each thread holds its own working memory.
+_CCX_MAX_THREADS = 8
+
+
+def ccx_threads() -> int:
+    """Threads for one CalculiX run: the computer's cores, at most _CCX_MAX_THREADS."""
+    return max(1, min(_CCX_MAX_THREADS, os.cpu_count() or 1))
+
+
+def ccx_thread_environment(threads: int, *, equation_solver: bool = True) -> dict[str, str]:
+    """The variables CalculiX reads for its thread count.
+
+    Without ``equation_solver``, the direct (SPOOLES) solver stays on one
+    thread: on this computer more threads saved about a tenth of its time
+    and made it run out of memory on a system it solved on one. Building the
+    stiffness matrix and the stresses still use every thread.
+    """
+    count = str(max(1, int(threads)))
+    return {
+        "OMP_NUM_THREADS": count,
+        "NUMBER_OF_CPUS": count,
+        "CCX_NPROC_STIFFNESS": count,
+        "CCX_NPROC_RESULTS": count,
+        "CCX_NPROC_EQUATION_SOLVER": count if equation_solver else "1",
+    }
+
+
 def _solve_too_big(what: str, equations: int, node_count: int, mesh_size: float) -> str:
     text = f"CalculiX {what} while solving {equations:,} equations ({node_count:,} nodes"
     if mesh_size > 0:
@@ -1311,11 +1341,15 @@ def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
 
         from aicad.sandbox import program_environment, run_confined_helper
 
+        threads = ccx_threads()
+        environment = program_environment()
+        environment.update(ccx_thread_environment(threads, equation_solver=method == "iterative"))
         try:
             completed = run_confined_helper(
                 [solver, "-i", "job"],
-                env=program_environment(),
+                env=environment,
                 timeout=_CCX_TIMEOUT_S,
+                threads=threads,
                 **held_subprocess_kwargs(path),
             )
         except subprocess.TimeoutExpired:
