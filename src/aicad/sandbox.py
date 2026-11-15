@@ -534,18 +534,42 @@ def cpu_seconds() -> int:
     return _capped("AICAD_SCRIPT_CPU_SECONDS", ceiling, ceiling)
 
 
-def _limit_stop_text() -> str:
-    """Why a script stopped at its memory or CPU cap, with both caps."""
+def _limit_stop_text(which: str = "") -> str:
+    """Why a script stopped at its memory or CPU cap.
+
+    ``which`` is ``"cpu"`` or ``"memory"`` when the platform said which cap it
+    was, and empty when it did not; then both caps are named.
+    """
     cpu = cpu_seconds()
     cores = script_cores()
     if cpu == CPU_SECONDS * cores and cores > 1:
         cpu_text = f"{cpu} s of CPU time ({CPU_SECONDS} s for each of {cores} cores)"
     else:
         cpu_text = f"{cpu} s of CPU time"
-    return (
-        "The script was stopped because it hit the memory or CPU limit "
-        f"({memory_bytes() // (1024 * 1024)} MiB of memory, {cpu_text})."
-    )
+    memory_text = f"{memory_bytes() // (1024 * 1024)} MiB of memory"
+    if which == "cpu":
+        return (
+            f"The script was stopped because it used all of its CPU time ({cpu_text}). "
+            "The time of every thread adds up, so a script that keeps many cores busy "
+            "reaches it before the wall clock does."
+        )
+    if which == "memory":
+        return f"The script was stopped because it hit the memory limit ({memory_text})."
+    return f"The script was stopped because it hit the memory or CPU limit ({memory_text}, {cpu_text})."
+
+
+def _limit_kind(memory_killed, code: int) -> str:
+    """``"cpu"`` or ``"memory"`` when it is known which cap stopped the script, else ``""``.
+
+    Windows says which in ``memory_killed``. Elsewhere SIGXCPU is the CPU
+    cap and the parent's memory watch is the memory cap. A plain SIGKILL can
+    be either, or the parent's own kill.
+    """
+    if isinstance(memory_killed, str) and memory_killed in ("cpu", "memory"):
+        return memory_killed
+    if not memory_killed and code < 0 and -code == getattr(signal, "SIGXCPU", None):
+        return "cpu"
+    return ""
 
 
 def memory_bytes() -> int:
@@ -3244,8 +3268,9 @@ def _child_env(
     _copy_set(env, _SCRIPT_LOCALE)
     _copy_set(env, _SCRIPT_TEXT)
     _copy_set(env, _SCRIPT_LIMITS)
-    # The child applies the cap the parent counted. It may not be able to
-    # count the cores itself once it is confined.
+    # The child is told the cap the parent counted, so a limit message names
+    # the cap that was set. The child still counts its own cores and keeps the
+    # lower of the two (cpu_seconds), so this variable cannot raise the cap.
     env["AICAD_SCRIPT_CPU_SECONDS"] = str(cpu_seconds())
     _copy_set(env, _SCRIPT_HOME)
     if sys.platform == "win32":
@@ -6153,7 +6178,7 @@ def _spawn(
             proc.returncode if proc.returncode is not None else -1,
             stdout_b.decode("utf-8", "replace"),
             stderr_b.decode("utf-8", "replace"),
-            memory_killed=memory_hit.is_set(),
+            memory_killed="memory" if memory_hit.is_set() else False,
             process_killed=process_hit.is_set(),
         )
         if design_record is not None:
@@ -6281,7 +6306,7 @@ def _payload_from_result(
         raise ScriptError(_PROCESS_LIMIT)
     if memory_killed:
         shutil.rmtree(job, ignore_errors=True)
-        raise ScriptError(_limit_stop_text())
+        raise ScriptError(_limit_stop_text(_limit_kind(memory_killed, code)))
     result_path = job / "result.json"
     try:
         result_text = _result_text(result_path)
@@ -6304,7 +6329,7 @@ def _payload_from_result(
                 except (ValueError, OSError):
                     signame = str(-code)
                 detail = (detail + f"\nstopped by signal {-code} ({signame})").strip()
-            raise ScriptError(_limit_stop_text() + (f"\n{detail}" if detail else ""))
+            raise ScriptError(_limit_stop_text(_limit_kind(memory_killed, code)) + (f"\n{detail}" if detail else ""))
         detail = tail.strip() or stdout[-2000:].strip()
         if code < 0:
             try:

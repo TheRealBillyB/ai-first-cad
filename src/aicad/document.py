@@ -179,6 +179,9 @@ class Document:
 
         remember_project(self.workspace)
         self._parts: dict[str, _Part] = {}
+        # The solid after each op or sketch step of the lists built last. An edit
+        # to a part built from shapes or a sketch builds from the step that changed.
+        self._ops_builds = kernel.OpsBuilds()
         self._sketches: dict[str, _Sketch] = {}
         self._assemblies: dict[str, dict] = {}
         self.problems: list[str] = []
@@ -209,7 +212,7 @@ class Document:
     def create_part_from_ops(self, name: str, ops: list[dict]) -> PartInfo:
         with self._lock:
             self._require_new_name(name)
-            shape = kernel.make_from_ops(ops)
+            shape = kernel.make_from_ops(ops, builds=self._ops_builds)
             self._parts[name] = _Part(name, "ops", shape, ops=copy.deepcopy(list(ops)))
             self._save()
             return self._info(self._parts[name])
@@ -304,7 +307,7 @@ class Document:
         with self._lock:
             part = self._get(name)
             edge_ops = list(part.edge_ops) if part.source == "ops" and part.edge_ops else None
-            shape, errors = kernel.prefix_from_ops(ops)
+            shape, errors = kernel.prefix_from_ops(ops, builds=self._ops_builds)
             if shape is None:
                 raise GeometryError(_first_error(errors))
             if edge_ops:
@@ -945,7 +948,7 @@ class Document:
     def _source_solid(self, part: _Part) -> kernel.Shape:
         """The solid before fillet and chamfer steps, in part coordinates."""
         if part.source == "ops":
-            return kernel.make_from_ops(part.ops or [])
+            return kernel.make_from_ops(part.ops or [], builds=self._ops_builds)
         sketch = self._get_sketch(part.sketch_name or "")
         report = solve_sketch(sketch.spec, sketch.name)
         if report.status in _UNBUILDABLE:
@@ -1406,7 +1409,7 @@ class Document:
         if report.status in _UNBUILDABLE:
             raise GeometryError(report.note)
         frame = self._sketch_frame(spec, sketch_name, building)
-        shape = kernel.solid_from_sketch(report.geometry, steps, frame=frame)
+        shape = kernel.solid_from_sketch(report.geometry, steps, frame=frame, builds=self._ops_builds)
         if edge_ops:
             shape = kernel.apply_edge_ops(shape, edge_ops)
         return shape
@@ -1425,7 +1428,7 @@ class Document:
         if report.status in _UNBUILDABLE:
             raise GeometryError(report.note)
         frame = self._sketch_frame(spec, sketch_name, building)
-        shape, errors = kernel.prefix_from_sketch(report.geometry, steps, frame=frame)
+        shape, errors = kernel.prefix_from_sketch(report.geometry, steps, frame=frame, builds=self._ops_builds)
         if shape is not None and edge_ops:
             shape, failures = kernel.apply_edge_ops_partial(shape, edge_ops)
             errors = dict(errors)
@@ -3231,7 +3234,7 @@ class Document:
                     placement.get("rotation_deg", [0.0, 0.0, 0.0]), "rotation_deg", unit="deg"
                 )
                 if source == "ops":
-                    base, source_errors = kernel.prefix_from_ops(record["ops"])
+                    base, source_errors = kernel.prefix_from_ops(record["ops"], builds=self._ops_builds)
                     if base is None:
                         raise DocumentError(_first_error(source_errors))
                 elif source == "step":

@@ -1409,30 +1409,55 @@ def _marker_path() -> Path:
 # Folders this process has already made readable, per container. Another
 # process's record does not stand in for a folder this process has not granted.
 _granted_read: set[tuple[str, str]] = set()
+# The folders among them that were walked with the whole tree's read grant.
+_granted_trees: set[tuple[str, str]] = set()
+
+
+def _read_key(path) -> str:
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return os.path.normcase(str(path))
+
+
+def _inside_granted_tree(sid: str, key: str) -> bool:
+    """True when a folder above ``key`` was walked with the tree's read grant in this process.
+
+    That walk already granted everything under it, so walking ``key`` again
+    changes nothing. The keys are resolved, so a link inside that points
+    elsewhere is not counted as inside.
+    """
+    return any((sid, str(parent)) in _granted_trees for parent in Path(key).parents)
 
 
 def grant_read_paths(paths: Sequence[Path], sid: str, package_sid: str | None = None) -> None:
     """Let the container read these folders.
 
-    A folder already granted in this process is not walked again. A record
-    left by another process does not skip a folder this process has not granted.
+    A folder already granted in this process is not walked again, nor is a
+    folder inside one this process walked: the interpreter's site-packages
+    inside its environment took a second walk of 7 s. A record left by
+    another process does not skip a folder this process has not granted.
     """
 
     if not package_sid:
         package_sid = _ALL_APPLICATION_PACKAGES
-    for path in paths:
-        try:
-            key = str(Path(path).resolve())
-        except OSError:
-            key = os.path.normcase(str(path))
+    keyed = [(Path(path), _read_key(path)) for path in paths]
+    # The outer folder first, so a folder inside it is seen as covered.
+    keyed.sort(key=lambda item: len(Path(item[1]).parts))
+    for path, key in keyed:
         if (sid, key) in _granted_read:
             continue
-        refuse_broad_folder(Path(path))
-        if Path(path).is_file():
-            _grant_file(Path(path), sid)
+        refuse_broad_folder(path)
+        if _inside_granted_tree(sid, key):
+            _granted_read.add((sid, key))
+            continue
+        if path.is_file():
+            _grant_file(path, sid)
         else:
-            _grant_tree(Path(path), sid, "(OI)(CI)RX")
-        _grant_traverse(Path(path), sid, package_sid)
+            _grant_tree(path, sid, "(OI)(CI)RX")
+            if path.is_dir():
+                _granted_trees.add((sid, key))
+        _grant_traverse(path, sid, package_sid)
         _granted_read.add((sid, key))
     _grant_links_on_the_way([*paths, *_interpreter_paths()], sid, package_sid)
     marker = _marker_path()
@@ -2197,19 +2222,22 @@ def _job_stop_was_a_limit(
     cpu_reached: bool,
     exit_code: int,
     memory_peak: bool,
-) -> bool:
-    """True when the job's CPU or memory cap stopped the script.
+) -> str:
+    """Which cap stopped the script: ``"cpu"``, ``"memory"``, or ``""`` for neither.
 
     A wall-clock timeout is separate. User time at the cap counts even when
-    the exit code is 0. A memory peak counts only on a failed exit, so a
-    script that finishes is not reported as a memory stop.
+    the exit code is 0. The violation record carries the memory bits, not the
+    CPU one. A memory peak counts only on a failed exit, so a script that
+    finishes is not reported as a memory stop.
     """
 
     if timed_out:
-        return False
-    if violated or cpu_reached:
-        return True
-    return exit_code != 0 and memory_peak
+        return ""
+    if cpu_reached:
+        return "cpu"
+    if violated:
+        return "memory"
+    return "memory" if exit_code != 0 and memory_peak else ""
 
 
 def _job_limit_violated(job: wintypes.HANDLE) -> bool:
