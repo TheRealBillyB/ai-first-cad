@@ -212,14 +212,21 @@ class ClearanceReport:
     threshold_mm: float | None
     passed: bool | None
     note: str
+    # Where the parts overlap: center, box, and each region. None when they do not.
+    overlap: dict | None = None
+    # The assembly and pose the parts were checked in, when they are instances.
+    assembly: str | None = None
+    pose: dict | None = None
 
     def to_dict(self) -> dict[str, object]:
         return finish(
             {
                 "part_a": self.part_a,
                 "part_b": self.part_b,
+                **({} if self.assembly is None else {"assembly": self.assembly, "pose": self.pose}),
                 "intersecting": self.intersecting,
                 "interference_volume_mm3": self.interference_volume_mm3,
+                "overlap": self.overlap,
                 "min_distance_mm": self.min_distance_mm,
                 "closest_point_a_mm": None
                 if self.closest_point_a_mm is None
