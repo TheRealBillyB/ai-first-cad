@@ -263,7 +263,7 @@ class Workspace:
         a command starts from the saved project and does not write back an
         older copy of it.
         """
-        if not self.document.reload_if_changed():
+        if not self.document._reload_if_changed():  # noqa: SLF001
             return
         self.geometry_revision += 1
         self._mesh_cache.clear()

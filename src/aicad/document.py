@@ -3094,12 +3094,12 @@ class Document:
             return None
         return (int(info.st_mtime_ns), int(info.st_size), int(info.st_ino))
 
-    def changed_on_disk(self) -> bool:
+    def _changed_on_disk(self) -> bool:
         """True when another program wrote session.json after this document read or wrote it."""
         current = self._session_stamp()
         return current is not None and current != self._disk_stamp
 
-    def reload_if_changed(self) -> bool:
+    def _reload_if_changed(self) -> bool:
         """Read session.json again when another program wrote it since this document last did.
 
         A project can be open in two processes at once: the app and a script,
@@ -3108,7 +3108,7 @@ class Document:
         back. Parts whose saved record is unchanged keep their solids.
         """
         with self._lock:
-            if not self.changed_on_disk():
+            if not self._changed_on_disk():
                 return False
             payload = self._read_payload()
             if payload is None:
@@ -3137,7 +3137,7 @@ class Document:
             raise DocumentError(
                 "The session has a number that is not finite, so it was not saved."
             ) from exc
-        if not replace_newer and self.changed_on_disk():
+        if not replace_newer and self._changed_on_disk():
             raise DocumentError(
                 "session.json was changed by another program with this project open (the app or a script) "
                 "after this one read it, so this change was not saved. Run the command again: "

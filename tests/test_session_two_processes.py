@@ -66,9 +66,9 @@ def test_a_document_refuses_to_write_over_a_newer_session(tmp_path):
     with pytest.raises(DocumentError, match="changed by another program"):
         second.document.delete_part("a")
     assert _saved_parts(tmp_path) == ["a"]
-    assert second.document.reload_if_changed() is True
+    assert second.document._reload_if_changed() is True
     assert _names(second) == ["a"]
-    assert second.document.reload_if_changed() is False
+    assert second.document._reload_if_changed() is False
 
 
 def test_undo_after_another_copy_saved_is_not_refused(tmp_path):
