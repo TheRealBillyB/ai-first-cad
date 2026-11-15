@@ -1072,6 +1072,8 @@ def _clearance_between_on_this_thread(a: Shape, b: Shape) -> tuple[float, float,
         if overlap < 0:
             overlap = 0.0
     if overlap > _INTERFERENCE_VOLUME and common is not None:
+        global _last_overlap
+        _last_overlap = (a, b, common)
         center = common.center()
         point = _vec(center)
         return round_mm(overlap), 0.0, point, point
@@ -1108,19 +1110,24 @@ def penetration_depth(a: Shape, b: Shape) -> dict:
 
     Any other pair has only that theorem on convex hulls, which measures the
     hulls, not the overlap: a screw in a nut is inside the nut's hull, so a
-    0.1 mm flank overlap read as most of the screw's diameter. For such a
-    pair the depth is the overlap's own thickness, twice its volume over its
-    surface (``overlap_thickness``). A thin overlap of area A and thickness
-    t has volume tA and about 2A of surface. The hull reading stays on
-    ``hull_depth_mm``: it bounds the translation that separates the solids
-    from above. ``direction`` is a unit vector that moves the second solid
-    out of the first; for a non-convex pair it is the hulls' direction.
+    0.1 mm flank overlap read as most of the screw's diameter. Such a pair
+    also gets ``overlap_thickness_mm``, twice the overlap's volume over its
+    surface: a thin overlap of area A and thickness t has volume tA and about
+    2A of surface. When that is under a quarter of the hull depth, the
+    overlap is a thin sheet the hulls cannot see, and it is the depth
+    (``overlap_thickness``). Otherwise the hull depth stands: for a chunky
+    overlap, such as a block pushed 2 mm into the end of an L, it is exact,
+    and 2V/A reads short (1.43). ``hull_depth_mm`` has the hull reading
+    whenever the thickness replaced it. ``direction`` is a unit vector that
+    moves the second solid out of the first; for a non-convex pair it is the
+    hulls' direction.
     """
     first = _solid_axes(a)
     second = _solid_axes(b)
     depth, direction, sampled = _separating_depth(first, second)
     convex = bool(first["convex"] and second["convex"] and not first["meshed"] and not second["meshed"])
     hull_depth = None
+    thickness = None
     if depth <= 1e-9:
         depth = _intersection_extent(a, b)
         direction = [0.0, 0.0, 1.0]
@@ -1128,27 +1135,39 @@ def penetration_depth(a: Shape, b: Shape) -> dict:
     elif convex and not sampled:
         method = "separating_axis"
     else:
-        hull_depth = depth
+        method = "separating_axis_sampled" if sampled else "convex_hull"
         thickness = _overlap_thickness(a, b)
-        if thickness is not None:
-            depth = min(depth, thickness)
+        if thickness is not None and thickness < _THIN_OVERLAP * depth:
+            hull_depth = depth
+            depth = thickness
             method = "overlap_thickness"
-        else:
-            method = "separating_axis_sampled" if sampled else "convex_hull"
     result = {
         "penetration_depth_mm": round_mm(max(0.0, depth)),
         "direction": [round_mm(component) for component in direction],
         "depth_method": method,
     }
+    if thickness is not None:
+        result["overlap_thickness_mm"] = round_mm(thickness)
     if hull_depth is not None:
         result["hull_depth_mm"] = round_mm(max(0.0, hull_depth))
     return result
 
 
+# An overlap thinner than this share of the hull depth is a sheet the hulls cannot see.
+_THIN_OVERLAP = 0.25
+# The last overlap solid clearance_between made, kept so penetration_depth on the
+# same pair does not run the boolean again: (first shape, second shape, solid).
+_last_overlap: tuple | None = None
+
+
 def _overlap_thickness(a: Shape, b: Shape) -> float | None:
     """Twice the overlap's volume over its surface area: its thickness when it is thin."""
+    kept = _last_overlap
     try:
-        common = a.impl & b.impl
+        if kept is not None and kept[0] is a and kept[1] is b:
+            common = kept[2]
+        else:
+            common = a.impl & b.impl
         if common is None:
             return None
         volume = float(common.volume)

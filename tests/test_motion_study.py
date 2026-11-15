@@ -605,3 +605,38 @@ def test_a_motion_study_hit_carries_the_hull_depth(monkeypatch):
     assert hit["kind"] == "interference"
     assert hit["depth_method"] == "overlap_thickness"
     assert hit["penetration_depth_mm"] < 0.11 and hit["hull_depth_mm"] > 9
+
+
+def _l_block_and_box(push_mm: float):
+    l_block = make_from_ops(
+        [
+            {"op": "add", "shape": "box", "size": [30, 10, 10], "center": [15, 5, 5]},
+            {"op": "add", "shape": "box", "size": [10, 30, 10], "center": [5, 15, 5]},
+        ]
+    )
+    box = make_from_ops([{"op": "add", "shape": "box", "size": [10, 10, 10], "center": [35 - push_mm, 5, 5]}])
+    return l_block, box
+
+
+@pytest.mark.parametrize("push_mm", [2.0, 5.0])
+def test_a_block_pushed_into_an_l_keeps_its_exact_depth(push_mm):
+    """A chunky overlap is not a sheet: 2V/A read 1.43 for 2 mm and 2.5 for 5 mm."""
+    depth = penetration_depth(*_l_block_and_box(push_mm))
+    assert depth["penetration_depth_mm"] == pytest.approx(push_mm, abs=1e-6)
+    assert depth["depth_method"] == "convex_hull"
+    assert depth["overlap_thickness_mm"] < push_mm
+    assert "hull_depth_mm" not in depth
+
+
+def test_the_overlap_solid_from_the_clearance_check_is_used_again(monkeypatch):
+    from aicad import kernel
+
+    class Overlap:
+        volume = 10.0
+        area = 200.0
+
+    rod, nut = _rod_and_nut(0.1)
+    monkeypatch.setattr(kernel, "_last_overlap", (rod, nut, Overlap()))
+    assert kernel._overlap_thickness(rod, nut) == pytest.approx(0.1)
+    # Another pair does not take it.
+    assert kernel._overlap_thickness(nut, rod) != pytest.approx(0.1)
