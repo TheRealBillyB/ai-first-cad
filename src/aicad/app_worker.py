@@ -107,6 +107,8 @@ class GeometryWorker:
         self._meshes: dict[tuple, tuple[int, dict]] = {}
         self._answers: dict[tuple[str, str], tuple[int, str, bytes]] = {}
         self._running: tuple[str, float] | None = None
+        # The last progress the running command sent. See aicad.progress.
+        self._progress: dict | None = None
         self._process: subprocess.Popen | None = None
         self._connection: Connection | None = None
         self._closed = False
@@ -165,6 +167,9 @@ class GeometryWorker:
         running = self._running
         if running is not None:
             state["busy"] = {"command": running[0], "seconds": round(time.monotonic() - running[1], 1)}
+            heard = self._progress
+            if heard is not None:
+                state["busy"]["progress"] = {key: heard[key] for key in ("text", "done", "total") if key in heard}
         return state
 
     def commands(self) -> list[dict]:
@@ -264,6 +269,9 @@ class GeometryWorker:
                 self._connection.send_bytes(json.dumps({"method": method, "args": args}).encode("utf-8"))
                 while True:
                     message = json.loads(self._connection.recv_bytes().decode("utf-8"))
+                    if "progress" in message:
+                        self._progress = message["progress"]
+                        continue
                     if "event" not in message:
                         break
                     self._dispatch(message["event"])
@@ -275,6 +283,7 @@ class GeometryWorker:
         finally:
             notice.cancel()
             self._running = None
+            self._progress = None
         self._remember(message)
         if not message["ok"]:
             raise _rebuilt_error(message["error"])
@@ -436,6 +445,12 @@ def _serve(start: dict) -> None:
         _send(connection, send_lock, json.dumps({"event": event}).encode("utf-8"))
 
     workspace.listen(send_event)
+
+    def send_progress(entry: dict) -> None:
+        # Its own message: the app shows it on the busy note, and the page does not refresh for it.
+        _send(connection, send_lock, json.dumps({"progress": entry}).encode("utf-8"))
+
+    workspace.listen_progress(send_progress)
     _send(connection, send_lock, _encoded(workspace, {"ok": True, "state": state, "commands": commands}))
 
     def resume(revision: int, event_id: int) -> dict:

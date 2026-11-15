@@ -418,7 +418,10 @@ def solve_part(
             "Nothing was solved. The load does not land on the part.",
         )
 
+    from aicad.progress import report
+
     order = 2
+    report(f"meshing at {mesh_size:g} mm")
     mesh = _mesh_solid(shape, mesh_size, order)
     for note in mesh.get("mesh_notes") or []:
         if note not in warnings:
@@ -1259,6 +1262,9 @@ def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
         method = _linear_solver(equations)
     mesh["equations"] = equations
     mesh["linear_solver"] = method
+    from aicad.progress import report
+
+    report(f"solving {equations:,} equations with the {method} solver")
     mesh_size = float(mesh.get("mesh_size_mm") or 0.0)
     element_type = "C3D10" if order == 2 else "C3D4"
     width = 10 if order == 2 else 4

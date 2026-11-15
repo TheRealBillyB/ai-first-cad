@@ -692,7 +692,11 @@ def estimate_wall_thickness(shape: Shape, samples_per_edge: int = 4) -> WallEsti
     the estimate. A reading that could not step into the solid is an upper bound
     and is marked capped, so a later threshold cannot treat it as a pass.
     """
+    from aicad.progress import report
+
+    report("rays from each face")
     ray_mm, accepted, used, point, ray_capped = _ray_wall_thickness(shape, samples_per_edge)
+    report("planar sections")
     section_mm, section_count, section_capped = _section_wall_thickness(shape)
     minimum, capped, method = _thinnest(ray_mm, ray_capped, section_mm, section_capped)
     if method != "ray" and method != "ray+section":

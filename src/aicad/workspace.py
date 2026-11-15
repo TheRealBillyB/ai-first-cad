@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -119,6 +120,11 @@ class Workspace:
         self.requirements_path = self.root / "requirements.json"
         self._lock = threading.RLock()
         self._listeners: list[Callable[[dict], None]] = []
+        self._progress_listeners: list[Callable[[dict], None]] = []
+        # How far the running command has got, or None. See aicad.progress.
+        self.progress: dict | None = None
+        # Where a line is written for each progress update, such as sys.stderr, or None.
+        self.progress_stream = None
         self.geometry_revision = 0
         self.event_id = 0
         self._undo: list[dict] = []
@@ -158,6 +164,29 @@ class Workspace:
                     self._listeners.remove(callback)
 
         return unsubscribe
+
+    def listen_progress(self, callback: Callable[[dict], None]) -> Callable[[], None]:
+        """Hear how far a long command has got while it runs. See aicad.progress."""
+        self._progress_listeners.append(callback)
+
+        def unsubscribe() -> None:
+            if callback in self._progress_listeners:
+                self._progress_listeners.remove(callback)
+
+        return unsubscribe
+
+    def _progress_heard(self, name: str, started: float, update: dict) -> None:
+        entry = {"command": name, **update, "seconds": round(time.monotonic() - started, 1)}
+        self.progress = entry
+        for listener in list(self._progress_listeners):
+            listener(entry)
+        stream = self.progress_stream
+        if stream is not None:
+            try:
+                stream.write(f"aicad: {name}: {entry['text']} ({entry['seconds']:.0f} s)\n")
+                stream.flush()
+            except (OSError, ValueError):
+                pass
 
     def execute(self, name: str, arguments: dict | None = None, source: str = "api") -> dict:
         """Run one command. ``source`` is ``ui``, ``agent``, ``chat``, or ``api``.
@@ -199,8 +228,12 @@ class Workspace:
             writes = document._writes
             previous_actor = self.document.actor
             self.document.actor = "user" if source in {"ui", "cli", "api"} else "agent"
+            from aicad import progress
+
+            started = time.monotonic()
             try:
-                result = command.handler(self, arguments)
+                with progress.listening(lambda update: self._progress_heard(name, started, update)):
+                    result = command.handler(self, arguments)
                 if isinstance(result, dict):
                     from aicad.honesty import attach_sheet
 
@@ -217,6 +250,7 @@ class Workspace:
                 raise
             finally:
                 self.document.actor = previous_actor
+                self.progress = None
             changed = command.undo or self._note_mutation
             self._note_mutation = False
             if changed:
