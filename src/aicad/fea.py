@@ -28,6 +28,9 @@ from aicad.render import render_scalar_views
 
 _SOLVER = "CalculiX (ccx) + Gmsh"
 _CCX_TIMEOUT_S = 180
+# Two selector matches this close along the normal, or from the axis, share a
+# plane or a cylinder. Face records are rounded to 0.001 mm.
+_SAME_SURFACE_MM = 0.01
 _LOCK = threading.Lock()
 _FRD_NUMBER = re.compile(r"[+-]?\d+\.\d+E[+-]\d+")
 # Gmsh tet10 lists edge 2-3 before edge 1-3. CalculiX C3D10 wants the opposite.
@@ -261,8 +264,10 @@ def select_faces(catalog: list[dict], selector: dict) -> list[dict]:
 
     A plane selector uses the outward ``normal``. Pass ``at`` to take the
     matching plane closest to that point; omit ``at`` to take every matching
-    plane. A cylinder selector matches ``radius`` (millimeters, default
-    tolerance 0.05) and an optional ``axis``. Omit ``at`` to take every match,
+    plane. When several faces lie in that plane, ``at`` takes the one whose
+    center is closest to the point. A cylinder selector matches ``radius``
+    (millimeters, default tolerance 0.05) and an optional ``axis``; faces on
+    one axis are told apart the same way. Omit ``at`` to take every match,
     which is how "the four frame holes" is one selector. ``nearest`` needs
     ``at`` and returns the face whose center is closest. ``all: true`` forces
     every match instead of the single closest face.
@@ -1808,7 +1813,20 @@ def _narrow(matches: list[dict], selector: dict, score, direction) -> list[dict]
     point = _vec(selector["at"], "at") if selector.get("at") is not None else None
     if point is None:
         return matches if explicit is not False else matches[:1]
-    ranked = sorted(matches, key=lambda face: score(face, point, direction))
+    # Faces in one plane, or on one cylinder, are the same distance from the
+    # point along the normal or from the axis. Among those, the face whose
+    # center is closest to the point is the one it names.
+    offsets = [score(face, point, direction) for face in matches]
+    nearest = min(offsets)
+
+    def rank(position: int) -> tuple[int, float, float]:
+        offset = offsets[position]
+        apart = _distance(matches[position]["center_mm"], point)
+        if offset <= nearest + _SAME_SURFACE_MM:
+            return (0, 0.0, apart)
+        return (1, offset, apart)
+
+    ranked = [matches[position] for position in sorted(range(len(matches)), key=rank)]
     if explicit:
         return ranked
     return ranked[:1]
