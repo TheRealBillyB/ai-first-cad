@@ -62,10 +62,12 @@ The record also has ``first_collision``, ``collisions`` (every hit, with
 ``index`` and ``time_s``), ``colliding_steps``, ``first_limit``,
 ``limit_hits``, and ``limit_steps``. ``direction`` moves instance ``b`` out of
 ``a``, and the names are sorted. ``depth_method`` is ``separating_axis`` for
-convex polyhedra, ``convex_hull`` when the depth is taken on a hull,
-``separating_axis_sampled`` when there are too many edges for every pair,
-``intersection_extent`` when the axis test misses a boolean hit, and
-``clearance`` when only the gap is short. ``status`` is ``clear``, ``limit``,
+convex polyhedra, ``overlap_thickness`` for any other pair (twice the
+overlap's volume over its surface; ``hull_depth_mm`` then has the convex-hull
+reading, an upper bound on the translation that separates them),
+``convex_hull`` or ``separating_axis_sampled`` when that thickness could not
+be measured, ``intersection_extent`` when the axis test misses a boolean hit,
+and ``clearance`` when only the gap is short. ``status`` is ``clear``, ``limit``,
 ``collision``, or ``collision_and_limit``.
 
 ``broad_phase_rejected`` and ``narrow_phase_pairs`` count the pairs skipped
@@ -814,7 +816,7 @@ def _narrow(left, right, clearance: float) -> dict | None:
     at = None if point_a is None else [point_a.x, point_a.y, point_a.z]
     if overlap > _VOLUME_MM3:
         depth = kernel.penetration_depth(left, right)
-        return {
+        hit = {
             "kind": "interference",
             "interference_volume_mm3": overlap,
             "penetration_depth_mm": depth["penetration_depth_mm"],
@@ -823,6 +825,9 @@ def _narrow(left, right, clearance: float) -> dict | None:
             "direction": depth["direction"],
             "at_mm": at,
         }
+        if "hull_depth_mm" in depth:
+            hit["hull_depth_mm"] = depth["hull_depth_mm"]
+        return hit
     if distance + 1e-9 < clearance:
         return {
             "kind": "clearance",
