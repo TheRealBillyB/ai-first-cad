@@ -8,6 +8,7 @@ build123d stays behind :mod:`aicad.kernel`; this module only sees triangles.
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -170,25 +171,7 @@ def _rasterize(
     image[:] = _PAPER if background is None else background
     depth = np.full((height, width), -1e30, dtype=np.float64)
 
-    triangles = mesh.triangles
-    normals = mesh.normals
-    for tri in triangles:
-        i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
-        p0, p1, p2 = screen[i0], screen[i1], screen[i2]
-        shades = (
-            _shade(normals[i0], light_key, light_fill),
-            _shade(normals[i1], light_key, light_fill),
-            _shade(normals[i2], light_key, light_fill),
-        )
-        if mesh.colors is None:
-            _paint_triangle(image, depth, p0, p1, p2, shades)
-        else:
-            colored = (
-                mesh.colors[i0] * shades[0],
-                mesh.colors[i1] * shades[1],
-                mesh.colors[i2] * shades[2],
-            )
-            _paint_triangle_color(image, depth, p0, p1, p2, colored)
+    _paint_triangles(image, depth, screen, mesh, light_key, light_fill)
 
     # Colored assemblies used to return here, so a fabricated joint lost its edges.
     bias = 0.85 if mesh.colors is not None else 0.35
@@ -197,6 +180,161 @@ def _rasterize(
         for start, end in zip(projected[:-1], projected[1:]):
             _draw_visible_segment(image, depth, start, end, bias)
     return image, depth
+
+
+# Pixels tested in one batch of triangles, to bound the memory of the arrays.
+_BATCH_PIXELS = 1_000_000
+# Threads that paint one frame, each a band of rows.
+_RENDER_THREADS = max(1, min(8, os.cpu_count() or 1))
+
+
+def _vertex_shades(normals: np.ndarray, key: np.ndarray, fill: np.ndarray) -> np.ndarray:
+    """``_shade`` of each vertex normal, once per vertex rather than once per corner."""
+    normals = np.asarray(normals, dtype=np.float64)
+    shades = np.empty(len(normals), dtype=np.float64)
+    for index, normal in enumerate(normals):
+        shades[index] = _shade(normal, key, fill)
+    return shades
+
+
+def _paint_triangles(image, depth, screen, mesh, key, fill) -> None:
+    """Paint every triangle with a depth test, as painting them one after another would.
+
+    One by one, a 1080p frame of 50,000 triangles spent nearly all its time in
+    Python, not in the arithmetic. Triangles are painted in batches. Each
+    triangle's pixels are found a row at a time from its edges, then the same
+    barycentric test as before decides each one, so the picture is the same.
+    A pixel takes the nearest triangle, and on an exact tie the one that comes
+    first, which is what painting them in order with a strict nearer test gives.
+    """
+    triangles = np.asarray(mesh.triangles, dtype=np.int64).reshape(-1, 3)
+    if not len(triangles):
+        return
+    shades = _vertex_shades(mesh.normals, key, fill)
+    if mesh.colors is None:
+        values = shades[triangles][:, :, None]
+        colored = False
+    else:
+        values = np.asarray(mesh.colors, dtype=np.float64)[triangles] * shades[triangles][:, :, None]
+        colored = True
+    corners = screen[triangles]
+    height, width = depth.shape
+    xs = corners[:, :, 0]
+    ys = corners[:, :, 1]
+    min_x = np.maximum(np.floor(xs.min(axis=1)).astype(np.int64), 0)
+    max_x = np.minimum(np.ceil(xs.max(axis=1)).astype(np.int64), width - 1)
+    min_y = np.maximum(np.floor(ys.min(axis=1)).astype(np.int64), 0)
+    max_y = np.minimum(np.ceil(ys.max(axis=1)).astype(np.int64), height - 1)
+    p0, p1, p2 = corners[:, 0], corners[:, 1], corners[:, 2]
+    denom = (p1[:, 1] - p2[:, 1]) * (p0[:, 0] - p2[:, 0]) + (p2[:, 0] - p1[:, 0]) * (p0[:, 1] - p2[:, 1])
+    drawn = (min_x <= max_x) & (min_y <= max_y) & (np.abs(denom) >= 1e-8)
+    owner = np.full(depth.shape, np.iinfo(np.int64).max, dtype=np.int64)
+    # Bands of rows share no pixel, so each is painted on its own thread. The
+    # arithmetic is in numpy, which lets other threads run while it works.
+    bands = max(1, min(_RENDER_THREADS, height // 64))
+    edges = np.linspace(0, height, bands + 1).astype(np.int64)
+
+    def paint_band(top: int, bottom: int) -> None:
+        low = np.maximum(min_y, top)
+        high = np.minimum(max_y, bottom - 1)
+        chosen = np.flatnonzero(drawn & (low <= high))
+        box = (max_x[chosen] - min_x[chosen] + 1) * (high[chosen] - low[chosen] + 1)
+        total = np.cumsum(box)
+        start = 0
+        while start < len(chosen):
+            end = int(np.searchsorted(total, total[start] - box[start] + _BATCH_PIXELS, side="right"))
+            end = max(end, start + 1)
+            _paint_batch(image, depth, owner, chosen[start:end], corners, denom, min_x, max_x, low, high, values, colored)
+            start = end
+
+    if bands == 1:
+        paint_band(0, height)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=bands, thread_name_prefix="aicad-render") as pool:
+        for future in [pool.submit(paint_band, int(top), int(bottom)) for top, bottom in zip(edges[:-1], edges[1:])]:
+            future.result()
+
+
+def _row_spans(chosen, corners, min_x, max_x, min_y, max_y):
+    """Each triangle's rows, and on each row the pixels that may be inside it.
+
+    The span runs between the edges that cross the row, a pixel wider on each
+    side, so rounding never leaves out a pixel the barycentric test takes.
+    """
+    rows = max_y[chosen] - min_y[chosen] + 1
+    triangle = np.repeat(chosen, rows)
+    first_row = np.repeat(np.cumsum(rows) - rows, rows)
+    y = np.repeat(min_y[chosen], rows) + (np.arange(int(rows.sum()), dtype=np.int64) - first_row)
+    row = y.astype(np.float64)
+    low = np.full(len(triangle), np.inf)
+    high = np.full(len(triangle), -np.inf)
+    points = corners[triangle]
+    for first, second in ((0, 1), (1, 2), (2, 0)):
+        a = points[:, first]
+        b = points[:, second]
+        bottom = np.minimum(a[:, 1], b[:, 1])
+        top = np.maximum(a[:, 1], b[:, 1])
+        crosses = (row >= bottom - 1e-6) & (row <= top + 1e-6)
+        rise = b[:, 1] - a[:, 1]
+        flat = np.abs(rise) < 1e-12
+        t = np.clip(np.where(flat, 0.0, (row - a[:, 1]) / np.where(flat, 1.0, rise)), 0.0, 1.0)
+        x = a[:, 0] + t * (b[:, 0] - a[:, 0])
+        low = np.where(crosses, np.minimum(low, np.where(flat, np.minimum(a[:, 0], b[:, 0]), x)), low)
+        high = np.where(crosses, np.maximum(high, np.where(flat, np.maximum(a[:, 0], b[:, 0]), x)), high)
+    hit = np.isfinite(low)
+    left = np.where(hit, np.floor(np.where(hit, low, 0.0)) - 1, 1).astype(np.int64)
+    right = np.where(hit, np.ceil(np.where(hit, high, 0.0)) + 1, 0).astype(np.int64)
+    left = np.maximum(left, min_x[triangle])
+    right = np.minimum(right, max_x[triangle])
+    count = np.maximum(right - left + 1, 0)
+    pixel_triangle = np.repeat(triangle, count)
+    first_pixel = np.repeat(np.cumsum(count) - count, count)
+    px = np.repeat(left, count) + (np.arange(int(count.sum()), dtype=np.int64) - first_pixel)
+    py = np.repeat(y, count)
+    return pixel_triangle, px, py
+
+
+def _paint_batch(image, depth, owner, chosen, corners, denom, min_x, max_x, min_y, max_y, values, colored) -> None:
+    """Paint the triangles ``chosen`` into the image and depth, keeping the nearest."""
+    index, xs, ys = _row_spans(chosen, corners, min_x, max_x, min_y, max_y)
+    if not len(index):
+        return
+    a = corners[index, 0]
+    b = corners[index, 1]
+    c = corners[index, 2]
+    d = denom[index]
+    w0 = ((b[:, 1] - c[:, 1]) * (xs - c[:, 0]) + (c[:, 0] - b[:, 0]) * (ys - c[:, 1])) / d
+    w1 = ((c[:, 1] - a[:, 1]) * (xs - c[:, 0]) + (a[:, 0] - c[:, 0]) * (ys - c[:, 1])) / d
+    w2 = 1.0 - w0 - w1
+    inside = (w0 >= 0.0) & (w1 >= 0.0) & (w2 >= 0.0)
+    z = w0 * a[:, 2] + w1 * b[:, 2] + w2 * c[:, 2]
+    flat = ys * depth.shape[1] + xs
+    held = depth.reshape(-1)[flat]
+    holder = owner.reshape(-1)[flat]
+    better = inside & ((z > held) | ((z == held) & (index < holder)))
+    if not np.any(better):
+        return
+    keep = np.flatnonzero(better)
+    # Per pixel, the nearest fragment, and of equals the first triangle.
+    order = keep[np.lexsort((index[keep], -z[keep], flat[keep]))]
+    first = np.ones(len(order), dtype=bool)
+    first[1:] = flat[order][1:] != flat[order][:-1]
+    chosen_fragments = order[first]
+    pixels = flat[chosen_fragments]
+    depth.reshape(-1)[pixels] = z[chosen_fragments]
+    owner.reshape(-1)[pixels] = index[chosen_fragments]
+    v = values[index[chosen_fragments]]
+    k0 = w0[chosen_fragments][:, None]
+    k1 = w1[chosen_fragments][:, None]
+    k2 = w2[chosen_fragments][:, None]
+    if colored:
+        rgb = np.clip(k0 * v[:, 0] + k1 * v[:, 1] + k2 * v[:, 2], 0, 255).astype(np.uint8)
+    else:
+        shade = k0[:, 0] * v[:, 0, 0] + k1[:, 0] * v[:, 1, 0] + k2[:, 0] * v[:, 2, 0]
+        rgb = np.clip(_METAL * shade[:, None], 0, 255).astype(np.uint8)
+    image.reshape(-1, 3)[pixels] = rgb
 
 
 def _projection_center(
@@ -233,76 +371,6 @@ def _shade(normal: np.ndarray, key: np.ndarray, fill: np.ndarray) -> float:
     direction = normal / length
     lit = 0.78 * abs(float(direction @ key)) + 0.22 * abs(float(direction @ fill))
     return 0.20 + 0.80 * lit
-
-
-def _paint_triangle(
-    image: np.ndarray,
-    depth: np.ndarray,
-    p0: np.ndarray,
-    p1: np.ndarray,
-    p2: np.ndarray,
-    shades: tuple[float, float, float],
-) -> None:
-    height, width = depth.shape
-    min_x = max(int(math.floor(min(p0[0], p1[0], p2[0]))), 0)
-    max_x = min(int(math.ceil(max(p0[0], p1[0], p2[0]))), width - 1)
-    min_y = max(int(math.floor(min(p0[1], p1[1], p2[1]))), 0)
-    max_y = min(int(math.ceil(max(p0[1], p1[1], p2[1]))), height - 1)
-    if min_x > max_x or min_y > max_y:
-        return
-    denom = (p1[1] - p2[1]) * (p0[0] - p2[0]) + (p2[0] - p1[0]) * (p0[1] - p2[1])
-    if abs(denom) < 1e-8:
-        return
-
-    ys, xs = np.mgrid[min_y : max_y + 1, min_x : max_x + 1]
-    w0 = ((p1[1] - p2[1]) * (xs - p2[0]) + (p2[0] - p1[0]) * (ys - p2[1])) / denom
-    w1 = ((p2[1] - p0[1]) * (xs - p2[0]) + (p0[0] - p2[0]) * (ys - p2[1])) / denom
-    w2 = 1.0 - w0 - w1
-    inside = (w0 >= 0.0) & (w1 >= 0.0) & (w2 >= 0.0)
-    z = w0 * p0[2] + w1 * p1[2] + w2 * p2[2]
-    region = depth[min_y : max_y + 1, min_x : max_x + 1]
-    update = inside & (z > region)
-    if not np.any(update):
-        return
-    region[update] = z[update]
-    shade = w0 * shades[0] + w1 * shades[1] + w2 * shades[2]
-    rgb = np.clip(_METAL * shade[..., None], 0, 255).astype(np.uint8)
-    pixels = image[min_y : max_y + 1, min_x : max_x + 1]
-    pixels[update] = rgb[update]
-
-
-def _paint_triangle_color(
-    image: np.ndarray,
-    depth: np.ndarray,
-    p0: np.ndarray,
-    p1: np.ndarray,
-    p2: np.ndarray,
-    colors: tuple[np.ndarray, np.ndarray, np.ndarray],
-) -> None:
-    height, width = depth.shape
-    min_x = max(int(math.floor(min(p0[0], p1[0], p2[0]))), 0)
-    max_x = min(int(math.ceil(max(p0[0], p1[0], p2[0]))), width - 1)
-    min_y = max(int(math.floor(min(p0[1], p1[1], p2[1]))), 0)
-    max_y = min(int(math.ceil(max(p0[1], p1[1], p2[1]))), height - 1)
-    if min_x > max_x or min_y > max_y:
-        return
-    denom = (p1[1] - p2[1]) * (p0[0] - p2[0]) + (p2[0] - p1[0]) * (p0[1] - p2[1])
-    if abs(denom) < 1e-8:
-        return
-    ys, xs = np.mgrid[min_y : max_y + 1, min_x : max_x + 1]
-    w0 = ((p1[1] - p2[1]) * (xs - p2[0]) + (p2[0] - p1[0]) * (ys - p2[1])) / denom
-    w1 = ((p2[1] - p0[1]) * (xs - p2[0]) + (p0[0] - p2[0]) * (ys - p2[1])) / denom
-    w2 = 1.0 - w0 - w1
-    inside = (w0 >= 0.0) & (w1 >= 0.0) & (w2 >= 0.0)
-    z = w0 * p0[2] + w1 * p1[2] + w2 * p2[2]
-    region = depth[min_y : max_y + 1, min_x : max_x + 1]
-    update = inside & (z > region)
-    if not np.any(update):
-        return
-    region[update] = z[update]
-    rgb = w0[..., None] * colors[0] + w1[..., None] * colors[1] + w2[..., None] * colors[2]
-    pixels = image[min_y : max_y + 1, min_x : max_x + 1]
-    pixels[update] = np.clip(rgb[update], 0, 255).astype(np.uint8)
 
 
 def _draw_visible_segment(

@@ -135,6 +135,7 @@ def test_a_network_on_run_uses_its_own_container_and_leaves_the_block_alone(tmp_
 def test_each_container_gets_its_own_folder_grant(tmp_path, monkeypatch):
     grants = []
     monkeypatch.setattr(win, "_granted_read", set())
+    monkeypatch.setattr(win, "_granted_trees", set())
     monkeypatch.setattr(win, "_grant_tree", lambda path, sid, rights: grants.append(sid))
     monkeypatch.setattr(win, "_grant_traverse", lambda *_args: None)
     monkeypatch.setattr(win, "_marker_path", lambda: tmp_path / "marker")

@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import ctypes
 import io
+import json
 import math
 import os
 import re
 import sys
+import threading
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -363,41 +365,160 @@ def _execute_part_script(code: str) -> Shape:
     return Shape(solid, features=report)
 
 
-def make_from_ops(ops: list[dict]) -> Shape:
-    """Build a solid from a short list of add/cut box and cylinder operations."""
+def make_from_ops(ops: list[dict], *, builds: OpsBuilds | None = None) -> Shape:
+    """Build a solid from a short list of add/cut box and cylinder operations.
+
+    With ``builds``, the ops a recent build already made are not built again.
+    """
     if not isinstance(ops, list) or not ops:
         raise GeometryError("ops must be a non-empty list of operations.")
     if len(ops) > 500:
         raise GeometryError("A part may have at most 500 operations.")
 
-    log = FeatureLog()
-    for index, op in enumerate(ops):
-        _apply_model_op(log, op, index)
+    log, chain = _start_ops(ops, builds)
+    recording = builds is not None
+    try:
+        for index in range(len(chain), len(ops)):
+            _apply_model_op(log, ops[index], index)
+            recording = recording and _record_op(chain, ops[index], log)
+    finally:
+        if builds is not None:
+            builds.keep(chain)
     return Shape(_require_solid(log.current), features=log.report())
 
 
-def prefix_from_ops(ops: list[dict]) -> tuple[Shape | None, dict[str, str]]:
+def prefix_from_ops(ops: list[dict], *, builds: OpsBuilds | None = None) -> tuple[Shape | None, dict[str, str]]:
     """Build operations until one fails.
 
     The solid is the last successful step. The failing step's id maps to its
     error. Later steps are not built. An empty list or a failure of the first
-    step returns no solid.
+    step returns no solid. With ``builds``, the ops a recent build already made
+    are not built again.
     """
     if not isinstance(ops, list) or not ops:
         return None, {"op/0": "ops must be a non-empty list of operations."}
     if len(ops) > 500:
         return None, {"op/0": "A part may have at most 500 operations."}
-    log = FeatureLog()
+    log, chain = _start_ops(ops, builds)
+    recording = builds is not None
     errors: dict[str, str] = {}
-    for index, op in enumerate(ops):
+    for index in range(len(chain), len(ops)):
         try:
-            _apply_model_op(log, op, index)
+            _apply_model_op(log, ops[index], index)
         except GeometryError as exc:
             errors[f"op/{index}"] = str(exc)
             break
+        recording = recording and _record_op(chain, ops[index], log)
+    if builds is not None:
+        builds.keep(chain)
     if log.current is None:
         return None, errors
     return Shape(_require_solid(log.current), features=log.report()), errors
+
+
+@dataclass(frozen=True)
+class _OpCheckpoint:
+    """The feature log after one op: what the op was, the solid, and the steps so far."""
+
+    key: str
+    solid: object
+    steps: tuple
+    tracked: bool
+
+
+def _op_key(op, context: str = "") -> str | None:
+    """The op as text, after ``context``: what else its solid depends on, such as a solved sketch."""
+    try:
+        return context + json.dumps(op, sort_keys=True)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sketch_context(geometry: dict, frame: dict | None) -> str | None:
+    """A sketch step's solid depends on the solved sketch and its plane as well."""
+    import hashlib
+
+    try:
+        text = json.dumps([geometry, frame], sort_keys=True)
+    except (TypeError, ValueError):
+        return None
+    return "sketch " + hashlib.sha256(text.encode("utf-8")).hexdigest() + " "
+
+
+class OpsBuilds:
+    """The solid after each op of the op lists built last, so an edit builds from the op that changed.
+
+    A part built from shapes was built again from its first op on every edit:
+    adding one hole to a drilled rotor ran every earlier boolean again. An op
+    list's solid depends on nothing but its ops, so a list that starts with the
+    same ops as one built here starts from that solid. Only the last few lists
+    are kept, since each holds a solid per op.
+    """
+
+    def __init__(self, lists: int = 4) -> None:
+        self._lists = lists
+        self._chains: list[list[_OpCheckpoint]] = []
+        self._lock = threading.Lock()
+
+    def start(self, ops: list, context: str = "") -> list[_OpCheckpoint]:
+        """The checkpoints of the longest run of leading ops already built."""
+        keys: list[str] = []
+        for op in ops:
+            key = _op_key(op, context)
+            if key is None:
+                break
+            keys.append(key)
+        best: list[_OpCheckpoint] = []
+        with self._lock:
+            for chain in self._chains:
+                count = 0
+                for checkpoint, key in zip(chain, keys):
+                    if checkpoint.key != key:
+                        break
+                    count += 1
+                if count > len(best):
+                    best = chain[:count]
+        return list(best)
+
+    def keep(self, chain: list[_OpCheckpoint]) -> None:
+        if not chain:
+            return
+        with self._lock:
+            # A list that grew out of a kept one, or a part of it, replaces it.
+            kept = [
+                other
+                for other in self._chains
+                if not (other[0] is chain[0] and _is_prefix(other, chain))
+            ]
+            self._chains = [chain, *kept][: self._lists]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._chains = []
+
+
+def _is_prefix(shorter: list, longer: list) -> bool:
+    return len(shorter) <= len(longer) and all(a is b for a, b in zip(shorter, longer))
+
+
+def _start_ops(ops: list, builds: OpsBuilds | None, context: str = "") -> tuple[FeatureLog, list[_OpCheckpoint]]:
+    log = FeatureLog()
+    chain = builds.start(ops, context) if builds is not None else []
+    if chain:
+        last = chain[-1]
+        log.current = last.solid
+        log.steps = list(last.steps)
+        log.tracked = last.tracked
+    return log, chain
+
+
+def _record_op(chain: list[_OpCheckpoint], op, log: FeatureLog, context: str = "") -> bool:
+    """Keep the log after ``op``. False when it cannot be kept, and then nothing after it is."""
+    key = _op_key(op, context)
+    if key is None:
+        return False
+    chain.append(_OpCheckpoint(key, log.current, tuple(log.steps), log.tracked))
+    return True
 
 
 def _apply_model_op(log: FeatureLog, op: dict, index: int) -> None:
@@ -2658,6 +2779,23 @@ def _tessellate_on_this_thread(shape: Shape) -> TriangleMesh:
     return TriangleMesh(vertices=points, normals=norms, triangles=faces, edges=edges)
 
 
+def face_distances(shape: Shape, indexes, point) -> dict[int, float]:
+    """The shortest distance, in mm, from ``point`` to each face named by its describe_faces index."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    faces = shape.impl.faces()
+    vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(float(point[0]), float(point[1]), float(point[2]))).Vertex()
+    distances: dict[int, float] = {}
+    for index in indexes:
+        if not 0 <= index < len(faces):
+            continue
+        measure = BRepExtrema_DistShapeShape(vertex, faces[index].wrapped)
+        if measure.IsDone() and measure.NbSolution() > 0:
+            distances[index] = float(measure.Value())
+    return distances
+
+
 def describe_faces(shape: Shape) -> list[dict]:
     """Describe each face so a load or a support can name it without a click.
 
@@ -3788,6 +3926,8 @@ def solid_from_sketch(
     steps: list[dict],
     feature: FeatureLog | None = None,
     frame: dict | None = None,
+    *,
+    builds: OpsBuilds | None = None,
 ) -> Shape:
     """Extrude, revolve, or cut a solved sketch into a solid.
 
@@ -3816,6 +3956,9 @@ def solid_from_sketch(
     that smooth curve, not the polygon of its points. A profile with only
     straight edges stays a polygon. ``frame`` places that solid on the sketch
     plane. ``cut_box`` and ``gusset`` stay in world coordinates.
+
+    With ``builds`` and no ``feature``, steps a recent build already made from
+    this sketch are not built again.
     """
     if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
         raise GeometryError(
@@ -3827,16 +3970,32 @@ def solid_from_sketch(
         )
     if len(steps) > 500:
         raise GeometryError("A part may have at most 500 sketch steps.")
-    log = feature if isinstance(feature, FeatureLog) else FeatureLog()
-    for index, step in enumerate(steps):
-        _apply_sketch_step(log, step, geometry, index, frame)
+    if isinstance(feature, FeatureLog):
+        for index, step in enumerate(steps):
+            _apply_sketch_step(feature, step, geometry, index, frame)
+        return Shape(_require_solid(feature.current), features=feature.report())
+    context = _sketch_context(geometry, frame) if builds is not None else None
+    if context is None:
+        builds = None
+    log, chain = _start_ops(steps, builds, context or "")
+    recording = builds is not None
+    try:
+        for index in range(len(chain), len(steps)):
+            _apply_sketch_step(log, steps[index], geometry, index, frame)
+            recording = recording and _record_op(chain, steps[index], log, context or "")
+    finally:
+        if builds is not None:
+            builds.keep(chain)
     return Shape(_require_solid(log.current), features=log.report())
 
 
 def prefix_from_sketch(
-    geometry: dict, steps: list[dict], frame: dict | None = None
+    geometry: dict, steps: list[dict], frame: dict | None = None, *, builds: OpsBuilds | None = None
 ) -> tuple[Shape | None, dict[str, str]]:
-    """Build sketch steps until one fails. The solid is the last step that fitted."""
+    """Build sketch steps until one fails. The solid is the last step that fitted.
+
+    With ``builds``, steps a recent build already made from this sketch are not built again.
+    """
     if not isinstance(geometry, dict) or not isinstance(geometry.get("points"), dict):
         raise GeometryError(
             "solid_from_sketch needs solved sketch geometry, with points, lines, circles, and arcs."
@@ -3845,14 +4004,21 @@ def prefix_from_sketch(
         return None, {"step/0": "solid_from_sketch needs steps: extrude, cut, revolve, cut_box, or gusset."}
     if len(steps) > 500:
         return None, {"step/0": "A part may have at most 500 sketch steps."}
-    log = FeatureLog()
+    context = _sketch_context(geometry, frame) if builds is not None else None
+    if context is None:
+        builds = None
+    log, chain = _start_ops(steps, builds, context or "")
+    recording = builds is not None
     errors: dict[str, str] = {}
-    for index, step in enumerate(steps):
+    for index in range(len(chain), len(steps)):
         try:
-            _apply_sketch_step(log, step, geometry, index, frame)
+            _apply_sketch_step(log, steps[index], geometry, index, frame)
         except GeometryError as exc:
             errors[f"step/{index}"] = str(exc)
             break
+        recording = recording and _record_op(chain, steps[index], log, context or "")
+    if builds is not None:
+        builds.keep(chain)
     if log.current is None:
         return None, errors
     return Shape(_require_solid(log.current), features=log.report()), errors
@@ -4378,6 +4544,8 @@ def _section_wall_thickness(shape: Shape) -> tuple[float | None, int, bool]:
     measured: list[float] = []
     missed: list[float] = []
     count = 0
+    # One classifier for all nine slices, as for the rays.
+    inside = _InsideTest(impl)
     for normal, low, high in axes:
         span = high - low
         if span < 1e-6:
@@ -4392,7 +4560,7 @@ def _section_wall_thickness(shape: Shape) -> tuple[float | None, int, bool]:
             count += 1
             if not sketch.faces():
                 continue
-            thickness, capped = _sketch_thickness(sketch, solid=impl)
+            thickness, capped = _sketch_thickness(sketch, solid=impl, inside=inside)
             if thickness is None:
                 continue
             if capped:
@@ -4464,10 +4632,66 @@ def _strictly_on_face(face, point) -> bool:
     return classifier.State() == TopAbs_IN
 
 
-def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | None, bool]:
-    """Minimum width between roughly parallel edges of a planar section."""
+def _ray_meets_box(origin, direction, box) -> bool:
+    """Whether the ray from ``origin`` along ``direction`` can touch the box ``(low, high)``."""
+    near = 0.0
+    far = math.inf
+    for start, step, low, high in zip(
+        (origin.X, origin.Y, origin.Z), (direction.X, direction.Y, direction.Z), box[0], box[1]
+    ):
+        if abs(step) < 1e-12:
+            if start < low or start > high:
+                return False
+            continue
+        first = (low - start) / step
+        second = (high - start) / step
+        if first > second:
+            first, second = second, first
+        near = max(near, first)
+        far = min(far, second)
+        if near > far:
+            return False
+    return True
+
+
+def _section_edges(edges) -> list[tuple]:
+    """Each edge of a section face with its mid tangent and a box around it, read once.
+
+    A section's edges are checked against every probe of every other edge, so
+    these were read again thousands of times on a drilled plate. The box is
+    grown so that a hit OpenCascade finds on the edge's border is never skipped.
+    """
+    prepared = []
+    for edge in edges:
+        try:
+            tangent = edge.tangent_at(0.5)
+        except Exception:
+            continue
+        if tangent.length < 1e-9:
+            continue
+        try:
+            box = edge.bounding_box()
+            pad = 1e-3 + 1e-6 * float(box.diagonal)
+            bounds = (
+                (float(box.min.X) - pad, float(box.min.Y) - pad, float(box.min.Z) - pad),
+                (float(box.max.X) + pad, float(box.max.Y) + pad, float(box.max.Z) + pad),
+            )
+        except Exception:
+            bounds = None
+        prepared.append((edge, tangent.normalized(), bounds))
+    return prepared
+
+
+def _sketch_thickness(sketch, samples: int = 3, solid=None, inside=None) -> tuple[float | None, bool]:
+    """Minimum width between roughly parallel edges of a planar section.
+
+    ``inside`` is a loaded ``_InsideTest`` of ``solid``, for a caller that slices
+    the same solid more than once.
+    """
     from build123d import Axis, Vector
 
+    if solid is not None and inside is None:
+        inside = _InsideTest(solid)
     measured: list[float] = []
     missed: list[float] = []
     for face in sketch.faces():
@@ -4476,6 +4700,7 @@ def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | Non
         except Exception:
             continue
         edges = list(face.edges())
+        others = _section_edges(edges)
         for edge in edges:
             if edge.length < 0.3:
                 continue
@@ -4522,14 +4747,11 @@ def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | Non
                 axis = Axis(origin, inward)
                 floor = max(_WALL_HIT_FLOOR_MM, probe * 0.05)
                 nearest: float | None = None
-                for other in edges:
-                    try:
-                        other_tangent = other.tangent_at(0.5)
-                    except Exception:
+                for other, other_tangent, bounds in others:
+                    if abs(other_tangent.dot(tangent)) < 0.7:
                         continue
-                    if other_tangent.length < 1e-9:
-                        continue
-                    if abs(other_tangent.normalized().dot(tangent)) < 0.7:
+                    # Only a hit ahead of the probe counts, so an edge the ray cannot reach is skipped.
+                    if bounds is not None and not _ray_meets_box(origin, inward, bounds):
                         continue
                     hits = other.intersect(axis)
                     if not hits:
@@ -4539,8 +4761,8 @@ def _sketch_thickness(sketch, samples: int = 3, solid=None) -> tuple[float | Non
                         if distance <= floor:
                             continue
                         midpoint = origin + inward * (distance * 0.5)
-                        if solid is not None:
-                            if not _strictly_inside(solid, midpoint):
+                        if inside is not None:
+                            if not inside(midpoint):
                                 continue
                         elif not face.is_inside(midpoint):
                             continue
