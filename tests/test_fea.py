@@ -804,8 +804,7 @@ def test_calculix_is_started_with_stdin_closed(monkeypatch):
     fea._run_ccx(mesh, np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3})
     monkeypatch.setattr(modal, "_frequency_deck", lambda *_args: "*HEADING\n")
     modal._frequency_once([], [], [], 1, 5)
-    # The static solve stopped with no error of its own, so the iterative solver was tried as well.
-    assert len(seen) == 3
+    assert len(seen) == 2
     assert all(item.get("stdin") is subprocess.DEVNULL for item in seen)
 
 
@@ -974,18 +973,46 @@ def test_a_failed_allocation_tries_the_iterative_solver_where_no_limit_signal_is
     assert "9 equations" in warning and "mesh_size_mm" in warning
 
 
+# How a crash comes back: a signal elsewhere, the access-violation status on Windows.
+_CRASH_CODE = 0xC0000005 - 0x100000000 if sys.platform == "win32" else -11
+
+
 def test_a_solver_that_crashes_without_an_error_tries_the_iterative_solver(monkeypatch):
     """A failed allocation in SPOOLES often ends in a crash with no error line."""
     decks, warning = _run_one_tet_with(
         monkeypatch,
         [
-            (-11, "Factoring the system of equations using the symmetric spooles solver\n", ""),
-            (-11, "", ""),
+            (_CRASH_CODE, "Factoring the system of equations using the symmetric spooles solver\n", ""),
+            (_CRASH_CODE, "", ""),
         ],
     )
     assert len(decks) == 2 and "SOLVER=ITERATIVE CHOLESKY" in decks[1]
-    assert "without a result file or an error of its own (exit code -11)" in warning
+    assert f"without a result file or an error of its own (exit code {_CRASH_CODE})" in warning
     assert "9 equations" in warning
+
+
+@pytest.mark.parametrize("code", [127, 126, 1])
+def test_a_run_that_never_started_is_not_retried(monkeypatch, code):
+    """The sandbox refusing CalculiX is not the model's size, and another solver would not help."""
+    decks, warning = _run_one_tet_with(monkeypatch, [(code, "", "")])
+    assert len(decks) == 1
+    assert warning == "CalculiX failed."
+    assert "allocation" not in warning
+
+
+def test_only_a_signal_or_a_windows_crash_code_is_a_crash(monkeypatch):
+    from aicad import fea
+
+    monkeypatch.setattr(fea.sys, "platform", "win32")
+    for code in (0xC0000005, 0xC0000017, 0xC00000FD, 0xC0000005 - 0x100000000):
+        assert fea._died_in_a_crash(code), hex(code & 0xFFFFFFFF)
+    # A missing DLL: the program never ran.
+    for code in (0xC0000135, 0xC0000135 - 0x100000000, 127, 126, 1, 0):
+        assert not fea._died_in_a_crash(code), code
+    monkeypatch.setattr(fea.sys, "platform", "linux")
+    assert fea._died_in_a_crash(-11) and fea._died_in_a_crash(-6)
+    for code in (127, 126, 1, 0):
+        assert not fea._died_in_a_crash(code), code
 
 
 def test_an_error_calculix_reports_is_not_retried(monkeypatch):

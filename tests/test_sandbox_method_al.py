@@ -246,17 +246,16 @@ def test_calculix_runs_in_a_private_folder(tmp_path, monkeypatch):
     forces[1, 0] = 1.0
     fea._run_ccx(mesh, np.array([0], dtype=np.int32), forces, {"youngs_modulus_mpa": 2000.0, "poisson": 0.3})
     modal._frequency_once([], [], [], 1, 5)
-    # The static solve left no result and no error of its own, so the iterative solver was tried as well.
-    assert len(notes) == 3
+    assert len(notes) == 2
     folders = [Path(_field(text, "CWD")) for text in notes]
-    assert len(set(folders)) == 3
+    assert folders[0] != folders[1]
     for cwd in folders:
         _outside(cwd, project)
         assert not (project.resolve() in cwd.resolve().parents)
-    assert [_field(text, "SEEN") for text in notes] == ["no", "no", "no"]
-    assert [_field(text, "DECK") for text in notes] == ["yes", "yes", "yes"]
+    assert [_field(text, "SEEN") for text in notes] == ["no", "no"]
+    assert [_field(text, "DECK") for text in notes] == ["yes", "yes"]
     recorded = [_field(text, "ARGV") for text in notes]
-    assert recorded == ["-i job", "-i job", "-i job"]
+    assert recorded == ["-i job", "-i job"]
     _no_project_path("\n".join(recorded), project)
     assert not (project / "job.inp").exists()
     assert (project / "CANARY_HIT").read_text(encoding="utf-8") == "CANARY_HIT\n"
