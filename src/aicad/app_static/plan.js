@@ -29,7 +29,9 @@
   }
 
   async function planCommand(name, args) {
-    const response = await fetch("/api/command", {
+    // Through the main page's limit on requests that wait for a running command, when it is there.
+    const send = globalThis.aicadApiFetch || fetch;
+    const response = await send("/api/command", {
       method: "POST",
       headers: sessionHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ name, arguments: args || {}, source: "ui" }),
