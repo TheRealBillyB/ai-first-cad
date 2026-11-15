@@ -187,6 +187,7 @@ class Workspace:
                 "Only the person at this workspace can open a project folder or save a copy."
             )
         with self._lock:
+            self._pick_up_outside_changes()
             if command.undo:
                 self._undo.append(self._snapshot())
                 if len(self._undo) > _UNDO_LIMIT:
@@ -255,8 +256,23 @@ class Workspace:
             listener(event)
         return result
 
+    def _pick_up_outside_changes(self) -> None:
+        """Read session.json again if another program with this project open wrote it.
+
+        Called under the lock before a command, an undo, or a state read, so
+        a command starts from the saved project and does not write back an
+        older copy of it.
+        """
+        if not self.document.reload_if_changed():
+            return
+        self.geometry_revision += 1
+        self._mesh_cache.clear()
+        self._drop_meshes_of_removed_names()
+        self._requirement_cache.clear()
+
     def undo(self, source: str = "ui") -> dict:
         with self._lock:
+            self._pick_up_outside_changes()
             if not self._undo:
                 raise GeometryError("Nothing to undo.")
             now = self._snapshot()
@@ -274,6 +290,7 @@ class Workspace:
 
     def redo(self, source: str = "ui") -> dict:
         with self._lock:
+            self._pick_up_outside_changes()
             if not self._redo:
                 raise GeometryError("Nothing to redo.")
             now = self._snapshot()
@@ -291,6 +308,7 @@ class Workspace:
 
     def state(self) -> dict:
         with self._lock:
+            self._pick_up_outside_changes()
             checks = evaluate(self.document, self._requirements, cache=self._requirement_cache, run=False)
             if self._sketch_cache_revision != self.geometry_revision:
                 # A solved sketch depends on its name and its stored spec and on nothing
@@ -1643,7 +1661,7 @@ def _cmd_run_design_script(workspace: Workspace, arguments: dict) -> dict:
     except Exception:
         # A killed script may have written session.json. Put the previous document back.
         _give_back()
-        workspace.document._save()  # noqa: SLF001
+        workspace.document._save(replace_newer=True)  # noqa: SLF001
         raise
     if not payload.get("ok"):
         _give_back()
