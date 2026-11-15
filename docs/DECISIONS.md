@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-11-13
+
+| Decision | Rationale |
+| --- | --- |
+| The first public release is numbered 0.1.0 | This replaces the 2026-11-08 decision to number the next release 0.9.0. Version 0.1.0 is the first public early release: it works for real designs, but expect rough edges, missing features, and performance gaps. Feedback is welcome. Version 1.0 still follows once the assembly flow and other gaps are in better shape. |
+
 ## 2026-11-10
 
 | Decision | Rationale |
