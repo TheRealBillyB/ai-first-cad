@@ -1249,8 +1249,10 @@ def _ccx_stop(completed) -> str | None:
     """Why a CalculiX run that left no result stopped, when it may be the solver's size.
 
     ``limit`` is a memory or CPU limit: the helper saw it, or an allocation
-    failed. On Linux the memory cap makes an allocation fail rather than
-    killing the process, so the helper cannot tell. ``crash`` is a stop with
+    failed. The Linux helper has no memory cap of its own, so there the
+    limit is the computer's or a container's memory: the kernel may kill the
+    solver, which the helper sees, or an allocation fails, which it does not.
+    ``crash`` is a stop with
     no error line of CalculiX's own, which is how a failed allocation in the
     solver often ends. ``None`` is an error CalculiX reported, such as a bad
     input deck, which another solver would not fix.

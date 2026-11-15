@@ -960,7 +960,7 @@ def _run_one_tet_with(monkeypatch, answers):
 
 
 def test_a_failed_allocation_tries_the_iterative_solver_where_no_limit_signal_is_seen(monkeypatch):
-    """On Linux the memory cap fails an allocation; the process exits with an error, not a kill."""
+    """Out of memory on Linux can fail an allocation: the process exits with an error, not a kill."""
     decks, warning = _run_one_tet_with(
         monkeypatch,
         [
