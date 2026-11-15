@@ -3230,8 +3230,9 @@ def _child_env(
     _copy_set(env, _SCRIPT_LOCALE)
     _copy_set(env, _SCRIPT_TEXT)
     _copy_set(env, _SCRIPT_LIMITS)
-    # The child applies the cap the parent counted. It may not be able to
-    # count the cores itself once it is confined.
+    # The child is told the cap the parent counted, so a limit message names
+    # the cap that was set. The child still counts its own cores and keeps the
+    # lower of the two (cpu_seconds), so this variable cannot raise the cap.
     env["AICAD_SCRIPT_CPU_SECONDS"] = str(cpu_seconds())
     _copy_set(env, _SCRIPT_HOME)
     if sys.platform == "win32":
