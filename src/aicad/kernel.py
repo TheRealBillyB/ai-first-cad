@@ -3448,8 +3448,12 @@ def _primitive(op: dict, index: int):
         direction = tuple(component / length for component in axis)
         solid = Plane(origin=center, z_dir=direction) * Cylinder(radius, height)
         return solid
+    if kind == "thread":
+        from aicad.threads import thread_op
+
+        return thread_op(op, f"Operation {index}")
     raise GeometryError(
-        f"Operation {index}: unknown shape {kind!r}. Use 'box' or 'cylinder'."
+        f"Operation {index}: unknown shape {kind!r}. Use 'box', 'cylinder', or 'thread'."
     )
 
 

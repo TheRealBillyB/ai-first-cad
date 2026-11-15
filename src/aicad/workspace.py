@@ -1743,7 +1743,7 @@ _add(Command(
 ))
 _add(Command(
     "create_part_from_ops",
-    "Create a part from add/cut boxes and cylinders.",
+    "Create a part from add/cut boxes, cylinders, and threads (shape thread: add a threaded rod, cut a tapped hole; diameter, pitch, length, starts, profile trapezoidal or iso, clearance_mm, at, axis).",
     _obj({"name": _string("New part name."), "ops": {"type": "array", "description": "Operations."}}, ["name", "ops"]),
     _cmd_create_ops,
     undo=True,
