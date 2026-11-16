@@ -644,13 +644,22 @@ def _bind_load(item: dict, catalog: list[dict], index: int, shape: kernel.Shape 
         raise GeometryError(f"Load {index} must be an object with type, select, and a magnitude.")
     kind = item.get("type")
     name = item.get("name") or f"load_{index + 1}"
-    if kind not in ("force", "pressure", "bolt", "torque"):
-        raise GeometryError(f"Load {name!r} has type {kind!r}. Use force, pressure, bolt, or torque.")
+    if kind not in ("force", "pressure", "bolt", "torque", "remote"):
+        raise GeometryError(f"Load {name!r} has type {kind!r}. Use force, pressure, bolt, torque, or remote.")
     faces = select_faces(catalog, item.get("select") or {}, shape)
     zero = False
     if kind == "force":
         vector = _vec(item.get("vector"), f"{name} vector")
         zero = _distance(vector, (0, 0, 0)) < 1e-12
+    elif kind == "remote":
+        if item.get("at") is None:
+            raise GeometryError(
+                f"Remote load {name!r} needs at [x, y, z], the point in millimetres where the force acts."
+            )
+        _vec(item.get("at"), f"{name} at")
+        vector = _vec(item.get("vector"), f"{name} vector") if item.get("vector") is not None else (0.0, 0.0, 0.0)
+        moment = _vec(item.get("moment_nm"), f"{name} moment_nm") if item.get("moment_nm") is not None else (0.0, 0.0, 0.0)
+        zero = _distance(vector, (0, 0, 0)) < 1e-12 and _distance(moment, (0, 0, 0)) < 1e-15
     elif kind == "pressure":
         magnitude = _optional_float(item.get("magnitude"), None)
         if magnitude is None or not math.isfinite(magnitude):
@@ -1521,6 +1530,8 @@ def _apply_load(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
         return touched
     if load["kind"] == "torque":
         return _apply_torque(mesh, load, forces)
+    if load["kind"] == "remote":
+        return _apply_remote(mesh, load, forces)
     if load["kind"] == "force":
         vector = np.array(_vec(spec["vector"], load["name"]), dtype=np.float64)
     else:
@@ -1564,6 +1575,43 @@ def _apply_torque(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
         )
     scale = float(spec["torque_nm"]) * 1000.0 / second_moment
     forces[nodes] += scale * np.cross(axis, arms)
+    return {int(node) for node in nodes}
+
+
+def _apply_remote(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
+    """Carry a force acting at a point off the part to the selected nodes.
+
+    Like a distributing coupling with equal weights: each node takes an equal
+    share of the force, plus the force a small rigid twist about the nodes'
+    centroid gives it. The twist is chosen so the nodal forces sum to the
+    force, and their moment about the centroid is the force's moment from
+    its point, plus any moment_nm. So the part feels the lever arm of a load
+    at the end of a handle or a bracket that is not modeled.
+    """
+    spec = load["spec"]
+    nodes = _nodes_for(mesh, [face["index"] for face in load["faces"]])
+    if len(nodes) == 0:
+        return set()
+    force = np.array(_vec(spec["vector"], load["name"]) if spec.get("vector") is not None else (0, 0, 0), dtype=np.float64)
+    at = np.array(_vec(spec["at"], load["name"]), dtype=np.float64)
+    moment = np.zeros(3)
+    if spec.get("moment_nm") is not None:
+        moment = np.array(_vec(spec["moment_nm"], load["name"]), dtype=np.float64) * 1000.0
+    points = mesh["points"][nodes].astype(np.float64)
+    center = points.mean(axis=0)
+    arms = points - center
+    # N·mm about the centroid of the loaded nodes.
+    wanted = np.cross(at - center, force) + moment
+    inertia = np.einsum("ij,ij->", arms, arms) * np.eye(3) - arms.T @ arms
+    spin = np.linalg.pinv(inertia, rcond=1e-10) @ wanted
+    nodal = force / len(nodes) + np.cross(spin, arms)
+    carried = np.cross(arms, nodal).sum(axis=0)
+    if float(np.linalg.norm(carried - wanted)) > 1e-6 * max(1.0, float(np.linalg.norm(wanted))):
+        raise GeometryError(
+            f"Remote load {load['name']!r} has a moment the selected faces cannot carry: their nodes lie on one "
+            "line, and the load twists about that line. Select a face with some width, or more faces."
+        )
+    forces[nodes] += nodal
     return {int(node) for node in nodes}
 
 
@@ -1853,7 +1901,10 @@ def _assumptions(material, mesh, fixes, loads, target, mesh_size) -> list[str]:
         "does not become one sideways force. "
         "A bolt load is an axial force along the hole, not a thread or a contact patch. "
         "A torque is a couple: forces square to the axis, in proportion to each node's arm from the centroid "
-        "of the loaded nodes, so the net force is zero.",
+        "of the loaded nodes, so the net force is zero. "
+        "A remote load acts at a point off the part. It is carried to the selected faces like a distributing "
+        "coupling: the nodes share the force equally, plus a rigid twist about their centroid, so they carry "
+        "the same force and moment. The material between the point and the part is not modeled.",
     ]
     if material["printed"]:
         lines.append(
