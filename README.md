@@ -395,7 +395,7 @@ aicad print shelf --orientation best --printer prusa_mk4 --workspace examples/pr
 
 ![Suggested orientation, support area 0](examples/renders/overhang_best.png)
 
-`check_print` (CLI: `aicad print`) turns the solid so one modeled axis points up, colors faces by how far they lean from vertical, and drops the face that sits on the bed from the support area. Best means the smallest support area, then the shorter part. The six poses are `z_up`, `z_down`, `x_up`, `x_down`, `y_up`, and `y_down`. A diagonal pose is not searched.
+`check_print` (CLI: `aicad print`) turns the solid so one modeled axis points up, colors faces by how far they lean from vertical, and drops the face that sits on the bed from the support area. A floating start is where an island of material begins in mid-air: a lowest point, edge, or flat patch of the solid, off the bed, with nothing within one layer (`layer_height_mm`, or 0.2 mm) below it, such as a 45° tongue printed on its side whose lower edge hangs in air. Its faces may be steep enough to print, but it has nothing to start on. Each one is listed in `floating_starts` with its height, its place on the bed and in the model, its first layer's area, and its model faces, and that area counts as support. A bridge between two posts, or a shelf grown from a wall, is not one. Best means the smallest support area, then the shorter part. The six poses are `z_up`, `z_down`, `x_up`, `x_down`, `y_up`, and `y_down`. A diagonal pose is not searched.
 
 Each pose is checked against the published beds: Bambu A1, P1, and X1 are 256 mm cubes, the A1 mini is 180, the Prusa MK4 is 250×210×220, and the Ender 3 is 220×220×250. Height is the oriented Z. The footprint may swap X and Y.
 
