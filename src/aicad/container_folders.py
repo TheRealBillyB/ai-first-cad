@@ -54,6 +54,34 @@ _ACCESS_DENIED_ACE_TYPE = 1
 # The accounts Python's own owner-only list names: SYSTEM, Administrators, and
 # OWNER RIGHTS. CREATOR OWNER only passes the owner on to new children.
 _PYTHON_PRIVATE_SIDS = frozenset({"S-1-5-18", "S-1-5-32-544", "S-1-3-4", "S-1-3-0"})
+# Accounts a refusal names in words. Windows gives them these fixed SIDs.
+_KNOWN_ACCOUNTS = {
+    "S-1-1-0": "Everyone",
+    "S-1-5-11": "Authenticated Users",
+    "S-1-5-32-545": "Users",
+    "S-1-5-32-546": "Guests",
+    "S-1-5-4": "INTERACTIVE",
+    "S-1-5-7": "ANONYMOUS LOGON",
+    "S-1-15-2-1": "ALL APPLICATION PACKAGES",
+}
+
+
+def account_names(sids: list[str]) -> str:
+    """The accounts a refusal names: a known account by name and SID, any other by its SID."""
+    return ", ".join(f"{_KNOWN_ACCOUNTS[sid]} ({sid})" if sid in _KNOWN_ACCOUNTS else sid for sid in sids)
+
+
+def broad_folder_message(sids: list[str]) -> str:
+    """Why a script's private folder was refused, and what the person can change."""
+    return (
+        "Scripts make private folders inside the project, and a new folder takes the access list of the "
+        "folder it is in. Here it would also be open to " + account_names(sids) + ", so another account on "
+        "this PC could read what a script writes there, and aicad refused it. A folder outside your user "
+        "folder, such as C:\\Projects, usually lets every account on this PC read it. Keep the project under "
+        "your user folder, such as Documents. Or, to keep projects in such a folder, remove those accounts "
+        "once from the folder that holds them (Properties, Security, Advanced: disable inheritance, then "
+        "remove them); a project made in it afterwards inherits that."
+    )
 
 
 def unexpected_grants(aces: list[tuple[int, str]], allowed: frozenset[str]) -> list[str]:
@@ -252,10 +280,7 @@ def make_private_folders_work_in_a_container() -> None:
                     "that does not grant that container access."
                 )
             else:
-                message = (
-                    "A private folder here would also be open to " + ", ".join(broader)
-                    + ". Keep the project in a folder only your account can open, such as Documents."
-                )
+                message = broad_folder_message(broader)
             # Not a PermissionError, so tempfile stops instead of trying another name.
             raise OSError(errno.ENOTSUP, message, os.fspath(path))
         new = [sid for sid in outside if sid not in reported]
