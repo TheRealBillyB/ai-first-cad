@@ -519,6 +519,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("delete_part", name=name))
 
     @mcp.tool()
+    def delete_assembly(name: str) -> dict:
+        """Delete an assembly. Its parts stay in the project, and undo brings it back."""
+        return guard(lambda: run("delete_assembly", name=name))
+
+    @mcp.tool()
     def get_part_source(name: str) -> dict:
         """Return the script, operations, or STEP note that rebuilds this part."""
         return guard(lambda: run("get_part_source", name=name))
@@ -542,15 +547,34 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("check_wall_thickness", name=name, min_wall_mm=min_wall_mm, samples=samples))
 
     @mcp.tool()
-    def check_clearance(part_a: str, part_b: str, min_clearance_mm: float = 0.0) -> dict:
+    def check_clearance(
+        part_a: str,
+        part_b: str,
+        min_clearance_mm: float = 0.0,
+        assembly: str | None = None,
+        pose: str | None = None,
+        joints: dict[str, Any] | None = None,
+    ) -> dict:
         """Check interference or gap between two parts.
 
-        If they overlap, `intersecting` is true and `interference_volume_mm3` is
-        the overlap. Otherwise `min_distance_mm` is the gap between surfaces.
-        `min_clearance_mm` of 0 requires that the parts do not touch or overlap.
+        If they overlap, `intersecting` is true, `interference_volume_mm3` is
+        the overlap, and `overlap` says where: its center and box, each separate
+        region largest first, and the penetration depth. Otherwise
+        `min_distance_mm` is the gap between surfaces. `min_clearance_mm` of 0
+        requires that the parts do not touch or overlap. With `assembly`, the
+        two names are instances, posed by `pose` and `joints` for this check
+        only: a quick check of one pose, short of a motion study.
         """
         return guard(
-            lambda: run("check_clearance", part_a=part_a, part_b=part_b, min_clearance_mm=min_clearance_mm)
+            lambda: run(
+                "check_clearance",
+                part_a=part_a,
+                part_b=part_b,
+                min_clearance_mm=min_clearance_mm,
+                assembly=assembly,
+                pose=pose,
+                joints=joints,
+            )
         )
 
     @mcp.tool()
@@ -875,10 +899,13 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         {"name", "select"}. setup.relative lists face pairs {"name", "a": select, "b": select};
         each reports how far b moved relative to a, with gap_change_mm along the line
         between them (positive: apart), such as how far a vise jaw opens under load.
-        A load adds "type" of force, pressure, bolt, or torque:
+        A load adds "type" of force, pressure, bolt, torque, or remote:
         force has vector [x, y, z] in newtons, pressure has magnitude in MPa
         (positive pushes into the face), bolt has axial newtons along the hole,
-        torque has torque_nm about axis [x, y, z] as a couple with no net force.
+        torque has torque_nm about axis [x, y, z] as a couple with no net force,
+        remote has vector [x, y, z] in newtons acting at at [x, y, z] in millimetres,
+        a point off the part such as the end of a handle, and optional moment_nm
+        [x, y, z]; it is carried to the selected faces with its lever arm.
         select is {"kind": "plane", "normal": [x, y, z]},
         {"kind": "cylinder", "radius": r, "axis": [x, y, z]},
         {"kind": "nearest", "at": [x, y, z]}, {"kind": "index", "index": n}, or

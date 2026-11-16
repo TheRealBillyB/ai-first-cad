@@ -76,8 +76,9 @@ _UNBUILDABLE = {"over_constrained", "didnt_converge", "too_many_unknowns"}
 
 _CLEARANCE_NOTE = (
     "Interference is the volume of the boolean intersection, in mm^3. "
-    "When the solids do not intersect, min_distance_mm is the gap between their "
-    "surfaces. Penetration depth is not computed."
+    "When the solids overlap, overlap says where: the whole overlap's center and box, and each separate "
+    "region, largest first, with penetration_depth_mm. "
+    "When the solids do not intersect, min_distance_mm is the gap between their surfaces."
 )
 
 _PACKAGING_NOTE = (
@@ -539,7 +540,16 @@ class Document:
         part_a: str,
         part_b: str,
         min_clearance_mm: float | None = 0.0,
+        assembly: str | None = None,
+        pose: str | None = None,
+        joints: dict | None = None,
     ) -> ClearanceReport:
+        """Gap or overlap between two parts, or two instances of an assembly in one pose.
+
+        With ``assembly``, ``part_a`` and ``part_b`` are instance names, posed
+        by ``pose`` and ``joints`` for this check only, as check_packaging does.
+        That is a quick check of one pose, short of a motion study.
+        """
         with self._lock:
             if part_a == part_b:
                 raise GeometryError("Clearance needs two different parts.")
@@ -547,12 +557,32 @@ class Document:
                 min_clearance_mm = kernel.finite_number(min_clearance_mm, "min_clearance_mm", bound=None)
                 if min_clearance_mm < 0:
                     raise GeometryError("min_clearance_mm cannot be negative.")
-            first = self._get(part_a)
-            second = self._get(part_b)
-            overlap, distance, point_a, point_b = kernel.clearance_between(
-                first.shape, second.shape
-            )
+            assembly_name = None
+            pose_used = None
+            if assembly is not None:
+                if not isinstance(assembly, str) or not assembly.strip():
+                    raise GeometryError("assembly must be a name.")
+                assembly_name = assembly.strip()
+                spec = self._get_assembly(assembly_name)
+                overrides = _packaging_overrides(spec, pose, joints)
+                _solved, posed = _posed_shapes(spec, self._assembly_shapes(spec), overrides or None)
+                shapes = self._packaging_shapes([part_a, part_b], posed)
+                first_shape, second_shape = shapes[part_a], shapes[part_b]
+                pose_used = {"pose": pose, "joints": copy.deepcopy(joints) if joints else None}
+            elif pose is not None or joints is not None:
+                raise GeometryError("pose and joints need an assembly.")
+            else:
+                first_shape = self._get(part_a).shape
+                second_shape = self._get(part_b).shape
+            overlap, distance, point_a, point_b = kernel.clearance_between(first_shape, second_shape)
             intersecting = overlap > _INTERFERENCE_VOLUME
+            where = None
+            if intersecting:
+                where = kernel.overlap_regions(first_shape, second_shape)
+                if where is not None:
+                    depth = kernel.penetration_depth(first_shape, second_shape)
+                    where["penetration_depth_mm"] = depth["penetration_depth_mm"]
+                    where["depth_method"] = depth["depth_method"]
             passed = None
             if min_clearance_mm is not None:
                 passed = (not intersecting) and distance + 1e-9 >= min_clearance_mm
@@ -567,6 +597,9 @@ class Document:
                 threshold_mm=min_clearance_mm,
                 passed=passed,
                 note=_CLEARANCE_NOTE,
+                overlap=where,
+                assembly=assembly_name,
+                pose=pose_used,
             )
 
     def check_packaging(
@@ -1786,6 +1819,13 @@ class Document:
         with self._lock:
             spec = self._get_assembly(name)
             return {"assembly": copy.deepcopy(spec), "solved": solve_assembly(spec)}
+
+    def delete_assembly(self, name: str) -> None:
+        """Remove an assembly. Its parts, and pictures already rendered from it, stay."""
+        with self._lock:
+            self._get_assembly(name)
+            del self._assemblies[name]
+            self._save()
 
     def list_assemblies(self) -> list[dict]:
         """Names, joint values, poses, motions, and studies. This does not place solids."""

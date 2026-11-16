@@ -73,9 +73,14 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "poisson": 0.36,
         "strength_mpa": 50.0,
         "strength_kind": "tensile",
+        "across_layer_strength_mpa": 28.0,
         "density_g_cm3": 1.24,
         "printed": True,
-        "note": "Typical in-plane tensile values for PLA. Printed parts vary with temperature, pigment, and print settings.",
+        "note": (
+            "Typical in-plane tensile values for PLA. Printed parts vary with temperature, pigment, and print settings. "
+            "Across layers, typical printed PLA tests at about 25-35 MPa, roughly half to two thirds of in-plane: "
+            "28 MPa is used for the across-layer safety factor."
+        ),
     },
     "petg": {
         "name": "PETG",
@@ -83,9 +88,13 @@ _MATERIALS: dict[str, dict[str, object]] = {
         "poisson": 0.40,
         "strength_mpa": 50.0,
         "strength_kind": "tensile",
+        "across_layer_strength_mpa": 32.0,
         "density_g_cm3": 1.27,
         "printed": True,
-        "note": "Typical PETG tensile values. The real filament datasheet should replace these before a design is released.",
+        "note": (
+            "Typical PETG tensile values. The real filament datasheet should replace these before a design is released. "
+            "PETG bonds between layers better than PLA; about 32 MPa is used across layers."
+        ),
     },
     "abs": {
         "name": "ABS",
@@ -177,6 +186,77 @@ _MATERIALS: dict[str, dict[str, object]] = {
             "figures in this library. The safety factor is against the core proof strength."
         ),
     },
+    "aluminum_7075": {
+        "name": "aluminum 7075-T6",
+        "youngs_modulus_mpa": 71700.0,
+        "poisson": 0.33,
+        "strength_mpa": 503.0,
+        "strength_kind": "yield",
+        "ultimate_mpa": 572.0,
+        "density_g_cm3": 2.81,
+        "printed": False,
+        # Typical 7075-T6 sheet and bar values in the ASM aluminum handbook data:
+        # tensile yield 503 MPa, ultimate 572 MPa, modulus 71.7 GPa, density 2.81 g/cm3.
+        "note": (
+            "7075-T6, typical handbook values: yield 503 MPa, ultimate 572 MPa. A design allowable "
+            "(MMPDS A- or B-basis) for the actual product form and thickness is lower. Weaker in "
+            "fatigue and more notch-sensitive than 6061, and stress-corrosion prone across the grain. "
+            "The safety factor is against yield."
+        ),
+    },
+    "titanium_6al4v": {
+        "name": "titanium Ti-6Al-4V (grade 5, annealed)",
+        "youngs_modulus_mpa": 113800.0,
+        "poisson": 0.342,
+        "strength_mpa": 880.0,
+        "strength_kind": "yield",
+        "ultimate_mpa": 950.0,
+        "density_g_cm3": 4.43,
+        "printed": False,
+        # Typical annealed Ti-6Al-4V (ASTM B348 grade 5) in the ASM titanium data:
+        # yield 880 MPa, ultimate 950 MPa, modulus 113.8 GPa, Poisson 0.342, density 4.43 g/cm3.
+        "note": (
+            "Ti-6Al-4V grade 5, annealed, typical handbook values: yield 880 MPa, ultimate 950 MPa. "
+            "Additively made or solution-treated material differs; use its own datasheet. "
+            "The safety factor is against yield."
+        ),
+    },
+    "magnesium_az31b": {
+        "name": "magnesium AZ31B-H24",
+        "youngs_modulus_mpa": 45000.0,
+        "poisson": 0.35,
+        "strength_mpa": 220.0,
+        "strength_kind": "yield",
+        "ultimate_mpa": 290.0,
+        "density_g_cm3": 1.77,
+        "printed": False,
+        # Typical AZ31B-H24 sheet (ASTM B90) in the ASM magnesium data: tensile yield
+        # about 220 MPa, ultimate 290 MPa, modulus 45 GPa, density 1.77 g/cm3.
+        "note": (
+            "AZ31B-H24 sheet, typical handbook values: tensile yield 220 MPa, ultimate 290 MPa. "
+            "Compressive yield is much lower than tensile in wrought magnesium (often about 60 %), "
+            "and extrusions and castings are weaker. The safety factor is against tensile yield."
+        ),
+    },
+    "dyneema": {
+        "name": "Dyneema (UHMWPE fibre)",
+        "youngs_modulus_mpa": 109000.0,
+        "poisson": 0.35,
+        "strength_mpa": 3400.0,
+        "strength_kind": "tensile",
+        "density_g_cm3": 0.975,
+        "printed": False,
+        "line": True,
+        # Dyneema SK75/SK78 fibre datasheet range: modulus 109-132 GPa, tenacity
+        # about 3.5 N/tex (about 3.4 GPa at 0.975 g/cm3). The low end is used.
+        "note": (
+            "Dyneema (UHMWPE) fibre, low end of the SK75/SK78 datasheet range: modulus 109 GPa, "
+            "strength about 3.4 GPa, density 0.975 g/cm³. These are fibre numbers. A braided line "
+            "stretches more and breaks lower per area, so a tendon should state its line's own "
+            "modulus_mpa when the datasheet gives one. Dyneema creeps under a held load. It is a line "
+            "material, not a solid: a strength or vibration study refuses it."
+        ),
+    },
     "grey_cast_iron": {
         "name": "grey cast iron, ASTM A48 Class 30",
         "youngs_modulus_mpa": 100000.0,
@@ -204,6 +284,19 @@ _MATERIALS: dict[str, dict[str, object]] = {
     },
 }
 _ALIASES = {
+    "7075": "aluminum_7075",
+    "al7075": "aluminum_7075",
+    "7075_t6": "aluminum_7075",
+    "titanium": "titanium_6al4v",
+    "ti6al4v": "titanium_6al4v",
+    "ti_6al_4v": "titanium_6al4v",
+    "grade_5_titanium": "titanium_6al4v",
+    "magnesium": "magnesium_az31b",
+    "az31b": "magnesium_az31b",
+    "az31": "magnesium_az31b",
+    "uhmwpe": "dyneema",
+    "dyneema_sk78": "dyneema",
+    "dyneema_sk75": "dyneema",
     "aluminum": "aluminum_6061",
     "aluminium": "aluminum_6061",
     "6061": "aluminum_6061",
@@ -264,6 +357,17 @@ def lookup_material(name: str) -> dict[str, object]:
         known = ", ".join(_MATERIALS)
         raise GeometryError(f"No material {name!r}. Known materials: {known}.")
     return {"id": key, **_MATERIALS[key]}
+
+
+def solid_material(name: str) -> dict[str, object]:
+    """A library material a solid part can be made of. A line material such as Dyneema is refused."""
+    material = lookup_material(name)
+    if material.get("line"):
+        raise GeometryError(
+            f"{material['name']} is a line material for a tendon or a cord, not a solid, so it cannot be "
+            "used in a strength or vibration study. Choose the part's own material."
+        )
+    return material
 
 
 def select_faces(catalog: list[dict], selector: dict, shape: kernel.Shape | None = None) -> list[dict]:
@@ -373,7 +477,7 @@ def solve_part(
     probe_points = _probe_points(probes_mm)
     if not isinstance(setup, dict):
         raise GeometryError("A mechanics setup is an object with material, fixes, and loads.")
-    material = lookup_material(str(setup.get("material", "")))
+    material = solid_material(str(setup.get("material", "")))
     measurement = kernel.measure(shape)
     size = measurement.bounding_box.size
     diagonal = math.sqrt(size.x**2 + size.y**2 + size.z**2)
@@ -538,6 +642,14 @@ def solve_part(
     strength = float(material["strength_mpa"])
     peak = float(vm[peak_index])
     safety = None if peak < 1e-9 else strength / peak
+    across = material.get("across_layer_strength_mpa")
+    across_safety = None if across is None or peak < 1e-9 else float(across) / peak
+    if across_safety is not None and across_safety < target:
+        warnings.append(
+            f"Across the print layers this part has a safety factor of {across_safety:.2f} "
+            f"({material['name']} {float(across):g} MPa across layers), below the target {target:g}. "
+            "If the peak stress pulls the layers apart, turn the part so the load runs along the layers."
+        )
     if peak < 1e-6:
         warnings.append("The stress is essentially zero. The load may have missed the solid, or it was applied on a fixed face.")
     if float(magnitude[move_index]) > 0.3 * diagonal:
@@ -597,6 +709,7 @@ def solve_part(
         max_displacement_at_mm=_point(mesh["points"][move_index]),
         min_safety_factor=None if safety is None else round(safety, 3),
         min_safety_factor_at_mm=_point(mesh["points"][peak_index]),
+        min_safety_factor_across_layers=None if across_safety is None else round(across_safety, 3),
         warnings=warnings,
         assumptions=assumptions,
         review=review,
@@ -702,13 +815,22 @@ def _bind_load(item: dict, catalog: list[dict], index: int, shape: kernel.Shape 
         raise GeometryError(f"Load {index} must be an object with type, select, and a magnitude.")
     kind = item.get("type")
     name = item.get("name") or f"load_{index + 1}"
-    if kind not in ("force", "pressure", "bolt", "torque"):
-        raise GeometryError(f"Load {name!r} has type {kind!r}. Use force, pressure, bolt, or torque.")
+    if kind not in ("force", "pressure", "bolt", "torque", "remote"):
+        raise GeometryError(f"Load {name!r} has type {kind!r}. Use force, pressure, bolt, torque, or remote.")
     faces = select_faces(catalog, item.get("select") or {}, shape)
     zero = False
     if kind == "force":
         vector = _vec(item.get("vector"), f"{name} vector")
         zero = _distance(vector, (0, 0, 0)) < 1e-12
+    elif kind == "remote":
+        if item.get("at") is None:
+            raise GeometryError(
+                f"Remote load {name!r} needs at [x, y, z], the point in millimetres where the force acts."
+            )
+        _vec(item.get("at"), f"{name} at")
+        vector = _vec(item.get("vector"), f"{name} vector") if item.get("vector") is not None else (0.0, 0.0, 0.0)
+        moment = _vec(item.get("moment_nm"), f"{name} moment_nm") if item.get("moment_nm") is not None else (0.0, 0.0, 0.0)
+        zero = _distance(vector, (0, 0, 0)) < 1e-12 and _distance(moment, (0, 0, 0)) < 1e-15
     elif kind == "pressure":
         magnitude = _optional_float(item.get("magnitude"), None)
         if magnitude is None or not math.isfinite(magnitude):
@@ -1579,6 +1701,8 @@ def _apply_load(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
         return touched
     if load["kind"] == "torque":
         return _apply_torque(mesh, load, forces)
+    if load["kind"] == "remote":
+        return _apply_remote(mesh, load, forces)
     if load["kind"] == "force":
         vector = np.array(_vec(spec["vector"], load["name"]), dtype=np.float64)
     else:
@@ -1622,6 +1746,43 @@ def _apply_torque(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
         )
     scale = float(spec["torque_nm"]) * 1000.0 / second_moment
     forces[nodes] += scale * np.cross(axis, arms)
+    return {int(node) for node in nodes}
+
+
+def _apply_remote(mesh: dict, load: dict, forces: np.ndarray) -> set[int]:
+    """Carry a force acting at a point off the part to the selected nodes.
+
+    Like a distributing coupling with equal weights: each node takes an equal
+    share of the force, plus the force a small rigid twist about the nodes'
+    centroid gives it. The twist is chosen so the nodal forces sum to the
+    force, and their moment about the centroid is the force's moment from
+    its point, plus any moment_nm. So the part feels the lever arm of a load
+    at the end of a handle or a bracket that is not modeled.
+    """
+    spec = load["spec"]
+    nodes = _nodes_for(mesh, [face["index"] for face in load["faces"]])
+    if len(nodes) == 0:
+        return set()
+    force = np.array(_vec(spec["vector"], load["name"]) if spec.get("vector") is not None else (0, 0, 0), dtype=np.float64)
+    at = np.array(_vec(spec["at"], load["name"]), dtype=np.float64)
+    moment = np.zeros(3)
+    if spec.get("moment_nm") is not None:
+        moment = np.array(_vec(spec["moment_nm"], load["name"]), dtype=np.float64) * 1000.0
+    points = mesh["points"][nodes].astype(np.float64)
+    center = points.mean(axis=0)
+    arms = points - center
+    # N·mm about the centroid of the loaded nodes.
+    wanted = np.cross(at - center, force) + moment
+    inertia = np.einsum("ij,ij->", arms, arms) * np.eye(3) - arms.T @ arms
+    spin = np.linalg.pinv(inertia, rcond=1e-10) @ wanted
+    nodal = force / len(nodes) + np.cross(spin, arms)
+    carried = np.cross(arms, nodal).sum(axis=0)
+    if float(np.linalg.norm(carried - wanted)) > 1e-6 * max(1.0, float(np.linalg.norm(wanted))):
+        raise GeometryError(
+            f"Remote load {load['name']!r} has a moment the selected faces cannot carry: their nodes lie on one "
+            "line, and the load twists about that line. Select a face with some width, or more faces."
+        )
+    forces[nodes] += nodal
     return {int(node) for node in nodes}
 
 
@@ -1911,9 +2072,19 @@ def _assumptions(material, mesh, fixes, loads, target, mesh_size) -> list[str]:
         "does not become one sideways force. "
         "A bolt load is an axial force along the hole, not a thread or a contact patch. "
         "A torque is a couple: forces square to the axis, in proportion to each node's arm from the centroid "
-        "of the loaded nodes, so the net force is zero.",
+        "of the loaded nodes, so the net force is zero. "
+        "A remote load acts at a point off the part. It is carried to the selected faces like a distributing "
+        "coupling: the nodes share the force equally, plus a rigid twist about their centroid, so they carry "
+        "the same force and moment. The material between the point and the part is not modeled.",
     ]
-    if material["printed"]:
+    if material["printed"] and material.get("across_layer_strength_mpa") is not None:
+        lines.append(
+            "This is a 3D-printed material. min_safety_factor uses the in-plane tensile strength "
+            f"({float(material['strength_mpa']):g} MPa). min_safety_factor_across_layers uses "
+            f"{float(material['across_layer_strength_mpa']):g} MPa, for a peak stress that pulls the layers apart. "
+            "The solve does not know the print direction, so read the one that matches how the part is printed."
+        )
+    elif material["printed"]:
         lines.append(
             "This is a 3D-printed material. The strength used here is an in-plane tensile number. "
             "A printed part is weaker across layers, often about half, so a load that pulls the layers apart "
@@ -1997,6 +2168,11 @@ def _public_material(material: dict) -> dict[str, object]:
         "strength_mpa": material["strength_mpa"],
         "strength_kind": material["strength_kind"],
         "printed": material["printed"],
+        **(
+            {"across_layer_strength_mpa": material["across_layer_strength_mpa"]}
+            if material.get("across_layer_strength_mpa") is not None
+            else {}
+        ),
     }
 
 

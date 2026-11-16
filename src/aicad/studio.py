@@ -1587,6 +1587,7 @@ def _summary(name: str, arguments: dict, result: dict, parts: list[str]) -> str:
         "add_fillet": f"Rounded edges on {part}",
         "add_chamfer": f"Broke edges on {part}",
         "delete_part": f"Deleted {part}",
+        "delete_assembly": f"Deleted assembly {arguments.get('name')}",
         "insert_standard_part": f"Inserted {part}",
         "import_step": f"Imported {part}",
         "inspect_part": f"Inspected {part}",

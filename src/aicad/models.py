@@ -212,14 +212,21 @@ class ClearanceReport:
     threshold_mm: float | None
     passed: bool | None
     note: str
+    # Where the parts overlap: center, box, and each region. None when they do not.
+    overlap: dict | None = None
+    # The assembly and pose the parts were checked in, when they are instances.
+    assembly: str | None = None
+    pose: dict | None = None
 
     def to_dict(self) -> dict[str, object]:
         return finish(
             {
                 "part_a": self.part_a,
                 "part_b": self.part_b,
+                **({} if self.assembly is None else {"assembly": self.assembly, "pose": self.pose}),
                 "intersecting": self.intersecting,
                 "interference_volume_mm3": self.interference_volume_mm3,
+                "overlap": self.overlap,
                 "min_distance_mm": self.min_distance_mm,
                 "closest_point_a_mm": None
                 if self.closest_point_a_mm is None
@@ -677,6 +684,8 @@ class FeaReport:
     probes: tuple | None = None
     # How far each requested face pair moved relative to each other.
     relative: list | None = None
+    # A printed material with an across-layer strength: the safety factor against it.
+    min_safety_factor_across_layers: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         def _point(value: Vec3 | None) -> dict[str, float] | None:
@@ -697,7 +706,8 @@ class FeaReport:
             )
         limits = [
             "No plasticity, contact, buckling, or fatigue.",
-            "A printed material is not given a weaker across-layer strength in the solve.",
+            "The solve does not know the print direction. A printed material with an across-layer strength "
+            "gets a second safety factor against it; the others are in-plane numbers only.",
             "A force is shared by the nodes on the selected faces. A bolt load is an axial force, not a thread.",
             "CalculiX runs as a separate program. It is not linked into aicad.",
         ]
@@ -722,6 +732,11 @@ class FeaReport:
                 "max_displacement_at_mm": _point(self.max_displacement_at_mm),
                 "min_safety_factor": self.min_safety_factor,
                 "min_safety_factor_at_mm": _point(self.min_safety_factor_at_mm),
+                **(
+                    {}
+                    if self.min_safety_factor_across_layers is None
+                    else {"min_safety_factor_across_layers": self.min_safety_factor_across_layers}
+                ),
                 "warnings": self.warnings,
                 "assumptions": self.assumptions,
                 "review": self.review,

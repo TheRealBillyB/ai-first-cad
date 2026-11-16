@@ -918,6 +918,11 @@ def _cmd_update_ops(workspace: Workspace, arguments: dict) -> dict:
     return {"part": info.to_dict(), "next": "Call inspect_part and look at the model before the next edit."}
 
 
+def _cmd_delete_assembly(workspace: Workspace, arguments: dict) -> dict:
+    workspace.document.delete_assembly(arguments["name"])
+    return {"deleted": arguments["name"], "note": "Its parts stay in the project. Undo brings the assembly back."}
+
+
 def _cmd_delete_part(workspace: Workspace, arguments: dict) -> dict:
     workspace.document.delete_part(arguments["name"])
     if workspace.selection.get("part") == arguments["name"]:
@@ -966,7 +971,12 @@ def _cmd_wall(workspace: Workspace, arguments: dict) -> dict:
 
 def _cmd_clearance(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.check_clearance(
-        arguments["part_a"], arguments["part_b"], _optional_length(arguments, "min_clearance_mm")
+        arguments["part_a"],
+        arguments["part_b"],
+        _optional_length(arguments, "min_clearance_mm"),
+        assembly=arguments.get("assembly"),
+        pose=arguments.get("pose"),
+        joints=arguments.get("joints"),
     ).to_dict()
     return workspace._remember_panel("clearance", report)  # noqa: SLF001
 
@@ -1785,8 +1795,18 @@ _add(Command(
 ))
 _add(Command(
     "check_clearance",
-    "Interference volume or gap between two parts.",
-    _obj({"part_a": _string("First part."), "part_b": _string("Second part."), "min_clearance_mm": _number("Required gap.")}, ["part_a", "part_b"]),
+    "Interference volume or gap between two parts, and where they overlap. With assembly, two instances in one pose.",
+    _obj(
+        {
+            "part_a": _string("First part, or an instance when assembly is given."),
+            "part_b": _string("Second part, or an instance when assembly is given."),
+            "min_clearance_mm": _number("Required gap."),
+            "assembly": _string("Check two instances of this assembly in one pose instead of two parts."),
+            "pose": _string("A stored pose of the assembly, for this check only."),
+            "joints": {"type": "object", "description": "Joint values for this check only: degrees or millimetres by joint name."},
+        },
+        ["part_a", "part_b"],
+    ),
     _cmd_clearance,
 ))
 _add(Command(
@@ -1995,7 +2015,7 @@ _add(Command(
 ))
 _add(Command(
     "solve_mechanics",
-    "Linear static solve. setup has material, fixes, loads, mesh_size_mm, target_safety_factor. A select can be a viewport ref.",
+    "Linear static solve. setup has material, fixes, loads, mesh_size_mm, target_safety_factor. A load type is force, pressure, bolt, torque, or remote (a force at a point off the part, carried with its lever arm). A select can be a viewport ref.",
     _obj({"name": _string("Part name."), "setup": {"type": "object"}}, ["name", "setup"]),
     _cmd_fea,
 ))
@@ -2168,6 +2188,13 @@ _add(Command(
     "Replace an assembly spec. Parts it names must already be in the document.",
     _obj({"spec": {"type": "object"}}, ["spec"]),
     _cmd_update_assembly,
+    undo=True,
+))
+_add(Command(
+    "delete_assembly",
+    "Delete an assembly. Its parts stay in the project, and undo brings it back.",
+    _ASSEMBLY,
+    _cmd_delete_assembly,
     undo=True,
 ))
 _add(Command("list_assemblies", "List assemblies with joint values, poses, motion names, and motion studies. Does not test collisions.", _obj({}, []), _cmd_list_assemblies))
