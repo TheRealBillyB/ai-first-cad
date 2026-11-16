@@ -1787,6 +1787,13 @@ class Document:
             spec = self._get_assembly(name)
             return {"assembly": copy.deepcopy(spec), "solved": solve_assembly(spec)}
 
+    def delete_assembly(self, name: str) -> None:
+        """Remove an assembly. Its parts, and pictures already rendered from it, stay."""
+        with self._lock:
+            self._get_assembly(name)
+            del self._assemblies[name]
+            self._save()
+
     def list_assemblies(self) -> list[dict]:
         """Names, joint values, poses, motions, and studies. This does not place solids."""
         with self._lock:

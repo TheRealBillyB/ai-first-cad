@@ -3375,6 +3375,19 @@ async function boot() {
   $("nav-assembly").onclick = () => showPage("assembly");
   $("nav-docs").onclick = () => showPage("documents");
   $("assembly-preview").onclick = () => showAssemblyPicture().catch(showError);
+  $("assembly-delete").onclick = async () => {
+    const name = ui.assembly;
+    if (!name) return;
+    if (!confirm(`Delete assembly ${name}? Its parts stay in the project, and Undo brings it back.`)) return;
+    try {
+      await command("delete_assembly", { name });
+      ui.assembly = null;
+      ui.viewAssembly = null;
+      await refresh();
+    } catch (error) {
+      showError(error);
+    }
+  };
   $("assembly-cables").onclick = async () => {
     if (!ui.assembly) return;
     const current = (ui.state.assemblies || []).find((item) => item.name === ui.assembly);
