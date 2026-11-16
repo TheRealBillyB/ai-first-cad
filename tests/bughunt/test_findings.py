@@ -101,7 +101,12 @@ def test_bh_s03_script_cannot_leave_a_detached_child(tmp_path):
             "sleep = sandbox.time.sleep\n"
             "pid = sandbox.os.fork()\n"
             "if pid == 0:\n"
-            "    sandbox.os.setsid()\n"
+            # Linux refuses setsid (seccomp); macOS allows it. Either way the
+            # child must go on to the heartbeat, or the test checks nothing.
+            "    try:\n"
+            "        sandbox.os.setsid()\n"
+            "    except OSError:\n"
+            "        pass\n"
             "    for fd in (0, 1, 2):\n"
             "        try:\n"
             "            sandbox.os.close(fd)\n"
