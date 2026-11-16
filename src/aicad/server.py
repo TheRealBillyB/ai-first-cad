@@ -32,6 +32,7 @@ except ImportError:  # mcp 1.x
 
 _INSTRUCTIONS = """
 aicad is a CAD session for hard-body mechanical parts. Units are millimeters.
+Each result's `workspace` names the project folder the command acted on.
 The script or the operation list is the part: edit by replacing it, then look.
 
 After every create or update, call inspect_part. Read the measurements and look

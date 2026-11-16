@@ -852,6 +852,8 @@ def test_tool_runner_refuses_shell_network_and_outside_writes(tmp_path, config_h
     assert isinstance(reported.pop("can_run"), bool)
     reported.pop("cannot_run", None)
     reported.pop("windows_container", None)
+    # Every command result names its project folder.
+    assert reported.pop("workspace") == workspace.root.name
     assert workspace.script_status() == reported
     assert workspace.script_status()["enabled"] is False
     assert workspace.script_status()["network"] == "off"
