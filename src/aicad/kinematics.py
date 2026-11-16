@@ -3,7 +3,7 @@
 A structural joint (fixed, revolute, prismatic, cylindrical) is an edge in a
 tree. Gear, screw, and linkage relations write one driven joint from a
 driver. A screw is a gear from a turn in degrees to a slide in millimeters:
-its lead per turn, signed by its hand. A cylinder relation writes two: the barrel angle and the rod extension, from
+its lead per turn, signed by the thread's hand and by which part slides. A cylinder relation writes two: the barrel angle and the rod extension, from
 the in-plane pin distance of a revolute or cylindrical driver. A cylindrical
 driver includes its slide. The barrel joint cannot tilt, so a side offset is
 how far the eye misses the clevis and the stroke does not include it. That
@@ -148,7 +148,7 @@ def normalize(spec: dict) -> dict:
     relations = []
     joint_index = {joint["name"]: joint for joint in joints}
     for index, relation in enumerate(spec.get("relations") or []):
-        relations.append(_relation(relation, index, joint_index))
+        relations.append(_relation(relation, index, joint_index, cleaned_instances))
     poses = {}
     for pose_name, values in (spec.get("poses") or {}).items():
         if not isinstance(values, dict):
@@ -358,6 +358,7 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
         if relation["type"] == "screw":
             row["lead_mm"] = relation["lead_mm"]
             row["hand"] = relation["hand"]
+            row["slide_turns"] = relation["slide_turns"]
         if relation["type"] == "cylinder":
             row["stroke"] = relation["stroke"]
             row["stroke_mm"] = round(limited[relation["stroke"]], 4)
@@ -511,7 +512,7 @@ def _ordered_relations(relations: list[dict]) -> list[dict]:
     return [relations[index] for index in ordered]
 
 
-def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
+def _relation(relation: dict, index: int, joints: dict[str, dict], instances: list[dict]) -> dict:
     if not isinstance(relation, dict):
         raise GeometryError(f"Relation {index} must be an object.")
     kind = relation.get("type")
@@ -534,7 +535,7 @@ def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
         record["ratio"] = float(relation.get("ratio", 1.0))
         record["offset"] = float(relation.get("offset", 0.0))
     elif kind == "screw":
-        record.update(_screw(relation, name, joints[driver], joints[driven]))
+        record.update(_screw(relation, name, joints[driver], joints[driven], joints, instances))
     elif kind == "linkage":
         for joint_name in (driver, driven):
             if joints[joint_name]["type"] not in ("revolute", "cylindrical"):
@@ -598,12 +599,27 @@ def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
     return record
 
 
-def _screw(relation: dict, name: str, turn: dict, slide: dict) -> dict:
+def _screw(relation: dict, name: str, turn: dict, slide: dict, joints: dict[str, dict], instances: list[dict]) -> dict:
     """A lead screw: the driven slide moves lead_mm for each full turn of the driver.
 
-    A right-hand screw moves the slide toward +axis when the driver turns
-    positive about its own axis, when both axes point the same way. A left-hand
-    screw moves it the other way. The map is ideal: no friction, no backlash.
+    ``hand`` is the thread's real hand. Which way the slide moves depends on
+    which part slides, and the joint tree says which:
+
+    - The sliding part also turns. The slide carries the turning joint (or the
+      other way round), as a vise screw runs through a nut fixed in the frame.
+      A right-hand thread moves the slide toward +axis on a positive turn.
+      Example: prismatic frame -> carriage, revolute carriage -> screw, a 2 mm
+      lead: one positive turn moves the carriage and the screw +2 mm.
+    - The sliding part does not turn. Both joints hang from one body, as a
+      screw turns in place and its nut slides on it, or a nut turns in place
+      and drives a screw that cannot turn. A right-hand thread moves the slide
+      toward -axis on a positive turn. Example: revolute frame -> screw,
+      prismatic frame -> nut, a 2 mm lead: one positive turn moves the nut
+      -2 mm.
+
+    That is for the two axes pointing the same way. Opposite axes flip it. A
+    left-hand thread moves the other way in both cases. A tree that is neither
+    case is refused. The map is ideal: no friction, no backlash.
     """
     if turn["type"] not in ("revolute", "cylindrical"):
         raise GeometryError(f"Screw {name!r} turns a revolute or cylindrical driver. {turn['name']!r} is {turn['type']}.")
@@ -624,8 +640,77 @@ def _screw(relation: dict, name: str, turn: dict, slide: dict) -> dict:
     offset = float(relation.get("offset", 0.0))
     if not math.isfinite(offset):
         raise GeometryError(f"Screw {name!r} offset must be a finite number of millimeters.")
-    sign = 1.0 if hand == "right" else -1.0
-    return {"lead_mm": lead, "hand": hand, "ratio": sign * lead / 360.0, "offset": offset}
+    travel, slide_turns = _screw_travel(name, turn, slide, joints, instances)
+    sign = travel if hand == "right" else -travel
+    return {"lead_mm": lead, "hand": hand, "slide_turns": slide_turns, "ratio": sign * lead / 360.0, "offset": offset}
+
+
+def _screw_travel(name: str, turn: dict, slide: dict, joints: dict[str, dict], instances: list[dict]) -> tuple[float, bool]:
+    """Which way a right-hand thread moves the slide on a positive turn (+1 or -1), and whether the sliding part turns.
+
+    A thread fixes the motion of one body relative to another: a turn and a
+    slide along one axis, in step. The turning joint and the slide must then
+    be joined through fixed joints only. Either one carries the other, and
+    the part at the end of that chain both turns and slides. Or both hang from
+    one body, and the part that slides does not turn. A right-hand thread
+    moves the turning part's own side forward on a positive turn, so a nut
+    held off the turning part goes the other way.
+    """
+    above = {joint["child"]: joint for joint in joints.values()}
+
+    def chain(joint: dict) -> list[dict]:
+        out = [joint]
+        while out[-1]["parent"] in above:
+            out.append(above[out[-1]["parent"]])
+        return out
+
+    turn_chain, slide_chain = chain(turn), chain(slide)
+    turn_names = [joint["name"] for joint in turn_chain]
+    slide_names = [joint["name"] for joint in slide_chain]
+    if slide["name"] in turn_names:
+        between, slide_turns = turn_chain[1 : turn_names.index(slide["name"])], True
+    elif turn["name"] in slide_names:
+        between, slide_turns = slide_chain[1 : slide_names.index(turn["name"])], True
+    else:
+        between = [joint for joint in turn_chain[1:] if joint["name"] not in slide_names]
+        between += [joint for joint in slide_chain[1:] if joint["name"] not in turn_names]
+        slide_turns = False
+    moving = [joint["name"] for joint in between if joint["type"] != "fixed"]
+    if moving:
+        raise GeometryError(
+            f"Screw {name!r} cannot tell which part carries the thread: {', '.join(repr(item) for item in moving)} "
+            f"also {'moves' if len(moving) == 1 else 'move'} between {turn['name']!r} and {slide['name']!r}. "
+            "Join them through fixed joints only: the slide carries the turning part (a screw through a fixed nut), "
+            "or both hang from one body (a screw turning in place, with its nut on the slide)."
+        )
+    rotations: dict[str, list[list[float]]] = {}
+    placements = {instance["name"]: instance.get("placement") or {} for instance in instances}
+
+    def rotation(instance: str) -> list[list[float]]:
+        # At the zero pose a moving joint does not turn its child, and only a
+        # grounded instance uses its placement.
+        if instance not in rotations:
+            joint = above.get(instance)
+            if joint is None:
+                turned = placements.get(instance, {}).get("rotation_deg") or [0.0, 0.0, 0.0]
+                rotations[instance] = _euler(*turned)
+            elif joint["type"] == "fixed" and joint.get("rotation_deg"):
+                rotations[instance] = _matmat(rotation(joint["parent"]), _euler(*joint["rotation_deg"]))
+            else:
+                rotations[instance] = rotation(joint["parent"])
+        return rotations[instance]
+
+    turn_axis = _matvec(rotation(turn["parent"]), turn["axis"])
+    slide_axis = _matvec(rotation(slide["parent"]), slide["axis"])
+    dot = sum(turn_axis[i] * slide_axis[i] for i in range(3))
+    if abs(dot) < math.cos(math.radians(1.0)):
+        apart = math.degrees(math.acos(max(-1.0, min(1.0, dot))))
+        raise GeometryError(
+            f"Screw {name!r} needs {turn['name']!r} and {slide['name']!r} on one axis. "
+            f"Their axes are {apart:.1f} degrees apart."
+        )
+    same_way = 1.0 if dot > 0 else -1.0
+    return (same_way if slide_turns else -same_way), slide_turns
 
 
 def _cylinder(

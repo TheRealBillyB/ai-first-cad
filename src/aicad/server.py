@@ -1023,8 +1023,15 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         turned Y, then the twice-turned Z (about fixed axes: Z, then Y, then X).
         relations are gear {driver, driven, ratio, offset},
         screw {driver, driven, lead_mm, hand, offset}: a revolute or cylindrical driver
-        moves a prismatic joint lead_mm per turn. hand is right (default) or left. Right
-        moves it toward +axis on a positive turn when both axes point the same way.
+        moves a prismatic joint lead_mm per turn. hand is the thread's real hand, right
+        (default) or left. If the sliding part also turns (the slide carries the screw
+        through a fixed nut: prismatic frame->carriage, revolute carriage->screw), a
+        right-hand thread moves it toward +axis on a positive turn: +2 mm per turn of a
+        2 mm lead. If it does not turn (the screw turns in place and its nut slides:
+        revolute frame->screw, prismatic frame->nut), a right-hand thread moves it
+        toward -axis: -2 mm per turn. That is for axes pointing the same way; opposite
+        axes flip it, and left flips both. Any other moving joint between the two, or
+        axes more than 1 degree apart, is refused.
         linkage {driver, driven, ground_mm, crank_mm, coupler_mm, rocker_mm, branch},
         or cylinder {driver, driven, stroke, moving_anchor, retracted_mm}.
         A linkage is a planar four-bar map between revolute or cylindrical joints, not a closed spatial loop.

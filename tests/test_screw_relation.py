@@ -10,6 +10,7 @@ from aicad.power import _load_shift
 
 
 def _spec(relation: dict, *, screw_axis=(0, 0, 1), nut_axis=(0, 0, 1), turn=720.0) -> dict:
+    """A screw that turns in place on the frame, and a nut that slides on the frame."""
     return {
         "name": "lift",
         "instances": [{"name": "frame", "part": "frame"}, {"name": "screw", "part": "screw"}, {"name": "nut", "part": "nut"}],
@@ -21,27 +22,98 @@ def _spec(relation: dict, *, screw_axis=(0, 0, 1), nut_axis=(0, 0, 1), turn=720.
     }
 
 
+def _vise(relation: dict, *, turn=720.0) -> dict:
+    """A screw that runs through a nut fixed in the frame: the carriage slides and carries the turning screw."""
+    return {
+        "name": "vise",
+        "instances": [{"name": "frame", "part": "frame"}, {"name": "carriage", "part": "carriage"}, {"name": "screw", "part": "screw"}],
+        "joints": [
+            {"name": "travel", "type": "prismatic", "parent": "frame", "child": "carriage", "axis": [0, 0, 1], "value": 0},
+            {"name": "spin", "type": "revolute", "parent": "carriage", "child": "screw", "axis": [0, 0, 1], "value": turn},
+        ],
+        "relations": [{"name": "lead", "type": "screw", "driver": "spin", "driven": "travel", **relation}],
+    }
+
+
 def _value(solved: dict, name: str) -> float:
     return next(joint["value"] for joint in solved["joints"] if joint["name"] == name)
 
 
-def test_two_turns_of_a_2mm_lead_move_the_nut_4mm():
+def _z(solved: dict, instance: str) -> float:
+    return next(item for item in solved["instances"] if item["name"] == instance)["matrix"][2][3]
+
+
+def test_a_right_hand_screw_turning_in_place_moves_its_nut_toward_minus_axis():
+    """Two positive turns of a 2 mm right-hand lead pull the nut 4 mm down the screw's axis."""
     solved = solve(_spec({"lead_mm": 2.0}))
-    assert _value(solved, "travel") == pytest.approx(4.0)
-    nut = next(item for item in solved["instances"] if item["name"] == "nut")
-    assert nut["matrix"][2][3] == pytest.approx(4.0)
+    assert _value(solved, "travel") == pytest.approx(-4.0)
+    assert _z(solved, "nut") == pytest.approx(-4.0)
+    assert _z(solved, "screw") == pytest.approx(0.0)
     row = solved["relations"][0]
-    assert (row["type"], row["lead_mm"], row["hand"]) == ("screw", 2.0, "right")
+    assert (row["type"], row["lead_mm"], row["hand"], row["slide_turns"]) == ("screw", 2.0, "right", False)
 
 
-def test_a_left_hand_screw_moves_the_other_way_and_takes_an_offset():
+def test_a_right_hand_screw_through_a_fixed_nut_moves_itself_toward_plus_axis():
+    solved = solve(_vise({"lead_mm": 2.0}))
+    assert _value(solved, "travel") == pytest.approx(4.0)
+    assert _z(solved, "screw") == pytest.approx(4.0)
+    assert solved["relations"][0]["slide_turns"] is True
+
+
+def test_a_left_hand_thread_flips_both_cases():
+    assert _value(solve(_spec({"lead_mm": 2.0, "hand": "left"})), "travel") == pytest.approx(4.0)
+    assert _value(solve(_vise({"lead_mm": 2.0, "hand": "left"})), "travel") == pytest.approx(-4.0)
+
+
+def test_a_left_hand_screw_takes_an_offset():
     solved = solve(_spec({"lead_mm": 8.0, "hand": "left", "offset": 1.5}, turn=90.0))
-    assert _value(solved, "travel") == pytest.approx(-2.0 + 1.5)
+    assert _value(solved, "travel") == pytest.approx(2.0 + 1.5)
+
+
+def test_a_nut_turning_in_place_drives_a_screw_that_cannot_turn_like_a_traveling_nut():
+    """The thread is the same pair of bodies seen from the other side: right-hand still moves the slide toward -axis."""
+    spec = _spec({"lead_mm": 2.0})
+    spec["instances"] = [{"name": "frame", "part": "frame"}, {"name": "nut", "part": "nut"}, {"name": "screw", "part": "screw"}]
+    spec["joints"][0]["child"], spec["joints"][1]["child"] = "nut", "screw"
+    assert _value(solve(spec), "travel") == pytest.approx(-4.0)
+
+
+def test_a_slide_axis_pointing_the_other_way_flips_the_sign_of_its_value():
+    """The nut moves the same way in space: -4 mm along +Z is +4 mm along -Z."""
+    solved = solve(_spec({"lead_mm": 2.0}, nut_axis=(0, 0, -1)))
+    assert _value(solved, "travel") == pytest.approx(4.0)
+    assert _z(solved, "nut") == pytest.approx(-4.0)
+
+
+def test_fixed_joints_between_still_classify_and_their_turn_counts():
+    """The screw sits on a bracket turned 180 degrees about X, so its +Z is the frame's -Z."""
+    spec = _spec({"lead_mm": 2.0}, screw_axis=(0, 0, 1))
+    spec["instances"].append({"name": "bracket", "part": "bracket"})
+    spec["joints"].insert(0, {"name": "mount", "type": "fixed", "parent": "frame", "child": "bracket", "rotation_deg": [180, 0, 0]})
+    spec["joints"][1]["parent"] = "bracket"
+    solved = solve(spec)
+    # A positive turn about the frame's -Z is a negative turn about +Z, so a
+    # right-hand thread moves the nut toward the frame's +Z.
+    assert _value(solved, "travel") == pytest.approx(4.0)
+
+
+def test_a_moving_joint_between_the_turn_and_the_slide_is_refused_by_name():
+    spec = _spec({"lead_mm": 2.0})
+    spec["instances"].append({"name": "arm", "part": "arm"})
+    spec["joints"].insert(0, {"name": "swing", "type": "revolute", "parent": "frame", "child": "arm", "axis": [1, 0, 0]})
+    spec["joints"][1]["parent"] = "arm"
+    with pytest.raises(GeometryError, match="cannot tell which part carries the thread: 'swing' also moves between 'spin' and 'travel'"):
+        normalize(spec)
+
+
+def test_axes_that_are_not_parallel_are_refused():
+    with pytest.raises(GeometryError, match="'spin' and 'travel' on one axis. Their axes are 90.0 degrees apart"):
+        normalize(_spec({"lead_mm": 2.0}, nut_axis=(1, 0, 0)))
 
 
 def test_the_slide_stops_at_its_limit():
-    spec = _spec({"lead_mm": 5.0}, turn=3600.0)
-    spec["joints"][1]["max"] = 20.0
+    spec = _vise({"lead_mm": 5.0}, turn=3600.0)
+    spec["joints"][0]["max"] = 20.0
     solved = solve(spec)
     assert _value(solved, "travel") == pytest.approx(20.0)
     assert solved["warnings"]
