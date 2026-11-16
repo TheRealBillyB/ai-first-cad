@@ -33,7 +33,7 @@ def test_a_deleted_part_stays_deleted_when_another_copy_of_the_project_saves(tmp
     second = Workspace(tmp_path)
     kept_before = second.document._parts["kept"]
 
-    assert first.execute("delete_part", {"name": "gone"}, source="agent") == {"deleted": "gone"}
+    assert first.execute("delete_part", {"name": "gone"}, source="agent") == {"deleted": "gone", "workspace": tmp_path.name}
     assert _saved_parts(tmp_path) == ["kept"]
 
     second.execute("create_part_from_ops", {"name": "new", "ops": _BOX}, source="agent")
