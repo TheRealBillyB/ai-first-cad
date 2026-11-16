@@ -1227,7 +1227,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         wrap arc. The report has length change, slack or stretch, wrap angle,
         bend-radius violations, and tension from actuator_force_n. Friction
         multiplies tension by exp(-friction * wrap radians) on the far side of
-        each pulley. A centerline sample inside a solid, or closer than the
+        each pulley. A guide with no radius_mm is an eyelet the line runs
+        through. It takes friction over the angle the line turns there, and
+        wrap_radius_mm, the lip radius, which is its bend radius. A centerline sample inside a solid, or closer than the
         cable radius plus pinch_mm, is a collision. The line does not sag.
         sequence names a motion, or a study when no motion uses that name.
         study is an inline motion study. steps overrides how many poses are solved.
