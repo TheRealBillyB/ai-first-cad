@@ -103,3 +103,23 @@ def test_a_project_that_inherits_the_network_container_is_refused_clearly(tmp_pa
     workspace = _project(tmp_path, monkeypatch, network)
     with pytest.raises(ScriptError, match="network script container"):
         workspace.execute("run_design_script", {"script": "print('ran')"}, "ui")
+
+
+def test_a_refusal_names_the_broad_accounts_in_words():
+    message = folders.broad_folder_message(["S-1-5-32-545", "S-1-1-0", "S-1-5-11"])
+    assert "Users (S-1-5-32-545)" in message
+    assert "Everyone (S-1-1-0)" in message
+    assert "Authenticated Users (S-1-5-11)" in message
+
+
+def test_a_refusal_says_why_and_what_to_change_once():
+    message = folders.broad_folder_message(["S-1-5-32-545"])
+    # Why: the project's own folder list is inherited by the script's private folder.
+    assert "takes the access list of the folder it is in" in message
+    # What to change: move the project, or fix the folder that holds projects once.
+    assert "Documents" in message
+    assert "once from the folder that holds them" in message
+
+
+def test_an_unknown_account_is_named_by_its_sid():
+    assert folders.account_names(["S-1-5-21-1-2-3-1001"]) == "S-1-5-21-1-2-3-1001"
