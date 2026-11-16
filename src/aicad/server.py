@@ -1351,6 +1351,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         threshold_deg defaults to 45 (degrees from vertical). bridge_mm defaults to
         5: a down-facing span held along an edge no wider than that is a bridge, not
         support. 0 counts every overhang. A face with no path to the bed still counts.
+        floating_starts lists where material begins in mid-air with nothing within one
+        layer below it (z_mm, xy_mm on the bed, at_model_mm, area_mm2 of the first
+        layer, and the model faces). Each one needs support, and its area counts.
         printer names a bed from list_printers. slice true asks OrcaSlicer or
         PrusaSlicer for time and grams, and skips that part when neither is installed.
         layer_height_mm sets the slicer layer height in millimeters. Omit it to

@@ -175,9 +175,14 @@ def test_support_follows_the_angle_from_vertical():
     triangles = np.array([[0, 1, 2], [3, 4, 5]])
     mesh = SimpleNamespace(vertices=vertices, triangles=triangles)
     needs = _score(mesh, "z_up", 30)["support_area_mm2"]
-    clear = _score(mesh, "z_up", 60)["support_area_mm2"]
+    steep = _score(mesh, "z_up", 60)
     assert needs > 0
-    assert clear == pytest.approx(0)
+    # Its low corner starts 9 mm above the bed with nothing under it, so above
+    # the angle only that floating start's first layer still needs support.
+    assert steep["floating_start_count"] == 1
+    floating = steep["_floating"][0]["uncounted_mm2"]
+    assert 0 < floating < 0.05
+    assert steep["support_area_mm2"] == pytest.approx(round(floating, 2))
 
 
 def _span(document: Document, name: str, span: float) -> None:

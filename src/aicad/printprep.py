@@ -64,6 +64,10 @@ _BED_MM = 0.05
 _FLAT = 0.999
 # A down-facing span no wider than this, held along an edge, prints as a bridge.
 _DEFAULT_BRIDGE_MM = 5.0
+# The layer height a floating-start check uses when the setup states none.
+_FLOATING_LAYER_MM = 0.2
+# Heights closer than this are one level when looking for where an island starts.
+_LEVEL_MM = 1e-4
 # Vertices closer than this are the same point when a mesh splits a shared edge.
 _WELD_MM = 0.02
 _BRIDGE_PAIR_LIMIT = 4_000_000
@@ -124,7 +128,8 @@ def analyze_print(
     bridge_mm = _bridge_span(setup.get("bridge_mm", _DEFAULT_BRIDGE_MM))
     layer_height = _layer_height(setup.get("layer_height_mm"))
     mesh = kernel.tessellate(shape)
-    scores = [_score(mesh, name, threshold, bridge_mm) for name in _ORIENTATIONS]
+    layer_mm = layer_height or _FLOATING_LAYER_MM
+    scores = [_score(mesh, name, threshold, bridge_mm, layer_mm=layer_mm) for name in _ORIENTATIONS]
     requested = str(setup.get("orientation") or "best").lower().replace("-", "_").replace(" ", "_")
     wanted = setup.get("printer")
     printer = lookup_printer(str(wanted)) if wanted else None
@@ -136,7 +141,7 @@ def analyze_print(
                 f"Orientation {requested!r} and a stated pose (up or rotation_deg) were both given. Use one."
             )
         rotation = pose["rotation"]
-        chosen = _score(mesh, "custom", threshold, bridge_mm, rotation=rotation, note=pose["note"])
+        chosen = _score(mesh, "custom", threshold, bridge_mm, rotation=rotation, note=pose["note"], layer_mm=layer_mm)
         chosen_name = "custom"
         automatic = False
     elif requested in ("best", "auto", ""):
@@ -176,10 +181,13 @@ def analyze_print(
             price_per_kg=setup.get("price_per_kg"),
             layer_height_mm=layer_height,
         )
+    starts = _floating_rows(chosen.pop("_floating"), mesh, shape, rotation)
+    for row in scores:
+        row.pop("_floating", None)
     status = "pass"
     if focus and not focus["fits"]:
         status = "fail"
-    elif chosen["support_fraction"] > 0.25:
+    elif chosen["support_fraction"] > 0.25 or starts:
         status = "review"
     report = {
         "part": part_name,
@@ -195,6 +203,9 @@ def analyze_print(
         "support_area_mm2": chosen["support_area_mm2"],
         "support_fraction": chosen["support_fraction"],
         "bridge_area_mm2": chosen["bridge_area_mm2"],
+        "floating_starts": starts,
+        "floating_layer_mm": layer_mm,
+        **_slicer_floating(slicer),
         "bridge_mm": chosen["bridge_mm"],
         "bed_band_mm": chosen["bed_band_mm"],
         "height_mm": chosen["height_mm"],
@@ -206,7 +217,7 @@ def analyze_print(
         "slicer": slicer,
         "views": views,
         "assumptions": _assumptions(threshold, bridge_mm),
-        "note": _headline(chosen, automatic, focus, slicer),
+        "note": _headline(chosen, automatic, focus, slicer) + _floating_note(starts),
     }
     return finish(
         report,
@@ -223,6 +234,11 @@ def analyze_print(
                 "A face with no path to the bed still counts."
             ),
             "Time and grams follow the slicer's default profile. layer_height_mm, when set, is passed as the layer height. A missing slicer skips those numbers.",
+            (
+                "A floating start is where an island of material begins in mid-air: a lowest point or edge of the "
+                f"solid, off the bed, with no material within one layer ({layer_mm:g} mm) below it. Its area is the "
+                "island's first layer, read from the mesh, and it counts as support."
+            ),
         ],
     )
 
@@ -459,16 +475,21 @@ def _score(
     *,
     rotation: np.ndarray | None = None,
     note: str | None = None,
+    layer_mm: float = _FLOATING_LAYER_MM,
 ) -> dict:
     vertices, triangles, normals = _oriented_arrays(mesh, name, rotation)
     areas, _on_bed, overhang, bridge = _classify(vertices, triangles, normals, threshold, bridge_mm)
     total = float(areas.sum()) or 1.0
     support_mask = overhang & ~bridge
-    support = float(areas[support_mask].sum())
+    floating = floating_starts(vertices, triangles, normals, layer_mm, counted=support_mask)
+    # A floating start needs support even where its faces are steep enough to print.
+    support = float(areas[support_mask].sum()) + sum(start["uncounted_mm2"] for start in floating)
     size = vertices.max(axis=0) - vertices.min(axis=0) if len(vertices) else np.zeros(3)
     return {
         "orientation": name,
         "note": note if note is not None else _ORIENTATIONS[name][1],
+        "floating_start_count": len(floating),
+        "_floating": floating,
         "support_area_mm2": round(support, 2),
         "support_fraction": round(support / total, 4),
         "bridge_area_mm2": round(float(areas[bridge].sum()), 2),
@@ -478,6 +499,224 @@ def _score(
         "footprint_mm": [round(float(size[0]), 3), round(float(size[1]), 3)],
         "size_mm": [round(float(value), 3) for value in size],
     }
+
+
+def floating_starts(vertices, triangles, normals, layer_mm: float, counted=None) -> list[dict]:
+    """Where an island of material begins with nothing under it, in the print pose.
+
+    A layer that has an island the layer below does not touch can only start at
+    a lowest point of the solid: a vertex, edge, or flat patch whose neighbors
+    are all higher and whose faces face down, so material is above it and air is
+    below. One on the bed is the first layer. One with material less than a
+    layer below it prints onto that. Every other one is a floating start.
+
+    A bridge, or a shelf grown from a wall, is not one: its lowest edge meets
+    material that goes on down, so it is not a lowest point. Each start gives
+    its height, where it is, the first layer's area, the triangles in that
+    layer, and the area of those triangles not already in ``counted``.
+    """
+    if not len(triangles):
+        return []
+    verts, faces = _weld_faces(vertices, triangles)
+    z = verts[:, 2]
+    bed = float(z.min()) + _BED_MM
+    good = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 2] != faces[:, 0])
+    kept = faces[good]
+    source = np.concatenate([kept[:, 0], kept[:, 1], kept[:, 2], kept[:, 1], kept[:, 2], kept[:, 0]])
+    target = np.concatenate([kept[:, 1], kept[:, 2], kept[:, 0], kept[:, 0], kept[:, 1], kept[:, 2]])
+    lowest_neighbor = np.full(len(verts), np.inf)
+    np.minimum.at(lowest_neighbor, source, z[target])
+    # A vertex no neighbor is below. A lowest patch is made only of these.
+    candidate = (lowest_neighbor >= z - _LEVEL_MM) & (z > bed)
+    if not candidate.any():
+        return []
+    neighbors = _csr(source, target, len(verts))
+    face_ids = np.flatnonzero(good)
+    touching = _csr(np.concatenate([kept[:, 0], kept[:, 1], kept[:, 2]]), np.tile(face_ids, 3), len(verts))
+    seen = np.zeros(len(verts), dtype=bool)
+    starts = []
+    for vertex in np.flatnonzero(candidate)[np.argsort(z[candidate], kind="stable")]:
+        vertex = int(vertex)
+        if seen[vertex]:
+            continue
+        level = z[vertex]
+        # The flat patch at this height that this vertex belongs to.
+        patch = [vertex]
+        seen[vertex] = True
+        lowest = True
+        cursor = 0
+        while cursor < len(patch):
+            current = patch[cursor]
+            cursor += 1
+            if not candidate[current]:
+                lowest = False
+            for other in _row(neighbors, current):
+                if abs(z[other] - level) <= _LEVEL_MM and not seen[other]:
+                    seen[other] = True
+                    patch.append(int(other))
+        if not lowest:
+            continue
+        around = sorted({int(face) for member in patch for face in _row(touching, member)})
+        # Material above and air below: some face here faces down.
+        if not any(normals[face][2] < -1e-6 for face in around):
+            continue
+        if _held_from_below(verts, faces, patch, around, layer_mm):
+            continue
+        starts.append(_start_row(verts, faces, normals, patch, around, level, layer_mm, counted))
+    return starts
+
+
+def _csr(source: np.ndarray, target: np.ndarray, count: int) -> tuple[np.ndarray, np.ndarray]:
+    """Each source's targets, as offsets into one sorted array."""
+    order = np.argsort(source, kind="stable")
+    offsets = np.zeros(count + 1, dtype=np.int64)
+    np.add.at(offsets, source + 1, 1)
+    return np.cumsum(offsets), target[order]
+
+
+def _row(table: tuple[np.ndarray, np.ndarray], index: int) -> np.ndarray:
+    offsets, values = table
+    return values[offsets[index] : offsets[index + 1]]
+
+
+def _held_from_below(verts, faces, patch, around, layer_mm: float) -> bool:
+    """True when material lies less than one layer straight below some point of the patch."""
+    others = np.ones(len(faces), dtype=bool)
+    others[around] = False
+    corners = verts[faces[others]]
+    if not len(corners):
+        return False
+    xy = corners[:, :, :2]
+    step = max(1, len(patch) // 32)
+    for member in patch[::step]:
+        point = verts[member]
+        hit = _below(xy, corners, point)
+        if hit is not None and point[2] - hit <= layer_mm + _BED_MM:
+            return True
+    return False
+
+
+def _below(xy, corners, point):
+    """The highest triangle height at or straight below ``point``, or None.
+
+    A surface at the same height counts: a part set on another part rests on it.
+    """
+    a, b, c = xy[:, 0], xy[:, 1], xy[:, 2]
+    p = point[:2]
+    denominator = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
+    usable = np.abs(denominator) > 1e-12
+    safe = np.where(usable, denominator, 1.0)
+    u = ((b[:, 1] - c[:, 1]) * (p[0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (p[1] - c[:, 1])) / safe
+    v = ((c[:, 1] - a[:, 1]) * (p[0] - c[:, 0]) + (a[:, 0] - c[:, 0]) * (p[1] - c[:, 1])) / safe
+    w = 1.0 - u - v
+    inside = usable & (u >= -1e-9) & (v >= -1e-9) & (w >= -1e-9)
+    heights = u * corners[:, 0, 2] + v * corners[:, 1, 2] + w * corners[:, 2, 2]
+    below = inside & (heights <= point[2] + 1e-6)
+    if not below.any():
+        return None
+    return float(heights[below].max())
+
+
+def _start_row(verts, faces, normals, patch, around, level: float, layer_mm: float, counted) -> dict:
+    """One floating start: its height, place, first-layer area, and triangles."""
+    top = level + layer_mm
+    band = set(around)
+    edge_map = _edge_map(faces)
+    stack = list(around)
+    while stack:
+        current = stack.pop()
+        face = faces[current]
+        a, b, c = int(face[0]), int(face[1]), int(face[2])
+        for key in (_edge_key(a, b), _edge_key(b, c), _edge_key(c, a)):
+            for other in edge_map.get(key, ()):
+                if other in band or normals[other][2] >= -1e-6:
+                    continue
+                if float(verts[faces[other]][:, 2].min()) >= top:
+                    continue
+                band.add(other)
+                stack.append(other)
+    down = [face for face in band if normals[face][2] < -1e-6]
+    area = 0.0
+    uncounted = 0.0
+    for face in down:
+        piece = _plan_area_below(verts[faces[face]], top)
+        area += piece
+        if counted is None or not counted[face]:
+            uncounted += piece
+    points = verts[patch]
+    return {
+        "z_mm": float(level),
+        "xy_mm": [float(points[:, 0].mean()), float(points[:, 1].mean())],
+        "area_mm2": area,
+        "uncounted_mm2": uncounted,
+        "triangles": sorted(down),
+    }
+
+
+def _plan_area_below(corners, top: float) -> float:
+    """The area seen from above of the part of a triangle below height ``top``."""
+    polygon = []
+    count = len(corners)
+    for index in range(count):
+        here = corners[index]
+        there = corners[(index + 1) % count]
+        here_in = here[2] <= top
+        there_in = there[2] <= top
+        if here_in:
+            polygon.append(here)
+        if here_in != there_in:
+            t = (top - here[2]) / (there[2] - here[2])
+            polygon.append(here + t * (there - here))
+    if len(polygon) < 3:
+        return 0.0
+    xs = [point[0] for point in polygon]
+    ys = [point[1] for point in polygon]
+    return 0.5 * abs(sum(xs[i] * ys[(i + 1) % len(xs)] - xs[(i + 1) % len(xs)] * ys[i] for i in range(len(xs))))
+
+
+def _floating_rows(found: list[dict], mesh, shape, rotation) -> list[dict]:
+    """The floating starts of the chosen pose, with the model faces and the place in the model."""
+    if not found:
+        return []
+    turned = mesh.vertices @ rotation.T
+    offset = turned.min(axis=0)
+    rows = []
+    for start in found:
+        faces = []
+        if mesh.face_index is not None:
+            faces = sorted({int(mesh.face_index[triangle]) for triangle in start["triangles"]})
+        printed = np.array([start["xy_mm"][0], start["xy_mm"][1], start["z_mm"]])
+        model = rotation.T @ (printed + offset)
+        rows.append(
+            {
+                "z_mm": round(start["z_mm"], 3),
+                "xy_mm": [round(value, 3) for value in start["xy_mm"]],
+                "at_model_mm": [round(float(value), 3) for value in model],
+                "area_mm2": round(float(start["area_mm2"]), 3),
+                "faces": faces,
+            }
+        )
+    rows.sort(key=lambda row: (row["z_mm"], row["xy_mm"]))
+    return rows
+
+
+def _floating_note(starts: list[dict]) -> str:
+    if not starts:
+        return ""
+    lowest = starts[0]
+    return (
+        f" {len(starts)} floating start{'s' if len(starts) != 1 else ''}: material begins in mid-air with nothing "
+        f"under it, the lowest at z {lowest['z_mm']:g} mm (faces {', '.join(str(face) for face in lowest['faces']) or 'unknown'}). "
+        "It needs support in this pose."
+    )
+
+
+def _slicer_floating(slicer: dict) -> dict:
+    """A slicer's own floating-region warning, when the slice gave one."""
+    warning = slicer.get("slicer_warning") if isinstance(slicer, dict) else None
+    if isinstance(warning, str) and re.search(r"floating|cantilever", warning, re.IGNORECASE):
+        return {"slicer_floating_warning": warning}
+    return {}
 
 
 def _threshold(value) -> float:
