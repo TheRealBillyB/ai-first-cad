@@ -66,40 +66,65 @@ def test_bh_s02_script_cannot_signal_its_parent(tmp_path):
     assert (tmp_path / "signal.txt").read_text(encoding="utf-8").startswith("denied")
 
 
+# The detached child writes a heartbeat this often, for this long.
+_BEAT_SECONDS = 0.1
+_BEATS = 100
+
+
 def test_bh_s03_script_cannot_leave_a_detached_child(tmp_path):
+    """Nothing the script started still runs once the call returns.
+
+    The child writes a heartbeat every 0.1 s for 10 s. It may write while the
+    call is still tearing the script down; after the call returns, the
+    heartbeat must stop. The test used to wait for the child to write once,
+    two seconds after the fork, and a teardown slower than that on a loaded
+    runner made it fail although nothing outlived the call.
+    """
     _sandbox_or_skip()
+    beat = (
+        f"for count in range({_BEATS}):\n"
+        "    open('beat.txt', 'w').write(str(count))\n"
+        f"    sleep({_BEAT_SECONDS})\n"
+    )
     if sys.platform == "win32":
+        child = "from time import sleep\n" + beat
         script = (
             "import aicad.sandbox as sandbox\n"
-            "code = (\n"
-            "    'import time\\n'\n"
-            "    'from pathlib import Path\\n'\n"
-            "    'time.sleep(8)\\n'\n"
-            "    'Path(\"phase2.txt\").write_text(\"survived\\\\n\", encoding=\"utf-8\")\\n'\n"
-            ")\n"
-            "sandbox.subprocess.Popen([sandbox.sys.executable, '-c', code])\n"
+            f"sandbox.subprocess.Popen([sandbox.sys.executable, '-c', {child!r}])\n"
+            "sandbox.time.sleep(1.0)\n"
             "part = Box(1, 1, 1)\n"
         )
     else:
+        child = "    " + beat.replace("\n", "\n    ").rstrip()
         script = (
             "import aicad.sandbox as sandbox\n"
+            "sleep = sandbox.time.sleep\n"
             "pid = sandbox.os.fork()\n"
             "if pid == 0:\n"
-            "    sandbox.os.setsid()\n"
-            "    \n"
+            # Linux refuses setsid (seccomp); macOS allows it. Either way the
+            # child must go on to the heartbeat, or the test checks nothing.
+            "    try:\n"
+            "        sandbox.os.setsid()\n"
+            "    except OSError:\n"
+            "        pass\n"
             "    for fd in (0, 1, 2):\n"
             "        try:\n"
             "            sandbox.os.close(fd)\n"
             "        except OSError:\n"
             "            pass\n"
-            "    sandbox.os.system('sleep 2')\n"
-            "    open('phase2.txt', 'w').write('survived\\n')\n"
+            f"{child}\n"
             "    sandbox.os._exit(0)\n"
+            "sleep(1.0)\n"
             "part = Box(1, 1, 1)\n"
         )
     run_part_script(script, tmp_path)
-    time.sleep(4)
-    assert not (tmp_path / "phase2.txt").exists()
+    heartbeat = tmp_path / "beat.txt"
+    # The child started: otherwise the check below would pass for nothing.
+    assert heartbeat.exists()
+    first = heartbeat.read_text(encoding="utf-8")
+    time.sleep(1.0)
+    assert heartbeat.read_text(encoding="utf-8") == first, "a child of the script was still writing"
+    assert int(first or 0) < _BEATS - 1
 
 
 def test_bh_s04_session_step_outside_the_project_is_not_imported(tmp_path):
