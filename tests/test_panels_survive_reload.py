@@ -67,3 +67,15 @@ def test_a_strength_result_survives_a_reload(tmp_path):
     result = workspace.execute("solve_mechanics", {"name": "beam", "setup": setup}, source="agent")
     again = Workspace(workspace.root).state()["panels"]
     assert again["fea"]["max_von_mises_mpa"] == pytest.approx(result["max_von_mises_mpa"])
+
+
+def test_a_panel_made_before_another_copy_changed_the_model_is_not_kept(tmp_path):
+    first = _inspected(tmp_path)
+    second = Workspace(first.root)
+    second.execute("add_step", {"name": "beam", "step": {"op": "cut", "shape": "box", "size": [5, 20, 20], "center": [30, 0, 0]}}, source="agent")
+    # The first copy picks up the change, and its inspection is now about an old model.
+    first.execute("feature_report", {"name": "beam"}, source="agent")
+    reopened = Workspace(first.root).state()
+    assert "inspect" not in reopened["panels"]
+    assert "features" in reopened["panels"]
+    assert reopened["panel_revision"]["features"] == reopened["revision"]

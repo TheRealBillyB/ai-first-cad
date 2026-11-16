@@ -22,9 +22,6 @@ from typing import Any
 
 from aicad import kernel
 from aicad.document import Document
-
-# A panels file larger than this is not written or read.
-_PANELS_MAX_BYTES = 16 * 1024 * 1024
 from aicad.errors import AICADError, GeometryError
 from aicad.plan import ledger_snapshot, plan_files, restore_ledger_snapshot, restore_plan_files
 from aicad.refs import canonical_ref, resolve_edge
@@ -32,6 +29,8 @@ from aicad.requirements import evaluate, normalize
 
 _DOC_NAME = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}\.md$")
 _UNDO_LIMIT = 40
+# A panels file larger than this is not written or read.
+_PANELS_MAX_BYTES = 16 * 1024 * 1024
 _MAX_TEXT_FILE = 8 * 1024 * 1024
 # ui, cli, and api read a note as the file. Other sources, including agent
 # and chat, get the same project-text marker.
@@ -860,7 +859,13 @@ class Workspace:
                 {
                     "version": 1,
                     "project": self._project_fingerprint(),
-                    "panels": {key: value["payload"] for key, value in self.panels.items()},
+                    # Only panels about the model as it is now. A panel from before another
+                    # program's change stays on screen marked old, but is not kept as current.
+                    "panels": {
+                        key: value["payload"]
+                        for key, value in self.panels.items()
+                        if value["revision"] == self.geometry_revision
+                    },
                 },
                 allow_nan=False,
                 default=str,
