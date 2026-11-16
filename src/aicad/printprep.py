@@ -407,6 +407,8 @@ def _bambu_slice_report(executable: str, work, printer_id, layer_height_mm, pric
         note += f" Bambu Studio warned: {first_warning}"
     if supports_state == "on":
         note += " It was sliced again with supports on."
+    if parsed.get("export_note"):
+        note += " " + parsed["export_note"]
     parsed["note"] = plain_line(note)
     profiles = parsed["profiles"]
     parsed["layer_height_mm"] = layer_height_mm
@@ -465,6 +467,9 @@ _BAMBU_PROFILES = {
     "bambu_x1": ("Bambu Lab X1 Carbon 0.4 nozzle", "0.20mm Standard @BBL X1C", "Bambu PLA Basic @BBL X1C"),
 }
 _BAMBU_DEFAULT = "bambu_a1"
+# Bambu Studio's return code when writing an output file failed after the slice
+# itself finished. Its result.json still has the slice's time and grams.
+_BAMBU_EXPORT_FAILED = -13
 _PROFILE_MAX_BYTES = 4 * 1024 * 1024
 
 
@@ -540,7 +545,6 @@ def _bambu_command(executable: str, supports: bool) -> list[str]:
         "--load-settings", "machine.json;process.json",
         "--load-filaments", "filament.json",
         "--outputdir", ".",
-        "--export-3mf", "sliced.3mf",
         "oriented.stl",
     ]
 
@@ -602,11 +606,10 @@ def _slice_bambu(executable: str, work, printer_id: str | None, layer_height_mm,
         return None, f"Bambu Studio's {chosen} profiles could not be read: {exc}"
     for name, data in files.items():
         held_write_bytes(work, name, json.dumps(data).encode("utf-8"))
-    # The supported slice runs in the same folder. A file left by the first run
-    # must not be read as the second run's result.
-    for name in ("result.json", "sliced.3mf"):
-        if held_is_file(work, name):
-            held_unlink(work, name)
+    # The supported slice runs in the same folder. A result left by the first
+    # run must not be read as the second run's.
+    if held_is_file(work, "result.json"):
+        held_unlink(work, "result.json")
     completed = run_confined_helper(
         _bambu_command(executable, supports), env=program_environment(), timeout=300, **held_run_kwargs(work)
     )
@@ -620,11 +623,19 @@ def _slice_bambu(executable: str, work, printer_id: str | None, layer_height_mm,
     if not isinstance(data, dict):
         return None, log
     code = data.get("return_code")
-    if code not in (0, None):
+    early = _bambu_result(data)
+    # A failed file export after a finished slice still leaves its time and grams.
+    export_failed = code == _BAMBU_EXPORT_FAILED and early["seconds"] is not None and early["grams"] is not None
+    if code not in (0, None) and not export_failed:
         return None, log + f"\nBambu Studio returned {code}: {data.get('error_string') or 'no reason given'}"
     parsed = _bambu_result(data)
     if parsed["seconds"] is None and parsed["grams"] is None:
         return None, log + "\n" + str(data.get("error_string") or "")
+    if export_failed:
+        parsed["export_note"] = (
+            f"Bambu Studio returned {code} after slicing, which is a failed file export, and wrote the time and "
+            "grams of the slice. Those are used."
+        )
     parsed["profiles"] = {"printer": chosen, "machine": machine, "process": process, "filament": filament}
     parsed["printer_matched"] = chosen == printer_id
     return parsed, log

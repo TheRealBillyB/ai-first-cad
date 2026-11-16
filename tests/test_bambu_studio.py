@@ -89,10 +89,11 @@ def test_a_warning_about_supports_slices_again_with_them(monkeypatch):
 
 
 @pytest.mark.skipif(not _BAMBU, reason="Bambu Studio is not installed")
-def test_a_real_print_check_is_sliced_by_bambu_studio(tmp_path):
+@pytest.mark.parametrize("printer", ["bambu_x1", "p1s"])
+def test_a_real_print_check_is_sliced_by_bambu_studio(tmp_path, printer):
     workspace = Workspace(tmp_path / "project")
     workspace.execute("create_part_from_ops", {"name": "box", "ops": [{"op": "add", "shape": "box", "size": [20, 20, 20], "center": [0, 0, 10]}]}, source="agent")
-    setup = {"orientation": "z_up", "slice": True, "render": False, "printer": "bambu_x1"}
+    setup = {"orientation": "z_up", "slice": True, "render": False, "printer": printer}
     slicer = workspace.execute("check_print", {"name": "box", "setup": setup}, source="agent")["slicer"]
     if "bambu" not in str(slicer.get("slicer")).lower():
         pytest.skip("Another slicer on PATH sliced first.")
@@ -153,14 +154,14 @@ def test_a_failed_return_code_is_a_failed_slice(monkeypatch, tmp_path):
     monkeypatch.setattr(printprep, "_bambu_profile", lambda *_args, **_kwargs: {})
 
     def run(command, **kwargs):
-        result = {"return_code": -13, "error_string": "Failed", "sliced_plates": [{"total_predication": 1, "filaments": []}]}
+        result = {"return_code": -1, "error_string": "Failed", "sliced_plates": [{"total_predication": 1, "filaments": []}]}
         (Path(kwargs["cwd"]) / "result.json").write_text(json.dumps(result), encoding="utf-8")
         return _HelperResult(0, "", "")
 
     monkeypatch.setattr("aicad.sandbox.run_confined_helper", run)
     with held_subprocess_directory() as work:
         parsed, log = printprep._slice_bambu("C:/x/bambu-studio.exe", work, None, None, supports=False)
-    assert parsed is None and "returned -13" in log
+    assert parsed is None and "returned -1" in log
 
 
 def test_a_p1s_slices_with_the_p1s_profile():
@@ -168,3 +169,29 @@ def test_a_p1s_slices_with_the_p1s_profile():
     assert printprep._BAMBU_PROFILES["bambu_p1"][0] == "Bambu Lab P1S 0.4 nozzle"
     assert printprep.lookup_printer("p1p")["id"] == "bambu_p1p"
     assert printprep._BAMBU_PROFILES["bambu_p1p"][0] == "Bambu Lab P1P 0.4 nozzle"
+
+
+def test_a_failed_export_after_a_finished_slice_keeps_the_slice(monkeypatch, tmp_path):
+    """Bambu's -13 is a failed file export. Its result.json still has the slice's time and grams."""
+    from aicad.sandbox import _HelperResult
+    from aicad.tool_directory import held_subprocess_directory
+
+    monkeypatch.setattr(printprep, "_bambu_profile_root", lambda _executable: tmp_path)
+    monkeypatch.setattr(printprep, "_bambu_profile", lambda *_args, **_kwargs: {})
+
+    def run(command, **kwargs):
+        assert "--export-3mf" not in command
+        result = {
+            "return_code": -13,
+            "error_string": "Failed exporting 3mf files",
+            "sliced_plates": [{"total_predication": 720, "filaments": [{"total_used_g": 5.5}], "warning_message": ""}],
+        }
+        (Path(kwargs["cwd"]) / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        return _HelperResult(0, "", "")
+
+    monkeypatch.setattr("aicad.sandbox.run_confined_helper", run)
+    with held_subprocess_directory() as work:
+        report = printprep._bambu_slice_report("C:/x/bambu-studio.exe", work, None, None, None)
+    assert report["status"] == "sliced"
+    assert report["seconds"] == 720 and report["grams"] == pytest.approx(5.5)
+    assert "failed file export" in report["note"]
