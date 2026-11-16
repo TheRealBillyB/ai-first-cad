@@ -753,7 +753,7 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int, m
     solve does. The frequency solve has no iterative solver to fall back on:
     its eigenvalue method factorises the matrix directly.
     """
-    from aicad.fea import _ccx_stop, _equation_count, _solve_too_big
+    from aicad.fea import _ccx_stop, _equation_count, _solve_too_big, helper_limit_stop
     from aicad.paths import held_entry_is_file, held_subprocess_kwargs, held_tool_directory, publish_text
 
     node_count = sum(len(body["points"]) for body in bodies)
@@ -791,15 +791,8 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int, m
             # an allocation CalculiX reported, or a crash with no error of its own.
             stop = _ccx_stop(completed)
             if stop == "limit":
-                from aicad.sandbox import memory_bytes
-
-                return None, None, _solve_too_big(
-                    "was stopped at the memory or CPU limit "
-                    f"({memory_bytes() // (1024 * 1024)} MiB of memory, {timeout} s of CPU time)",
-                    unknowns,
-                    node_count,
-                    mesh_size,
-                )
+                # The frequency helper is told to use one thread.
+                return None, None, _solve_too_big(helper_limit_stop(timeout), unknowns, node_count, mesh_size)
             if stop == "crash":
                 return None, None, (
                     f"CalculiX stopped without a result file or an error of its own (exit code {completed.returncode}) "

@@ -42,6 +42,8 @@ def _ccx(monkeypatch, answer):
 
 
 def test_a_frequency_solve_stopped_by_its_limit_names_its_size(monkeypatch):
+    # The wording of a helper with caps of its own, as on Windows.
+    monkeypatch.setattr("aicad.fea._helper_has_caps", lambda: True)
     _ccx(monkeypatch, _HelperResult(-1, "Factoring the system of equations using the symmetric spooles solver", "", limit_hit=True))
     frequencies, _vectors, warning = modal._frequency_once([_body()], np.array([0]), [], 5, 180, 2.0)
     assert frequencies is None
@@ -66,6 +68,7 @@ def test_an_error_calculix_reports_is_passed_on(monkeypatch):
 
 def test_a_failed_allocation_calculix_prints_is_the_limit(monkeypatch):
     """The helper saw no limit, but CalculiX said it could not allocate: that is the solve's size too."""
+    monkeypatch.setattr("aicad.fea._helper_has_caps", lambda: True)
     _ccx(monkeypatch, _HelperResult(1, "Factoring the system\n*ERROR in spooles: could not allocate 812 MB\n", ""))
     frequencies, _vectors, warning = modal._frequency_once([_body()], np.array([0]), [], 5, 180, 2.0)
     assert frequencies is None
