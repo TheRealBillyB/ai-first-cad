@@ -90,3 +90,45 @@ def test_a_counterbore_is_a_step_on_a_shape_part(tmp_path):
 def test_a_hole_that_cannot_be_made_is_refused(hole, message):
     with pytest.raises(GeometryError, match=message):
         kernel.make_from_ops([*_PLATE, {"at": [0, 0, 10], **hole}])
+
+
+def _holed(tmp_path, hole: dict) -> Workspace:
+    workspace = Workspace(tmp_path / "project")
+    workspace.execute("create_part_from_ops", {"name": "plate", "ops": [*_PLATE, {"op": "cut", **hole}]}, source="agent")
+    return workspace
+
+
+def _hole_axis_x(workspace: Workspace) -> float:
+    faces = workspace.document.describe_faces("plate")["faces"]
+    return next(face["axis_origin_mm"][0] for face in faces if face["kind"] == "cylinder")
+
+
+def test_a_counterbore_lists_and_changes_its_own_sizes(tmp_path):
+    hole = {"shape": "counterbore", "at": [0, 0, 10], "diameter": 6.6, "depth": 10, "counterbore_diameter": 11, "counterbore_depth": 6.5}
+    workspace = _holed(tmp_path, hole)
+    listed = {item["id"] for item in workspace.execute("list_parameters", {"name": "plate"}, source="agent")["parameters"]}
+    assert {"op/1/diameter", "op/1/depth", "op/1/counterbore_diameter", "op/1/counterbore_depth", "op/1/at.x"} <= listed
+    assert not any(item.startswith("op/1/center") for item in listed)
+    workspace.execute("set_parameter", {"name": "plate", "parameter": "op/1/counterbore_depth", "value": 3}, source="ui")
+    volume = workspace.document.measure("plate").volume_mm3
+    assert volume == pytest.approx(_VOLUME - math.pi * (3.3**2 * 10 + (5.5**2 - 3.3**2) * 3), rel=1e-6)
+    workspace.execute("set_parameter", {"name": "plate", "parameter": "op/1/at.x", "value": 8}, source="ui")
+    assert _hole_axis_x(workspace) == pytest.approx(8, abs=1e-6)
+    with pytest.raises(GeometryError, match="No parameter 'op/1/center.x'"):
+        workspace.execute("set_parameter", {"name": "plate", "parameter": "op/1/center.x", "value": 5}, source="ui")
+
+
+def test_a_countersink_lists_its_angle(tmp_path):
+    hole = {"shape": "countersink", "at": [0, 0, 10], "diameter": 6.6, "depth": 10, "countersink_diameter": 12.4}
+    workspace = _holed(tmp_path, hole)
+    listed = {item["id"]: item for item in workspace.execute("list_parameters", {"name": "plate"}, source="agent")["parameters"]}
+    assert listed["op/1/countersink_angle"]["value"] == 90.0 and listed["op/1/countersink_angle"]["unit"] == "deg"
+    before = workspace.document.measure("plate").volume_mm3
+    workspace.execute("set_parameter", {"name": "plate", "parameter": "op/1/countersink_angle", "value": 120}, source="ui")
+    # The same countersink diameter at a wider angle is a shallower cone, so less is cut away.
+    assert workspace.document.measure("plate").volume_mm3 > before
+
+
+def test_a_hole_given_a_center_is_refused():
+    with pytest.raises(GeometryError, match="placed by at"):
+        kernel.make_from_ops([*_PLATE, {"op": "cut", "shape": "counterbore", "center": [5, 0, 10], "diameter": 5, "depth": 5, "counterbore_diameter": 8, "counterbore_depth": 2}])

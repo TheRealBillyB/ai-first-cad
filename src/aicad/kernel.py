@@ -3475,6 +3475,10 @@ def hole_tool(spec: dict, label: str = "Hole"):
     and most metric flat-head screws).
     """
     kind = spec.get("shape")
+    if "center" in spec:
+        raise GeometryError(
+            f"{label}: a hole is placed by at, the point on the surface where it starts, not by center."
+        )
     at = finite_vec3(spec.get("at", [0, 0, 0]), f"{label} at")
     axis = finite_vec3(spec.get("axis", [0, 0, -1]), f"{label} axis")
     length = math.sqrt(sum(component * component for component in axis))
