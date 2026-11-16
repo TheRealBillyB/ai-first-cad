@@ -896,7 +896,10 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
         setup needs material (a name from list_materials), fixes, and loads.
         Optional mesh_size_mm and target_safety_factor (default 2). A fix is
-        {"name", "select"}. A load adds "type" of force, pressure, bolt, torque, or remote:
+        {"name", "select"}. setup.relative lists face pairs {"name", "a": select, "b": select};
+        each reports how far b moved relative to a, with gap_change_mm along the line
+        between them (positive: apart), such as how far a vise jaw opens under load.
+        A load adds "type" of force, pressure, bolt, torque, or remote:
         force has vector [x, y, z] in newtons, pressure has magnitude in MPa
         (positive pushes into the face), bolt has axial newtons along the hole,
         torque has torque_nm about axis [x, y, z] as a couple with no net force,
