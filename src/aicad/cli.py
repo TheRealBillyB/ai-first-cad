@@ -429,7 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     printed.add_argument(
         "--rotation-deg", type=float, nargs=3, default=None, metavar=("RX", "RY", "RZ"),
-        help="Print pose: turns about X, then Y, then Z, in degrees.",
+        help="Print pose: the same turn as a part placement's rotation_deg, in degrees.",
     )
     printed.add_argument("--printer", default=None, help="bambu_a1, prusa_mk4, ender_3, and the other known beds.")
     printed.add_argument("--threshold", type=float, default=45.0, help="Degrees from vertical before a face needs support.")

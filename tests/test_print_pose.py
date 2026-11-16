@@ -105,3 +105,20 @@ def test_the_command_line_states_a_pose():
     assert args.up == [0.0, 1.0, 1.0]
     args = build_parser().parse_args(["print", "frame", "--rotation-deg", "90", "0", "30"])
     assert args.rotation_deg == [90.0, 0.0, 30.0]
+
+
+@pytest.mark.parametrize("angles", [(30, 40, 50), (90, 0, 30), (-20, 75, 160)])
+def test_rotation_deg_is_the_turn_a_part_placement_makes(angles):
+    """It multiplied Z, Y, X; a placement uses build123d's Rot, so mixed angles disagreed."""
+    probe = kernel.make_from_ops([{"op": "add", "shape": "box", "size": [0.5, 0.5, 0.5], "center": [10, 3, 1]}])
+    placed = kernel.place(probe, (0.0, 0.0, 0.0), angles)
+    center = placed.impl.center()
+    report = printprep.analyze_print(_cube(), {**_CHECK, "rotation_deg": list(angles)})
+    rotation = np.array(report["print_rotation"])
+    assert rotation @ np.array([10.0, 3.0, 1.0]) == pytest.approx([center.X, center.Y, center.Z], abs=1e-6)
+
+
+def test_model_x_turned_30_40_50_lands_where_a_placement_puts_it():
+    report = printprep.analyze_print(_cube(), {**_CHECK, "rotation_deg": [30, 40, 50]})
+    x = np.array(report["print_rotation"]) @ np.array([1.0, 0.0, 0.0])
+    assert x == pytest.approx([0.49, 0.87, 0.03], abs=0.01)

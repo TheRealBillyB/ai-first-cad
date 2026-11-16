@@ -2078,7 +2078,7 @@ _add(Command(
                 "type": "object",
                 "description": (
                     "orientation (best or z_up), or a stated pose: up (the modeled direction that points up) or "
-                    "rotation_deg (about X, then Y, then Z). threshold_deg, bridge_mm, printer, slice, price_per_kg, "
+                    "rotation_deg (the same turn as a part placement's rotation_deg). threshold_deg, bridge_mm, printer, slice, price_per_kg, "
                     "layer_height_mm."
                 ),
             },

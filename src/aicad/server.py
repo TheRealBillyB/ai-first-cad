@@ -1305,7 +1305,7 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         setup.orientation is best or one of z_up, z_down, x_up, x_down, y_up, y_down.
         Any other print pose is stated with setup.up, the modeled direction that points
         up on the bed ([0, 1, 1] lays the part on a 45 degree face), or with
-        setup.rotation_deg, turns about X, then Y, then Z as in a part's placement.
+        setup.rotation_deg, the same turn as a part placement's rotation_deg.
         threshold_deg defaults to 45 (degrees from vertical). bridge_mm defaults to
         5: a down-facing span held along an edge no wider than that is a bridge, not
         support. 0 counts every overhang. A face with no path to the bed still counts.

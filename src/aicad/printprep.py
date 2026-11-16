@@ -749,9 +749,9 @@ def _stated_pose(setup: dict) -> dict | None:
     """The print pose the setup states, as a rotation, or None for a named orientation.
 
     ``up`` is the modeled direction that points up on the bed, such as
-    [0, 1, 1] for a part laid on a 45 degree face. ``rotation_deg`` turns the
-    model about X, then Y, then Z, the way a part's placement does, and the
-    result is set on the bed as it lands.
+    [0, 1, 1] for a part laid on a 45 degree face. ``rotation_deg`` is the
+    same turn as a part placement's rotation_deg (kernel.place, build123d's
+    Rot(rx, ry, rz)), and the result is set on the bed as it lands.
     """
     has_up = setup.get("up") is not None
     has_turn = setup.get("rotation_deg") is not None
@@ -770,14 +770,18 @@ def _stated_pose(setup: dict) -> dict | None:
             "stated": {"up": [float(value) for value in setup["up"]]},
         }
     if has_turn:
-        rx, ry, rz = (math.radians(value) for value in kernel.finite_vec3(setup["rotation_deg"], "rotation_deg", unit="deg"))
-        about_x = np.array([[1, 0, 0], [0, math.cos(rx), -math.sin(rx)], [0, math.sin(rx), math.cos(rx)]])
-        about_y = np.array([[math.cos(ry), 0, math.sin(ry)], [0, 1, 0], [-math.sin(ry), 0, math.cos(ry)]])
-        about_z = np.array([[math.cos(rz), -math.sin(rz), 0], [math.sin(rz), math.cos(rz), 0], [0, 0, 1]])
+        from build123d import Pos, Rot
+
+        angles = kernel.finite_vec3(setup["rotation_deg"], "rotation_deg", unit="deg")
+        # The turn a part's placement makes, read from build123d itself, so the
+        # two can never disagree: each column is where a model axis ends up.
+        turn = Rot(*angles)
+        columns = [(turn * Pos(*axis)).position for axis in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+        rotation = np.array([[float(column.X), float(column.Y), float(column.Z)] for column in columns]).T
         shown = ", ".join(f"{float(value):g}" for value in setup["rotation_deg"])
         return {
-            "rotation": about_z @ about_y @ about_x,
-            "note": f"Turned about X, then Y, then Z by ({shown}) degrees, then set on the bed.",
+            "rotation": rotation,
+            "note": f"Turned by rotation_deg ({shown}), as a part's placement turns, then set on the bed.",
             "stated": {"rotation_deg": [float(value) for value in setup["rotation_deg"]]},
         }
     return None
