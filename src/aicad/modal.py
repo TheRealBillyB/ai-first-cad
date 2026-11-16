@@ -28,6 +28,7 @@ from aicad.fea import (
     _nodes_for,
     fea_available,
     lookup_material,
+    solid_material,
     select_faces,
     straight_sided,
 )
@@ -66,7 +67,7 @@ def solve_modal(
     ready, reason = fea_available()
     if not ready:
         raise GeometryError(reason)
-    material = lookup_material(str(setup.get("material") or ""))
+    material = solid_material(str(setup.get("material") or ""))
     mesh_size = _positive(setup.get("mesh_size_mm"), 3.0, "mesh_size_mm")
     nmodes = int(_positive(setup.get("modes"), 6, "modes"))
     if nmodes < 1 or nmodes > 20:
@@ -199,7 +200,7 @@ def solve_modal_assembly(spec: dict, shapes: dict, setup: dict | None, out_dir: 
         rotation = matrix[:3, :3]
         origin = matrix[:3, 3]
         world = mesh["points"] @ rotation.T + origin
-        material = lookup_material(str(instance.get("material") or fallback))
+        material = solid_material(str(instance.get("material") or fallback))
         bodies.append(
             {
                 "name": instance["name"],
