@@ -1259,7 +1259,10 @@ def _hole_parameters(op: dict, index: int, label: str, step: str) -> list[dict]:
     ]
     if op.get("shape") == "countersink":
         parameters.append(
-            _scalar(f"op/{index}/countersink_angle", f"{label} countersink angle", op.get("countersink_angle", 90.0), "angle", step)
+            _scalar(
+                f"op/{index}/countersink_angle", f"{label} countersink angle", op.get("countersink_angle", 90.0), "angle", step,
+                (1, 179, 1),
+            )
         )
     parameters.extend(_vector_parameters(f"op/{index}", label, "at", op.get("at") or [0, 0, 0], "offset", step))
     return parameters
@@ -1271,11 +1274,19 @@ def _thread_parameters(op: dict, index: int, label: str, step: str) -> list[dict
         _scalar(f"op/{index}/{field}", f"{label} {field}", op.get(field), "length", step)
         for field in ("diameter", "pitch", "length")
     ]
-    parameters.append(_scalar(f"op/{index}/starts", f"{label} starts", op.get("starts", 1), "count", step))
+    parameters.append(_scalar(f"op/{index}/starts", f"{label} starts", op.get("starts", 1), "count", step, (1, 8, 1)))
     if str(op.get("profile", "trapezoidal")) == "trapezoidal":
-        parameters.append(_scalar(f"op/{index}/angle", f"{label} flank angle", op.get("angle", 30.0), "angle", step))
+        parameters.append(
+            _scalar(f"op/{index}/angle", f"{label} flank angle", op.get("angle", 30.0), "angle", step, (1, 89, 1))
+        )
     if op.get("clearance_mm") is not None:
-        parameters.append(_scalar(f"op/{index}/clearance_mm", f"{label} clearance", op.get("clearance_mm"), "offset", step))
+        pitch = float(op.get("pitch") or 1.0)
+        parameters.append(
+            _scalar(
+                f"op/{index}/clearance_mm", f"{label} clearance", op.get("clearance_mm"), "clearance", step,
+                (0, round(pitch / 4 - 0.01, 2), 0.05),
+            )
+        )
     parameters.extend(_vector_parameters(f"op/{index}", label, "at", op.get("at") or [0, 0, 0], "offset", step))
     return parameters
 
@@ -1455,7 +1466,13 @@ def _signed_distance(constraint: dict, entities: dict) -> bool:
     return {entity.get("type") for entity in ends} == {"point", "line"}
 
 
-def _scalar(identifier: str, label: str, value, kind: str, step: str | None = None) -> dict | None:
+def _scalar(
+    identifier: str, label: str, value, kind: str, step: str | None = None, limits: tuple | None = None
+) -> dict | None:
+    """One parameter. ``limits`` is (min, max, increment) when only that range is valid.
+
+    The page's slider uses it; without it the slider guesses a range from the kind.
+    """
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -1469,6 +1486,8 @@ def _scalar(identifier: str, label: str, value, kind: str, step: str | None = No
     }
     if step:
         item["step"] = step
+    if limits is not None:
+        item["min"], item["max"], item["increment"] = (float(limit) for limit in limits)
     return item
 
 
