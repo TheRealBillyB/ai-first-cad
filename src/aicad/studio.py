@@ -1238,6 +1238,10 @@ def _op_parameters(ops: list) -> list[dict]:
             # A hole is placed by at, the point where it starts, and has no center.
             parameters.extend(_hole_parameters(op, index, label, step))
             continue
+        elif shape == "thread":
+            # A thread is placed by at too, and runs along its axis.
+            parameters.extend(_thread_parameters(op, index, label, step))
+            continue
         parameters.extend(_vector_parameters(f"op/{index}", label, "center", op.get("center") or [0, 0, 0], "offset", step))
     return [item for item in parameters if item is not None]
 
@@ -1257,6 +1261,21 @@ def _hole_parameters(op: dict, index: int, label: str, step: str) -> list[dict]:
         parameters.append(
             _scalar(f"op/{index}/countersink_angle", f"{label} countersink angle", op.get("countersink_angle", 90.0), "angle", step)
         )
+    parameters.extend(_vector_parameters(f"op/{index}", label, "at", op.get("at") or [0, 0, 0], "offset", step))
+    return parameters
+
+
+def _thread_parameters(op: dict, index: int, label: str, step: str) -> list[dict]:
+    """A thread's sizes, its start count, and its start point."""
+    parameters = [
+        _scalar(f"op/{index}/{field}", f"{label} {field}", op.get(field), "length", step)
+        for field in ("diameter", "pitch", "length")
+    ]
+    parameters.append(_scalar(f"op/{index}/starts", f"{label} starts", op.get("starts", 1), "count", step))
+    if str(op.get("profile", "trapezoidal")) == "trapezoidal":
+        parameters.append(_scalar(f"op/{index}/angle", f"{label} flank angle", op.get("angle", 30.0), "angle", step))
+    if op.get("clearance_mm") is not None:
+        parameters.append(_scalar(f"op/{index}/clearance_mm", f"{label} clearance", op.get("clearance_mm"), "offset", step))
     parameters.extend(_vector_parameters(f"op/{index}", label, "at", op.get("at") or [0, 0, 0], "offset", step))
     return parameters
 
@@ -1445,7 +1464,7 @@ def _scalar(identifier: str, label: str, value, kind: str, step: str | None = No
         "id": identifier,
         "label": label,
         "value": number,
-        "unit": "deg" if kind == "angle" else "mm",
+        "unit": {"angle": "deg", "count": ""}.get(kind, "mm"),
         "kind": kind,
     }
     if step:

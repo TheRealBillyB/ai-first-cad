@@ -20,10 +20,12 @@ Profiles:
 - ``iso``: a metric ISO 68-1 fastener thread, ``diameter`` the major diameter,
   one start.
 
-``clearance_mm`` is taken off each flank of a screw and added to a nut's
-(bd_warehouse's manufacturing compensation), for the clearance a printed
-pair needs. ``ends`` finishes each end: ``fade`` (the thread runs out
-smoothly; default), ``square``, ``chamfer``, or ``raw``.
+``clearance_mm`` is taken off each flank of a screw and added to each flank
+of a nut (bd_warehouse's manufacturing compensation), for the clearance a
+printed pair needs. Give the same value to both: 0.2 on the screw and on the
+nut left a 0.10 mm smallest gap between their flanks. ``ends`` finishes each
+end: ``fade`` (the thread runs out smoothly; default), ``square``,
+``chamfer``, or ``raw``. ``starts`` is a whole number; 2.0 is taken as 2.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ def screw(
     """A threaded rod: the core at the thread's root and the thread fused onto it."""
     from build123d import Cylinder, Pos
 
+    starts = _whole_starts(starts)
     thread = _thread(diameter, pitch, length, profile, angle, starts, hand, clearance_mm, ends, external=True)
     core = Pos(0, 0, length / 2.0) * Cylinder(float(thread.root_radius) + 1e-3, length)
     return core + thread
@@ -69,10 +72,9 @@ def nut_tool(
     ends: str = "square",
 ):
     """What to cut from a body for a tapped hole: a bore at the thread's root, less the teeth."""
-    from build123d import Cylinder, Pos
+    from build123d import Cylinder, Pos, Rot
 
-    from build123d import Rot
-
+    starts = _whole_starts(starts)
     thread = _thread(diameter, pitch, length, profile, angle, starts, hand, clearance_mm, ends, external=False)
     # bd_warehouse starts an internal thread's teeth where an external thread's teeth are. Half a
     # pitch round, they sit in the screw's grooves, so a screw and a nut from one height mesh.
@@ -83,6 +85,7 @@ def nut_tool(
 
 def thread_info(diameter: float, pitch: float, *, profile: str = "trapezoidal", angle: float = 30.0, starts: int = 1) -> dict:
     """The numbers a design needs: lead, helix angle, and the root and crest diameters."""
+    starts = _whole_starts(starts)
     _check(diameter, pitch, 1.0, profile, angle, starts, "right", 0.0, "fade")
     thread = _thread(diameter, pitch, max(pitch * starts, 1.0), profile, angle, starts, "right", 0.0, "raw", external=True)
     lead = pitch * starts
@@ -104,6 +107,10 @@ def thread_op(op: dict, label: str):
 
     from aicad.kernel import finite_number, finite_vec3
 
+    if "center" in op:
+        raise GeometryError(
+            f"{label}: a thread is placed by at, the point where it starts, and runs along axis. It has no center."
+        )
     at = finite_vec3(op.get("at", [0, 0, 0]), f"{label} at")
     axis = finite_vec3(op.get("axis", [0, 0, 1]), f"{label} axis")
     if math.sqrt(sum(value * value for value in axis)) < 1e-9:
@@ -122,6 +129,13 @@ def thread_op(op: dict, label: str):
         arguments["ends"] = str(op["ends"])
     solid = screw(**arguments) if op.get("op") == "add" else nut_tool(**arguments)
     return Plane(origin=at, z_dir=axis) * solid
+
+
+def _whole_starts(starts):
+    """A start count given as 2 or 2.0 is 2. Anything else is left for _check to refuse."""
+    if isinstance(starts, float) and not isinstance(starts, bool) and math.isfinite(starts) and starts.is_integer():
+        return int(starts)
+    return starts
 
 
 def _check(diameter, pitch, length, profile, angle, starts, hand, clearance_mm, ends) -> None:

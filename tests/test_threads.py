@@ -103,3 +103,39 @@ def test_a_part_script_can_make_a_lead_screw(tmp_path: Path, config_home):
     )
     assert shape.impl.is_valid
     assert float(shape.impl.volume) > math.pi * 5**2 * 20
+
+
+def test_a_thread_op_lists_and_changes_its_own_sizes(tmp_path):
+    from aicad.workspace import Workspace
+
+    workspace = Workspace(tmp_path / "project")
+    workspace.execute(
+        "create_part_from_ops",
+        {"name": "rod", "ops": [{"op": "add", "shape": "thread", "diameter": 14, "pitch": 4, "starts": 2, "length": 20}]},
+        source="agent",
+    )
+    listed = {item["id"]: item for item in workspace.execute("list_parameters", {"name": "rod"}, source="agent")["parameters"]}
+    assert {"op/0/diameter", "op/0/pitch", "op/0/length", "op/0/starts", "op/0/angle", "op/0/at.x"} <= set(listed)
+    assert not any(item.startswith("op/0/center") for item in listed)
+    assert listed["op/0/starts"]["unit"] == ""
+    workspace.execute("set_parameter", {"name": "rod", "parameter": "op/0/length", "value": 30}, source="ui")
+    box = workspace.document._parts["rod"].shape.impl.bounding_box()
+    assert box.max.Z - box.min.Z == pytest.approx(30, abs=1e-6)
+    workspace.execute("set_parameter", {"name": "rod", "parameter": "op/0/at.x", "value": 50}, source="ui")
+    box = workspace.document._parts["rod"].shape.impl.bounding_box()
+    assert (box.max.X + box.min.X) / 2 == pytest.approx(50, abs=0.05)
+    # The count comes back from set_parameter as 1.0, a whole number.
+    workspace.execute("set_parameter", {"name": "rod", "parameter": "op/0/starts", "value": 1}, source="ui")
+    with pytest.raises(GeometryError, match="No parameter 'op/0/center.x'"):
+        workspace.execute("set_parameter", {"name": "rod", "parameter": "op/0/center.x", "value": 5}, source="ui")
+
+
+def test_a_thread_given_a_center_is_refused():
+    with pytest.raises(GeometryError, match="placed by at"):
+        kernel.make_from_ops([{"op": "add", "shape": "thread", "diameter": 14, "pitch": 4, "length": 20, "center": [50, 0, 0]}])
+
+
+def test_starts_given_as_a_whole_float_is_taken():
+    assert threads.thread_info(14, 4, starts=2.0)["lead_mm"] == 8
+    with pytest.raises(GeometryError, match="1 to 8 starts"):
+        threads.screw(14, 4, 20, starts=2.5)
