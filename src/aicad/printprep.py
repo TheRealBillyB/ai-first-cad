@@ -535,6 +535,8 @@ def floating_starts(vertices, triangles, normals, layer_mm: float, counted=None)
     touching = _csr(np.concatenate([kept[:, 0], kept[:, 1], kept[:, 2]]), np.tile(face_ids, 3), len(verts))
     seen = np.zeros(len(verts), dtype=bool)
     starts = []
+    # Built once: rebuilding it for each start made many starts quadratic in the mesh.
+    edge_map = None
     for vertex in np.flatnonzero(candidate)[np.argsort(z[candidate], kind="stable")]:
         vertex = int(vertex)
         if seen[vertex]:
@@ -562,7 +564,9 @@ def floating_starts(vertices, triangles, normals, layer_mm: float, counted=None)
             continue
         if _held_from_below(verts, faces, patch, around, layer_mm):
             continue
-        starts.append(_start_row(verts, faces, normals, patch, around, level, layer_mm, counted))
+        if edge_map is None:
+            edge_map = _edge_map(faces)
+        starts.append(_start_row(verts, faces, normals, patch, around, level, layer_mm, counted, edge_map))
     return starts
 
 
@@ -617,11 +621,10 @@ def _below(xy, corners, point):
     return float(heights[below].max())
 
 
-def _start_row(verts, faces, normals, patch, around, level: float, layer_mm: float, counted) -> dict:
+def _start_row(verts, faces, normals, patch, around, level: float, layer_mm: float, counted, edge_map) -> dict:
     """One floating start: its height, place, first-layer area, and triangles."""
     top = level + layer_mm
     band = set(around)
-    edge_map = _edge_map(faces)
     stack = list(around)
     while stack:
         current = stack.pop()
