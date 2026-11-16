@@ -198,9 +198,9 @@ class Workspace:
         is ``ui``. MCP is ``agent``. The request body cannot choose it.
         """
         if name == "undo":
-            return self.undo(source)
+            return self._name_workspace(self.undo(source))
         if name == "redo":
-            return self.redo(source)
+            return self._name_workspace(self.redo(source))
         command = COMMANDS.get(name)
         if command is None:
             known = ", ".join(sorted(COMMANDS))
@@ -288,12 +288,24 @@ class Workspace:
                 ):
                     self.panels.pop(panel, None)
                 self._save_panels()
+            result = self._name_workspace(result)
             self._record(name, arguments, result, source)
             self.event_id += 1
             event = self._event(name, arguments, result, source)
             listeners = list(self._listeners)
         for listener in listeners:
             listener(event)
+        return result
+
+    def _name_workspace(self, result):
+        """Say which project a command acted on: its folder name.
+
+        A client connected to the workspace app may not know which project the
+        app has open. A result that already names its workspace keeps that.
+        The result is copied: a handler may also hold it as a panel.
+        """
+        if isinstance(result, dict) and "workspace" not in result:
+            return {**result, "workspace": self.root.name}
         return result
 
     def _pick_up_outside_changes(self) -> None:
