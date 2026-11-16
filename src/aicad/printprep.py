@@ -26,7 +26,8 @@ from aicad.render import render_scalar_views
 PRINTERS = {
     "bambu_a1": {"name": "Bambu Lab A1", "size_mm": [256, 256, 256]},
     "bambu_a1_mini": {"name": "Bambu Lab A1 mini", "size_mm": [180, 180, 180]},
-    "bambu_p1": {"name": "Bambu Lab P1P / P1S", "size_mm": [256, 256, 256]},
+    "bambu_p1": {"name": "Bambu Lab P1S", "size_mm": [256, 256, 256]},
+    "bambu_p1p": {"name": "Bambu Lab P1P", "size_mm": [256, 256, 256]},
     "bambu_x1": {"name": "Bambu Lab X1 / X1C", "size_mm": [256, 256, 256]},
     "prusa_mk4": {"name": "Prusa MK4", "size_mm": [250, 210, 220]},
     "ender_3": {"name": "Creality Ender 3", "size_mm": [220, 220, 250]},
@@ -39,7 +40,8 @@ _PRINTER_ALIASES = {
     "a1 mini": "bambu_a1_mini",
     "p1": "bambu_p1",
     "p1s": "bambu_p1",
-    "p1p": "bambu_p1",
+    "bambu_p1s": "bambu_p1",
+    "p1p": "bambu_p1p",
     "x1": "bambu_x1",
     "x1c": "bambu_x1",
     "mk4": "prusa_mk4",
@@ -457,7 +459,9 @@ _BAMBU_INSTALLS = (
 _BAMBU_PROFILES = {
     "bambu_a1": ("Bambu Lab A1 0.4 nozzle", "0.20mm Standard @BBL A1", "Bambu PLA Basic @BBL A1"),
     "bambu_a1_mini": ("Bambu Lab A1 mini 0.4 nozzle", "0.20mm Standard @BBL A1M", "Bambu PLA Basic @BBL A1M"),
-    "bambu_p1": ("Bambu Lab P1P 0.4 nozzle", "0.20mm Standard @BBL P1P", "Bambu PLA Basic @BBL X1C"),
+    # Bambu's X1C process and filament profiles list the P1S as compatible.
+    "bambu_p1": ("Bambu Lab P1S 0.4 nozzle", "0.20mm Standard @BBL X1C", "Bambu PLA Basic @BBL X1C"),
+    "bambu_p1p": ("Bambu Lab P1P 0.4 nozzle", "0.20mm Standard @BBL P1P", "Bambu PLA Basic @BBL X1C"),
     "bambu_x1": ("Bambu Lab X1 Carbon 0.4 nozzle", "0.20mm Standard @BBL X1C", "Bambu PLA Basic @BBL X1C"),
 }
 _BAMBU_DEFAULT = "bambu_a1"
@@ -578,7 +582,7 @@ def _slice_bambu(executable: str, work, printer_id: str | None, layer_height_mm,
     import json
 
     from aicad.sandbox import program_environment, run_confined_helper
-    from aicad.tool_directory import held_is_file, held_read_bytes, held_run_kwargs, held_write_bytes
+    from aicad.tool_directory import held_is_file, held_read_bytes, held_run_kwargs, held_unlink, held_write_bytes
 
     root = _bambu_profile_root(executable)
     if root is None:
@@ -598,6 +602,11 @@ def _slice_bambu(executable: str, work, printer_id: str | None, layer_height_mm,
         return None, f"Bambu Studio's {chosen} profiles could not be read: {exc}"
     for name, data in files.items():
         held_write_bytes(work, name, json.dumps(data).encode("utf-8"))
+    # The supported slice runs in the same folder. A file left by the first run
+    # must not be read as the second run's result.
+    for name in ("result.json", "sliced.3mf"):
+        if held_is_file(work, name):
+            held_unlink(work, name)
     completed = run_confined_helper(
         _bambu_command(executable, supports), env=program_environment(), timeout=300, **held_run_kwargs(work)
     )
@@ -608,6 +617,11 @@ def _slice_bambu(executable: str, work, printer_id: str | None, layer_height_mm,
         data = json.loads(held_read_bytes(work, "result.json", maximum=8 * 1024 * 1024).decode("utf-8"))
     except (OSError, ValueError):
         return None, log
+    if not isinstance(data, dict):
+        return None, log
+    code = data.get("return_code")
+    if code not in (0, None):
+        return None, log + f"\nBambu Studio returned {code}: {data.get('error_string') or 'no reason given'}"
     parsed = _bambu_result(data)
     if parsed["seconds"] is None and parsed["grams"] is None:
         return None, log + "\n" + str(data.get("error_string") or "")
