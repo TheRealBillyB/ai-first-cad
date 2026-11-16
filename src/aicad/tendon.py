@@ -12,6 +12,11 @@ Moving away from that end, a pulley with friction ``μ`` multiplies tension by
 ``exp(-μ φ)``, where ``φ`` is the wrap angle in radians. The capstan ratio of
 that pulley is ``exp(μ φ)``.
 
+A guide with no ``radius_mm`` is an eyelet: the line runs straight through
+its point. It may have ``friction``, applied the same way over the angle the
+line turns there, and ``wrap_radius_mm``, the radius of the lip the line
+bends over, which is then its bend radius.
+
 A path more than 0.01 mm shorter than the rest length is slack and carries no
 tension. A longer path is stretch. Rest length is the authored value, or the
 length of the first sample. Elastic elongation is the actuator force times
@@ -47,7 +52,7 @@ _CABLE_KEYS = {
     "points",
     "waypoints",
 }
-_POINT_KEYS = {"role", "instance", "at", "name", "axis", "radius_mm", "wrap", "friction", "turns"}
+_POINT_KEYS = {"role", "instance", "at", "name", "axis", "radius_mm", "wrap", "friction", "turns", "wrap_radius_mm"}
 _SLACK_MM = 0.01
 _MAX_FREE_WRAPS = 8
 _MAX_POINTS = 32
@@ -63,6 +68,7 @@ def presentation() -> tuple[str, list[str]]:
             "radius_mm is the cable centerline. The bend check compares that radius with min_bend_radius_mm.",
             "An omitted wrap uses the shorter arc. cw and ccw follow the right-hand rule about the axis.",
             "Capstan tension is multiplied by exp(-friction × wrap) across each pulley, moving away from the actuator. A slack route carries no tension.",
+            "An eyelet (a guide with no radius_mm) takes friction over the angle the line turns through it, and its wrap_radius_mm is its bend radius.",
             "Elastic elongation uses the library modulus and a circular cross-section. It is not added to the path.",
             "A collision is a centerline sample inside a solid, or closer than the cable radius plus pinch_mm. Samples on a pulley's own arc are the groove and are not counted against that part.",
             "Pulleys whose axes are not parallel use the straight line between the in-plane tangents.",
@@ -76,6 +82,7 @@ def assumptions() -> list[str]:
         "The route is straight between tangent points and circular on each sheave. It does not sag, and it does not slip along a groove.",
         "radius_mm is the radius of the cable centerline, not the sheave metal. Bend radius for a pulley or a wrap is that number.",
         "A guide with no radius is a point. Its bend radius is the circumradius of the incoming point, the guide, and the outgoing point. A guide that sits on the incoming or outgoing point is not a corner, so that radius stays unlimited.",
+        "A point guide with wrap_radius_mm is an eyelet with that lip radius. The line still runs through the point, so the length has no arc there, and the bend radius is wrap_radius_mm wherever the line turns. Its friction multiplies tension by exp(-friction × turn) across it, where turn is the angle between the incoming and outgoing spans.",
         "Wrap is cw or ccw about the posed axis. When wrap is omitted, the solver keeps the combination with the smaller total arc.",
         "turns applies to the first sample. Later samples keep the whole turns nearest the sample before, never below zero, so a line that unwinds or winds past a full turn stays continuous.",
         "Rest length is the authored value, or the length of the first sample. Slack is a path more than 0.01 mm shorter than that. Stretch is a path more than 0.01 mm longer.",
@@ -259,10 +266,16 @@ def _point(item, cable: str, index: int) -> dict:
     name = require_one_line(str(item.get("name") or f"{role}_{index + 1}"), "A tendon name", GeometryError)
     radius = item.get("radius_mm")
     sheave = role in ("pulley", "wrap") or (role == "guide" and radius is not None)
-    if role == "anchor" and any(key in item for key in ("axis", "radius_mm", "wrap", "friction", "turns")):
+    if role == "anchor" and any(key in item for key in ("axis", "radius_mm", "wrap", "friction", "turns", "wrap_radius_mm")):
         raise GeometryError(f"{label} is an anchor, so it has no radius, axis, wrap, or friction.")
-    if role == "guide" and not sheave and any(key in item for key in ("axis", "wrap", "friction", "turns")):
-        raise GeometryError(f"{label} needs radius_mm before it can wrap.")
+    if role == "guide" and not sheave and any(key in item for key in ("axis", "wrap", "turns")):
+        raise GeometryError(
+            f"{label} needs radius_mm before it can wrap about an axis. An eyelet takes friction and wrap_radius_mm instead."
+        )
+    if sheave and item.get("wrap_radius_mm") is not None:
+        raise GeometryError(
+            f"{label} has radius_mm, so that is its wrap radius. wrap_radius_mm is for an eyelet, a guide with no radius_mm."
+        )
     record = {
         "role": role,
         "name": name,
@@ -271,6 +284,11 @@ def _point(item, cable: str, index: int) -> dict:
         "kind": "point",
     }
     if not sheave:
+        if role == "guide":
+            # An eyelet: the line runs through the point and bends over its lip.
+            record["friction"] = _nonnegative(item.get("friction") if item.get("friction") is not None else 0.0, f"{label} friction")
+            lip = item.get("wrap_radius_mm")
+            record["wrap_radius_mm"] = None if lip is None else _positive(lip, f"{label} wrap_radius_mm")
         return record
     if radius is None:
         raise GeometryError(f"{label} needs radius_mm.")
@@ -303,6 +321,9 @@ def _place(cable: dict, solved: dict) -> list[dict]:
             "kind": point["kind"],
             "at": transform_point(matrix, point["at"]),
         }
+        if point["kind"] == "point":
+            node["friction"] = point.get("friction", 0.0)
+            node["wrap_radius_mm"] = point.get("wrap_radius_mm")
         if point["kind"] == "sheave":
             axis = _unit(_rotate(matrix, point["axis"]), f"{cable['name']} {point['name']} axis")
             node.update(
@@ -604,6 +625,9 @@ def _metrics(cable: dict, route: dict, rest: float) -> dict:
             "turn_deg": round(math.degrees(bend["turn"]), 3),
             "ok": not violation,
         }
+        if not bend["sheave"] and bend.get("friction"):
+            row["friction"] = bend["friction"]
+            row["capstan_ratio"] = round(math.exp(bend["friction"] * bend["turn"]), 6)
         bends.append(row)
         if radius != math.inf and (worst is None or radius < worst):
             worst = radius
@@ -699,7 +723,11 @@ def _tensions(cable: dict, route: dict, carried: bool) -> tuple[list[float] | No
 
 
 def _between(route: dict) -> list[dict | None]:
-    """The sheave between each pair of spans, or None when that node is a guide."""
+    """The friction and wrap between each pair of spans, or None for a point without friction.
+
+    A sheave gives its wrap. An eyelet with friction gives the angle the line
+    turns through it.
+    """
     nodes = route["nodes"]
     sheave_wraps = {}
     wrap_index = 0
@@ -707,7 +735,17 @@ def _between(route: dict) -> list[dict | None]:
         if node["kind"] == "sheave":
             sheave_wraps[index] = route["wraps"][wrap_index]
             wrap_index += 1
-    return [sheave_wraps.get(index) for index in range(1, len(nodes) - 1)]
+    spans = route["spans"]
+    between = []
+    for index in range(1, len(nodes) - 1):
+        if index in sheave_wraps:
+            between.append(sheave_wraps[index])
+        elif nodes[index].get("friction"):
+            _radius, turn = _circumradius(spans[index - 1]["start"], nodes[index]["at"], spans[index]["end"])
+            between.append({"friction": nodes[index]["friction"], "wrap_rad": turn})
+        else:
+            between.append(None)
+    return between
 
 
 def _contacts(nodes, arrivals, departures) -> list[dict]:
@@ -768,6 +806,10 @@ def _bends(nodes, spans, wraps) -> list[dict]:
         here = node["at"]
         nxt = spans[index]["end"]
         radius, turn = _circumradius(previous, here, nxt)
+        lip = node.get("wrap_radius_mm")
+        if lip is not None:
+            # An eyelet bends the line over its lip wherever the line turns.
+            radius = lip if turn > 1e-4 else math.inf
         rows.append(
             {
                 "name": node["name"],
@@ -776,6 +818,7 @@ def _bends(nodes, spans, wraps) -> list[dict]:
                 "radius": radius,
                 "turn": turn,
                 "sheave": False,
+                "friction": node.get("friction") or 0.0,
             }
         )
     return rows
