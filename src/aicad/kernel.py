@@ -284,6 +284,8 @@ class TriangleMesh:
     triangles: np.ndarray
     edges: list[np.ndarray]
     colors: np.ndarray | None = None
+    # The describe_faces index of the face each triangle came from.
+    face_index: np.ndarray | None = None
 
 
 def make_from_script(code: str, workspace: str | Path | None = None) -> Shape:
@@ -2818,8 +2820,9 @@ def _tessellate_on_this_thread(shape: Shape) -> TriangleMesh:
     point_blocks: list[np.ndarray] = []
     normal_blocks: list[np.ndarray] = []
     triangle_blocks: list[np.ndarray] = []
+    face_blocks: list[np.ndarray] = []
     offset = 0
-    for face in impl.faces():
+    for index, face in enumerate(impl.faces()):
         read = _face_triangulation(face, exact_nodes=False, with_normals=True, reversed_order=(1, 0, 2))
         if read is None:
             continue
@@ -2827,6 +2830,7 @@ def _tessellate_on_this_thread(shape: Shape) -> TriangleMesh:
         point_blocks.append(face_points)
         normal_blocks.append(face_normals)
         triangle_blocks.append(face_triangles + offset)
+        face_blocks.append(np.full(len(face_triangles), index, dtype=np.int32))
         offset += len(face_points)
     triangle_count = sum(len(block) for block in triangle_blocks)
     if not triangle_count:
@@ -2842,7 +2846,9 @@ def _tessellate_on_this_thread(shape: Shape) -> TriangleMesh:
         samples = edge.positions(deflection=deflection)
         if len(samples) >= 2:
             edges.append(np.array([(p.X, p.Y, p.Z) for p in samples], dtype=np.float64))
-    return TriangleMesh(vertices=points, normals=norms, triangles=faces, edges=edges)
+    return TriangleMesh(
+        vertices=points, normals=norms, triangles=faces, edges=edges, face_index=np.concatenate(face_blocks)
+    )
 
 
 def face_distances(shape: Shape, indexes, point) -> dict[int, float]:
