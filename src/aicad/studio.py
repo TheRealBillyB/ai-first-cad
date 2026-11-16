@@ -530,6 +530,95 @@ def set_parameter(workspace, name: str, parameter: str, value: float) -> dict:
     }
 
 
+def list_shared_parameters(workspace) -> dict:
+    """Top-level sizes in the part scripts, gathered by name across the parts.
+
+    A size such as ``wall = 2.4`` written in several part scripts is one shared
+    parameter. set_shared_parameter changes it in each of them.
+    """
+    found: dict[str, dict] = {}
+    for part in workspace.document.list_parts():
+        for item in _script_sizes_of(workspace, part.name):
+            entry = found.setdefault(item["name"], {"name": item["name"], "parts": [], "values": {}})
+            entry["parts"].append(part.name)
+            entry["values"][part.name] = item["value"]
+    parameters = []
+    for entry in found.values():
+        values = sorted(set(entry["values"].values()))
+        parameters.append(
+            {
+                "name": entry["name"],
+                "parts": entry["parts"],
+                "shared": len(entry["parts"]) > 1,
+                "value": values[0] if len(values) == 1 else None,
+                "values": entry["values"],
+                "same_everywhere": len(values) == 1,
+            }
+        )
+    parameters.sort(key=lambda item: (not item["shared"], item["name"]))
+    return {
+        "parameters": parameters,
+        "note": (
+            "A shared parameter is a top-level number, such as wall = 2.4, written under the same name in "
+            "several part scripts. set_shared_parameter writes the new value into each of them and rebuilds them."
+        ),
+    }
+
+
+def set_shared_parameter(workspace, parameter: str, value: float, parts: list | None = None) -> dict:
+    """Write one size into every part script that has it, and rebuild those parts.
+
+    ``parts`` limits the change to those parts. All the parts change, or none:
+    when one fails to rebuild, the parts already changed get their scripts back.
+    """
+    if not isinstance(parameter, str) or not parameter:
+        raise GeometryError("Name the shared parameter to change.")
+    users = [part.name for part in workspace.document.list_parts() if any(item["name"] == parameter for item in _script_sizes_of(workspace, part.name))]
+    if not users:
+        known = ", ".join(item["name"] for item in list_shared_parameters(workspace)["parameters"]) or "(none)"
+        raise GeometryError(f"No part script has a top-level size {parameter!r}. Sizes: {known}.")
+    if parts is not None:
+        if not isinstance(parts, list) or not all(isinstance(name, str) for name in parts) or not parts:
+            raise GeometryError("parts is a list of part names.")
+        missing = [name for name in parts if name not in users]
+        if missing:
+            raise GeometryError(
+                f"{', '.join(repr(name) for name in missing)} has no top-level size {parameter!r}. "
+                f"Parts with it: {', '.join(users)}."
+            )
+        users = [name for name in users if name in parts]
+    before = {name: workspace.document.get_source(name) for name in users}
+    changed: list[str] = []
+    rebuilt: list[dict] = []
+    try:
+        for name in users:
+            result = set_parameter(workspace, name, f"script/{parameter}", value)
+            changed.append(name)
+            rebuilt.extend(result["rebuilt_parts"])
+    except Exception:
+        for name in reversed(changed):
+            source = before[name]
+            info = workspace.document.update_part_script(name, source.get("script") or "")
+            _restore_placement(workspace, name, source.get("placement") or {}, info)
+        raise
+    return {
+        "parameter": parameter,
+        "value": float(value),
+        "parts": users,
+        "rebuilt_parts": rebuilt,
+    }
+
+
+def _script_sizes_of(workspace, name: str) -> list[dict]:
+    from aicad.script_params import script_sizes
+
+    source = workspace.document.get_source(name)
+    script = source.get("script")
+    if not isinstance(script, str) or not script:
+        return []
+    return script_sizes(script)
+
+
 def measure_points(a, b, c=None) -> dict:
     first = _point(a, "a")
     second = _point(b, "b")
@@ -797,6 +886,28 @@ def register(add) -> None:
         undo=True,
     ))
     add(Command(
+        "list_shared_parameters",
+        "Top-level sizes in the part scripts, by name across parts, with the parts that use each one.",
+        _obj({}, []),
+        lambda workspace, _arguments: list_shared_parameters(workspace),
+    ))
+    add(Command(
+        "set_shared_parameter",
+        "Write one top-level size into every part script that has it and rebuild those parts. All or none change.",
+        _obj(
+            {
+                "parameter": _string("Size name, such as wall."),
+                "value": _number("New value, as the scripts use it: usually millimeters."),
+                "parts": {"type": "array", "description": "Optional part names to limit the change to."},
+            },
+            ["parameter", "value"],
+        ),
+        lambda workspace, arguments: set_shared_parameter(
+            workspace, arguments["parameter"], arguments["value"], arguments.get("parts")
+        ),
+        undo=True,
+    ))
+    add(Command(
         "measure_points",
         "Distance between two points, in millimeters. A third point adds the angle at the second point.",
         _obj(
@@ -908,6 +1019,26 @@ def register_mcp(mcp, run, guard) -> None:
         for an angle. A bad value leaves the previous solid in place.
         """
         return guard(lambda: run("set_parameter", name=name, parameter=parameter, value=value))
+
+    @mcp.tool()
+    def list_shared_parameters() -> dict:
+        """Sizes shared across part scripts.
+
+        A top-level number such as wall = 2.4, written under the same name in
+        several part scripts, is one shared parameter. Each row names the parts
+        that have it, and their values, which may differ.
+        """
+        return guard(lambda: run("list_shared_parameters"))
+
+    @mcp.tool()
+    def set_shared_parameter(parameter: str, value: float, parts: list[str] | None = None) -> dict:
+        """Change a shared size in every part script that has it, and rebuild those parts.
+
+        parameter is a name from list_shared_parameters. parts limits the change
+        to those parts. Each part stays where it was placed. When one part fails
+        to rebuild, none of them change.
+        """
+        return guard(lambda: run("set_shared_parameter", parameter=parameter, value=value, parts=parts))
 
     @mcp.tool()
     def measure_points(a: list[float], b: list[float], c: list[float] | None = None) -> dict:

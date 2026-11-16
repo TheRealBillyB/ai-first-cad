@@ -81,6 +81,7 @@ Model and Assembly now share one workspace and one 3D view, but the assembly flo
 
 - Each part keeps the steps that rebuild it: shape operations, sketch steps, a script, a catalog part, an import, a gear, and fillet or chamfer steps. A step that did not fit keeps the error from that rebuild.
 - An earlier size can be changed and the solid rebuilds from that step. That includes an operation size, a sketch dimension, an extrude height, a fillet radius, a chamfer distance, a catalog length, and a top-level number in a script.
+- A top-level number with the same name in several part scripts is a shared parameter. `set_shared_parameter` changes it in all of them at once, or in none when one fails to rebuild.
 - Undo and redo restore the open project. A failed rebuild keeps the previous solid.
 - An imported STEP file has no size to edit. An imported STL mesh has no feature history to edit. Both can still be moved.
 
