@@ -9,6 +9,7 @@ read cap.
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import numpy as np
 
@@ -61,6 +62,32 @@ def test_an_error_calculix_reports_is_passed_on(monkeypatch):
     _ccx(monkeypatch, _HelperResult(201, "*ERROR reading *FREQUENCY: bad\n", ""))
     frequencies, _vectors, warning = modal._frequency_once([_body()], np.array([0]), [], 5, 180, 2.0)
     assert frequencies is None and "bad" in warning and "equations" not in warning
+
+
+def test_a_failed_allocation_calculix_prints_is_the_limit(monkeypatch):
+    """The helper saw no limit, but CalculiX said it could not allocate: that is the solve's size too."""
+    _ccx(monkeypatch, _HelperResult(1, "Factoring the system\n*ERROR in spooles: could not allocate 812 MB\n", ""))
+    frequencies, _vectors, warning = modal._frequency_once([_body()], np.array([0]), [], 5, 180, 2.0)
+    assert frequencies is None
+    assert "was stopped at the memory or CPU limit (" in warning
+    assert "Use mesh_size_mm 2.6 or larger" in warning
+
+
+def test_a_crash_with_no_error_of_its_own_names_the_size(monkeypatch):
+    # An access violation on Windows, a SIGSEGV elsewhere: how a failed allocation often ends.
+    code = 0xC0000005 - (1 << 32) if sys.platform == "win32" else -11
+    _ccx(monkeypatch, _HelperResult(code, "Factoring the system of equations using the symmetric spooles solver", ""))
+    frequencies, _vectors, warning = modal._frequency_once([_body()], np.array([0]), [], 5, 180, 2.0)
+    assert frequencies is None
+    assert f"exit code {code}" in warning
+    assert "on 9 equations" in warning and "larger mesh_size_mm" in warning
+
+
+def test_a_program_that_could_not_start_is_not_called_too_big(monkeypatch):
+    # 127: the sandbox could not start CalculiX. Another mesh would not help.
+    _ccx(monkeypatch, _HelperResult(127, "", "ccx: not found"))
+    frequencies, _vectors, warning = modal._frequency_once([_body()], np.array([0]), [], 5, 180, 2.0)
+    assert frequencies is None and "equations" not in warning
 
 
 def test_the_mode_shape_read_cap_grows_with_the_mesh(monkeypatch, tmp_path):

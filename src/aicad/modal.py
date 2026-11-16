@@ -753,7 +753,7 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int, m
     solve does. The frequency solve has no iterative solver to fall back on:
     its eigenvalue method factorises the matrix directly.
     """
-    from aicad.fea import _equation_count, _solve_too_big
+    from aicad.fea import _ccx_stop, _equation_count, _solve_too_big
     from aicad.paths import held_entry_is_file, held_subprocess_kwargs, held_tool_directory, publish_text
 
     node_count = sum(len(body["points"]) for body in bodies)
@@ -787,7 +787,10 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int, m
         if "nonpositive jacobian" in stdout.lower():
             return None, None, "nonpositive jacobian"
         if completed.returncode != 0 or not held_entry_is_file(path, "job.dat"):
-            if getattr(completed, "limit_hit", False):
+            # The same reading of the stop as a static solve: the helper's limit,
+            # an allocation CalculiX reported, or a crash with no error of its own.
+            stop = _ccx_stop(completed)
+            if stop == "limit":
                 from aicad.sandbox import memory_bytes
 
                 return None, None, _solve_too_big(
@@ -796,6 +799,12 @@ def _frequency_once(bodies, fixed_nodes, equations, nmodes: int, timeout: int, m
                     unknowns,
                     node_count,
                     mesh_size,
+                )
+            if stop == "crash":
+                return None, None, (
+                    f"CalculiX stopped without a result file or an error of its own (exit code {completed.returncode}) "
+                    f"on {unknowns:,} equations. A failed allocation can end this way; a larger mesh_size_mm "
+                    "needs less memory. The frequency solve has no iterative solver to try instead."
                 )
             return None, None, _ccx_error(stdout)
         dat = path / "job.dat"
