@@ -3495,8 +3495,12 @@ def _primitive(op: dict, index: int):
         if op.get("op") != "cut":
             raise GeometryError(f"Operation {index}: a {kind} is a hole. Use it with op cut.")
         return hole_tool(op, f"Operation {index}")
+    if kind == "thread":
+        from aicad.threads import thread_op
+
+        return thread_op(op, f"Operation {index}")
     raise GeometryError(
-        f"Operation {index}: unknown shape {kind!r}. Use 'box', 'cylinder', 'counterbore', or 'countersink'."
+        f"Operation {index}: unknown shape {kind!r}. Use 'box', 'cylinder', 'thread', 'counterbore', or 'countersink'."
     )
 
 

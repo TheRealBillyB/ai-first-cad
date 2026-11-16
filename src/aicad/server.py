@@ -487,8 +487,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         """Create a part by running a build123d script. Assign the solid to `part`.
 
         Units are millimeters. build123d and math are already imported. Example:
-        `plate = Box(40, 20, 3)` then `part = plate`. After this returns, call
-        inspect_part and look at the pictures before editing again.
+        `plate = Box(40, 20, 3)` then `part = plate`. For a screw thread,
+        `from aicad.threads import screw, nut_tool`: screw(14, 4, 60, starts=2)
+        is a two-start lead screw along +Z, and subtracting nut_tool with the same
+        numbers makes its nut. After this returns, call inspect_part and look at
+        the pictures before editing again.
         """
         return guard(lambda: run("create_part_from_script", name=name, script=script))
 
@@ -504,6 +507,10 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         [0, 0, -1]), `diameter` and `depth` the plain hole; a counterbore adds
         `counterbore_diameter` and `counterbore_depth`, a countersink
         `countersink_diameter` and `countersink_angle` (default 90).
+        A `thread` shape is a threaded rod with op add or a tapped hole with op cut:
+        `diameter`, `pitch`, `length`, optional `starts`, `profile` (trapezoidal or
+        iso), `angle` (30, or 29 for ACME), `clearance_mm` for a printed fit, `hand`,
+        `ends`, and `at` and `axis` for where it starts and runs.
         Then call inspect_part.
         """
         return guard(lambda: run("create_part_from_ops", name=name, ops=ops))
