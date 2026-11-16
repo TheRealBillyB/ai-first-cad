@@ -1,8 +1,9 @@
 """Joints, poses, and forward kinematics.
 
 A structural joint (fixed, revolute, prismatic, cylindrical) is an edge in a
-tree. Gear and linkage relations write one driven joint from a driver. A
-cylinder relation writes two: the barrel angle and the rod extension, from
+tree. Gear, screw, and linkage relations write one driven joint from a
+driver. A screw is a gear from a turn in degrees to a slide in millimeters:
+its lead per turn, signed by its hand. A cylinder relation writes two: the barrel angle and the rod extension, from
 the in-plane pin distance of a revolute or cylindrical driver. A cylindrical
 driver includes its slide. The barrel joint cannot tilt, so a side offset is
 how far the eye misses the clevis and the stroke does not include it. That
@@ -24,7 +25,9 @@ from typing import Any
 from aicad.errors import GeometryError
 
 _STRUCTURAL = ("fixed", "revolute", "prismatic", "cylindrical")
-_RELATIONS = ("gear", "linkage", "cylinder")
+_RELATIONS = ("gear", "screw", "linkage", "cylinder")
+# Relations that are a straight line from driver to driven: ratio * driver + offset.
+LINEAR_RELATIONS = ("gear", "screw")
 _MISSING = object()
 
 
@@ -282,7 +285,7 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
     warnings = []
     for relation in _ordered_relations(spec["relations"]):
         driver = active[relation["driver"]]
-        if relation["type"] == "gear":
+        if relation["type"] in LINEAR_RELATIONS:
             raw_value = relation["ratio"] * driver + relation["offset"]
             commanded[relation["driven"]] = raw_value
             active[relation["driven"]], _which = _clamp(raw_value, joint_index[relation["driven"]])
@@ -352,6 +355,9 @@ def solve(spec: dict, overrides: dict | None = None) -> dict:
             "driven_value": round(limited[relation["driven"]], 4),
             "ratio": relation.get("ratio"),
         }
+        if relation["type"] == "screw":
+            row["lead_mm"] = relation["lead_mm"]
+            row["hand"] = relation["hand"]
         if relation["type"] == "cylinder":
             row["stroke"] = relation["stroke"]
             row["stroke_mm"] = round(limited[relation["stroke"]], 4)
@@ -511,7 +517,7 @@ def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
     kind = relation.get("type")
     if kind not in _RELATIONS:
         raise GeometryError(
-            f"Relation {index} type {kind!r} is unknown. Use gear, linkage, or cylinder."
+            f"Relation {index} type {kind!r} is unknown. Use gear, screw, linkage, or cylinder."
         )
     name = _one_line(relation.get("name") or f"{kind}_{index + 1}", "A relation name")
     driver = str(relation.get("driver") or "")
@@ -527,6 +533,8 @@ def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
                 raise GeometryError(f"Gear {name!r} cannot turn fixed joint {joint_name!r}.")
         record["ratio"] = float(relation.get("ratio", 1.0))
         record["offset"] = float(relation.get("offset", 0.0))
+    elif kind == "screw":
+        record.update(_screw(relation, name, joints[driver], joints[driven]))
     elif kind == "linkage":
         for joint_name in (driver, driven):
             if joints[joint_name]["type"] not in ("revolute", "cylindrical"):
@@ -588,6 +596,36 @@ def _relation(relation: dict, index: int, joints: dict[str, dict]) -> dict:
         record["moving_anchor"] = _point(anchor, f"{name} moving_anchor")
         record["bore_axis"] = bore
     return record
+
+
+def _screw(relation: dict, name: str, turn: dict, slide: dict) -> dict:
+    """A lead screw: the driven slide moves lead_mm for each full turn of the driver.
+
+    A right-hand screw moves the slide toward +axis when the driver turns
+    positive about its own axis, when both axes point the same way. A left-hand
+    screw moves it the other way. The map is ideal: no friction, no backlash.
+    """
+    if turn["type"] not in ("revolute", "cylindrical"):
+        raise GeometryError(f"Screw {name!r} turns a revolute or cylindrical driver. {turn['name']!r} is {turn['type']}.")
+    if slide["type"] != "prismatic":
+        raise GeometryError(f"Screw {name!r} moves a prismatic joint. {slide['name']!r} is {slide['type']}.")
+    raw = relation.get("lead_mm")
+    if raw is None:
+        raise GeometryError(f"Screw {name!r} needs lead_mm, how far the slide moves in one turn.")
+    try:
+        lead = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise GeometryError(f"Screw {name!r} lead_mm must be a number.") from exc
+    if not math.isfinite(lead) or lead <= 0:
+        raise GeometryError(f"Screw {name!r} lead_mm must be a positive number of millimeters per turn.")
+    hand = str(relation.get("hand") or "right").strip().lower()
+    if hand not in ("right", "left"):
+        raise GeometryError(f"Screw {name!r} hand must be right or left.")
+    offset = float(relation.get("offset", 0.0))
+    if not math.isfinite(offset):
+        raise GeometryError(f"Screw {name!r} offset must be a finite number of millimeters.")
+    sign = 1.0 if hand == "right" else -1.0
+    return {"lead_mm": lead, "hand": hand, "ratio": sign * lead / 360.0, "offset": offset}
 
 
 def _cylinder(
@@ -920,6 +958,8 @@ def _euler(rx: float, ry: float, rz: float) -> list[list[float]]:
     """Degrees about X, then Y, then Z, matching ``kernel.place``.
 
     The matrix is ``Rx @ Ry @ Rz``, the same composition as a placed part.
+    About the child's own axes that is X first, then the turned Y, then the
+    twice-turned Z. About fixed axes it is the reverse: Z, then Y, then X.
     """
     ax, ay, az = math.radians(rx), math.radians(ry), math.radians(rz)
     cx, sx = math.cos(ax), math.sin(ax)

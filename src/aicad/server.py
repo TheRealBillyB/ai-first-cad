@@ -66,7 +66,7 @@ lists its assumptions. A 3D-printed material is weaker across layers than the
 in-plane strength used here.
 
 An assembly places several parts with joints (fixed, revolute, prismatic,
-cylindrical), gear, linkage, or cylinder relations, named poses, and motions.
+cylindrical), gear, screw, linkage, or cylinder relations, named poses, and motions.
 A cylinder relation sets a barrel angle and a rod extension from a revolute
 or a cylindrical joint. The cylindrical slide moves the clevis with the driver.
 `run_motion` sweeps those joints and reports collisions, with a picture per
@@ -1018,7 +1018,13 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         joints are {name, type, parent, child, parent_anchor, child_anchor, axis, value, min, max}.
         type is fixed, revolute (degrees), prismatic (millimeters), or cylindrical
         (degrees in value, millimeters in slide). A fixed joint also takes
-        rotation_deg [x, y, z], which turns the child about its child anchor. relations are gear {driver, driven, ratio, offset},
+        rotation_deg [x, y, z], which turns the child about its child anchor. The turn is
+        Rx·Ry·Rz, as for a placed part: about the child's own axes, X first, then the
+        turned Y, then the twice-turned Z (about fixed axes: Z, then Y, then X).
+        relations are gear {driver, driven, ratio, offset},
+        screw {driver, driven, lead_mm, hand, offset}: a revolute or cylindrical driver
+        moves a prismatic joint lead_mm per turn. hand is right (default) or left. Right
+        moves it toward +axis on a positive turn when both axes point the same way.
         linkage {driver, driven, ground_mm, crank_mm, coupler_mm, rocker_mm, branch},
         or cylinder {driver, driven, stroke, moving_anchor, retracted_mm}.
         A linkage is a planar four-bar map between revolute or cylindrical joints, not a closed spatial loop.
