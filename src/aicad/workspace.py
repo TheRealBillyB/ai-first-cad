@@ -29,6 +29,8 @@ from aicad.requirements import evaluate, normalize
 
 _DOC_NAME = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_-]{0,40}\.md$")
 _UNDO_LIMIT = 40
+# A panels file larger than this is not written or read.
+_PANELS_MAX_BYTES = 16 * 1024 * 1024
 _MAX_TEXT_FILE = 8 * 1024 * 1024
 # ui, cli, and api read a note as the file. Other sources, including agent
 # and chat, get the same project-text marker.
@@ -153,6 +155,7 @@ class Workspace:
         self._note_mutation = False
         self._activity: list[dict] = []
         self._ensure_project_files()
+        self._load_panels()
 
     def listen(self, callback: Callable[[dict], None]) -> Callable[[], None]:
         with self._lock:
@@ -284,6 +287,7 @@ class Workspace:
                     "animation",
                 ):
                     self.panels.pop(panel, None)
+                self._save_panels()
             self._record(name, arguments, result, source)
             self.event_id += 1
             event = self._event(name, arguments, result, source)
@@ -527,6 +531,7 @@ class Workspace:
             self._sketch_cache_revision = -1
             self._requirements = requirements
             self.geometry_revision += 1
+            self._load_panels()
             parts = [part.to_dict() for part in self.document.list_parts()]
             workspace = str(self.root)
         return {"workspace": workspace, "parts": parts, "problems": list(self.document.problems)}
@@ -831,7 +836,66 @@ class Workspace:
 
         payload = attach_sheet(payload, self.root / "renders" / "sheets", key, root=self.root)
         self.panels[key] = {"revision": self.geometry_revision, "payload": payload}
+        self._save_panels()
         return payload
+
+    def _project_fingerprint(self) -> str:
+        """What the project's saved model is, as one hash. A panel is about that model."""
+        text = json.dumps(self.document._payload(), sort_keys=True, default=str)  # noqa: SLF001
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _save_panels(self) -> None:
+        """Keep the panels in .aicad/panels.json, so a reload or a new app shows them again.
+
+        They are kept beside session.json, not in it. A check such as a strength
+        solve changes no part, so it does not save the project. Writing
+        session.json for it would refuse whenever another program with the
+        project open had saved, and the result would be lost.
+        """
+        from aicad.paths import ensure_real_directory, publish_text
+
+        try:
+            text = json.dumps(
+                {
+                    "version": 1,
+                    "project": self._project_fingerprint(),
+                    # Only panels about the model as it is now. A panel from before another
+                    # program's change stays on screen marked old, but is not kept as current.
+                    "panels": {
+                        key: value["payload"]
+                        for key, value in self.panels.items()
+                        if value["revision"] == self.geometry_revision
+                    },
+                },
+                allow_nan=False,
+                default=str,
+            )
+        except (TypeError, ValueError):
+            return
+        if len(text) > _PANELS_MAX_BYTES:
+            return
+        try:
+            folder = ensure_real_directory(self.root / ".aicad")
+            publish_text(folder / "panels.json", text, root=self.root)
+        except (OSError, AICADError):
+            pass
+
+    def _load_panels(self) -> None:
+        """Show the panels kept for this project, when the model is still the one they are about."""
+        from aicad.file_access import read_text
+
+        path = self.root / ".aicad" / "panels.json"
+        try:
+            kept = json.loads(read_text(path, maximum=_PANELS_MAX_BYTES))
+        except (OSError, ValueError, AICADError):
+            return
+        if not isinstance(kept, dict) or kept.get("version") != 1 or not isinstance(kept.get("panels"), dict):
+            return
+        if kept.get("project") != self._project_fingerprint():
+            return
+        for key, payload in kept["panels"].items():
+            if isinstance(key, str) and isinstance(payload, dict):
+                self.panels[key] = {"revision": self.geometry_revision, "payload": payload}
 
     def _event(self, name: str, arguments: dict, result: dict, source: str) -> dict:
         from aicad.studio import note_for
@@ -1753,7 +1817,7 @@ _add(Command(
 ))
 _add(Command(
     "create_part_from_ops",
-    "Create a part from add/cut boxes and cylinders.",
+    "Create a part from add/cut boxes and cylinders, and counterbore or countersink holes (shape counterbore or countersink, with at, axis, diameter, depth, and the counterbore or countersink size).",
     _obj({"name": _string("New part name."), "ops": {"type": "array", "description": "Operations."}}, ["name", "ops"]),
     _cmd_create_ops,
     undo=True,
@@ -2096,7 +2160,11 @@ _add(Command(
             "name": _string("Part name, or an assembly in its current pose."),
             "setup": {
                 "type": "object",
-                "description": "orientation (best or z_up), threshold_deg, bridge_mm, printer, slice, price_per_kg, layer_height_mm.",
+                "description": (
+                    "orientation (best or z_up), or a stated pose: up (the modeled direction that points up) or "
+                    "rotation_deg (the same turn as a part placement's rotation_deg). threshold_deg, bridge_mm, printer, slice, price_per_kg, "
+                    "layer_height_mm."
+                ),
             },
         },
         ["name"],

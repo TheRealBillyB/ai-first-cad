@@ -1234,8 +1234,31 @@ def _op_parameters(ops: list) -> list[dict]:
         elif shape == "cylinder":
             parameters.append(_scalar(f"op/{index}/radius", f"{label} radius", op.get("radius"), "length", step))
             parameters.append(_scalar(f"op/{index}/height", f"{label} height", op.get("height"), "length", step))
+        elif shape in ("counterbore", "countersink"):
+            # A hole is placed by at, the point where it starts, and has no center.
+            parameters.extend(_hole_parameters(op, index, label, step))
+            continue
         parameters.extend(_vector_parameters(f"op/{index}", label, "center", op.get("center") or [0, 0, 0], "offset", step))
     return [item for item in parameters if item is not None]
+
+
+def _hole_parameters(op: dict, index: int, label: str, step: str) -> list[dict]:
+    """A counterbore or countersink hole's sizes and its start point."""
+    fields = ["diameter", "depth"]
+    if op.get("shape") == "counterbore":
+        fields += ["counterbore_diameter", "counterbore_depth"]
+    else:
+        fields += ["countersink_diameter"]
+    parameters = [
+        _scalar(f"op/{index}/{field}", f"{label} {field.replace('_', ' ')}", op.get(field), "length", step)
+        for field in fields
+    ]
+    if op.get("shape") == "countersink":
+        parameters.append(
+            _scalar(f"op/{index}/countersink_angle", f"{label} countersink angle", op.get("countersink_angle", 90.0), "angle", step)
+        )
+    parameters.extend(_vector_parameters(f"op/{index}", label, "at", op.get("at") or [0, 0, 0], "offset", step))
+    return parameters
 
 
 def _one_line_step_name(name) -> None:

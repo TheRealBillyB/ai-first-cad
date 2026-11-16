@@ -128,7 +128,18 @@ def analyze_print(
     requested = str(setup.get("orientation") or "best").lower().replace("-", "_").replace(" ", "_")
     wanted = setup.get("printer")
     printer = lookup_printer(str(wanted)) if wanted else None
-    if requested in ("best", "auto", ""):
+    pose = _stated_pose(setup)
+    rotation = None
+    if pose is not None:
+        if requested not in ("best", "auto", "", "custom"):
+            raise GeometryError(
+                f"Orientation {requested!r} and a stated pose (up or rotation_deg) were both given. Use one."
+            )
+        rotation = pose["rotation"]
+        chosen = _score(mesh, "custom", threshold, bridge_mm, rotation=rotation, note=pose["note"])
+        chosen_name = "custom"
+        automatic = False
+    elif requested in ("best", "auto", ""):
         ranked = scores
         if printer is not None:
             fitting = [row for row in scores if _fits(row["size_mm"], printer["size_mm"])]
@@ -143,19 +154,24 @@ def analyze_print(
         automatic = False
     else:
         known = ", ".join(("best", *_ORIENTATIONS))
-        raise GeometryError(f"Orientation {requested!r} is unknown. Use {known}.")
+        raise GeometryError(
+            f"Orientation {requested!r} is unknown. Use {known}, or state a pose with up or rotation_deg."
+        )
+    if rotation is None:
+        rotation = _rotation_to_up(_ORIENTATIONS[chosen_name][0])
     printers = _printer_rows(chosen, scores)
     focus = None
     if printer is not None:
         focus = next(row for row in printers if row["id"] == printer["id"])
     views = []
     if out_dir is not None and setup.get("render", True):
-        views = _render(mesh, chosen_name, threshold, bridge_mm, Path(out_dir), part_name or "part")
+        views = _render(mesh, chosen_name, threshold, bridge_mm, Path(out_dir), part_name or "part", rotation=rotation)
     slicer = {"status": "not_requested"}
     if setup.get("slice"):
+        oriented = _oriented_arrays(mesh, chosen_name, rotation)
         slicer = slice_mesh(
-            _oriented_arrays(mesh, chosen_name)[0],
-            _oriented_arrays(mesh, chosen_name)[1],
+            oriented[0],
+            oriented[1],
             Path(out_dir or "."),
             price_per_kg=setup.get("price_per_kg"),
             layer_height_mm=layer_height,
@@ -170,7 +186,10 @@ def analyze_print(
         "status": status,
         "orientation": chosen_name,
         "orientation_automatic": automatic,
-        "orientation_note": _ORIENTATIONS[chosen_name][1],
+        "orientation_note": chosen["note"],
+        # The turn from the model to the print, with modeled points as columns: print = rotation @ model.
+        "print_rotation": [[round(float(value), 9) for value in row] for row in rotation],
+        **({"pose": pose["stated"]} if pose is not None else {}),
         "threshold_deg": threshold,
         "layer_height_mm": layer_height,
         "support_area_mm2": chosen["support_area_mm2"],
@@ -195,7 +214,8 @@ def analyze_print(
         name="Print",
         what="Overhang, support area, and printer fit are rough estimates. A slicer time, when present, uses that slicer's default profile, and layer_height_mm when it is set.",
         limits=[
-            "Only the six axis-up orientations are tried. A diagonal pose is not searched.",
+            "Only the six axis-up orientations are tried for best. A diagonal pose is checked only when it is "
+            "stated with up or rotation_deg.",
             f"The bed face, within {_BED_MM:g} mm of the lowest point, is not counted as support.",
             (
                 "A down-facing span held along an edge is a bridge, not support, when twice "
@@ -431,8 +451,16 @@ def _bridge_span(value) -> float:
     return span
 
 
-def _score(mesh, name: str, threshold: float, bridge_mm: float = _DEFAULT_BRIDGE_MM) -> dict:
-    vertices, triangles, normals = _oriented_arrays(mesh, name)
+def _score(
+    mesh,
+    name: str,
+    threshold: float,
+    bridge_mm: float = _DEFAULT_BRIDGE_MM,
+    *,
+    rotation: np.ndarray | None = None,
+    note: str | None = None,
+) -> dict:
+    vertices, triangles, normals = _oriented_arrays(mesh, name, rotation)
     areas, _on_bed, overhang, bridge = _classify(vertices, triangles, normals, threshold, bridge_mm)
     total = float(areas.sum()) or 1.0
     support_mask = overhang & ~bridge
@@ -440,7 +468,7 @@ def _score(mesh, name: str, threshold: float, bridge_mm: float = _DEFAULT_BRIDGE
     size = vertices.max(axis=0) - vertices.min(axis=0) if len(vertices) else np.zeros(3)
     return {
         "orientation": name,
-        "note": _ORIENTATIONS[name][1],
+        "note": note if note is not None else _ORIENTATIONS[name][1],
         "support_area_mm2": round(support, 2),
         "support_fraction": round(support / total, 4),
         "bridge_area_mm2": round(float(areas[bridge].sum()), 2),
@@ -701,8 +729,13 @@ def _bridge_span_mm(points, verts, segments) -> float:
     return float(2.0 * distance.min(axis=1).max())
 
 
-def _oriented_arrays(mesh, name: str):
-    rotation = _rotation_to_up(_ORIENTATIONS[name][0])
+def _oriented_arrays(mesh, name: str, rotation: np.ndarray | None = None):
+    """The mesh turned into its print pose and set on the bed, with each triangle's normal.
+
+    ``rotation`` is the turn for a stated pose. Without it, the named axis is turned up.
+    """
+    if rotation is None:
+        rotation = _rotation_to_up(_ORIENTATIONS[name][0])
     vertices = mesh.vertices @ rotation.T
     vertices = vertices - np.array([vertices[:, 0].min(), vertices[:, 1].min(), vertices[:, 2].min()])
     corners = vertices[mesh.triangles]
@@ -710,6 +743,48 @@ def _oriented_arrays(mesh, name: str):
     length = np.linalg.norm(raw, axis=1, keepdims=True)
     normals = raw / np.clip(length, 1e-12, None)
     return vertices, mesh.triangles, normals
+
+
+def _stated_pose(setup: dict) -> dict | None:
+    """The print pose the setup states, as a rotation, or None for a named orientation.
+
+    ``up`` is the modeled direction that points up on the bed, such as
+    [0, 1, 1] for a part laid on a 45 degree face. ``rotation_deg`` is the
+    same turn as a part placement's rotation_deg (kernel.place, build123d's
+    Rot(rx, ry, rz)), and the result is set on the bed as it lands.
+    """
+    has_up = setup.get("up") is not None
+    has_turn = setup.get("rotation_deg") is not None
+    if has_up and has_turn:
+        raise GeometryError("State the print pose with up or with rotation_deg, not both.")
+    if has_up:
+        up = np.array(kernel.finite_vec3(setup["up"], "up"), dtype=np.float64)
+        length = float(np.linalg.norm(up))
+        if length < 1e-9:
+            raise GeometryError("up must be a direction, not zero.")
+        up = up / length
+        shown = ", ".join(f"{value:g}" for value in setup["up"])
+        return {
+            "rotation": _rotation_to_up((float(up[0]), float(up[1]), float(up[2]))),
+            "note": f"Turn it so modeled ({shown}) points up.",
+            "stated": {"up": [float(value) for value in setup["up"]]},
+        }
+    if has_turn:
+        from build123d import Pos, Rot
+
+        angles = kernel.finite_vec3(setup["rotation_deg"], "rotation_deg", unit="deg")
+        # The turn a part's placement makes, read from build123d itself, so the
+        # two can never disagree: each column is where a model axis ends up.
+        turn = Rot(*angles)
+        columns = [(turn * Pos(*axis)).position for axis in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+        rotation = np.array([[float(column.X), float(column.Y), float(column.Z)] for column in columns]).T
+        shown = ", ".join(f"{float(value):g}" for value in setup["rotation_deg"])
+        return {
+            "rotation": rotation,
+            "note": f"Turned by rotation_deg ({shown}), as a part's placement turns, then set on the bed.",
+            "stated": {"rotation_deg": [float(value) for value in setup["rotation_deg"]]},
+        }
+    return None
 
 
 def _rotation_to_up(axis: tuple[float, float, float]) -> np.ndarray:
@@ -775,8 +850,8 @@ def _fits(size_mm, bed) -> bool:
     return (x <= bx + 1e-6 and y <= by + 1e-6) or (x <= by + 1e-6 and y <= bx + 1e-6)
 
 
-def _render(mesh, name: str, threshold: float, bridge_mm: float, out_dir: Path, part_name: str):
-    vertices, triangles, normals = _oriented_arrays(mesh, name)
+def _render(mesh, name: str, threshold: float, bridge_mm: float, out_dir: Path, part_name: str, rotation=None):
+    vertices, triangles, normals = _oriented_arrays(mesh, name, rotation)
     angle = np.degrees(np.arccos(np.clip(normals[:, 2], -1.0, 1.0))) - 90.0
     angle = np.clip(angle, 0.0, 90.0)
     _areas, on_bed, _overhang, bridge = _classify(vertices, triangles, normals, threshold, bridge_mm)

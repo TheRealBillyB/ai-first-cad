@@ -423,6 +423,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     printed.add_argument("name")
     printed.add_argument("--orientation", default="best", help="best, z_up, z_down, x_up, x_down, y_up, or y_down.")
+    printed.add_argument(
+        "--up", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
+        help="Print pose: the modeled direction that points up, such as 0 1 1.",
+    )
+    printed.add_argument(
+        "--rotation-deg", type=float, nargs=3, default=None, metavar=("RX", "RY", "RZ"),
+        help="Print pose: the same turn as a part placement's rotation_deg, in degrees.",
+    )
     printed.add_argument("--printer", default=None, help="bambu_a1, prusa_mk4, ender_3, and the other known beds.")
     printed.add_argument("--threshold", type=float, default=45.0, help="Degrees from vertical before a face needs support.")
     printed.add_argument(
@@ -1045,6 +1053,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         }
         if args.bridge is not None:
             setup["bridge_mm"] = args.bridge
+        if args.up is not None:
+            setup["up"] = list(args.up)
+            setup["orientation"] = "custom"
+        if args.rotation_deg is not None:
+            setup["rotation_deg"] = list(args.rotation_deg)
+            setup["orientation"] = "custom"
         if args.printer:
             setup["printer"] = args.printer
         if args.price_per_kg is not None:

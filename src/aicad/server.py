@@ -499,6 +499,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         Each operation is `{"op": "add"|"cut", "shape": "box"|"cylinder", ...}`.
         A box needs `size` [x, y, z]. A cylinder needs `radius` and `height`.
         Optional `center` [x, y, z] and, for cylinders, `axis` [x, y, z].
+        A cut can also be a `counterbore` or `countersink` hole: `at` is the point on
+        the surface where it starts, `axis` the drilling direction (default
+        [0, 0, -1]), `diameter` and `depth` the plain hole; a counterbore adds
+        `counterbore_diameter` and `counterbore_depth`, a countersink
+        `countersink_diameter` and `countersink_angle` (default 90).
         Then call inspect_part.
         """
         return guard(lambda: run("create_part_from_ops", name=name, ops=ops))
@@ -896,7 +901,10 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
 
         setup needs material (a name from list_materials), fixes, and loads.
         Optional mesh_size_mm and target_safety_factor (default 2). A fix is
-        {"name", "select"}. A load adds "type" of force, pressure, bolt, torque, or remote:
+        {"name", "select"}. setup.relative lists face pairs {"name", "a": select, "b": select};
+        each reports how far b moved relative to a, with gap_change_mm along the line
+        between them (positive: apart), such as how far a vise jaw opens under load.
+        A load adds "type" of force, pressure, bolt, torque, or remote:
         force has vector [x, y, z] in newtons, pressure has magnitude in MPa
         (positive pushes into the face), bolt has axial newtons along the hole,
         torque has torque_nm about axis [x, y, z] as a couple with no net force,
@@ -1330,6 +1338,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         name is a part, or an assembly in its current pose. The assembly is
         one print and the parts are not united.
         setup.orientation is best or one of z_up, z_down, x_up, x_down, y_up, y_down.
+        Any other print pose is stated with setup.up, the modeled direction that points
+        up on the bed ([0, 1, 1] lays the part on a 45 degree face), or with
+        setup.rotation_deg, the same turn as a part placement's rotation_deg.
         threshold_deg defaults to 45 (degrees from vertical). bridge_mm defaults to
         5: a down-facing span held along an edge no wider than that is a bridge, not
         support. 0 counts every overhang. A face with no path to the bed still counts.
