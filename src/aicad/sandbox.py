@@ -294,6 +294,9 @@ _SAFE_BUILTINS = (
     "format",
     "frozenset",
     "getattr",
+    # The script's own names. The namespace already holds __builtins__, so this
+    # reaches nothing new.
+    "globals",
     "hasattr",
     "hash",
     "hex",
