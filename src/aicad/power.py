@@ -365,7 +365,10 @@ def _stroke_ratio(relation: dict, solved: dict, spec: dict) -> float:
 
 
 def _instant_ratio(relation: dict, solved: dict, spec: dict) -> float:
-    if relation["type"] == "gear":
+    from aicad.kinematics import LINEAR_RELATIONS
+
+    if relation["type"] in LINEAR_RELATIONS:
+        # A screw's ratio is millimeters per degree, so its slide force becomes driver torque.
         return float(relation.get("ratio") or 1.0)
     driver = next(joint["value"] for joint in solved["joints"] if joint["name"] == relation["driver"])
     step = 0.5
