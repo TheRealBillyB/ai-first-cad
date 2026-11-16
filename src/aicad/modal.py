@@ -27,7 +27,6 @@ from aicad.fea import (
     _mesh_solid,
     _nodes_for,
     fea_available,
-    lookup_material,
     solid_material,
     select_faces,
     straight_sided,
@@ -412,7 +411,8 @@ def fatigue_check(spec: dict) -> dict:
     amplitude = _positive(spec.get("stress_amplitude_mpa"), None, "stress_amplitude_mpa")
     mean = float(spec.get("mean_stress_mpa") or 0.0)
     material_name = str(spec.get("material") or "steel")
-    material = lookup_material(material_name)
+    # A line material such as Dyneema is not a part a fatigue check applies to.
+    material = solid_material(material_name)
     key = str(material["id"])
     if spec.get("ultimate_mpa") is not None:
         ultimate = _positive(spec["ultimate_mpa"], None, "ultimate_mpa")
@@ -444,7 +444,7 @@ def fatigue_check(spec: dict) -> dict:
     if key == "steel" or material.get("endurance") == "steel":
         prime = 0.5 * ultimate if ultimate <= 1400.0 else 700.0
         endurance_note = "Steel uses Se' = 0.5·Sut up to 1400 MPa, then 700 MPa."
-    elif key == "aluminum_6061":
+    elif key in ("aluminum_6061", "aluminum_7075"):
         prime = 0.3 * ultimate
         endurance_note = "Aluminum has no true endurance limit. Se' = 0.3·Sut is a long-life stand-in, not a knee in the S-N curve."
     else:
