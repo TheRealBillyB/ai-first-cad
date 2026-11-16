@@ -1515,6 +1515,35 @@ def _ccx_stop(completed) -> str | None:
     return None
 
 
+def _helper_has_caps() -> bool:
+    """Whether the CalculiX helper runs under memory and CPU caps of its own: a Windows job object."""
+    return sys.platform == "win32"
+
+
+def helper_limit_stop(timeout: float, threads: int = 1) -> str:
+    """How a CalculiX run stopped at a limit, naming the limits it actually had.
+
+    Only the Windows helper has caps of its own: memory, and CPU time of
+    ``timeout`` seconds for each thread it was told to use, counted over all
+    of them. On Linux and macOS the helper has neither cap. There the limit is
+    the computer's free memory: the system kills the solver, or an allocation
+    fails.
+    """
+    if _helper_has_caps():
+        from aicad.sandbox import memory_bytes
+
+        each = max(1, int(timeout))
+        count = max(1, int(threads))
+        cpu = f"{each * count} s of CPU time"
+        if count > 1:
+            cpu += f" ({each} s for each of {count} threads)"
+        return f"was stopped at the memory or CPU limit ({memory_bytes() // (1024 * 1024)} MiB of memory, {cpu})"
+    return (
+        "ran out of memory (on this system the solver has no memory or CPU cap of its own, "
+        "so the limit is the computer's free memory)"
+    )
+
+
 def _solve_too_big(what: str, equations: int, node_count: int, mesh_size: float) -> str:
     text = f"CalculiX {what} while solving {equations:,} equations ({node_count:,} nodes"
     if mesh_size > 0:
@@ -1622,16 +1651,8 @@ def _run_ccx(mesh, fixed_nodes, forces, material, method: str | None = None):
             f"with the iterative solver, on {equations:,} equations. "
             "A failed allocation can end this way; a larger mesh_size_mm needs less memory."
         )
-    from aicad.sandbox import memory_bytes
-
     # The helper says a limit stopped it, not which one.
-    return None, None, _solve_too_big(
-        "was stopped at the memory or CPU limit "
-        f"({memory_bytes() // (1024 * 1024)} MiB of memory, {_CCX_TIMEOUT_S} s of CPU time)",
-        equations,
-        len(points),
-        mesh_size,
-    )
+    return None, None, _solve_too_big(helper_limit_stop(_CCX_TIMEOUT_S, threads), equations, len(points), mesh_size)
 
 
 def _parse_frd(path: Path, node_count: int):

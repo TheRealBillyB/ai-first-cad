@@ -704,6 +704,8 @@ def test_a_solver_stopped_by_its_limit_tries_the_iterative_solver_then_names_the
     monkeypatch.setattr(fea, "solver_deck", deck)
     monkeypatch.setattr("aicad.sandbox.run_confined_helper", stopped)
     monkeypatch.setattr("aicad.prereqs.find_program", lambda _name, project=None: "ccx")
+    # The wording of a helper with caps of its own, as on Windows.
+    monkeypatch.setattr(fea, "_helper_has_caps", lambda: True)
     mesh = _one_tet_mesh()
     forces = np.zeros((4, 3))
     forces[1, 0] = 1.0
@@ -715,7 +717,8 @@ def test_a_solver_stopped_by_its_limit_tries_the_iterative_solver_then_names_the
     assert "\n*STATIC\n" in decks[0]
     assert "\n*STATIC, SOLVER=ITERATIVE CHOLESKY\n" in decks[1]
     assert "ran out of" not in warning and "180 s of CPU it may use" not in warning
-    assert "was stopped at the memory or CPU limit (" in warning and "s of CPU time)" in warning
+    # The CPU cap is the timeout for each thread the solver was told to use.
+    assert "was stopped at the memory or CPU limit (" in warning and " s of CPU time" in warning
     assert "9 equations" in warning and "mesh_size_mm" in warning
     assert mesh["equations"] == 9 and mesh["linear_solver"] == "iterative"
 
