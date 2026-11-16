@@ -547,15 +547,34 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         return guard(lambda: run("check_wall_thickness", name=name, min_wall_mm=min_wall_mm, samples=samples))
 
     @mcp.tool()
-    def check_clearance(part_a: str, part_b: str, min_clearance_mm: float = 0.0) -> dict:
+    def check_clearance(
+        part_a: str,
+        part_b: str,
+        min_clearance_mm: float = 0.0,
+        assembly: str | None = None,
+        pose: str | None = None,
+        joints: dict[str, Any] | None = None,
+    ) -> dict:
         """Check interference or gap between two parts.
 
-        If they overlap, `intersecting` is true and `interference_volume_mm3` is
-        the overlap. Otherwise `min_distance_mm` is the gap between surfaces.
-        `min_clearance_mm` of 0 requires that the parts do not touch or overlap.
+        If they overlap, `intersecting` is true, `interference_volume_mm3` is
+        the overlap, and `overlap` says where: its center and box, each separate
+        region largest first, and the penetration depth. Otherwise
+        `min_distance_mm` is the gap between surfaces. `min_clearance_mm` of 0
+        requires that the parts do not touch or overlap. With `assembly`, the
+        two names are instances, posed by `pose` and `joints` for this check
+        only: a quick check of one pose, short of a motion study.
         """
         return guard(
-            lambda: run("check_clearance", part_a=part_a, part_b=part_b, min_clearance_mm=min_clearance_mm)
+            lambda: run(
+                "check_clearance",
+                part_a=part_a,
+                part_b=part_b,
+                min_clearance_mm=min_clearance_mm,
+                assembly=assembly,
+                pose=pose,
+                joints=joints,
+            )
         )
 
     @mcp.tool()

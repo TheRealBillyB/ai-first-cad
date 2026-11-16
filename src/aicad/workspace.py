@@ -971,7 +971,12 @@ def _cmd_wall(workspace: Workspace, arguments: dict) -> dict:
 
 def _cmd_clearance(workspace: Workspace, arguments: dict) -> dict:
     report = workspace.document.check_clearance(
-        arguments["part_a"], arguments["part_b"], _optional_length(arguments, "min_clearance_mm")
+        arguments["part_a"],
+        arguments["part_b"],
+        _optional_length(arguments, "min_clearance_mm"),
+        assembly=arguments.get("assembly"),
+        pose=arguments.get("pose"),
+        joints=arguments.get("joints"),
     ).to_dict()
     return workspace._remember_panel("clearance", report)  # noqa: SLF001
 
@@ -1790,8 +1795,18 @@ _add(Command(
 ))
 _add(Command(
     "check_clearance",
-    "Interference volume or gap between two parts.",
-    _obj({"part_a": _string("First part."), "part_b": _string("Second part."), "min_clearance_mm": _number("Required gap.")}, ["part_a", "part_b"]),
+    "Interference volume or gap between two parts, and where they overlap. With assembly, two instances in one pose.",
+    _obj(
+        {
+            "part_a": _string("First part, or an instance when assembly is given."),
+            "part_b": _string("Second part, or an instance when assembly is given."),
+            "min_clearance_mm": _number("Required gap."),
+            "assembly": _string("Check two instances of this assembly in one pose instead of two parts."),
+            "pose": _string("A stored pose of the assembly, for this check only."),
+            "joints": {"type": "object", "description": "Joint values for this check only: degrees or millimetres by joint name."},
+        },
+        ["part_a", "part_b"],
+    ),
     _cmd_clearance,
 ))
 _add(Command(

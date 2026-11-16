@@ -1106,6 +1106,48 @@ _PENETRATION_EDGE_BUDGET = 4096
 _PENETRATION_SAMPLES = 96
 
 
+def overlap_regions(a: Shape, b: Shape, limit: int = 20) -> dict | None:
+    """Where two solids overlap: the whole overlap's center and box, and each separate region.
+
+    A region is one solid of the boolean intersection, largest first, with
+    its volume, center, and box. The overlap clearance_between made for the
+    same pair is used again.
+    """
+    kept = _last_overlap
+    try:
+        if kept is not None and kept[0] is a and kept[1] is b:
+            common = kept[2]
+        else:
+            common = a.impl & b.impl
+        if common is None or float(common.volume) <= _INTERFERENCE_VOLUME:
+            return None
+        pieces = [solid for solid in common.solids() if float(solid.volume) > _INTERFERENCE_VOLUME]
+        if not pieces:
+            pieces = [common]
+        regions = []
+        for piece in pieces:
+            box = piece.bounding_box()
+            regions.append(
+                {
+                    "volume_mm3": round_mm(float(piece.volume)),
+                    "center_mm": _vec(piece.center()).to_dict(),
+                    "box_min_mm": [round_mm(float(box.min.X)), round_mm(float(box.min.Y)), round_mm(float(box.min.Z))],
+                    "box_max_mm": [round_mm(float(box.max.X)), round_mm(float(box.max.Y)), round_mm(float(box.max.Z))],
+                }
+            )
+        regions.sort(key=lambda region: -region["volume_mm3"])
+        box = common.bounding_box()
+        return {
+            "center_mm": _vec(common.center()).to_dict(),
+            "box_min_mm": [round_mm(float(box.min.X)), round_mm(float(box.min.Y)), round_mm(float(box.min.Z))],
+            "box_max_mm": [round_mm(float(box.max.X)), round_mm(float(box.max.Y)), round_mm(float(box.max.Z))],
+            "region_count": len(regions),
+            "regions": regions[:limit],
+        }
+    except Exception:  # The volume is already reported; a location that cannot be read is left out.
+        return None
+
+
 def penetration_depth(a: Shape, b: Shape) -> dict:
     """How deep two solids overlap, in millimeters.
 
