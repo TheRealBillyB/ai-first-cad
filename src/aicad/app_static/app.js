@@ -3099,7 +3099,13 @@ function rangeFor(item) {
     };
   }
   let range;
-  if (item.kind === "angle") range = { min: 0, max: 360, step: 1 };
+  // A parameter that is only valid over a range says so: a thread's start count, its
+  // clearance, a flank or countersink angle. Guessing from the kind offered 1.3 starts.
+  if (typeof item.min === "number" && typeof item.max === "number") {
+    range = { min: item.min, max: item.max, step: item.increment || 0.1 };
+  } else if (item.kind === "count") range = { min: 1, max: Math.max(8, value), step: 1 };
+  else if (item.kind === "clearance") range = { min: 0, max: Math.max(1, value * 2), step: 0.05 };
+  else if (item.kind === "angle") range = { min: 0, max: 360, step: 1 };
   else if (item.kind === "offset" || item.kind === "signed") {
     const span = Math.max(40, Math.abs(value) * 2);
     const step = item.kind === "signed" ? 0.1 : 0.5;
