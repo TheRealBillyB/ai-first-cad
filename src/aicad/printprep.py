@@ -625,7 +625,8 @@ def _slice_bambu(executable: str, work, printer_id: str | None, layer_height_mm,
     code = data.get("return_code")
     early = _bambu_result(data)
     # A failed file export after a finished slice still leaves its time and grams.
-    export_failed = code == _BAMBU_EXPORT_FAILED and early["seconds"] is not None and early["grams"] is not None
+    # _bambu_result gives 0, not None, for a plate without them, so ask for more than 0.
+    export_failed = code == _BAMBU_EXPORT_FAILED and bool(early["seconds"]) and bool(early["grams"])
     if code not in (0, None) and not export_failed:
         return None, log + f"\nBambu Studio returned {code}: {data.get('error_string') or 'no reason given'}"
     parsed = _bambu_result(data)

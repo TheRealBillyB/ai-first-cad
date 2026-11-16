@@ -146,7 +146,17 @@ def test_a_supported_slice_that_fails_is_not_reported_as_done(monkeypatch, tmp_p
     assert "floating cantilever" in report["slicer_warning"]
 
 
-def test_a_failed_return_code_is_a_failed_slice(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("code", "plates"),
+    [
+        (-1, [{"total_predication": 1, "filaments": []}]),
+        # A -13 is only a finished slice when both its time and its grams are there.
+        (-13, [{"total_predication": 1, "filaments": []}]),
+        (-13, []),
+        (-13, [{}]),
+    ],
+)
+def test_a_failed_return_code_is_a_failed_slice(monkeypatch, tmp_path, code, plates):
     from aicad.sandbox import _HelperResult
     from aicad.tool_directory import held_subprocess_directory
 
@@ -154,14 +164,14 @@ def test_a_failed_return_code_is_a_failed_slice(monkeypatch, tmp_path):
     monkeypatch.setattr(printprep, "_bambu_profile", lambda *_args, **_kwargs: {})
 
     def run(command, **kwargs):
-        result = {"return_code": -1, "error_string": "Failed", "sliced_plates": [{"total_predication": 1, "filaments": []}]}
+        result = {"return_code": code, "error_string": "Failed", "sliced_plates": plates}
         (Path(kwargs["cwd"]) / "result.json").write_text(json.dumps(result), encoding="utf-8")
         return _HelperResult(0, "", "")
 
     monkeypatch.setattr("aicad.sandbox.run_confined_helper", run)
     with held_subprocess_directory() as work:
         parsed, log = printprep._slice_bambu("C:/x/bambu-studio.exe", work, None, None, supports=False)
-    assert parsed is None and "returned -1" in log
+    assert parsed is None and f"returned {code}" in log
 
 
 def test_a_p1s_slices_with_the_p1s_profile():
