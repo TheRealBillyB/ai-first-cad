@@ -677,7 +677,7 @@ def _size(value, label: str, default: int) -> int:
 
     if value is None:
         return default
-    return _even(value, label, 16, 1280)
+    return _even(value, label, 16, 1920)
 
 
 def _optional_int(value):
