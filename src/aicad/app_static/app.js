@@ -3740,15 +3740,29 @@ function moveTab(event) {
   next.click();
 }
 
+// Commands that put another project on screen. The page the person was on may not
+// exist there, so Live goes to the new project's model.
+const PROJECT_COMMANDS = new Set(["open_project", "open_example", "save_project_as"]);
+
+// Live follows an assistant's edit only on the Model page's solid view, where the
+// person is already looking at parts. Anywhere else (the Assembly page, an assembly
+// in the viewport, a sketch, Documents) the page refreshes in place and stays put.
+function liveFollows(event) {
+  if (!ui.live || !event.follow || !event.frame) return false;
+  if (PROJECT_COMMANDS.has(event.command)) return true;
+  return ui.page === "model" && ui.stage === "solid" && !ui.viewAssembly;
+}
+
 function handleLiveEvent(event) {
   if (!event || event.source === "ui") return;
   if (event.summary) $("who").textContent = event.summary;
-  const focus = ui.live && event.follow && event.frame === "part" ? (event.parts || [])[0] : null;
+  const follow = liveFollows(event);
+  const focus = follow && event.frame === "part" ? (event.parts || [])[0] : null;
   refresh({
     applySelection: true,
     focus,
-    fit: ui.live && event.follow ? (focus ? "part" : "scene") : null,
-    solid: Boolean(ui.live && event.follow && event.frame),
+    fit: follow ? (focus ? "part" : "scene") : null,
+    solid: follow,
   }).catch(showError);
 }
 
