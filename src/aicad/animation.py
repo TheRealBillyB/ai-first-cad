@@ -1,6 +1,7 @@
 """Headless animations of an assembly.
 
-A stored motion, a motion study, a camera orbit, or an exploded opening is drawn with the same
+A stored motion, a motion study, a camera orbit, an exploded opening, or the
+reverse (the parts assembling themselves from the exploded view) is drawn with the same
 software rasterizer as the still views. Nothing here opens a window or uses a
 GPU. The GIF is written with Pillow, which is already a dependency. MP4 and
 WebM are written by ``ffmpeg`` when that program is on PATH outside the
@@ -57,7 +58,11 @@ _KINDS = {
     "orbit": "orbit",
     "exploded": "exploded",
     "explode": "exploded",
+    "assemble": "assemble",
+    "assembling": "assemble",
 }
+# Kinds that move the parts along the exploded view's offsets: open, or close.
+_EXPLODE_KINDS = ("exploded", "assemble")
 _NAMED_CAMERAS = {name: (eye, up) for name, eye, up, _label in _VIEWS}
 _OVERLAYS = {"none", "step", "time", "value"}
 _VIDEOS = {"gif", "none", "mp4", "webm", "both"}
@@ -130,8 +135,8 @@ def render_clip(
 ) -> dict:
     """Draw the animation and return the file paths."""
     chosen_kind = _kind(kind, sequence, study)
-    if gap_mm is not None and chosen_kind != "exploded":
-        raise GeometryError("gap_mm is the opening of an exploded animation.")
+    if gap_mm is not None and chosen_kind not in _EXPLODE_KINDS:
+        raise GeometryError("gap_mm is the opening of an exploded or assemble animation.")
     if joint is not None and chosen_kind != "motion":
         raise GeometryError("joint names the measured value on a motion study.")
     rate = 12 if fps is None else _whole(fps, "fps", 1, 60)
@@ -244,7 +249,7 @@ def render_clip(
         ],
         "note": note,
     }
-    if chosen_kind == "exploded":
+    if chosen_kind in _EXPLODE_KINDS:
         report["gap_mm"] = samples["gap_mm"]
     return report
 
@@ -253,10 +258,10 @@ def _kind(kind: str | None, sequence: str | None, study: dict | None) -> str:
     if kind is None:
         return "motion" if (sequence or study) else "orbit"
     if not isinstance(kind, str):
-        raise GeometryError("kind must be motion, orbit, or exploded.")
+        raise GeometryError("kind must be motion, orbit, exploded, or assemble.")
     chosen = _KINDS.get(kind.strip().lower())
     if chosen is None:
-        raise GeometryError("kind must be motion, orbit, or exploded.")
+        raise GeometryError("kind must be motion, orbit, exploded, or assemble.")
     return chosen
 
 
@@ -454,9 +459,7 @@ def _frames_of(samples, shapes, color_of, material_of, camera_spec, clock, joint
     texts = []
     for row in samples["rows"]:
         index = row["index"]
-        factor = 0.0 if count == 1 else index / (count - 1)
-        if samples["kind"] == "orbit":
-            factor = 0.0
+        factor = _opening(samples["kind"], index, count)
         meshes.append(
             _mesh(cache, shapes, row["solved"], color_of, material_of, samples.get("offsets"), factor)
         )
@@ -508,13 +511,25 @@ def _overlay_text(clock, samples, row, index, count, joint_name, camera_spec) ->
         # The same clock as the sample. Playback fps is a different number:
         # four frames of a two-second orbit are not a quarter of a second apart.
         return f"{float(row['time_s']):.3f} s"
-    if samples["kind"] == "exploded":
-        opening = float(samples["gap_mm"]) * (0.0 if count == 1 else index / (count - 1))
+    if samples["kind"] in _EXPLODE_KINDS:
+        opening = float(samples["gap_mm"]) * _opening(samples["kind"], index, count)
         return f"{opening:.3f} mm"
     if samples["kind"] == "orbit":
         traveled = _traveled_degrees(index, count, camera_spec)
         return f"{traveled:.1f} deg"
     return _joint_text(row["solved"], clock["drivers"], joint_name)
+
+
+def _opening(kind: str, index: int, count: int) -> float:
+    """How far open the exploded view is at this frame: 0 assembled, 1 fully apart.
+
+    An exploded animation opens from 0 to 1. An assemble animation is the same
+    frames backwards: it starts apart and ends with every part in its place.
+    """
+    if kind not in _EXPLODE_KINDS:
+        return 0.0
+    share = 0.0 if count == 1 else index / (count - 1)
+    return 1.0 - share if kind == "assemble" else share
 
 
 def _joint_text(solved, drivers, joint_name) -> str:
@@ -817,6 +832,8 @@ def _clip_stem(assembly: str, kind: str, study_name: str | None) -> str:
         return _file_stem(f"{base}_{_file_stem(study_name or 'motion')}")
     if kind == "exploded":
         return _file_stem(f"{base}_exploded")
+    if kind == "assemble":
+        return _file_stem(f"{base}_assemble")
     return _file_stem(f"{base}_orbit")
 
 

@@ -501,3 +501,59 @@ def test_a_long_full_hd_clip_gets_a_smaller_gif_and_a_full_size_poster(tmp_path)
         assert gif.n_frames == count
     with Image.open(report["poster"]) as poster:
         assert poster.size == (1920, 1080)
+
+
+def test_an_assemble_animation_is_the_exploded_opening_backwards(tmp_path):
+    """The parts start apart and end in place: the first frame is the exploded end, the last the assembled one."""
+    document = Document(tmp_path)
+    _box(document, "base", [18, 12, 6], [0, 0, 3])
+    _box(document, "cap", [10, 10, 4], [0, 0, 10])
+    document.create_assembly(
+        {
+            "name": "stack",
+            "instances": [
+                {"name": "base", "part": "base"},
+                {"name": "cap", "part": "cap"},
+            ],
+            "joints": [{"name": "seat", "type": "fixed", "parent": "base", "child": "cap"}],
+        }
+    )
+    common = {"frames": 3, "fps": 4, "width": 64, "height": 48, "gap_mm": 40, "overlay": "value", "video": "gif"}
+    opened = document.render_animation("stack", kind="exploded", path=tmp_path / "renders" / "open.gif", **common)
+    closed = document.render_animation("stack", kind="assemble", path=tmp_path / "renders" / "close.gif", **common)
+    assert closed["kind"] == "assemble"
+    assert closed["gap_mm"] == pytest.approx(40)
+    assert closed["overlays"] == list(reversed(opened["overlays"]))
+    assert closed["overlays"][0] == "40.000 mm" and closed["overlays"][-1] == "0.000 mm"
+
+    def frames(report):
+        with _gif(Path(report["gif"])) as gif:
+            out = []
+            for index in range(gif.n_frames):
+                gif.seek(index)
+                out.append(gif.convert("RGB").tobytes())
+            return out
+
+    assert frames(closed) == list(reversed(frames(opened)))
+
+
+def test_an_assemble_animation_has_its_own_file_name(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [18, 12, 6], [0, 0, 3])
+    _box(document, "cap", [10, 10, 4], [0, 0, 10])
+    document.create_assembly(
+        {
+            "name": "stack",
+            "instances": [{"name": "base", "part": "base"}, {"name": "cap", "part": "cap"}],
+            "joints": [{"name": "seat", "type": "fixed", "parent": "base", "child": "cap"}],
+        }
+    )
+    report = document.render_animation("stack", kind="assemble", frames=2, width=32, height=32, overlay="none", video="gif")
+    assert Path(report["gif"]).name == "stack_assemble.gif"
+
+
+def test_gap_mm_belongs_to_the_explode_kinds(tmp_path):
+    document = Document(tmp_path)
+    _stand(document)
+    with pytest.raises(GeometryError, match="exploded or assemble"):
+        document.render_animation("stand", kind="orbit", frames=2, gap_mm=10, video="gif")

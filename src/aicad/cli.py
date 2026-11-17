@@ -494,10 +494,15 @@ def build_parser() -> argparse.ArgumentParser:
     animate = commands.add_parser(
         "animate",
         parents=[common],
-        help="Write a GIF of a motion study, a camera orbit, or an exploded opening.",
+        help="Write a GIF of a motion study, a camera orbit, an exploded opening, or the parts assembling themselves.",
     )
     animate.add_argument("name")
-    animate.add_argument("--kind", choices=["motion", "orbit", "exploded"], default=None)
+    animate.add_argument(
+        "--kind",
+        choices=["motion", "orbit", "exploded", "assemble"],
+        default=None,
+        help="assemble plays the exploded opening backwards: the parts move into place.",
+    )
     animate.add_argument("--sequence", default=None, help="Study stored on the assembly.")
     animate.add_argument("--file", type=Path, default=None, help="JSON motion study.")
     animate.add_argument("--frames", type=int, default=None, help="Pictures, including both ends.")
@@ -523,7 +528,7 @@ def build_parser() -> argparse.ArgumentParser:
     animate.add_argument("--materials", type=Path, default=None, help="JSON map of instance name to a material.")
     animate.add_argument("--overlay", choices=["none", "step", "time", "value"], default=None)
     animate.add_argument("--joint", default=None, help="Joint drawn when the overlay is value.")
-    animate.add_argument("--gap", type=float, default=None, help="Millimeters each joint opens in an exploded animation.")
+    animate.add_argument("--gap", type=float, default=None, help="Millimeters each joint opens in an exploded or assemble animation.")
     animate.add_argument(
         "--video",
         choices=["gif", "mp4", "webm", "both"],
