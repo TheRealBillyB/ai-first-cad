@@ -230,6 +230,14 @@ function assemblyFormHtml(tool, current) {
           <option value="assemble">Assemble</option>
         </select>
       </label>
+      <label>Size
+        <select id="anim-size">
+          <option value="480x360">480 × 360</option>
+          <option value="1280x720">1280 × 720</option>
+          <option value="1920x1080">1920 × 1080</option>
+          <option value="1080x1920">1080 × 1920, upright</option>
+        </select>
+      </label>
       <label>Frames <input id="anim-frames" type="number" min="2" max="300" step="1" value="8" /></label>
       <label>Frames per second <input id="anim-fps" type="number" min="1" max="60" step="1" value="8" /></label>
     </div>
@@ -896,6 +904,7 @@ async function runAnimation(button) {
     kind,
     frames: requiredNumber($("anim-frames").value, "Enter the frame count."),
     fps: requiredNumber($("anim-fps").value, "Enter the frames per second."),
+    ...animationSize($("anim-size") ? $("anim-size").value : ""),
     video: "gif",
   };
   if (kind === "motion") {
@@ -913,6 +922,12 @@ async function runAnimation(button) {
   ui.reportFocus = "animation";
   await refresh();
   showAnimationReport(report);
+}
+
+// The Size choice is "WIDTHxHEIGHT". Anything else leaves the default size.
+function animationSize(value) {
+  const match = /^(\d+)x(\d+)$/.exec(String(value || ""));
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : {};
 }
 
 async function runMotionStudy(sequence, button) {
