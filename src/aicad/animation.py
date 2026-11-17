@@ -4,10 +4,11 @@ A stored motion, a motion study, a camera orbit, an exploded opening, or the
 reverse (the parts assembling themselves from the exploded view) is drawn with the same
 software rasterizer as the still views. Nothing here opens a window or uses a
 GPU. The GIF is written with Pillow, which is already a dependency. MP4 and
-WebM are written by ``ffmpeg`` when that program is on PATH outside the
-project. A copy in the project is not started. ``ffmpeg`` is not
-downloaded. When it is missing, or when it cannot encode the frames, the GIF
-is still written and the report says so.
+WebM are written by ``ffmpeg``: the one on PATH outside the project, or else
+the build the optional ``imageio-ffmpeg`` package installed. A copy in the
+project is not started. ``ffmpeg`` is not downloaded here. When it is
+missing, or when it cannot encode the frames, the GIF is still written and
+the report says how to add an encoder.
 
 Pictures are up to 1920 pixels on a side, so 1920 x 1080 and 1080 x 1920
 both work. Frames are written as they are drawn, not held: the poster and
@@ -47,7 +48,7 @@ from aicad.paths import (
     refuse_reserved_device,
     require_export_path,
 )
-from aicad.prereqs import find_program
+from aicad.prereqs import bundled_ffmpeg, ffmpeg_hint, find_program
 from aicad.render import _PAPER, _VIEWS, _camera_basis, frame_scale, render_frame, sequence_centers
 
 _FILE_SUFFIXES = {".gif", ".mp4", ".webm"}
@@ -78,10 +79,6 @@ _MATERIAL_COLOR = {
     "steel_16mncr5": (128.0, 132.0, 138.0),
     "grey_cast_iron": (84.0, 86.0, 90.0),
 }
-_FFMPEG_MISSING = (
-    "ffmpeg was not found on PATH, so no MP4 or WebM was written. "
-    "The GIF is the animation. Install ffmpeg and run this again to write a video."
-)
 _MAX_FRAMES = 300
 # Longest side of a picture: 1920 x 1080 and 1080 x 1920 both fit.
 _MAX_SIDE = 1920
@@ -929,9 +926,10 @@ class _ClipWriter:
 
     def __enter__(self):
         if self.formats:
-            self.executable = find_program("ffmpeg", project=self.root)
+            # PATH first, so an ffmpeg the person installed wins over the bundled build.
+            self.executable = find_program("ffmpeg", project=self.root) or bundled_ffmpeg(project=self.root)
             if not self.executable:
-                self.message = _FFMPEG_MISSING
+                self.message = ffmpeg_hint()
             else:
                 from aicad.tool_directory import held_subprocess_directory
 
