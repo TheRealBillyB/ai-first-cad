@@ -2471,11 +2471,14 @@ _add(Command(
 ))
 _add(Command(
     "render_animation",
-    "Write a GIF of a motion study, a camera orbit, or an exploded opening. MP4 and WebM are written when ffmpeg is on PATH. The files stay in the project.",
+    "Write a GIF of a motion study, a camera orbit, an exploded opening, or the parts assembling themselves. MP4 and WebM are written when ffmpeg is on PATH. The files stay in the project.",
     _obj(
         {
             "name": _string("Assembly name."),
-            "kind": _string("motion, orbit, or exploded. Omit to orbit, or to play a study when one is passed."),
+            "kind": _string(
+                "motion, orbit, exploded (the parts move apart), or assemble (the parts start apart and move into place). "
+                "Omit to orbit, or to play a study when one is passed."
+            ),
             "sequence": _string("Named motion study on the assembly."),
             "study": {"type": "object", "description": "Inline motion study. frames on this command replaces the study step count."},
             "frames": _number("Pictures, including both ends. From 2 to 300."),
@@ -2495,7 +2498,7 @@ _add(Command(
             "materials": {"type": "object", "description": "Instance name to a material such as steel or pla. Pictures only."},
             "overlay": _string("none, step, time, or value."),
             "joint": _string("Joint whose value is drawn when overlay is value."),
-            "gap_mm": _number("Millimeters each joint opens in an exploded animation."),
+            "gap_mm": _number("Millimeters each joint opens in an exploded or assemble animation."),
             "video": _string("gif, mp4, webm, or both. gif skips the video. mp4 and webm need ffmpeg."),
             "path": _string("A .gif, .mp4, or .webm file, or a directory, inside the project."),
         },
