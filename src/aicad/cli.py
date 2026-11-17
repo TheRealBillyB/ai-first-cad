@@ -503,8 +503,8 @@ def build_parser() -> argparse.ArgumentParser:
     animate.add_argument("--frames", type=int, default=None, help="Pictures, including both ends.")
     animate.add_argument("--fps", type=int, default=None, help="Playback frames per second.")
     animate.add_argument("--duration", dest="duration_s", type=float, default=None, help="Playback length in seconds when --frames is omitted.")
-    animate.add_argument("--width", type=int, default=None, help="Picture width in pixels. Even, from 16 to 1280.")
-    animate.add_argument("--height", type=int, default=None, help="Picture height in pixels. Even, from 16 to 1280.")
+    animate.add_argument("--width", type=int, default=None, help="Picture width in pixels. Even, from 16 to 1920.")
+    animate.add_argument("--height", type=int, default=None, help="Picture height in pixels. Even, from 16 to 1920.")
     animate.add_argument(
         "--camera",
         default=None,
@@ -713,8 +713,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="gif writes only the GIF. mp4 and webm need ffmpeg.",
     )
-    recorded.add_argument("--width", type=int, default=None, help="Picture width in pixels. Even, from 16 to 1280.")
-    recorded.add_argument("--height", type=int, default=None, help="Picture height in pixels. Even, from 16 to 1280.")
+    recorded.add_argument("--width", type=int, default=None, help="Picture width in pixels. Even, from 16 to 1920.")
+    recorded.add_argument("--height", type=int, default=None, help="Picture height in pixels. Even, from 16 to 1920.")
     recorded.add_argument("--out", type=Path, default=None, help="A .gif, .mp4, or .webm file, or a directory, inside the project.")
 
     from aicad.plugins import add_cli
