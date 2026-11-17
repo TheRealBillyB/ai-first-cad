@@ -1098,7 +1098,8 @@ def write_frames(
     """Write frames with the same GIF and ffmpeg path as an assembly animation.
 
     The GIF is always written. MP4 and WebM are written when ``video`` asks
-    for them and ``ffmpeg`` is on PATH. A missing encoder leaves the GIF.
+    for them and ``ffmpeg`` is on PATH or the optional ``imageio-ffmpeg``
+    build is installed. A missing encoder leaves the GIF.
     """
     if not images:
         raise GeometryError("There are no frames to write.")

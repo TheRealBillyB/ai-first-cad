@@ -2693,7 +2693,7 @@ class Document:
         video: str | None = None,
         path: str | Path | None = None,
     ) -> dict:
-        """Write a GIF of this assembly, and a video when ffmpeg is on PATH.
+        """Write a GIF of this assembly, and a video when ffmpeg can be found.
 
         ``kind`` is ``motion``, ``orbit``, ``exploded``, or ``assemble``.
         ``assemble`` is the exploded opening backwards: the parts start apart
@@ -2706,8 +2706,10 @@ class Document:
         ``colors`` and ``materials`` recolor the pictures only. ``overlay`` is
         ``none``, ``step``, ``time``, or ``value``. ``video`` is ``gif``,
         ``mp4``, ``webm``, or ``both``. ``path`` is a file or a directory
-        inside the project. A missing ffmpeg still leaves the GIF, and
-        ``video_message`` says why the video was not written.
+        inside the project. The video uses ffmpeg on PATH, or else the optional
+        imageio-ffmpeg build. A missing ffmpeg still leaves the GIF, and
+        ``video_message`` says why the video was not written and how to add
+        an encoder.
         """
         with self._lock:
             if path is not None:
