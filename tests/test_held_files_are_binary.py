@@ -2,7 +2,8 @@
 
 On Windows a descriptor opens in text mode unless asked otherwise, so a write
 turned each LF byte into CR LF. Every PNG frame given to ffmpeg arrived with
-a broken signature, and no video was written.
+a broken signature, and no video was written. The binary STL given to the
+slicer grew by a byte for each LF byte in it, and the slice failed.
 """
 
 import io
@@ -34,3 +35,48 @@ def test_a_png_frame_still_opens():
         held_write_bytes(folder, "frame_0000.png", buffer.getvalue())
         with Image.open(folder.original / "frame_0000.png") as picture:
             assert picture.size == (8, 8)
+
+
+def test_a_slicer_stl_keeps_its_size():
+    # Ten triangles: the count field is 0A 00 00 00, so a text-mode write grew
+    # the file by a byte and Bambu Studio refused it as the wrong size.
+    import numpy as np
+
+    from aicad.printprep import _stl_bytes
+
+    vertices = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]] * 10)
+    triangles = np.arange(30).reshape(10, 3)
+    stl = _stl_bytes(vertices, triangles)
+    assert b"\n" in stl
+    with held_subprocess_directory() as folder:
+        held_write_bytes(folder, "oriented.stl", stl)
+        written = (folder.original / "oriented.stl").read_bytes()
+    assert len(written) == 84 + 50 * 10
+    assert written == stl
+
+
+def test_both_opens_ask_for_binary_mode(monkeypatch):
+    # Only Windows has O_BINARY, so this pretends it is 0x8000 everywhere and
+    # checks that the write and the read both ask for it. The spy takes the bit
+    # off before the real open, since on Linux 0x8000 can be another flag.
+    import os
+
+    from aicad import tool_directory
+
+    opened = []
+    real_open = os.open
+
+    def spy(path, flags, *args, **kwargs):
+        opened.append((os.fspath(path), flags))
+        return real_open(path, flags & ~0x8000, *args, **kwargs)
+
+    with held_subprocess_directory() as folder:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "O_BINARY", 0x8000, raising=False)
+            patch.setattr(tool_directory, "_BINARY", 0x8000, raising=False)
+            patch.setattr(os, "open", spy)
+            held_write_bytes(folder, "data.bin", b"bytes")
+            held_read_bytes(folder, "data.bin", maximum=100)
+    files = [flags for path, flags in opened if os.path.basename(path) == "data.bin"]
+    assert len(files) == 2
+    assert all(flags & 0x8000 for flags in files)

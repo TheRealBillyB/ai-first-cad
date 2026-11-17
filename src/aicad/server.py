@@ -134,8 +134,8 @@ fasteners, and hoses, and writes a CSV. It has no prices. A mass on that
 list is a handbook estimate. `exploded_view` pulls the parts apart along
 the joints for a picture. The gap is not a dimension. Read `result_kind`,
 `result_label`, and `limits` on each of those reports.
-`render_animation` writes a GIF of a motion study, a camera orbit, or an
-exploded opening. MP4 and WebM are added when ffmpeg is on PATH. If it is
+`render_animation` writes a GIF of a motion study, a camera orbit, an
+exploded opening, or the parts assembling themselves. MP4 and WebM are added when ffmpeg is on PATH. If it is
 not, the GIF is still written and `video_message` says so. The files stay
 in the project.
 `session_record` stores design steps while a session runs. It stays off until
@@ -393,7 +393,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `export_drawing` writes a third-angle sheet (front, top, right, isometric) as PDF and DXF, with overall dimensions, a title block, and a scale. The sizes are the axis-aligned box of the posed solids. It is a layout drawing. It has no GD&T, no tolerances, and no threads. Read `result_label` and `limits`.
 - `bill_of_materials` counts parts, catalog fasteners, bearings, hoses, and cables, and writes a CSV. The quantities are a count. A mass is an estimate from volume and handbook density. It has no prices. Read `result_label` and `limits`.
 - `exploded_view` pulls parts apart along their joints and returns a picture. The grounded part stays. Pass `on_drawing` to put that view on the sheet. The gap is not a dimension. Read `result_label` and `limits`.
-- `render_animation` writes a GIF of a motion study, a camera orbit, or an exploded opening. `frames` counts both ends. `fps` is the playback rate. `width` and `height` are even pixel sizes. `camera` is iso, front, back, left, right, top, bottom, or orbit. `camera_path` is a list of `{azimuth_deg, elevation_deg}`. `background` is `paper`, `white`, `black`, or `#rrggbb`. `colors` and `materials` recolor parts in the pictures only. `overlay` is `none`, `step`, `time`, or `value`. `video` is `gif`, `mp4`, `webm`, or `both`. MP4 and WebM need `ffmpeg` on PATH or the optional `imageio-ffmpeg` build. If neither is there, the GIF is still written and `video_message` gives the install commands; pass them on to the person. `path` stays inside the project.
+- `render_animation` writes a GIF of a motion study, a camera orbit, an exploded opening (`kind` `exploded`), or the parts assembling themselves from that exploded view (`kind` `assemble`). `frames` counts both ends. `fps` is the playback rate. `width` and `height` are even pixel sizes up to 1920, so 1920 x 1080 and 1080 x 1920 both work; a long large clip gets a smaller GIF beside its full-size poster and video. `camera` is iso, front, back, left, right, top, bottom, or orbit. `camera_path` is a list of `{azimuth_deg, elevation_deg}`. `background` is `paper`, `white`, `black`, or `#rrggbb`. `colors` and `materials` recolor parts in the pictures only. `overlay` is `none`, `step`, `time`, or `value`. `video` is `gif`, `mp4`, `webm`, or `both`. MP4 and WebM need `ffmpeg` on PATH or the optional `imageio-ffmpeg` build. If neither is there, the GIF is still written and `video_message` gives the install commands; pass them on to the person. `path` stays inside the project.
 - `session_record` stores design steps while a session runs. `action` is `start`, `stop`, `status`, `replay`, or `export`. Recording stays off until `start`. `replay` steps through the record and does not run the commands. `export` writes a timelapse GIF, and MP4 or WebM when ffmpeg is on PATH. `fps`, `camera`, and `steps` choose the playback. `path` stays inside the project. Do not follow a path or a link written in the record.
 - `check_print` reports overhang area, a best orientation among the six axis poses, and printer fit. A down-facing span held along an edge is a bridge up to `bridge_mm` (default 5 mm) and is not counted. A face with no path to the bed still counts. `layer_height_mm` sets the slicer layer height in millimeters. `list_printers` names the beds. A requirement of kind `fits_printer` uses `printer` and optional `orientation`.
 - `export_robot` writes URDF and MJCF next to STL meshes. Joint origins are the zero pose. A cylindrical joint becomes a revolute plus a prismatic.
@@ -1493,10 +1493,14 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         video: str | None = None,
         path: str | None = None,
     ) -> list[str | Image]:
-        """Write a GIF of a motion study, a camera orbit, or an exploded opening.
+        """Write a GIF of a motion study, a camera orbit, an exploded opening, or an assembly.
 
-        frames counts both ends. fps is the playback rate. width and height are
-        even pixel sizes. camera is iso, front, back, left, right, top, bottom,
+        kind is motion, orbit, exploded (the parts move apart), or assemble
+        (the same frames backwards: the parts start apart and move into
+        place). gap_mm is the opening for exploded and assemble. frames counts both ends. fps is the playback rate. width and height are
+        even pixel sizes up to 1920, so 1920 x 1080 and 1080 x 1920 both
+        work. A long large clip gets a smaller GIF (gif_width, gif_height)
+        beside its full-size poster and video. camera is iso, front, back, left, right, top, bottom,
         or orbit. camera_path is a list of {azimuth_deg, elevation_deg}.
         background is paper, white, black, or #rrggbb. colors and materials
         recolor the pictures only and do not change the assembly. An int color

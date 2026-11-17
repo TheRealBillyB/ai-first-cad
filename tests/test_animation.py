@@ -458,3 +458,103 @@ def test_frame_cleanup_does_not_follow_a_directory_junction(tmp_path):
     _remove_frames(frames, root)
     assert marker.read_text(encoding="utf-8") == "keep"
     assert frames.exists()
+
+
+@pytest.mark.parametrize(("width", "height"), [(1920, 1080), (1080, 1920)])
+def test_a_full_hd_clip_in_either_orientation(tmp_path, width, height):
+    document = Document(tmp_path)
+    _stand(document)
+    report = document.render_animation(
+        "stand", kind="orbit", frames=3, fps=4, width=width, height=height, overlay="none", video="gif"
+    )
+    assert (report["width"], report["height"]) == (width, height)
+    # Three frames are well inside the GIF limit, so the GIF is full size too.
+    assert (report["gif_width"], report["gif_height"]) == (width, height)
+    with Image.open(report["poster"]) as poster:
+        assert poster.size == (width, height)
+    with _gif(Path(report["gif"])) as gif:
+        assert gif.size == (width, height)
+        assert gif.n_frames == 3
+
+
+def test_a_side_over_1920_is_refused(tmp_path):
+    document = Document(tmp_path)
+    _stand(document)
+    with pytest.raises(GeometryError, match="width must be from 16 to 1920"):
+        document.render_animation("stand", kind="orbit", frames=2, width=1922, height=1080, video="gif")
+
+
+def test_a_long_full_hd_clip_gets_a_smaller_gif_and_a_full_size_poster(tmp_path):
+    from aicad.animation import _MAX_GIF_PIXELS, write_frames
+
+    count = 26
+    assert count * 1920 * 1080 > _MAX_GIF_PIXELS
+    images = [Image.new("RGB", (1920, 1080), (10 * index, 40, 80)) for index in range(count)]
+    report = write_frames(tmp_path, images, fps=12, video="gif", path="renders/long.gif")
+    assert (report["width"], report["height"]) == (1920, 1080)
+    gif_w, gif_h = report["gif_width"], report["gif_height"]
+    assert gif_w < 1920 and gif_h < 1080
+    assert gif_w % 2 == 0 and gif_h % 2 == 0
+    assert count * gif_w * gif_h <= _MAX_GIF_PIXELS
+    assert abs(gif_w / gif_h - 1920 / 1080) < 0.01
+    with _gif(Path(report["gif"])) as gif:
+        assert gif.size == (gif_w, gif_h)
+        assert gif.n_frames == count
+    with Image.open(report["poster"]) as poster:
+        assert poster.size == (1920, 1080)
+
+
+def test_an_assemble_animation_is_the_exploded_opening_backwards(tmp_path):
+    """The parts start apart and end in place: the first frame is the exploded end, the last the assembled one."""
+    document = Document(tmp_path)
+    _box(document, "base", [18, 12, 6], [0, 0, 3])
+    _box(document, "cap", [10, 10, 4], [0, 0, 10])
+    document.create_assembly(
+        {
+            "name": "stack",
+            "instances": [
+                {"name": "base", "part": "base"},
+                {"name": "cap", "part": "cap"},
+            ],
+            "joints": [{"name": "seat", "type": "fixed", "parent": "base", "child": "cap"}],
+        }
+    )
+    common = {"frames": 3, "fps": 4, "width": 64, "height": 48, "gap_mm": 40, "overlay": "value", "video": "gif"}
+    opened = document.render_animation("stack", kind="exploded", path=tmp_path / "renders" / "open.gif", **common)
+    closed = document.render_animation("stack", kind="assemble", path=tmp_path / "renders" / "close.gif", **common)
+    assert closed["kind"] == "assemble"
+    assert closed["gap_mm"] == pytest.approx(40)
+    assert closed["overlays"] == list(reversed(opened["overlays"]))
+    assert closed["overlays"][0] == "40.000 mm" and closed["overlays"][-1] == "0.000 mm"
+
+    def frames(report):
+        with _gif(Path(report["gif"])) as gif:
+            out = []
+            for index in range(gif.n_frames):
+                gif.seek(index)
+                out.append(gif.convert("RGB").tobytes())
+            return out
+
+    assert frames(closed) == list(reversed(frames(opened)))
+
+
+def test_an_assemble_animation_has_its_own_file_name(tmp_path):
+    document = Document(tmp_path)
+    _box(document, "base", [18, 12, 6], [0, 0, 3])
+    _box(document, "cap", [10, 10, 4], [0, 0, 10])
+    document.create_assembly(
+        {
+            "name": "stack",
+            "instances": [{"name": "base", "part": "base"}, {"name": "cap", "part": "cap"}],
+            "joints": [{"name": "seat", "type": "fixed", "parent": "base", "child": "cap"}],
+        }
+    )
+    report = document.render_animation("stack", kind="assemble", frames=2, width=32, height=32, overlay="none", video="gif")
+    assert Path(report["gif"]).name == "stack_assemble.gif"
+
+
+def test_gap_mm_belongs_to_the_explode_kinds(tmp_path):
+    document = Document(tmp_path)
+    _stand(document)
+    with pytest.raises(GeometryError, match="exploded or assemble"):
+        document.render_animation("stand", kind="orbit", frames=2, gap_mm=10, video="gif")

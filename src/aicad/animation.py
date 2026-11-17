@@ -1,6 +1,7 @@
 """Headless animations of an assembly.
 
-A stored motion, a motion study, a camera orbit, or an exploded opening is drawn with the same
+A stored motion, a motion study, a camera orbit, an exploded opening, or the
+reverse (the parts assembling themselves from the exploded view) is drawn with the same
 software rasterizer as the still views. Nothing here opens a window or uses a
 GPU. The GIF is written with Pillow, which is already a dependency. MP4 and
 WebM are written by ``ffmpeg``: the one on PATH outside the project, or else
@@ -8,6 +9,11 @@ the build the optional ``imageio-ffmpeg`` package installed. A copy in the
 project is not started. ``ffmpeg`` is not downloaded here. When it is
 missing, or when it cannot encode the frames, the GIF is still written and
 the report says how to add an encoder.
+
+Pictures are up to 1920 pixels on a side, so 1920 x 1080 and 1080 x 1920
+both work. Frames are written as they are drawn, not held: the poster and
+the video frames are full size. The GIF is held while it is written, so a
+large clip gets a smaller GIF, and the report says its size.
 
 ``frames`` counts both ends. Playback shows each frame for the nearest
 whole centisecond to ``1000 / fps`` milliseconds, because a GIF stores its
@@ -19,6 +25,8 @@ Output paths stay inside the project.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import math
 import subprocess
 from pathlib import Path
@@ -51,7 +59,11 @@ _KINDS = {
     "orbit": "orbit",
     "exploded": "exploded",
     "explode": "exploded",
+    "assemble": "assemble",
+    "assembling": "assemble",
 }
+# Kinds that move the parts along the exploded view's offsets: open, or close.
+_EXPLODE_KINDS = ("exploded", "assemble")
 _NAMED_CAMERAS = {name: (eye, up) for name, eye, up, _label in _VIEWS}
 _OVERLAYS = {"none", "step", "time", "value"}
 _VIDEOS = {"gif", "none", "mp4", "webm", "both"}
@@ -68,7 +80,14 @@ _MATERIAL_COLOR = {
     "grey_cast_iron": (84.0, 86.0, 90.0),
 }
 _MAX_FRAMES = 300
-_MAX_PIXELS = 50_000_000
+# Longest side of a picture: 1920 x 1080 and 1080 x 1920 both fit.
+_MAX_SIDE = 1920
+# The frames are written to disk as they are drawn, so this is the most work one
+# call can ask for: 300 frames of 1920 x 1080.
+_MAX_PIXELS = 1920 * 1080 * _MAX_FRAMES
+# The GIF is held in memory until it is written. It keeps to this many pixels in
+# all frames, and a larger clip gets a GIF scaled down beside its full-size video.
+_MAX_GIF_PIXELS = 50_000_000
 _ISO_EYE = (1.0, -1.0, 0.85)
 
 
@@ -113,13 +132,13 @@ def render_clip(
 ) -> dict:
     """Draw the animation and return the file paths."""
     chosen_kind = _kind(kind, sequence, study)
-    if gap_mm is not None and chosen_kind != "exploded":
-        raise GeometryError("gap_mm is the opening of an exploded animation.")
+    if gap_mm is not None and chosen_kind not in _EXPLODE_KINDS:
+        raise GeometryError("gap_mm is the opening of an exploded or assemble animation.")
     if joint is not None and chosen_kind != "motion":
         raise GeometryError("joint names the measured value on a motion study.")
     rate = 12 if fps is None else _whole(fps, "fps", 1, 60)
-    picture_w = 480 if width is None else _even(width, "width", 16, 1280)
-    picture_h = 360 if height is None else _even(height, "height", 16, 1280)
+    picture_w = 480 if width is None else _even(width, "width", 16, _MAX_SIDE)
+    picture_h = 360 if height is None else _even(height, "height", 16, _MAX_SIDE)
     paper = _background(background)
     color_of, material_of, color_note = _appearances(spec, colors, materials)
     formats = _video_formats(video)
@@ -163,29 +182,28 @@ def render_clip(
     centers = sequence_centers(meshes, bases)
     from aicad.progress import report
 
-    images = []
-    for number, (mesh, basis, text, center) in enumerate(zip(meshes, bases, texts, centers, strict=True)):
-        report(f"frame {number + 1} of {len(meshes)}", number, len(meshes))
-        images.append(
-            render_frame(
-                mesh,
-                basis,
-                scale,
-                picture_w,
-                picture_h,
-                background=paper,
-                overlay=_drawn(text) if clock["overlay"] != "none" else "",
-                ssaa=ssaa,
-                center=center,
-            )
-        )
     stem = _clip_stem(spec["name"], chosen_kind, clock.get("study_name"))
     targets = _targets(root, path, stem, formats)
     # GIF delay is a whole number of centiseconds. Half-up, and never zero.
     frame_ms = max(10, int(math.floor(1000 / rate / 10 + 0.5)) * 10)
-    _write_png(targets["poster"], images[0])
-    _write_gif(targets["gif"], images, frame_ms)
-    videos, video_message = _write_videos(root, targets, images, rate, formats)
+    with _ClipWriter(root, targets, formats, rate, frame_ms, (picture_w, picture_h), len(meshes)) as writer:
+        for number, (mesh, basis, text, center) in enumerate(zip(meshes, bases, texts, centers, strict=True)):
+            report(f"frame {number + 1} of {len(meshes)}", number, len(meshes))
+            writer.add(
+                render_frame(
+                    mesh,
+                    basis,
+                    scale,
+                    picture_w,
+                    picture_h,
+                    background=paper,
+                    overlay=_drawn(text) if clock["overlay"] != "none" else "",
+                    ssaa=ssaa,
+                    center=center,
+                )
+            )
+        videos, video_message = writer.finish()
+    gif_w, gif_h = writer.gif_size
     primary = videos.get("mp4") or videos.get("webm")
     note = (
         "The GIF is drawn by the software renderer, with no window and no GPU. "
@@ -194,6 +212,8 @@ def render_clip(
     )
     if color_note:
         note = f"{note} {color_note}"
+    if (gif_w, gif_h) != (picture_w, picture_h):
+        note = f"{note} {_smaller_gif_note(gif_w, gif_h, picture_w, picture_h, bool(videos))}"
     if video_message:
         note = f"{note} {video_message}"
     gif_path = str(targets["gif"].resolve())
@@ -208,6 +228,8 @@ def render_clip(
         "motion_s": clock.get("motion_s"),
         "width": picture_w,
         "height": picture_h,
+        "gif_width": gif_w,
+        "gif_height": gif_h,
         "camera": _camera_report(camera_spec),
         "background": [int(channel) for channel in paper],
         "overlay": clock["overlay"],
@@ -224,7 +246,7 @@ def render_clip(
         ],
         "note": note,
     }
-    if chosen_kind == "exploded":
+    if chosen_kind in _EXPLODE_KINDS:
         report["gap_mm"] = samples["gap_mm"]
     return report
 
@@ -233,10 +255,10 @@ def _kind(kind: str | None, sequence: str | None, study: dict | None) -> str:
     if kind is None:
         return "motion" if (sequence or study) else "orbit"
     if not isinstance(kind, str):
-        raise GeometryError("kind must be motion, orbit, or exploded.")
+        raise GeometryError("kind must be motion, orbit, exploded, or assemble.")
     chosen = _KINDS.get(kind.strip().lower())
     if chosen is None:
-        raise GeometryError("kind must be motion, orbit, or exploded.")
+        raise GeometryError("kind must be motion, orbit, exploded, or assemble.")
     return chosen
 
 
@@ -434,9 +456,7 @@ def _frames_of(samples, shapes, color_of, material_of, camera_spec, clock, joint
     texts = []
     for row in samples["rows"]:
         index = row["index"]
-        factor = 0.0 if count == 1 else index / (count - 1)
-        if samples["kind"] == "orbit":
-            factor = 0.0
+        factor = _opening(samples["kind"], index, count)
         meshes.append(
             _mesh(cache, shapes, row["solved"], color_of, material_of, samples.get("offsets"), factor)
         )
@@ -488,13 +508,25 @@ def _overlay_text(clock, samples, row, index, count, joint_name, camera_spec) ->
         # The same clock as the sample. Playback fps is a different number:
         # four frames of a two-second orbit are not a quarter of a second apart.
         return f"{float(row['time_s']):.3f} s"
-    if samples["kind"] == "exploded":
-        opening = float(samples["gap_mm"]) * (0.0 if count == 1 else index / (count - 1))
+    if samples["kind"] in _EXPLODE_KINDS:
+        opening = float(samples["gap_mm"]) * _opening(samples["kind"], index, count)
         return f"{opening:.3f} mm"
     if samples["kind"] == "orbit":
         traveled = _traveled_degrees(index, count, camera_spec)
         return f"{traveled:.1f} deg"
     return _joint_text(row["solved"], clock["drivers"], joint_name)
+
+
+def _opening(kind: str, index: int, count: int) -> float:
+    """How far open the exploded view is at this frame: 0 assembled, 1 fully apart.
+
+    An exploded animation opens from 0 to 1. An assemble animation is the same
+    frames backwards: it starts apart and ends with every part in its place.
+    """
+    if kind not in _EXPLODE_KINDS:
+        return 0.0
+    share = 0.0 if count == 1 else index / (count - 1)
+    return 1.0 - share if kind == "assemble" else share
 
 
 def _joint_text(solved, drivers, joint_name) -> str:
@@ -797,6 +829,8 @@ def _clip_stem(assembly: str, kind: str, study_name: str | None) -> str:
         return _file_stem(f"{base}_{_file_stem(study_name or 'motion')}")
     if kind == "exploded":
         return _file_stem(f"{base}_exploded")
+    if kind == "assemble":
+        return _file_stem(f"{base}_assemble")
     return _file_stem(f"{base}_orbit")
 
 
@@ -851,6 +885,100 @@ def _write_png(path: Path, image: Image.Image) -> None:
     publish_file(path, write)
 
 
+def _gif_size(width: int, height: int, count: int) -> tuple[int, int]:
+    """The GIF's picture size: the full size, or smaller so all frames keep to the GIF limit."""
+    total = width * height * count
+    if total <= _MAX_GIF_PIXELS:
+        return width, height
+    share = math.sqrt(_MAX_GIF_PIXELS / total)
+    return max(16, int(width * share) // 2 * 2), max(16, int(height * share) // 2 * 2)
+
+
+def _smaller_gif_note(gif_w: int, gif_h: int, width: int, height: int, video: bool) -> str:
+    full = "The poster and the video are" if video else "The poster is"
+    return (
+        f"The GIF is {gif_w} x {gif_h}, so all its frames fit in {_MAX_GIF_PIXELS // 1_000_000} million pixels. "
+        f"{full} {width} x {height}."
+    )
+
+
+class _ClipWriter:
+    """Each frame as it is drawn: the poster, the GIF frames, and the video frames on disk.
+
+    A full-size frame is not held. The video frames go to a private folder as
+    PNG, the GIF keeps a copy at its own size, and the first frame is the poster.
+    """
+
+    def __init__(self, root: Path, targets: dict, formats: list[str], fps: int, frame_ms: int, size, count: int):
+        self.root = root
+        self.targets = targets
+        self.formats = formats
+        self.fps = fps
+        self.frame_ms = frame_ms
+        self.size = (int(size[0]), int(size[1]))
+        self.gif_size = _gif_size(self.size[0], self.size[1], count)
+        self.gif_frames: list[Image.Image] = []
+        self.count = 0
+        self.executable = None
+        self.message = None
+        self.frame_dir = None
+        self._stack = contextlib.ExitStack()
+
+    def __enter__(self):
+        if self.formats:
+            # PATH first, so an ffmpeg the person installed wins over the bundled build.
+            self.executable = find_program("ffmpeg", project=self.root) or bundled_ffmpeg(project=self.root)
+            if not self.executable:
+                self.message = ffmpeg_hint()
+            else:
+                from aicad.tool_directory import held_subprocess_directory
+
+                self.frame_dir = self._stack.enter_context(held_subprocess_directory())
+        return self
+
+    def __exit__(self, *exc):
+        return self._stack.__exit__(*exc)
+
+    def add(self, image: Image.Image) -> None:
+        picture = image.convert("RGB")
+        if self.count == 0 and "poster" in self.targets:
+            _write_png(self.targets["poster"], picture)
+        if self.frame_dir is not None:
+            from aicad.tool_directory import held_write_bytes
+
+            buffer = io.BytesIO()
+            picture.save(buffer, format="PNG")
+            held_write_bytes(self.frame_dir, f"frame_{self.count:04d}.png", buffer.getvalue())
+        if "gif" in self.targets:
+            if picture.size != self.gif_size:
+                picture = picture.resize(self.gif_size, Image.Resampling.LANCZOS)
+            self.gif_frames.append(picture)
+        self.count += 1
+
+    def finish(self) -> tuple[dict, str | None]:
+        """Write the GIF, then encode the videos. Returns the videos and any message."""
+        if "gif" in self.targets:
+            _write_gif(self.targets["gif"], self.gif_frames, self.frame_ms)
+        self.gif_frames = []
+        if self.frame_dir is None:
+            return {}, self.message
+        videos = {}
+        failures = []
+        # About a quarter second of encoding for each million pixels, and never under 90 seconds.
+        timeout = max(90.0, self.count * self.size[0] * self.size[1] / 1_000_000 * 0.25)
+        for fmt in self.formats:
+            try:
+                _encode(self.executable, self.frame_dir, self.count, self.fps, fmt, self.targets["videos"][fmt], timeout)
+                videos[fmt] = str(self.targets["videos"][fmt].resolve())
+            except (OSError, RuntimeError) as exc:
+                reason = str(exc).strip() or "the encoder failed"
+                failures.append(f"ffmpeg could not write the {fmt.upper()} ({reason}). The GIF is the animation.")
+        message = " ".join(failures) if failures else None
+        if failures and not videos and len(failures) == 1:
+            message = failures[0]
+        return videos, message
+
+
 def _write_gif(path: Path, images: list[Image.Image], frame_ms: int) -> None:
     frames = [image.convert("RGB") for image in images]
     durations = [frame_ms] * len(frames)
@@ -871,39 +999,18 @@ def _write_gif(path: Path, images: list[Image.Image], frame_ms: int) -> None:
 
 
 def _write_videos(root: Path, targets: dict, images: list[Image.Image], fps: int, formats: list[str]):
-    if not formats:
+    """Encode ``images`` as the videos ``formats`` names. A GIF or poster is written only if ``targets`` names one."""
+    if not images:
         return {}, None
-    # PATH first, so an ffmpeg the person installed wins over the bundled build.
-    executable = find_program("ffmpeg", project=root) or bundled_ffmpeg(project=root)
-    if not executable:
-        return {}, ffmpeg_hint()
-    import io
-
-    from aicad.tool_directory import held_subprocess_directory, held_write_bytes
-
-    videos = {}
-    failures = []
-    with held_subprocess_directory() as frame_dir:
-        for index, image in enumerate(images):
-            buffer = io.BytesIO()
-            image.convert("RGB").save(buffer, format="PNG")
-            held_write_bytes(frame_dir, f"frame_{index:04d}.png", buffer.getvalue())
-        for fmt in formats:
-            try:
-                _encode(executable, frame_dir, len(images), fps, fmt, targets["videos"][fmt])
-                videos[fmt] = str(targets["videos"][fmt].resolve())
-            except (OSError, RuntimeError) as exc:
-                reason = str(exc).strip() or "the encoder failed"
-                failures.append(
-                    f"ffmpeg could not write the {fmt.upper()} ({reason}). The GIF is the animation."
-                )
-    message = " ".join(failures) if failures else None
-    if failures and not videos and len(failures) == 1:
-        message = failures[0]
-    return videos, message
+    with _ClipWriter(root, targets, formats, fps, 10, images[0].size, len(images)) as writer:
+        for image in images:
+            writer.add(image)
+        return writer.finish()
 
 
-def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, destination: Path) -> None:
+def _encode(
+    executable: str, frame_dir: Path, count: int, fps: int, fmt: str, destination: Path, timeout: float = 90.0
+) -> None:
     if fmt == "mp4":
         codec = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23"]
         produced = "video.mp4"
@@ -936,7 +1043,7 @@ def _encode(executable: str, frame_dir: Path, count: int, fps: int, fmt: str, de
         completed = run_confined_helper(
             command,
             env=program_environment(),
-            timeout=90,
+            timeout=timeout,
             **held_run_kwargs(frame_dir),
         )
     except subprocess.TimeoutExpired as exc:
@@ -999,15 +1106,18 @@ def write_frames(
     formats = _video_formats(video)
     targets = _targets(root, path, stem, formats)
     frame_ms = max(10, int(math.floor(1000 / rate / 10 + 0.5)) * 10)
-    _write_png(targets["poster"], images[0])
-    _write_gif(targets["gif"], images, frame_ms)
-    videos, video_message = _write_videos(root, targets, images, rate, formats)
+    with _ClipWriter(root, targets, formats, rate, frame_ms, images[0].size, len(images)) as writer:
+        for image in images:
+            writer.add(image)
+        videos, video_message = writer.finish()
     report = {
         "frames": len(images),
         "fps": rate,
         "frame_ms": frame_ms,
         "width": images[0].width,
         "height": images[0].height,
+        "gif_width": writer.gif_size[0],
+        "gif_height": writer.gif_size[1],
         "gif": targets["gif"],
         "poster": targets["poster"],
         "video_message": video_message,

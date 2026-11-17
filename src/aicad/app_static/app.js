@@ -2006,6 +2006,7 @@ function drawSolid() {
     // Nothing to draw, so hold no old mesh's arrays.
     view.derived.clear();
     view.uploaded.clear();
+    if (typeof copyDrawnView === "function") copyDrawnView(canvas);
     return;
   }
   const mvp = cameraMatrix(canvas.width / canvas.height);
@@ -2030,6 +2031,8 @@ function drawSolid() {
     gl.uniformMatrix4fv(gl.getUniformLocation(view.edgeProgram, "uMvp"), false, mvp);
     gl.drawArrays(gl.LINES, 0, edgePositions.length / 3);
   }
+  // A recording copies the view now, while the drawn picture is still in the buffer.
+  if (typeof copyDrawnView === "function") copyDrawnView(canvas);
 }
 
 // An orbit or pan frame changes only the camera. Each array the solid is drawn
@@ -2205,6 +2208,7 @@ function cameraUp() {
 function setStandardView(name) {
   const spec = STANDARD_VIEWS[name];
   if (!spec) return;
+  if (typeof stopCameraMotion === "function") stopCameraMotion();
   view.direction = spec.eye.slice();
   view.up = spec.up.slice();
   if (ui.stage === "solid") drawSolid();
@@ -2308,6 +2312,8 @@ function drawOverlay() {
 }
 
 function onPointerDown(event) {
+  // A drag takes the camera back from a turntable or a path. A recording goes on.
+  if (typeof stopCameraMotion === "function") stopCameraMotion();
   const rect = $("view").getBoundingClientRect();
   const localX = event.clientX - rect.left;
   const localY = event.clientY - rect.top;
@@ -3740,15 +3746,29 @@ function moveTab(event) {
   next.click();
 }
 
+// Commands that put another project on screen. The page the person was on may not
+// exist there, so Live goes to the new project's model.
+const PROJECT_COMMANDS = new Set(["open_project", "open_example", "save_project_as"]);
+
+// Live follows an assistant's edit only on the Model page's solid view, where the
+// person is already looking at parts. Anywhere else (the Assembly page, an assembly
+// in the viewport, a sketch, Documents) the page refreshes in place and stays put.
+function liveFollows(event) {
+  if (!ui.live || !event.follow || !event.frame) return false;
+  if (PROJECT_COMMANDS.has(event.command)) return true;
+  return ui.page === "model" && ui.stage === "solid" && !ui.viewAssembly;
+}
+
 function handleLiveEvent(event) {
   if (!event || event.source === "ui") return;
   if (event.summary) $("who").textContent = event.summary;
-  const focus = ui.live && event.follow && event.frame === "part" ? (event.parts || [])[0] : null;
+  const follow = liveFollows(event);
+  const focus = follow && event.frame === "part" ? (event.parts || [])[0] : null;
   refresh({
     applySelection: true,
     focus,
-    fit: ui.live && event.follow ? (focus ? "part" : "scene") : null,
-    solid: Boolean(ui.live && event.follow && event.frame),
+    fit: follow ? (focus ? "part" : "scene") : null,
+    solid: follow,
   }).catch(showError);
 }
 

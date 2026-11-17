@@ -6,12 +6,6 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-## 2026-11-16
-
-| Decision | Rationale |
-| --- | --- |
-| A video can use the optional imageio-ffmpeg build when ffmpeg is not on PATH | ffmpeg on PATH still comes first. The imageio-ffmpeg build is read from that package's own folder, not from the variable that could name another program, and a copy inside a project is not started. It is an opt-in extra (`python install.py --with-ffmpeg`) because the build is GPL and runs as a separate program. With neither, the GIF is still written and the message gives the install commands for this system. |
-
 ## 2026-11-15
 
 | Decision | Rationale |
