@@ -219,6 +219,8 @@ img[src^="/api/file?"] { cursor: zoom-in; }
 }
 .kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 8px; font-size: 13px; }
 .kv span { color: var(--muted); }
+.study-player { display: flex; gap: 6px; align-items: center; margin: 8px 0 2px; }
+.study-player input[type="range"] { flex: 1; min-width: 80px; }
 .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; align-items: center; }
 .row input, .row select, .req-form input, .req-form select, #doc-editor, #chat-input {
   border: 1px solid var(--line); background: var(--field); border-radius: 4px; padding: 4px 6px;

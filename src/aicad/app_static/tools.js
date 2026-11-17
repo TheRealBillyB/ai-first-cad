@@ -1118,9 +1118,209 @@ function showStudyReport(report) {
       <span>Collisions</span><b>${report.collision_count != null ? report.collision_count : 0}</b>
       <span>Limit hits</span><b>${report.limit_hit_count != null ? report.limit_hit_count : 0}</b>
     </div>
+    ${studyPlayerHtml(report)}
     ${hits ? `<ul>${hits}</ul>` : ""}
     ${limits ? `<h3>Limits</h3><ul>${limits}</ul>` : ""}
     <p class="muted">${escapeHtml(report.note || "")}</p>`;
+  bindStudyPlayer(report);
+}
+
+// A motion study's steps say where each instance sits. The viewport plays them:
+// the pieces already on screen are placed at each step, with no new geometry. An
+// instance in a collision at that step is drawn red.
+const STUDY_HIT_COLOR = [214, 72, 72];
+// Built frames are kept up to this many bytes, so a loop does not build them again.
+const STUDY_CACHE_BYTES = 96 * 1024 * 1024;
+const studyPlayer = { key: "", report: null, index: -1, playing: false, frame: 0, started: 0, cache: new Map(), cacheBytes: 0, cacheBase: null };
+
+function playableSteps(report) {
+  return (report && Array.isArray(report.steps) ? report.steps : []).filter((step) => step && step.poses);
+}
+
+function studyKey(report) {
+  return [report.assembly, report.study && report.study.name, report.duration_s, playableSteps(report).length].join("|");
+}
+
+function studyPlayerHtml(report) {
+  const steps = playableSteps(report);
+  if (steps.length < 2) return "";
+  return `<div class="study-player">
+      <button type="button" id="study-play" aria-pressed="false">Play</button>
+      <input id="study-step" type="range" min="0" max="${steps.length - 1}" step="1" value="0" aria-label="Study step" />
+      <button type="button" id="study-rest">Stored pose</button>
+    </div>
+    <p id="study-readout" class="meta" role="status">Play the study in the view, or drag to a step.</p>`;
+}
+
+function bindStudyPlayer(report) {
+  const key = studyKey(report);
+  if (studyPlayer.key !== key) {
+    stopStudy();
+    studyPlayer.key = key;
+    studyPlayer.index = -1;
+    forgetStudyFrames();
+  }
+  studyPlayer.report = report;
+  const play = $("study-play");
+  if (!play || playableSteps(report).length < 2) return;
+  play.onclick = () => (studyPlayer.playing ? stopStudy() : startStudy());
+  $("study-step").oninput = (event) => {
+    stopStudy();
+    showStudyStep(Number(event.target.value));
+  };
+  $("study-rest").onclick = () => {
+    stopStudy();
+    showStoredPose();
+  };
+  paintStudyControls();
+}
+
+function forgetStudyFrames() {
+  studyPlayer.cache = new Map();
+  studyPlayer.cacheBytes = 0;
+  studyPlayer.cacheBase = null;
+}
+
+// The assembly on screen, as read from the server: its pieces and its stored pose.
+function studyBase(report) {
+  const mesh = ui.mesh;
+  if (!report || ui.page !== "assembly" || ui.viewAssembly !== report.assembly) return null;
+  if (!mesh || !mesh._pieces || !mesh._pose) return null;
+  return { pieces: mesh._pieces, pose: mesh._pose, key: mesh._key };
+}
+
+function studyFrameMesh(base, report, index) {
+  if (!studyPlayer.cacheBase || studyPlayer.cacheBase.pieces !== base.pieces || studyPlayer.cacheBase.pose !== base.pose) {
+    forgetStudyFrames();
+    studyPlayer.cacheBase = base;
+  }
+  const held = studyPlayer.cache.get(index);
+  if (held) return held;
+  const step = playableSteps(report)[index];
+  const hit = new Set();
+  (step.collisions || []).forEach((item) => {
+    if (item.a) hit.add(item.a);
+    if (item.b) hit.add(item.b);
+  });
+  const pose = {
+    ...base.pose,
+    instances: (base.pose.instances || []).map((instance) => {
+      const placed = step.poses[instance.name];
+      const moved = placed && placed.matrix
+        ? { ...instance, matrix: placed.matrix, origin_mm: placed.origin_mm || instance.origin_mm }
+        : instance;
+      return hit.has(instance.name) ? { ...moved, color: STUDY_HIT_COLOR } : moved;
+    }),
+  };
+  const mesh = assembledMesh(base.pieces, pose);
+  // A refresh that reads the same stored pose keeps this step on screen.
+  mesh._pose = base.pose;
+  mesh._key = base.key;
+  mesh._studyStep = index;
+  const bytes = (mesh.positions.byteLength + mesh.normals.byteLength + mesh.colors.byteLength);
+  if (studyPlayer.cacheBytes + bytes <= STUDY_CACHE_BYTES) {
+    studyPlayer.cache.set(index, mesh);
+    studyPlayer.cacheBytes += bytes;
+  }
+  return mesh;
+}
+
+function showStudyStep(index) {
+  const report = studyPlayer.report;
+  const steps = playableSteps(report);
+  if (!steps.length) return false;
+  const base = studyBase(report);
+  if (!base) {
+    studyReadout("Open this assembly's view to play the study.");
+    return false;
+  }
+  studyPlayer.index = Math.max(0, Math.min(steps.length - 1, Math.round(index) || 0));
+  ui.mesh = studyFrameMesh(base, report, studyPlayer.index);
+  drawSolid();
+  paintStudyControls();
+  return true;
+}
+
+function showStoredPose() {
+  const base = studyBase(studyPlayer.report);
+  studyPlayer.index = -1;
+  if (base) {
+    const mesh = assembledMesh(base.pieces, base.pose);
+    mesh._key = base.key;
+    ui.mesh = mesh;
+    drawSolid();
+  }
+  paintStudyControls();
+}
+
+// Seconds on screen for each step: the study's own clock, so the view plays at the
+// speed the study describes. A study with no duration plays at 10 steps a second.
+function studyStepSeconds(steps) {
+  const first = Number(steps[0].time_s) || 0;
+  const last = Number(steps[steps.length - 1].time_s) || 0;
+  const each = steps.length > 1 ? (last - first) / (steps.length - 1) : 0;
+  return each > 0 ? Math.max(each, 1 / 60) : 0.1;
+}
+
+function startStudy() {
+  const steps = playableSteps(studyPlayer.report);
+  if (steps.length < 2) return;
+  if (!studyBase(studyPlayer.report)) {
+    studyReadout("Open this assembly's view to play the study.");
+    return;
+  }
+  if (studyPlayer.index < 0 || studyPlayer.index >= steps.length - 1) studyPlayer.index = 0;
+  studyPlayer.playing = true;
+  studyPlayer.started = performance.now() - studyPlayer.index * studyStepSeconds(steps) * 1000;
+  showStudyStep(studyPlayer.index);
+  studyPlayer.frame = requestAnimationFrame(tickStudy);
+}
+
+function tickStudy(now) {
+  if (!studyPlayer.playing) return;
+  const steps = playableSteps(studyPlayer.report);
+  // Another report, another page, or another assembly stops the player.
+  if (!document.getElementById("study-play") || !studyBase(studyPlayer.report)) {
+    stopStudy();
+    return;
+  }
+  const index = Math.floor((now - studyPlayer.started) / 1000 / studyStepSeconds(steps)) % steps.length;
+  if (index !== studyPlayer.index || !ui.mesh || ui.mesh._studyStep !== index) showStudyStep(index);
+  studyPlayer.frame = requestAnimationFrame(tickStudy);
+}
+
+function stopStudy() {
+  if (studyPlayer.frame) cancelAnimationFrame(studyPlayer.frame);
+  studyPlayer.frame = 0;
+  if (!studyPlayer.playing) return;
+  studyPlayer.playing = false;
+  paintStudyControls();
+}
+
+function studyReadout(text) {
+  const readout = $("study-readout");
+  if (readout) readout.textContent = text;
+}
+
+function paintStudyControls() {
+  const play = $("study-play");
+  if (!play) return;
+  play.textContent = studyPlayer.playing ? "Pause" : "Play";
+  play.setAttribute("aria-pressed", studyPlayer.playing ? "true" : "false");
+  const steps = playableSteps(studyPlayer.report);
+  const index = studyPlayer.index;
+  $("study-step").value = String(Math.max(0, index));
+  if (index < 0 || !steps[index]) {
+    studyReadout("Stored pose. Play the study in the view, or drag to a step.");
+    return;
+  }
+  const step = steps[index];
+  const pairs = (step.collisions || []).map((item) => `${item.a || ""} × ${item.b || ""}`);
+  const limits = (step.limits || []).map((item) => item.joint || item.name || "joint");
+  let text = `Step ${index + 1} of ${steps.length} · t = ${Number(step.time_s || 0).toFixed(2)} s`;
+  if (pairs.length) text += ` · collision ${pairs.join(", ")}`;
+  if (limits.length) text += ` · at a stop: ${limits.join(", ")}`;
+  studyReadout(text);
 }
 
 function showGearMeshReport(report) {
