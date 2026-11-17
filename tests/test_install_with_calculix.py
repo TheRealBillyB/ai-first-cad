@@ -22,7 +22,7 @@ def _quiet_install(monkeypatch, install, tmp_path, calls, returncode=0):
     python = tmp_path / ".venv" / "Scripts" / "python.exe"
     monkeypatch.setattr(install, "_venv_python", lambda: python)
     monkeypatch.setattr(install, "_ensure_venv", lambda: python)
-    monkeypatch.setattr(install, "_pip_install", lambda _python: None)
+    monkeypatch.setattr(install, "_pip_install", lambda _python, **_options: None)
     monkeypatch.setattr(install, "_install_linux_packages", lambda: True)
     monkeypatch.setattr(install, "_missing_prerequisites", lambda build=True: [])
     monkeypatch.setattr(install.sys, "platform", "win32")

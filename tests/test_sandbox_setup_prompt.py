@@ -40,7 +40,7 @@ def install(monkeypatch, tmp_path):
     python = tmp_path / ".venv" / "Scripts" / "python.exe"
     monkeypatch.setattr(module, "_venv_python", lambda: python)
     monkeypatch.setattr(module, "_ensure_venv", lambda: python)
-    monkeypatch.setattr(module, "_pip_install", lambda _python: None)
+    monkeypatch.setattr(module, "_pip_install", lambda _python, **_options: None)
     monkeypatch.setattr(module, "_install_linux_packages", lambda: True)
     monkeypatch.setattr(module, "_missing_prerequisites", lambda build=True: [])
     monkeypatch.setattr(module.sys, "platform", "win32")
