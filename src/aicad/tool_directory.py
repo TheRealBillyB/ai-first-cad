@@ -198,8 +198,15 @@ def _one_component(name: str) -> None:
         raise OSError(errno.EINVAL, "invalid path component", name)
 
 
+# Windows opens a descriptor in text mode unless asked otherwise. A write in
+# text mode turns each LF byte into CR LF, and a read turns CR LF back into LF.
+# A PNG frame, an STL, or a video is bytes, so every held file is opened in
+# binary mode.
+_BINARY = getattr(os, "O_BINARY", 0)
+
+
 def _open_write(held: HeldWork, name: str) -> int:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _BINARY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
@@ -210,7 +217,7 @@ def _open_write(held: HeldWork, name: str) -> int:
 
 
 def _open_read(held: HeldWork, name: str) -> int:
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | _BINARY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
