@@ -89,6 +89,29 @@
           <button type="button" data-view="iso" title="Isometric (7)">Iso</button>
         </div>
         <button type="button" id="fit" title="Fit (0)">Fit</button>
+        <details class="camera-menu" id="camera-menu">
+          <summary>Camera</summary>
+          <div class="camera-panel">
+            <div class="row">
+              <button type="button" id="camera-turntable">Turntable</button>
+              <label>One turn, s <input id="camera-turn-seconds" type="number" min="2" max="120" step="1" value="12" /></label>
+            </div>
+            <div class="row">
+              <button type="button" id="camera-add" title="Store this view as a point on the camera path">Add view</button>
+              <button type="button" id="camera-play">Play path (0)</button>
+              <button type="button" id="camera-clear">Clear path</button>
+            </div>
+            <div class="row">
+              <select id="camera-record-what" aria-label="What to record">
+                <option value="turn">One turntable turn</option>
+                <option value="path">The camera path</option>
+                <option value="free">Until I stop it</option>
+              </select>
+              <button type="button" id="camera-record">Record</button>
+            </div>
+            <p id="camera-readout" class="meta" role="status">Turn the view around the model's centre, store views for a path, or record the view to a video.</p>
+          </div>
+        </details>
         <button type="button" id="measure-clear" hidden>Clear measure</button>
         <span id="selection-readout">Nothing selected</span>
         <div class="grow"></div>
@@ -276,6 +299,7 @@
   <script src="/static/picture_viewer.js"></script>
   <script src="/static/viewport_guides.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/viewport_camera.js"></script>
   <script src="/static/tools.js"></script>
 </body>
 </html>
