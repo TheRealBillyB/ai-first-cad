@@ -53,3 +53,30 @@ def test_a_slicer_stl_keeps_its_size():
         written = (folder.original / "oriented.stl").read_bytes()
     assert len(written) == 84 + 50 * 10
     assert written == stl
+
+
+def test_both_opens_ask_for_binary_mode(monkeypatch):
+    # Only Windows has O_BINARY, so this pretends it is 0x8000 everywhere and
+    # checks that the write and the read both ask for it. The spy takes the bit
+    # off before the real open, since on Linux 0x8000 can be another flag.
+    import os
+
+    from aicad import tool_directory
+
+    opened = []
+    real_open = os.open
+
+    def spy(path, flags, *args, **kwargs):
+        opened.append((os.fspath(path), flags))
+        return real_open(path, flags & ~0x8000, *args, **kwargs)
+
+    with held_subprocess_directory() as folder:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "O_BINARY", 0x8000, raising=False)
+            patch.setattr(tool_directory, "_BINARY", 0x8000, raising=False)
+            patch.setattr(os, "open", spy)
+            held_write_bytes(folder, "data.bin", b"bytes")
+            held_read_bytes(folder, "data.bin", maximum=100)
+    files = [flags for path, flags in opened if os.path.basename(path) == "data.bin"]
+    assert len(files) == 2
+    assert all(flags & 0x8000 for flags in files)
