@@ -324,6 +324,7 @@ def test_a_time_overlay_follows_the_sampled_clock(tmp_path):
 
 def test_a_missing_ffmpeg_still_writes_the_gif(tmp_path, monkeypatch):
     monkeypatch.setattr("aicad.animation.find_program", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("aicad.animation.bundled_ffmpeg", lambda *_args, **_kwargs: None)
     document = Document(tmp_path)
     _stand(document)
     report = document.render_animation(

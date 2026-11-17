@@ -80,6 +80,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--with-ffmpeg",
+        action="store_true",
+        help=(
+            "Also install imageio-ffmpeg into .venv, so animations are written as MP4 and WebM "
+            "as well as GIF. Its ffmpeg build is GPL and stays a separate program."
+        ),
+    )
+    parser.add_argument(
         "--require-ccx",
         action="store_true",
         help="With --check, exit 1 when CalculiX is missing.",
@@ -116,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     for problem in _missing_prerequisites():
         print(problem)
         print()
-    _pip_install(python)
+    _pip_install(python, video=args.with_ffmpeg)
     solver_ok = _install_calculix() if args.with_calculix else True
     print()
     print(_ccx_message(hints))
@@ -276,7 +284,7 @@ def _pip_env() -> dict[str, str]:
     return env
 
 
-def _pip_install(python: Path) -> None:
+def _pip_install(python: Path, *, video: bool = False) -> None:
     subprocess.run(
         [str(python), "-m", "pip", "install", "--upgrade", "pip"],
         cwd=ROOT,
@@ -286,7 +294,7 @@ def _pip_install(python: Path) -> None:
     if (ROOT / "pyproject.toml").is_file():
         print("Installing aicad and the development tools into .venv")
         subprocess.run(
-            [str(python), "-m", "pip", "install", "-e", ".[dev,robot]"],
+            [str(python), "-m", "pip", "install", "-e", ".[dev,robot,video]" if video else ".[dev,robot]"],
             cwd=ROOT,
             check=True,
             env=_pip_env(),
@@ -295,7 +303,7 @@ def _pip_install(python: Path) -> None:
         return
     print("Installing aicad into .venv")
     subprocess.run(
-        [str(python), "-m", "pip", "install", "aicad"],
+        [str(python), "-m", "pip", "install", "aicad[video]" if video else "aicad"],
         cwd=ROOT,
         check=True,
         env=_pip_env(),

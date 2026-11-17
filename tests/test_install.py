@@ -312,7 +312,7 @@ def test_the_python_install_continues_after_apt_fails(monkeypatch, capsys):
     monkeypatch.setattr(module, "_install_linux_packages", lambda: False)
     monkeypatch.setattr(module, "_ensure_venv", lambda: module._venv_python())
     installed: list[bool] = []
-    monkeypatch.setattr(module, "_pip_install", lambda _python: installed.append(True))
+    monkeypatch.setattr(module, "_pip_install", lambda _python, **_options: installed.append(True))
     assert module.main([]) == 0
     assert installed == [True]
     assert "system packages were not installed" in capsys.readouterr().out

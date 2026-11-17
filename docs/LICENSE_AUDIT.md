@@ -145,6 +145,7 @@ IPython 9.17.1 also installs these, all permissive. pexpect and ptyprocess are i
 | kiwisolver | 1.5.1 | via matplotlib | BSD | | Yes |
 | python-dateutil | 4.0.0 | via matplotlib | BSD-3-Clause | | Yes |
 | tzdata | 2026.6 | via matplotlib | Apache-2.0 | | Yes |
+| imageio-ffmpeg | >=0.5, not installed by default | video | BSD-2-Clause | Not imported. aicad finds the ffmpeg binary in the package's `binaries` folder and starts it as a separate program to encode MP4 and WebM. The binary itself is an ffmpeg build with GPL components: treat it as GPL-3.0-or-later. | Yes, while it stays a separate program and an opt-in extra. Check the binary's license before shipping it in a bundle. |
 | mujoco | 4.0.1 | robot | Apache-2.0 | Imported only when the extra is installed (`aicad.robot`). `mujoco>=3.1` now installs 4.x. | Yes |
 | mujoco-core | 4.0.1 | via mujoco | Apache-2.0 | | Yes |
 | mujoco-studio | 4.0.1 | via mujoco | Apache-2.0 | | Yes |

@@ -3,6 +3,10 @@
 CalculiX (``ccx``) is GPL-2.0-only. aicad does not link it. It only starts
 ``ccx`` as a separate program, and only when a strength or vibration check asks
 for it.
+
+``ffmpeg`` writes an animation's MP4 or WebM. It is also a separate program:
+one on PATH, or the build the optional ``imageio-ffmpeg`` package ships
+(``pip install "aicad[video]"``, or ``python install.py --with-ffmpeg``).
 """
 
 from __future__ import annotations
@@ -56,6 +60,69 @@ def ccx_hint(platform_name: str | None = None) -> str:
         + conda
         + "Then run `ccx`."
     )
+
+
+def bundled_ffmpeg(*, project: Path | None = None) -> str | None:
+    """The ffmpeg program the optional ``imageio-ffmpeg`` package installed, or None.
+
+    The package is found without importing it, and its own ``binaries`` folder
+    is read. ``IMAGEIO_FFMPEG_EXE`` is not read, so a setting in the
+    environment cannot name another program. A binary inside an open project
+    is skipped, as on PATH.
+    """
+
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("imageio_ffmpeg")
+    except (ImportError, ValueError):
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    roots = _program_roots(project)
+    for location in spec.submodule_search_locations:
+        folder = Path(location) / "binaries"
+        try:
+            candidates = sorted(folder.iterdir())
+        except OSError:
+            continue
+        for candidate in candidates:
+            name = candidate.name.lower()
+            if not name.startswith("ffmpeg"):
+                continue
+            if os.name == "nt" and not name.endswith(".exe"):
+                continue
+            if not _can_execute(candidate):
+                continue
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if any(_inside(resolved, root) for root in roots):
+                continue
+            return str(resolved)
+    return None
+
+
+def ffmpeg_hint(platform_name: str | None = None) -> str:
+    """Why no video was written, and the commands that add an encoder on this system."""
+
+    system = platform_name or sys.platform
+    shared = (
+        "ffmpeg was not found, so no MP4 or WebM was written. The GIF is the animation. "
+        "To write videos, add the bundled encoder to the Python that runs aicad: from the aicad folder, "
+        "`python install.py --with-ffmpeg`, or `python -m pip install \"imageio-ffmpeg>=0.5\"`. "
+    )
+    if system == "win32":
+        own = "Or install ffmpeg itself with `winget install Gyan.FFmpeg` and open a new terminal. "
+    elif system == "darwin":
+        own = "Or install ffmpeg itself with `brew install ffmpeg`. "
+    else:
+        own = (
+            "Or install ffmpeg itself: `sudo apt-get install -y ffmpeg` on Ubuntu or Debian, "
+            "or `sudo dnf install -y ffmpeg-free` on Fedora. "
+        )
+    return shared + own + "Then run this again."
 
 
 # Windows searches these extensions when the name has none. An empty PATHEXT
