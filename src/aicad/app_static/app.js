@@ -2205,6 +2205,7 @@ function cameraUp() {
 function setStandardView(name) {
   const spec = STANDARD_VIEWS[name];
   if (!spec) return;
+  if (typeof stopCameraMotion === "function") stopCameraMotion();
   view.direction = spec.eye.slice();
   view.up = spec.up.slice();
   if (ui.stage === "solid") drawSolid();
@@ -2308,6 +2309,8 @@ function drawOverlay() {
 }
 
 function onPointerDown(event) {
+  // A drag takes the camera back from a turntable or a path. A recording goes on.
+  if (typeof stopCameraMotion === "function") stopCameraMotion();
   const rect = $("view").getBoundingClientRect();
   const localX = event.clientX - rect.left;
   const localY = event.clientY - rect.top;

@@ -135,6 +135,16 @@ nav { display: flex; gap: 4px; }
 }
 .sketch-tools { border-bottom: 0; border-top: 1px solid var(--line); }
 .seg { display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.camera-menu { position: relative; }
+.camera-menu > summary { cursor: pointer; list-style: none; padding: 3px 8px; border: 1px solid var(--line); border-radius: 4px; }
+.camera-menu[open] > summary { background: var(--selected); }
+.camera-panel {
+  position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; width: 330px; max-width: 90vw;
+  padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--glass);
+}
+.camera-panel .row { margin: 4px 0; }
+.camera-panel input[type="number"] { width: 56px; }
+#camera-record.on { background: var(--fail-bg); color: var(--fail); }
 .seg button { border-radius: 0; }
 .seg button:first-child { border-radius: 4px 0 0 4px; }
 .seg button:last-child { border-radius: 0 4px 4px 0; }
