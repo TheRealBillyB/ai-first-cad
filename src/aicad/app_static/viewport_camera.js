@@ -162,6 +162,9 @@ function stopCameraMotion() {
   cameraMotion.frame = 0;
   const was = cameraMotion.mode;
   cameraMotion.mode = null;
+  // The move this recording was waiting for will not end by itself now. A later,
+  // unrelated move ending must not stop it: Record stops it.
+  cameraMotion.stopWith = null;
   if (was) paintCameraControls();
 }
 

@@ -142,6 +142,18 @@ $("camera-record").onclick();
 $("camera-record").onclick();
 out.webm = { type: FakeRecorder.made[1].mimeType, download: clicks[clicks.length - 1].download, readout: $("camera-readout").textContent };
 
+// A one-turn recording whose turn is interrupted by a drag goes on until Record.
+// A path played later must not stop it when the path ends.
+$("camera-record-what").value = "turn";
+$("camera-record").onclick();
+const savedBefore = clicks.length;
+stopCameraMotion();
+playCameraPath();
+stepCamera(1e6);
+out.interrupted = { recording: cameraMotion.recorder !== null, saved: clicks.length - savedBefore, label: $("camera-record").textContent };
+$("camera-record").onclick();
+out.interrupted.savedAfterRecord = clicks.length - savedBefore;
+
 clearCameraKeys();
 $("camera-record-what").value = "path";
 $("camera-record").onclick();
@@ -231,3 +243,12 @@ def test_the_page_loads_the_camera_script_after_app_js():
     page = (ROOT / "src" / "aicad" / "app_static" / "index.html").read_text(encoding="utf-8")
     assert page.index("/static/app.js") < page.index("/static/viewport_camera.js")
     assert 'id="camera-record"' in page
+
+
+def test_an_interrupted_turn_recording_is_not_stopped_by_a_later_path(tmp_path):
+    assert _report(tmp_path)["interrupted"] == {
+        "recording": True,
+        "saved": 0,
+        "label": "Stop recording",
+        "savedAfterRecord": 1,
+    }
