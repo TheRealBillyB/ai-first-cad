@@ -58,7 +58,8 @@ function toggleAssemblyFields(form) {
   const kind = form.querySelector("[data-show]");
   const value = kind ? kind.value : "";
   form.querySelectorAll("[data-when]").forEach((node) => {
-    node.hidden = node.dataset.when !== value;
+    // A field can belong to several choices: data-when="exploded assemble".
+    node.hidden = !node.dataset.when.split(" ").includes(value);
   });
 }
 
@@ -226,6 +227,7 @@ function assemblyFormHtml(tool, current) {
           <option value="orbit">Orbit</option>
           <option value="motion">Motion</option>
           <option value="exploded">Exploded</option>
+          <option value="assemble">Assemble</option>
         </select>
       </label>
       <label>Frames <input id="anim-frames" type="number" min="2" max="300" step="1" value="8" /></label>
@@ -236,7 +238,7 @@ function assemblyFormHtml(tool, current) {
         <select id="anim-sequence">${sequenceOptions || `<option value="">None on this assembly</option>`}</select>
       </label>
     </div>
-    <div data-when="exploded">
+    <div data-when="exploded assemble">
       <label>Gap mm <input id="anim-gap" type="number" min="0" step="1" /></label>
     </div>
     <p data-tool-progress class="muted" role="status"></p>
@@ -901,7 +903,7 @@ async function runAnimation(button) {
     if (!sequence) throw new Error("Pick a motion or a study to play.");
     args.sequence = sequence;
   }
-  if (kind === "exploded") {
+  if (kind === "exploded" || kind === "assemble") {
     const gap = optionalNumber($("anim-gap").value, "Gap must be a number.");
     if (gap != null) args.gap_mm = gap;
   }

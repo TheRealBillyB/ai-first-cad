@@ -338,7 +338,7 @@ aicad bill-of-materials rod_handler --workspace examples/rod_handler_workspace
 aicad exploded-view rod_handler --workspace examples/rod_handler_workspace
 ```
 
-An animation is the same headless picture, one frame after another. `render_animation` (CLI: `aicad animate`) writes a GIF of a motion study, a camera orbit, or an exploded opening. Resolution, frame rate, duration, camera path, background, and per-part colors or materials are arguments. An overlay can show the step, the time, or a joint value. When `ffmpeg` is on PATH the same frames are also written as MP4 or WebM. When it is not, the GIF is still written and the report says the video was skipped. The files stay in the project.
+An animation is the same headless picture, one frame after another. `render_animation` (CLI: `aicad animate`) writes a GIF of a motion study, a camera orbit, an exploded opening, or the parts assembling themselves (`kind` `assemble`, the same frames backwards, so every part ends in its place). Resolution, frame rate, duration, camera path, background, and per-part colors or materials are arguments. An overlay can show the step, the time, or a joint value. When `ffmpeg` is on PATH the same frames are also written as MP4 or WebM. When it is not, the GIF is still written and the report says the video was skipped. The files stay in the project.
 
 ```bash
 aicad animate rod_arm --kind orbit --frames 24 --fps 12 --workspace ./aicad_workspace
