@@ -4,6 +4,8 @@
 // the browser as a download.
 
 const cameraMotion = {
+  copy: null,
+  copyContext: null,
   mode: null,
   frame: 0,
   started: 0,
@@ -171,17 +173,33 @@ function recordingType() {
   return types.find((type) => recorder.isTypeSupported(type)) || "";
 }
 
+// The 3D view's buffer is cleared once the page has shown it, so a stream of
+// that canvas records the empty background. While a recording runs, each drawn
+// view is copied right after it is drawn into this 2D canvas, and the copy is
+// what is recorded. Its size is the view's size when the recording started,
+// rounded down to even numbers so H.264 can encode it.
+function copyDrawnView(source) {
+  if (!cameraMotion.recorder || !cameraMotion.copyContext) return;
+  const target = cameraMotion.copy;
+  cameraMotion.copyContext.drawImage(source, 0, 0, target.width, target.height);
+}
+
 // "turn" records one turntable turn, "path" records the stored path, and
 // anything else records until Record is pressed again.
 function startRecording(what) {
-  const canvas = $("view");
-  if (!globalThis.MediaRecorder || !canvas || typeof canvas.captureStream !== "function") {
-    throw new Error("This browser cannot record the view.");
-  }
+  const view3d = $("view");
+  if (!globalThis.MediaRecorder || !view3d) throw new Error("This browser cannot record the view.");
   if (what === "path" && cameraMotion.keys.length < 2) throw new Error("Add at least two views to record a path.");
   const type = recordingType();
   if (!type) throw new Error("This browser cannot write MP4 or WebM video.");
-  const recorder = new MediaRecorder(canvas.captureStream(60), { mimeType: type, videoBitsPerSecond: 16000000 });
+  const copy = document.createElement("canvas");
+  copy.width = Math.max(2, Math.floor((view3d.width || 2) / 2) * 2);
+  copy.height = Math.max(2, Math.floor((view3d.height || 2) / 2) * 2);
+  const context = copy.getContext && copy.getContext("2d");
+  if (!context || typeof copy.captureStream !== "function") throw new Error("This browser cannot record the view.");
+  const recorder = new MediaRecorder(copy.captureStream(60), { mimeType: type, videoBitsPerSecond: 16000000 });
+  cameraMotion.copy = copy;
+  cameraMotion.copyContext = context;
   cameraMotion.chunks = [];
   recorder.ondataavailable = (event) => {
     if (event.data && event.data.size) cameraMotion.chunks.push(event.data);
@@ -189,6 +207,8 @@ function startRecording(what) {
   recorder.onstop = () => saveRecording(new Blob(cameraMotion.chunks, { type: recorder.mimeType || type }));
   cameraMotion.recorder = recorder;
   recorder.start(250);
+  // The first frame: the view as it is now.
+  drawSolid();
   if (what === "turn") startTurntable({ once: true });
   else if (what === "path") {
     playCameraPath();
@@ -199,6 +219,7 @@ function startRecording(what) {
 function stopRecording() {
   const recorder = cameraMotion.recorder;
   cameraMotion.recorder = null;
+  cameraMotion.copyContext = null;
   if (recorder && recorder.state !== "inactive") recorder.stop();
   paintCameraControls();
 }

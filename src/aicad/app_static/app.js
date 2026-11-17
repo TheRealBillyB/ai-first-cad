@@ -2006,6 +2006,7 @@ function drawSolid() {
     // Nothing to draw, so hold no old mesh's arrays.
     view.derived.clear();
     view.uploaded.clear();
+    if (typeof copyDrawnView === "function") copyDrawnView(canvas);
     return;
   }
   const mvp = cameraMatrix(canvas.width / canvas.height);
@@ -2030,6 +2031,8 @@ function drawSolid() {
     gl.uniformMatrix4fv(gl.getUniformLocation(view.edgeProgram, "uMvp"), false, mvp);
     gl.drawArrays(gl.LINES, 0, edgePositions.length / 3);
   }
+  // A recording copies the view now, while the drawn picture is still in the buffer.
+  if (typeof copyDrawnView === "function") copyDrawnView(canvas);
 }
 
 // An orbit or pan frame changes only the camera. Each array the solid is drawn

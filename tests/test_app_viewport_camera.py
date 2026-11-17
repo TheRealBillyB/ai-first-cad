@@ -18,6 +18,7 @@ const fs = require("fs");
 const vm = require("vm");
 const elements = {};
 const clicks = [];
+const copies = [];
 function make(id, value) {
   const node = {
     id,
@@ -70,7 +71,14 @@ const sandbox = {
     querySelector() { return { getAttribute() { return ""; } }; },
     querySelectorAll() { return []; },
     addEventListener() {},
-    createElement() { return make("link"); },
+    createElement(tag) {
+      const node = make(tag);
+      if (tag === "canvas") {
+        node.getContext = () => ({ drawImage(source, x, y, w, h) { copies.push([source.id, w, h]); } });
+        node.captureStream = () => ({ stream: true });
+      }
+      return node;
+    },
   },
   sessionStorage: { getItem() { return null; }, setItem() {} },
   localStorage: { getItem() { return null; }, setItem() {} },
@@ -88,11 +96,13 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.FakeRecorder = FakeRecorder;
 sandbox.clicks = clicks;
+sandbox.copies = copies;
 vm.createContext(sandbox);
 const source = process.argv.slice(2).map((path) => fs.readFileSync(path, "utf8")).join("\n");
 const driver = `
 const out = {};
-$("view").captureStream = () => ({ stream: true });
+$("view").width = 1281;
+$("view").height = 721;
 ui.mesh = { positions: [0], bounding_box: { min: [0, 0, 0], max: [100, 40, 20] } };
 ui.viewAssembly = "clamp vise";
 view.yaw = 0.5; view.pitch = 0.3; view.distance = 250; view.target = [0, 0, 0];
@@ -119,7 +129,10 @@ out.pathEnd = { yaw: view.yaw, distance: view.distance, target: view.target, mod
 view.yaw = 1.0;
 $("camera-record-what").value = "turn";
 $("camera-record").onclick();
-out.recording = { type: FakeRecorder.made[0].mimeType, label: $("camera-record").textContent, mode: cameraMotion.mode };
+out.recording = { type: FakeRecorder.made[0].mimeType, label: $("camera-record").textContent, mode: cameraMotion.mode, size: [cameraMotion.copy.width, cameraMotion.copy.height] };
+copies.length = 0;
+copyDrawnView($("view"));
+out.copied = copies.slice();
 stepCamera(12001);
 out.recorded = { yaw: view.yaw, mode: cameraMotion.mode, recorder: cameraMotion.recorder === null, clicks: clicks.slice(), readout: $("camera-readout").textContent };
 
@@ -187,7 +200,15 @@ def test_a_path_passes_through_the_views_the_short_way(tmp_path):
 
 def test_recording_one_turn_stops_with_the_turn_and_saves_an_mp4(tmp_path):
     report = _report(tmp_path)
-    assert report["recording"] == {"type": "video/mp4;codecs=avc1", "label": "Stop recording", "mode": "turntable"}
+    assert report["recording"] == {
+        "type": "video/mp4;codecs=avc1",
+        "label": "Stop recording",
+        "mode": "turntable",
+        # The view's size, rounded down to even numbers for H.264.
+        "size": [1280, 720],
+    }
+    # Each drawn view is copied into the recorded canvas, scaled to its size.
+    assert report["copied"] == [["view", 1280, 720]]
     recorded = report["recorded"]
     assert abs(recorded["yaw"] - (1.0 + 2 * 3.14159265358979)) < 1e-6
     assert recorded["mode"] is None and recorded["recorder"] is True

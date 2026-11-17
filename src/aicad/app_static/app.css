@@ -139,7 +139,7 @@ nav { display: flex; gap: 4px; }
 .camera-menu > summary { cursor: pointer; list-style: none; padding: 3px 8px; border: 1px solid var(--line); border-radius: 4px; }
 .camera-menu[open] > summary { background: var(--selected); }
 .camera-panel {
-  position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; width: 330px; max-width: 90vw;
+  position: absolute; z-index: 20; top: calc(100% + 4px); right: 0; width: 330px; max-width: 90vw;
   padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--glass);
 }
 .camera-panel .row { margin: 4px 0; }
