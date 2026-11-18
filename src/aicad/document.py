@@ -1951,6 +1951,35 @@ class Document:
                 clearance_mm=clearance_mm,
             )
 
+    def check_insertion(
+        self,
+        name: str,
+        insertion: list | None = None,
+        pose: str | dict | None = None,
+        step_mm: float | None = None,
+    ) -> dict:
+        """Move each part in along a straight path, in order, and report the first collision of each.
+
+        ``insertion`` is the plan: the parts in the order they go in, each
+        ``{"instance", "direction"?, "distance_mm"?, "step_mm"?, "check"?}``.
+        Without it the assembly's own insertion list is used, and without
+        that the parts on prismatic joints slide along their axes. ``pose``
+        is a stored pose name or joint values for the seated pose.
+        """
+        from aicad.insertion import check_insertion
+
+        with self._lock:
+            spec = self._get_assembly(name)
+            if isinstance(pose, str):
+                stored = spec.get("poses") or {}
+                if pose not in stored:
+                    known = ", ".join(stored) or "(none)"
+                    raise GeometryError(f"Assembly {name!r} has no pose {pose!r}. Poses: {known}.")
+                pose = dict(stored[pose])
+            elif pose is not None and not isinstance(pose, dict):
+                raise GeometryError("pose is a stored pose name or an object of joint values.")
+            return check_insertion(spec, self._assembly_shapes(spec), insertion, pose, step_mm)
+
     def solve_kinematics(
         self,
         name: str,

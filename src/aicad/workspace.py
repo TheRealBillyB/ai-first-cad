@@ -268,6 +268,7 @@ class Workspace:
                     "fea",
                     "motion",
                     "motion_study",
+                    "insertion",
                     "cables",
                     "power",
                     "vibration",
@@ -1562,6 +1563,16 @@ def _cmd_run_motion_study(workspace: Workspace, arguments: dict) -> dict:
     return workspace._remember_panel("motion_study", report)  # noqa: SLF001
 
 
+def _cmd_check_insertion(workspace: Workspace, arguments: dict) -> dict:
+    report = workspace.document.check_insertion(
+        arguments["name"],
+        insertion=arguments.get("insertion"),
+        pose=arguments.get("pose"),
+        step_mm=arguments.get("step_mm"),
+    )
+    return workspace._remember_panel("insertion", report)  # noqa: SLF001
+
+
 def _cmd_check_position_error(workspace: Workspace, arguments: dict) -> dict:
     if isinstance(arguments.get("request"), dict):
         request = dict(arguments["request"])
@@ -2324,6 +2335,24 @@ _add(Command(
         ["name"],
     ),
     _cmd_run_motion_study,
+))
+_add(Command(
+    "check_insertion",
+    "Move each part in a straight line from outside the assembly to its seated pose, in order, with the parts already in place held still, and report the first collision: which parts, where, and how far from seated.",
+    _obj(
+        {
+            "name": _string("Assembly name."),
+            "insertion": {
+                "type": "array",
+                "description": "The parts in the order they go in: {instance, direction (the way it moves going in), distance_mm, step_mm, check}. Defaults to the assembly's insertion list, then to its prismatic joints.",
+                "items": {"type": "object"},
+            },
+            "pose": {"description": "Stored pose name or joint values for the seated pose."},
+            "step_mm": _number("Step between checked positions, in millimeters. Default 1."),
+        },
+        ["name"],
+    ),
+    _cmd_check_insertion,
 ))
 _add(Command(
     "solve_kinematics",

@@ -379,6 +379,7 @@ and, when the setup cannot be solved, `status` is `not_solved`.
 - `solve_mechanics` is a linear static check. Read the safety factor, the review, and the stress picture. A pass on a coarse mesh is `inconclusive`.
 - `create_assembly` places parts that are already in the document. A joint is a tree edge: fixed, revolute (degrees), prismatic (millimeters), or cylindrical (degrees plus slide). A gear is `driven = ratio * driver + offset`. A linkage is a planar four-bar, not a spatial loop.
 - `run_motion` takes a named sequence or an inline sweep `{sweep: {joint, start, end, frames}}` or keyframes. Omit start and end to sweep from the joint's min stop to its max stop. It reports where solids that are not joined to each other intersect, and returns an isometric frame per sample.
+- `check_insertion` moves each part in a straight line from outside the assembly to its seated pose, in order, with the parts already in place held still, and reports the first collision of each: which parts, where, and how far from seated. A final pose can be clear while a part has no way in. The order and each part's direction live in the assembly's `insertion` list.
 - `run_motion_study` takes a named study or an inline study. Drivers are expressions in `t` (seconds), keyframes, or `range` true to sweep from the joint's min stop to its max stop. A coupling is `driven = ratio * driver + offset`. `steps` is the number of poses, including both ends. `clearance_mm` is the minimum gap. The record is `motion_study.v1`: each step has poses, collisions (volume and penetration depth), and joint-limit hits. The broad phase is the axis-aligned box. The narrow phase is the boolean intersection.
 - `solve_kinematics` solves the chain from the grounded part to `tool`. Pass `joints` for a forward pose. Pass `target` (`position`, `rotation_deg`, or `matrix`) for inverse kinematics. A planar elbow returns both bends. A spherical wrist returns each shoulder, elbow, and wrist branch that reaches. An unreachable, singular, or out-of-limit target is reported, and a value past a stop is not a solution. Pass `path` (`kind` `line` or `waypoints`) to step the tool and reuse the motion study for collisions and joint limits. The record is `kinematics.v1`.
 - `check_position_error` budgets the tip position error of that chain. `sources` maps a joint to `encoder`, `backlash`, and `stiffness`. Encoder `resolution_deg` or `counts` uses half a step. Backlash is the full gap: `deg`, `arcmin`, `mm` with `radius_mm`, or `mesh` (a spur, helical, or bevel pair; the circumferential arc divided by the operating pitch radius). Stiffness is `torque_nmm` over `nmm_per_rad`, or `force_n` over `n_per_mm`. `links` maps an instance to a stated `translation_mm` and `rotation_rad`, or to `fea` (the same setup as `solve_mechanics`). Pass `poses` or `path`. The pass is the worst case against `tolerance_mm`. Root-sum-square is reported and does not grant a pass. Read assumptions and limits. The record is `position_error.v1`.
@@ -1040,6 +1041,9 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         keeps the rod eye on the moving clevis without adding a joint cycle.
         When the driver is cylindrical, its slide moves that clevis along the joint axis.
         poses, motions, studies, cables, and actuators live on the same spec.
+        insertion is the order the parts go in, for check_insertion:
+        [{instance, direction, distance_mm, step_mm, check}], direction being the
+        way the part moves as it goes in.
         motions maps a name to a motion, or is a list of motions that each have a name.
         gear_train, when present, is {shafts, meshes, fixed, differentials}.
         A shaft is {name, gears, joint}. A gear is an instance name, or
@@ -1093,6 +1097,31 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         Parent and child of a joint are allowed to touch.
         """
         return guard(lambda: _images(run("run_motion", name=name, sequence=sequence, motion=motion)))
+
+    @mcp.tool()
+    def check_insertion(
+        name: str,
+        insertion: list[dict[str, Any]] | None = None,
+        pose: str | dict[str, Any] | None = None,
+        step_mm: float | None = None,
+    ) -> dict:
+        """Check that each part can go in: a straight path from outside to its seated pose.
+
+        Parts go in in order. Each moves from just outside the parts already in
+        place to its seated pose in steps of step_mm (default 1), and the first
+        collision is narrowed to 0.05 mm: which parts, where, and how far from
+        seated. insertion is the plan, or the assembly's own insertion list is
+        used: [{"instance": "moving_jaw", "direction": [-1, 0, 0]},
+        {"instance": "lead_screw", "check": false}, {"instance": "end_cap",
+        "direction": [0, 0, -1]}]. direction is the way the part moves as it
+        goes in. A part not listed is in place from the start; a part hung from
+        a listed one goes in with it. A listed part with no direction slides
+        along its prismatic joint, both senses tried. check false puts a part in
+        without a straight path (a screw threaded in). pose is the seated pose:
+        a stored pose name or joint values. Parts that overlap when seated are
+        seated_overlaps and are not counted on the way in.
+        """
+        return guard(lambda: run("check_insertion", name=name, insertion=insertion, pose=pose, step_mm=step_mm))
 
     @mcp.tool()
     def run_motion_study(

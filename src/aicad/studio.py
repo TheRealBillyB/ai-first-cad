@@ -56,6 +56,7 @@ _LOUD = {
     "estimate_power",
     "run_motion",
     "run_motion_study",
+    "check_insertion",
     "solve_kinematics",
     "check_position_error",
     "check_requirements",
