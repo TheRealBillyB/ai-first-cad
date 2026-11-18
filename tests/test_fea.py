@@ -303,6 +303,10 @@ def test_a_thin_rib_on_a_thick_plate_cannot_pass(tmp_path):
             "material": "pla",
             "mesh_size_mm": 2.0,
             "target_safety_factor": 2.0,
+            # The rib's root is a sharp corner. Refined there it reads far over PLA's
+            # strength, which is right (about 83 MPa by hand). This test is about the
+            # coarse mesh alone, so it keeps the first mesh's reading.
+            "refine_peak": False,
             "fixes": [{"name": "floor", "select": {"kind": "plane", "normal": [0, 0, -1]}}],
             "loads": [
                 {
