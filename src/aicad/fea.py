@@ -662,7 +662,9 @@ def solve_part(
         # The corner at the peak, and the next hottest corners with it.
         chosen = [hot] + [item for item in raisers if item["faces"] != hot["faces"]][: _REFINE_CORNERS - 1]
         if refine_peak:
-            convergence = _refine_corners(shape, mesh, vm, used_size, order_used, material, fixes, matched_loads, chosen)
+            convergence = _refine_corners(
+                shape, mesh, vm, used_size, order_used, material, fixes, matched_loads, chosen, stress, print_up
+            )
         else:
             convergence = {
                 "refined_radius_mm": None,
@@ -691,7 +693,9 @@ def solve_part(
     across = material.get("across_layer_strength_mpa")
     across_block = None
     if print_up is not None:
-        across_block = _across_layers(stress, mesh["points"], print_up, material, safety, target, warnings)
+        across_block = _across_layers(
+            stress, mesh["points"], print_up, material, safety, target, warnings, convergence
+        )
         across_safety = across_block.get("safety_factor_across_layers")
     else:
         across_safety = None if across is None or peak < 1e-9 else float(across) / peak
@@ -2176,6 +2180,18 @@ def _refine_steps(mesh_size: float) -> list[float]:
     return sizes
 
 
+def _across_pull(stress, up) -> np.ndarray:
+    """The normal stress across the print layers, n . sigma . n, at each node. Positive pulls them apart."""
+    n = np.asarray(up, dtype=np.float64)
+    sxx, syy, szz, sxy, syz, szx = (stress[:, index] for index in range(6))
+    return (
+        sxx * n[0] ** 2
+        + syy * n[1] ** 2
+        + szz * n[2] ** 2
+        + 2.0 * (sxy * n[0] * n[1] + syz * n[1] * n[2] + szx * n[2] * n[0])
+    )
+
+
 def _local_peak(points, vm, center, radius: float) -> tuple[float, list[float]]:
     near = np.flatnonzero(np.linalg.norm(points - np.asarray(center, dtype=np.float64), axis=1) <= radius)
     if len(near) == 0:
@@ -2184,19 +2200,31 @@ def _local_peak(points, vm, center, radius: float) -> tuple[float, list[float]]:
     return float(vm[top]), [round(float(value), 3) for value in points[top]]
 
 
-def _refine_corners(shape, mesh, vm, mesh_size, order, material, fixes, loads, corners: list[dict]) -> dict:
-    """Solve again with smaller elements in a ball at each corner, and say whether each one settles."""
+def _refine_corners(
+    shape, mesh, vm, mesh_size, order, material, fixes, loads, corners: list[dict], stress=None, print_up=None
+) -> dict:
+    """Solve again with smaller elements in a ball at each corner, and say whether each one settles.
+
+    With ``print_up``, each step also records the largest pull across the print
+    layers inside each ball, from the first mesh's ``stress`` and every refined solve.
+    """
     from aicad.progress import report
 
     radius = max(float(mesh_size), 3.0)
+    base_pull = None if print_up is None or stress is None else _across_pull(stress, print_up)
     tracks = []
     for corner in corners:
         peak, at = _local_peak(mesh["points"], vm, corner["_hot"], radius)
+        step = {"local_mesh_mm": round(float(mesh_size), 4), "peak_mpa": round(peak, 4), "at_mm": at}
+        if base_pull is not None:
+            pull, pull_at = _local_peak(mesh["points"], base_pull, corner["_hot"], radius)
+            step["across_layers_mpa"] = round(max(pull, 0.0), 4)
+            step["across_layers_at_mm"] = pull_at
         tracks.append(
             {
                 "corner": {key: value for key, value in corner.items() if not key.startswith("_")},
                 "center_mm": [round(float(value), 3) for value in corner["_hot"]],
-                "steps": [{"local_mesh_mm": round(float(mesh_size), 4), "peak_mpa": round(peak, 4), "at_mm": at}],
+                "steps": [step],
             }
         )
     nodes = [int(mesh["node_count"])]
@@ -2226,9 +2254,15 @@ def _refine_corners(shape, mesh, vm, mesh_size, order, material, fixes, loads, c
             break
         refined_vm = _von_mises(stress)
         nodes.append(int(refined["node_count"]))
+        refined_pull = None if print_up is None else _across_pull(stress, print_up)
         for track, corner in zip(tracks, corners):
             peak, at = _local_peak(refined["points"], refined_vm, corner["_hot"], radius)
-            track["steps"].append({"local_mesh_mm": size, "peak_mpa": round(peak, 4), "at_mm": at})
+            step = {"local_mesh_mm": size, "peak_mpa": round(peak, 4), "at_mm": at}
+            if refined_pull is not None:
+                pull, pull_at = _local_peak(refined["points"], refined_pull, corner["_hot"], radius)
+                step["across_layers_mpa"] = round(max(pull, 0.0), 4)
+                step["across_layers_at_mm"] = pull_at
+            track["steps"].append(step)
     for track in tracks:
         peaks = [step["peak_mpa"] for step in track["steps"]]
         track["settled"] = len(peaks) >= 2 and abs(peaks[-1] - peaks[-2]) <= _SETTLED_SHARE * max(peaks[-2], 1e-9)
@@ -2284,8 +2318,15 @@ def _convergence_warning(result: dict, strength: float) -> str:
     return text
 
 
-def _across_layers(stress, points, up, material, safety, target: float, warnings: list[str]) -> dict:
-    """The stress that pulls the print layers apart, for a part printed with ``up`` as the build direction."""
+def _across_layers(
+    stress, points, up, material, safety, target: float, warnings: list[str], convergence: dict | None = None
+) -> dict:
+    """The stress that pulls the print layers apart, for a part printed with ``up`` as the build direction.
+
+    The largest pull is the highest of the first mesh and every refined solve at
+    a corner in ``convergence``. A corner that did not settle is said to leave
+    the across-layer reading unconverged too.
+    """
     n = np.asarray(up, dtype=np.float64)
     across = material.get("across_layer_strength_mpa")
     block: dict = {
@@ -2295,16 +2336,27 @@ def _across_layers(stress, points, up, material, safety, target: float, warnings
         "safety_factor_in_layers": None if safety is None else round(float(safety), 3),
     }
     sxx, syy, szz, sxy, syz, szx = (stress[:, index] for index in range(6))
-    normal = (
-        sxx * n[0] ** 2
-        + syy * n[1] ** 2
-        + szz * n[2] ** 2
-        + 2.0 * (sxy * n[0] * n[1] + syz * n[1] * n[2] + szx * n[2] * n[0])
-    )
+    normal = _across_pull(stress, n)
     top = int(np.argmax(normal))
     pull = float(normal[top])
+    pull_at = [round(float(value), 3) for value in points[top]]
+    unsettled_pull = False
+    for track in (convergence or {}).get("corners") or []:
+        readings = [step for step in track["steps"] if step.get("across_layers_mpa") is not None]
+        for step in readings:
+            if step["across_layers_mpa"] > pull:
+                pull = float(step["across_layers_mpa"])
+                pull_at = step["across_layers_at_mm"]
+        if len(readings) > 1 and not track.get("settled") and readings[-1]["across_layers_mpa"] > 1e-9:
+            unsettled_pull = True
     block["max_tension_across_layers_mpa"] = round(max(pull, 0.0), 4)
-    block["max_tension_across_layers_at_mm"] = [round(float(value), 3) for value in points[top]]
+    block["max_tension_across_layers_at_mm"] = pull_at
+    if unsettled_pull:
+        block["note"] = (
+            "The largest pull across the layers includes the refined corner readings. A corner whose stress "
+            "did not settle leaves the across-layer reading there not converged either: it keeps climbing with "
+            "the mesh until the corner has a radius."
+        )
     tensors = np.empty((len(stress), 3, 3), dtype=np.float64)
     tensors[:, 0, 0], tensors[:, 1, 1], tensors[:, 2, 2] = sxx, syy, szz
     tensors[:, 0, 1] = tensors[:, 1, 0] = sxy
@@ -2333,7 +2385,7 @@ def _across_layers(stress, points, up, material, safety, target: float, warnings
         return block
     factor = None if pull <= 1e-9 else float(across) / pull
     block["safety_factor_across_layers"] = None if factor is None else round(factor, 3)
-    if factor is None:
+    if factor is None and "note" not in block:
         block["note"] = "No tension crosses the layers in this load case."
     if runs_across:
         warnings.append(
@@ -2343,7 +2395,7 @@ def _across_layers(stress, points, up, material, safety, target: float, warnings
     if factor is not None and factor < target:
         warnings.append(
             f"Across the print layers this part has a safety factor of {factor:.2f}: {pull:.3g} MPa pulls the "
-            f"layers apart at {_where(points[top])} against {material['name']}'s {float(across):g} MPa across "
+            f"layers apart at {_where(pull_at)} against {material['name']}'s {float(across):g} MPa across "
             f"layers, below the target {target:g}. Turn the part so the load runs along the layers."
         )
     return block

@@ -193,3 +193,18 @@ def test_a_refined_solve_that_hits_the_limit_says_so(monkeypatch):
     warning = next(item for item in result["warnings"] if "not converged" in item)
     assert "The refinement stopped" in warning
     assert convergence["stopped"] in warning
+
+
+@needs_solver
+def test_the_across_layer_pull_takes_the_refined_corner_readings():
+    setup = {**_shelf_load(), "print_up": [1, 0, 0]}
+    first_mesh = solve_part(_bracket(), {**setup, "refine_peak": False}).to_dict()
+    result = solve_part(_bracket(), setup).to_dict()
+    across = result["across_layers"]
+    # The pull across the layers climbs with the corner's mesh, and the headline takes it.
+    assert across["max_tension_across_layers_mpa"] > 1.3 * first_mesh["across_layers"]["max_tension_across_layers_mpa"]
+    assert result["min_safety_factor_across_layers"] == across["safety_factor_across_layers"]
+    assert result["min_safety_factor_across_layers"] < result["min_safety_factor"]
+    assert "not converged" in across["note"]
+    track = result["convergence"]["corners"][0]
+    assert across["max_tension_across_layers_mpa"] == max(step["across_layers_mpa"] for step in track["steps"])
