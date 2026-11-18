@@ -318,6 +318,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum allowed gap in millimeters. A smaller gap is interference.",
     )
 
+    insertion = commands.add_parser(
+        "insertion",
+        parents=[common],
+        help="Check that each part can go in along a straight path to its seated pose, in order.",
+    )
+    insertion.add_argument("name")
+    insertion.add_argument("--file", type=Path, default=None, help="JSON insertion plan: the parts in order.")
+    insertion.add_argument("--pose", default=None, help="Stored pose for the seated position.")
+    insertion.add_argument("--step", type=float, default=None, help="Step between checked positions, in millimeters.")
+
     kinematics = commands.add_parser(
         "kinematics",
         parents=[common],
@@ -983,6 +993,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 clearance_mm=args.clearance,
             )
         )
+    if args.command == "insertion":
+        plan = json.loads(_read_named_file(args.file)) if args.file else None
+        return emit(document.check_insertion(args.name, insertion=plan, pose=args.pose, step_mm=args.step))
     if args.command == "kinematics":
         request = json.loads(_read_named_file(args.file))
         if not isinstance(request, dict):

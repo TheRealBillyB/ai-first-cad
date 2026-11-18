@@ -178,6 +178,11 @@ def normalize(spec: dict) -> dict:
     gear_train = _gear_train(spec, cleaned_instances, joints)
     if gear_train is not None:
         cleaned["gear_train"] = gear_train
+    if spec.get("insertion"):
+        from aicad.insertion import normalize_insertion
+
+        # The order the parts go in, and how. Kept only when the assembly states one.
+        cleaned["insertion"] = normalize_insertion(spec["insertion"], seen)
     return cleaned
 
 
