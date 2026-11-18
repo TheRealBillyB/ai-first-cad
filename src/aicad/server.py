@@ -359,6 +359,17 @@ safety factor and where it occurs, and colored pictures from the front, the
 right, the top, and isometric. Each picture is scaled to its own maximum; the
 title carries that maximum. `review.status` is `pass`, `fail`, or
 `inconclusive`. Overstressed regions are candidates for added material.
+
+`stress_raisers` lists sharp inside corners, and inside radii under 1 mm, that
+are pulled at least half as hard as anywhere in the part, with where they are.
+When the peak sits at a sharp corner the stress there is a mesh number: the
+solve refines the mesh around it up to three times, never past its time limit,
+and `convergence` gives each reading. A peak that keeps climbing has no real
+value; the headline is the highest reading and the review cannot pass. Add a
+fillet. `refine_peak: false` skips the extra solves. `print_up` is the part's up
+direction on the print bed. With it, `across_layers` gives the stress that pulls
+the layers apart, the safety factor against the material's across-layer
+strength, and whether the main tension runs across the layers.
 Regions carrying almost none of the peak are candidates for removed material.
 
 Read `assumptions` and `warnings` every time. The solve is linear, isotropic,
@@ -914,6 +925,11 @@ def build_server(workspace: str | Path, connect: str | None = None) -> MCPServer
         {"name", "select"}. setup.relative lists face pairs {"name", "a": select, "b": select};
         each reports how far b moved relative to a, with gap_change_mm along the line
         between them (positive: apart), such as how far a vise jaw opens under load.
+        setup.print_up is the part's up direction on the print bed; across_layers then
+        gives the safety factor against the stress that crosses the layers.
+        stress_raisers lists sharp inside corners under tension. When the peak sits on
+        one, the mesh is refined there and convergence says whether it settles;
+        refine_peak false skips that.
         A load adds "type" of force, pressure, bolt, torque, or remote:
         force has vector [x, y, z] in newtons, pressure has magnitude in MPa
         (positive pushes into the face), bolt has axial newtons along the hole,
