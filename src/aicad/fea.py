@@ -1065,7 +1065,8 @@ def _mesh_ladder(shape: kernel.Shape, mesh_size: float, order: int, refine: dict
                     algorithm=int(attempt["algorithm"]),
                     optimize=int(attempt["optimize"]),
                     occ_fix=bool(attempt["occ_fix"]),
-                    refine=refine,
+                    # Only a refined mesh passes this, so a plain mesh is asked for as before.
+                    **({"refine": refine} if refine else {}),
                 )
             except GeometryError as exc:
                 notes.append(f"{attempt['label']} failed: {exc}")
