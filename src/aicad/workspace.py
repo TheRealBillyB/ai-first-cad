@@ -2471,7 +2471,7 @@ _add(Command(
 ))
 _add(Command(
     "render_animation",
-    "Write a GIF of a motion study, a camera orbit, an exploded opening, or the parts assembling themselves. MP4 and WebM are written when ffmpeg is on PATH. The files stay in the project.",
+    "Write a GIF of a motion study, a camera orbit, an exploded opening, or the parts assembling themselves. MP4 and WebM are written when ffmpeg is on PATH or the optional imageio-ffmpeg build is installed. The files stay in the project.",
     _obj(
         {
             "name": _string("Assembly name."),
