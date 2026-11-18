@@ -488,6 +488,12 @@ def solve_part(
     target = _optional_float(setup.get("target_safety_factor"), 2.0)
     if target is None or not math.isfinite(target) or target <= 0:
         raise GeometryError("target_safety_factor must be a positive finite number.")
+    print_up = setup.get("print_up")
+    if print_up is not None:
+        print_up = _unit(_vec(print_up, "print_up"))
+    refine_peak = setup.get("refine_peak", True)
+    if not isinstance(refine_peak, bool):
+        raise GeometryError("refine_peak is true or false.")
     catalog = kernel.describe_faces(shape)
     fixes_in = _as_list(setup.get("fixes", []), "fixes")
     loads_in = _as_list(setup.get("loads", []), "loads")
@@ -641,15 +647,66 @@ def solve_part(
     move_index = int(np.argmax(magnitude))
     strength = float(material["strength_mpa"])
     peak = float(vm[peak_index])
+    base_peak = peak
     safety = None if peak < 1e-9 else strength / peak
-    across = material.get("across_layer_strength_mpa")
-    across_safety = None if across is None or peak < 1e-9 else float(across) / peak
-    if across_safety is not None and across_safety < target:
-        warnings.append(
-            f"Across the print layers this part has a safety factor of {across_safety:.2f} "
-            f"({material['name']} {float(across):g} MPa across layers), below the target {target:g}. "
-            "If the peak stress pulls the layers apart, turn the part so the load runs along the layers."
+    peak_at = mesh["points"][peak_index]
+    raisers, measured, corners_checked = _stress_raisers(
+        shape, mesh["points"], vm, stress, peak, strength, used_size
+    )
+    if raisers:
+        warnings.append(_raiser_warning(raisers, used_size))
+    convergence = None
+    # Any sharp corner at the peak, pulled or pushed, makes the peak a mesh number.
+    hot = _corner_at(measured, peak_at, _corner_band(used_size))
+    if hot is not None:
+        # The corner at the peak, and the next hottest corners with it.
+        chosen = [hot] + [item for item in raisers if item["faces"] != hot["faces"]][: _REFINE_CORNERS - 1]
+        if refine_peak:
+            convergence = _refine_corners(
+                shape, mesh, vm, used_size, order_used, material, fixes, matched_loads, chosen, stress, print_up
+            )
+        else:
+            convergence = {
+                "refined_radius_mm": None,
+                "nodes": [int(mesh["node_count"])],
+                "corners": [
+                    {
+                        "corner": {key: value for key, value in item.items() if not key.startswith("_")},
+                        "center_mm": [round(float(value), 3) for value in item["_hot"]],
+                        "steps": [{"local_mesh_mm": used_size, "peak_mpa": item["stress_mpa"], "at_mm": item["stress_at_mm"]}],
+                        "settled": False,
+                        "climbing": False,
+                    }
+                    for item in chosen
+                ],
+                "stopped": "refine_peak is false, so the mesh was not refined.",
+            }
+        warnings.append(_convergence_warning(convergence, strength))
+        highest = max(
+            (step for track in convergence["corners"] for step in track["steps"]), key=lambda step: step["peak_mpa"]
         )
+        if highest["peak_mpa"] > peak:
+            # The finer reading is the higher one. The pictures stay on the first mesh.
+            peak = float(highest["peak_mpa"])
+            peak_at = np.asarray(highest["at_mm"], dtype=np.float64)
+            safety = strength / peak
+    across = material.get("across_layer_strength_mpa")
+    across_block = None
+    if print_up is not None:
+        across_block = _across_layers(
+            stress, mesh["points"], print_up, material, safety, target, warnings, convergence
+        )
+        across_safety = across_block.get("safety_factor_across_layers")
+    else:
+        across_safety = None if across is None or peak < 1e-9 else float(across) / peak
+        if across_safety is not None and across_safety < target:
+            warnings.append(
+                f"Across the print layers this part has a safety factor of {across_safety:.2f} "
+                f"({material['name']} {float(across):g} MPa across layers), below the target {target:g}. "
+                "If the peak stress pulls the layers apart, turn the part so the load runs along the layers. "
+                "Pass setup.print_up, the part's up direction on the print bed, for the stress that "
+                "actually crosses the layers."
+            )
     if peak < 1e-6:
         warnings.append("The stress is essentially zero. The load may have missed the solid, or it was applied on a fixed face.")
     if float(magnitude[move_index]) > 0.3 * diagonal:
@@ -671,10 +728,10 @@ def solve_part(
                 out_dir,
                 stem,
                 "stress",
-                f"von Mises  max {peak:.3g} MPa",
+                f"von Mises  max {base_peak:.3g} MPa",
                 "MPa",
                 "von Mises",
-                maximum=peak,
+                maximum=base_peak,
             )
         )
         views.extend(
@@ -703,13 +760,17 @@ def solve_part(
         fixes=[_public_region(item) for item in fixes],
         loads=[_public_region(item) for item in loads],
         max_von_mises_mpa=round(peak, 4),
-        max_von_mises_at_mm=_point(mesh["points"][peak_index]),
+        max_von_mises_at_mm=_point(peak_at),
         max_displacement_mm=round_mm(float(magnitude[move_index])),
         max_displacement_vector_mm=_point(disp[move_index]),
         max_displacement_at_mm=_point(mesh["points"][move_index]),
         min_safety_factor=None if safety is None else round(safety, 3),
-        min_safety_factor_at_mm=_point(mesh["points"][peak_index]),
+        min_safety_factor_at_mm=_point(peak_at),
         min_safety_factor_across_layers=None if across_safety is None else round(across_safety, 3),
+        stress_raisers=[{key: value for key, value in item.items() if not key.startswith("_")} for item in raisers],
+        inside_corners_checked=corners_checked,
+        convergence=convergence,
+        across_layers=across_block,
         warnings=warnings,
         assumptions=assumptions,
         review=review,
@@ -932,10 +993,14 @@ def _refuse_dense_mesh(shape: kernel.Shape, mesh_size: float) -> None:
         raise GeometryError("That mesh would be too large. Use a larger mesh_size_mm.")
 
 
-def _mesh_solid(shape: kernel.Shape, mesh_size: float, order: int) -> dict:
-    """Mesh the solid. A Gmsh failure is retried, not raised raw."""
+def _mesh_solid(shape: kernel.Shape, mesh_size: float, order: int, refine: dict | None = None) -> dict:
+    """Mesh the solid. A Gmsh failure is retried, not raised raw.
+
+    ``refine`` is ``{"balls": [{"center", "radius_mm", "size_mm"}]}``: elements
+    of that size inside each ball, and ``mesh_size`` everywhere else.
+    """
     _refuse_dense_mesh(shape, mesh_size)
-    prepared, mesh = _mesh_ladder(shape, mesh_size, order)
+    prepared, mesh = _mesh_ladder(shape, mesh_size, order, refine)
     if mesh.get("points") is None:
         return mesh
     catalog = kernel.describe_faces(shape)
@@ -954,7 +1019,7 @@ def _mesh_solid(shape: kernel.Shape, mesh_size: float, order: int) -> dict:
     return mesh
 
 
-def _mesh_ladder(shape: kernel.Shape, mesh_size: float, order: int):
+def _mesh_ladder(shape: kernel.Shape, mesh_size: float, order: int, refine: dict | None = None):
     """Try the requested mesh, then safer settings, then a simplified solid.
 
     The first attempt is the mesh the caller asked for. Later attempts use a
@@ -1004,6 +1069,8 @@ def _mesh_ladder(shape: kernel.Shape, mesh_size: float, order: int):
                     algorithm=int(attempt["algorithm"]),
                     optimize=int(attempt["optimize"]),
                     occ_fix=bool(attempt["occ_fix"]),
+                    # Only a refined mesh passes this, so a plain mesh is asked for as before.
+                    **({"refine": refine} if refine else {}),
                 )
             except GeometryError as exc:
                 notes.append(f"{attempt['label']} failed: {exc}")
@@ -1200,7 +1267,16 @@ def _on_the_gmsh_thread(func):
     return _GMSH_EXECUTOR.submit(run).result()
 
 
-def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorithm: int, optimize: int, occ_fix: bool) -> dict:
+def _mesh_attempt(
+    shape: kernel.Shape,
+    mesh_size: float,
+    order: int,
+    *,
+    algorithm: int,
+    optimize: int,
+    occ_fix: bool,
+    refine: dict | None = None,
+) -> dict:
     import gmsh
     from aicad.paths import guest_path, held_tool_directory, use_held_thread
 
@@ -1224,6 +1300,8 @@ def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorith
                         gmsh.model.occ.importShapes(str(guest_path(directory, "part.step")))
                     gmsh.model.occ.synchronize()
                     gmsh.model.mesh.setSize(gmsh.model.getEntities(0), mesh_size)
+                    if refine:
+                        _refine_ball(gmsh, refine, mesh_size)
                     _gmsh_option(gmsh, "Mesh.ElementOrder", order)
                     _gmsh_option(gmsh, "Mesh.Optimize", optimize)
                     _gmsh_option(gmsh, "Mesh.Algorithm3D", algorithm)
@@ -1264,6 +1342,27 @@ def _mesh_attempt(shape: kernel.Shape, mesh_size: float, order: int, *, algorith
         "surface": (surface_triangles, surface_nodes),
         "mesh_size_mm": mesh_size,
     }
+
+
+def _refine_ball(gmsh, refine: dict, mesh_size: float) -> None:
+    """Smaller elements inside each ball, growing back to ``mesh_size`` over one radius."""
+    field = gmsh.model.mesh.field
+    tags = []
+    for ball in refine["balls"]:
+        tag = field.add("Ball")
+        center = [float(value) for value in ball["center"]]
+        radius = float(ball["radius_mm"])
+        field.setNumber(tag, "Radius", radius)
+        field.setNumber(tag, "Thickness", radius)
+        field.setNumber(tag, "VIn", float(ball["size_mm"]))
+        field.setNumber(tag, "VOut", float(mesh_size))
+        field.setNumber(tag, "XCenter", center[0])
+        field.setNumber(tag, "YCenter", center[1])
+        field.setNumber(tag, "ZCenter", center[2])
+        tags.append(tag)
+    smallest = field.add("Min")
+    field.setNumbers(smallest, "FieldsList", tags)
+    field.setAsBackgroundMesh(smallest)
 
 
 def _gmsh_option(gmsh, name: str, value: float) -> None:
@@ -1937,6 +2036,371 @@ def _thin_feature_mesh_note(mesh: dict) -> str | None:
     return None
 
 
+# A sharp inside corner, or an inside radius under 1 mm, is reported when the
+# tension near it is at least this share of the part's highest tension. A notch
+# cracks under tension; one held in compression is left out.
+_RAISER_SHARE = 0.5
+# Nor is one whose tension is under this share of the peak von Mises stress.
+_RAISER_FLOOR = 0.25
+# Around a peak at such a corner the mesh is refined locally this many times,
+# halving the element size each time, and never below the finest size.
+_REFINE_STEPS = 3
+_REFINE_FINEST_MM = 0.3
+# A refined peak within this share of the one before it has settled.
+_SETTLED_SHARE = 0.10
+# Corners named in the warning, and corners refined together, at most.
+_RAISER_NAMED = 3
+_REFINE_CORNERS = 3
+
+
+def _corner_band(mesh_size: float) -> float:
+    """How far from a corner a node still reads that corner's stress: about one element."""
+    return max(float(mesh_size), 1.0)
+
+
+def _where(point) -> str:
+    return "(" + ", ".join(f"{float(value):.1f}" for value in point) + ")"
+
+
+def _principal_tension(stress) -> np.ndarray:
+    """The largest principal stress at each node: positive pulls the material apart."""
+    tensors = np.empty((len(stress), 3, 3), dtype=np.float64)
+    tensors[:, 0, 0], tensors[:, 1, 1], tensors[:, 2, 2] = stress[:, 0], stress[:, 1], stress[:, 2]
+    tensors[:, 0, 1] = tensors[:, 1, 0] = stress[:, 3]
+    tensors[:, 1, 2] = tensors[:, 2, 1] = stress[:, 4]
+    tensors[:, 2, 0] = tensors[:, 0, 2] = stress[:, 5]
+    return np.linalg.eigvalsh(tensors)[:, 2]
+
+
+def _stress_raisers(
+    shape, points, vm, stress, peak: float, strength: float, mesh_size: float
+) -> tuple[list[dict], list[dict], int]:
+    """Sharp inside corners and small inside radii, measured on the solved mesh.
+
+    Returns the flagged ones (tension near them at least half the part's
+    highest tension), highest tension first; every measured corner; and how
+    many corners the CAD model has.
+    """
+    from scipy.spatial import cKDTree
+
+    from aicad.stress_raisers import inside_corners
+
+    try:
+        corners = inside_corners(shape)
+    except Exception:
+        return [], [], 0
+    if not corners or peak <= 1e-9:
+        return [], [], len(corners)
+    tension = _principal_tension(stress)
+    most = float(tension.max())
+    tree = cKDTree(points)
+    band = _corner_band(mesh_size)
+    measured = []
+    for corner in corners:
+        groups = tree.query_ball_point(corner["points"], r=band)
+        nodes = np.array(sorted({int(node) for group in groups for node in group}), dtype=np.int64)
+        if len(nodes) == 0:
+            continue
+        local = vm[nodes]
+        top = int(np.argmax(local))
+        local_peak = float(local[top])
+        pull = float(tension[nodes].max())
+        hot = points[nodes[top]]
+        # The point on the corner nearest its hottest node: where a finer mesh goes.
+        nearest = corner["points"][int(np.argmin(np.linalg.norm(corner["points"] - hot, axis=1)))]
+        measured.append(
+            {
+                "kind": corner["kind"],
+                "radius_mm": round(float(corner["radius_mm"]), 3),
+                "faces": list(corner["faces"]),
+                "at_mm": [round(float(value), 3) for value in corner["at_mm"]],
+                "length_mm": round(float(corner["length_mm"]), 2),
+                "stress_mpa": round(local_peak, 4),
+                "tension_mpa": round(max(pull, 0.0), 4),
+                "stress_at_mm": [round(float(value), 3) for value in hot],
+                "share_of_peak": round(local_peak / peak, 3),
+                "share_of_max_tension": None if most <= 1e-9 else round(max(pull, 0.0) / most, 3),
+                "safety_factor": round(strength / local_peak, 3) if local_peak > 1e-9 else None,
+                "_points": corner["points"],
+                "_hot": np.asarray(nearest, dtype=np.float64),
+            }
+        )
+    flagged = [
+        item
+        for item in measured
+        if most > 1e-9
+        and item["tension_mpa"] >= _RAISER_SHARE * most
+        and item["tension_mpa"] >= _RAISER_FLOOR * peak
+    ]
+    flagged.sort(key=lambda item: -item["tension_mpa"])
+    return flagged, measured, len(corners)
+
+
+def _describe_corner(item: dict) -> str:
+    faces = " and ".join(str(index) for index in item["faces"]) or "?"
+    if item["kind"] == "sharp":
+        return f"a sharp inside corner (faces {faces}, {item['length_mm']:.0f} mm long) at {_where(item['_hot'])}"
+    return f"a {item['radius_mm']:.2g} mm inside radius (face {faces}) at {_where(item['_hot'])}"
+
+
+def _raiser_warning(flagged: list[dict], mesh_size: float) -> str:
+    shown = flagged[:_RAISER_NAMED]
+    parts = [
+        f"{_describe_corner(item)}, {item['tension_mpa']:.3g} MPa of tension near it" for item in shown
+    ]
+    many = len(flagged) != 1
+    text = (
+        f"{len(flagged)} sharp inside corner{'s' if many else ''} or inside radi{'i' if many else 'us'} under 1 mm "
+        f"{'are' if many else 'is'} pulled at least half as hard as anywhere in the part: " + "; ".join(parts)
+    )
+    if len(flagged) > len(shown):
+        text += f"; and {len(flagged) - len(shown)} more in stress_raisers"
+    return (
+        text + f". A corner this sharp concentrates stress that a {mesh_size:g} mm mesh cannot resolve, and a "
+        "printed part cracks there first. Round each with a fillet of 1 mm or more."
+    )
+
+
+def _corner_at(flagged: list[dict], point, band: float) -> dict | None:
+    for item in flagged:
+        gaps = np.linalg.norm(item["_points"] - np.asarray(point, dtype=np.float64), axis=1)
+        if float(gaps.min()) <= band:
+            return item
+    return None
+
+
+def _refine_steps(mesh_size: float) -> list[float]:
+    sizes = []
+    size = float(mesh_size) / 2.0
+    while len(sizes) < _REFINE_STEPS and size >= _REFINE_FINEST_MM - 1e-9:
+        sizes.append(round(size, 4))
+        size /= 2.0
+    if not sizes and mesh_size > _REFINE_FINEST_MM * 1.2:
+        sizes.append(_REFINE_FINEST_MM)
+    return sizes
+
+
+def _across_pull(stress, up) -> np.ndarray:
+    """The normal stress across the print layers, n . sigma . n, at each node. Positive pulls them apart."""
+    n = np.asarray(up, dtype=np.float64)
+    sxx, syy, szz, sxy, syz, szx = (stress[:, index] for index in range(6))
+    return (
+        sxx * n[0] ** 2
+        + syy * n[1] ** 2
+        + szz * n[2] ** 2
+        + 2.0 * (sxy * n[0] * n[1] + syz * n[1] * n[2] + szx * n[2] * n[0])
+    )
+
+
+def _local_peak(points, vm, center, radius: float) -> tuple[float, list[float]]:
+    near = np.flatnonzero(np.linalg.norm(points - np.asarray(center, dtype=np.float64), axis=1) <= radius)
+    if len(near) == 0:
+        return 0.0, [round(float(value), 3) for value in center]
+    top = int(near[int(np.argmax(vm[near]))])
+    return float(vm[top]), [round(float(value), 3) for value in points[top]]
+
+
+def _refine_corners(
+    shape, mesh, vm, mesh_size, order, material, fixes, loads, corners: list[dict], stress=None, print_up=None
+) -> dict:
+    """Solve again with smaller elements in a ball at each corner, and say whether each one settles.
+
+    With ``print_up``, each step also records the largest pull across the print
+    layers inside each ball, from the first mesh's ``stress`` and every refined solve.
+    """
+    from aicad.progress import report
+
+    radius = max(float(mesh_size), 3.0)
+    base_pull = None if print_up is None or stress is None else _across_pull(stress, print_up)
+    tracks = []
+    for corner in corners:
+        peak, at = _local_peak(mesh["points"], vm, corner["_hot"], radius)
+        step = {"local_mesh_mm": round(float(mesh_size), 4), "peak_mpa": round(peak, 4), "at_mm": at}
+        if base_pull is not None:
+            pull, pull_at = _local_peak(mesh["points"], base_pull, corner["_hot"], radius)
+            step["across_layers_mpa"] = round(max(pull, 0.0), 4)
+            step["across_layers_at_mm"] = pull_at
+        tracks.append(
+            {
+                "corner": {key: value for key, value in corner.items() if not key.startswith("_")},
+                "center_mm": [round(float(value), 3) for value in corner["_hot"]],
+                "steps": [step],
+            }
+        )
+    nodes = [int(mesh["node_count"])]
+    stopped = None
+    face_indices = [face["index"] for item in fixes for face in item["faces"]]
+    for size in _refine_steps(mesh_size):
+        report(f"refining to {size:g} mm at {len(corners)} corner{'s' if len(corners) != 1 else ''}")
+        balls = [{"center": corner["_hot"], "radius_mm": radius, "size_mm": size} for corner in corners]
+        try:
+            refined = _mesh_solid(shape, mesh_size, order, refine={"balls": balls})
+        except GeometryError as exc:
+            stopped = f"The {size:g} mm mesh at the corners could not be made: {exc}"
+            break
+        if refined.get("points") is None:
+            stopped = f"The {size:g} mm mesh at the corners could not be made."
+            break
+        fixed = _nodes_for(refined, face_indices)
+        forces = np.zeros((len(refined["points"]), 3), dtype=np.float64)
+        for load in loads:
+            _apply_load(refined, load, forces)
+        try:
+            solved, _disp, stress, warning, _order = _execute(refined, fixed, forces, material, order)
+        except GeometryError as exc:
+            solved, stress, warning = False, None, str(exc)
+        if not solved:
+            stopped = f"The solve with {size:g} mm elements at the corners did not finish: {warning}"
+            break
+        refined_vm = _von_mises(stress)
+        nodes.append(int(refined["node_count"]))
+        refined_pull = None if print_up is None else _across_pull(stress, print_up)
+        for track, corner in zip(tracks, corners):
+            peak, at = _local_peak(refined["points"], refined_vm, corner["_hot"], radius)
+            step = {"local_mesh_mm": size, "peak_mpa": round(peak, 4), "at_mm": at}
+            if refined_pull is not None:
+                pull, pull_at = _local_peak(refined["points"], refined_pull, corner["_hot"], radius)
+                step["across_layers_mpa"] = round(max(pull, 0.0), 4)
+                step["across_layers_at_mm"] = pull_at
+            track["steps"].append(step)
+    for track in tracks:
+        peaks = [step["peak_mpa"] for step in track["steps"]]
+        track["settled"] = len(peaks) >= 2 and abs(peaks[-1] - peaks[-2]) <= _SETTLED_SHARE * max(peaks[-2], 1e-9)
+        track["climbing"] = len(peaks) >= 2 and not track["settled"] and peaks[-1] > peaks[-2]
+    return {"refined_radius_mm": round(radius, 3), "nodes": nodes, "corners": tracks, "stopped": stopped}
+
+
+def _track_line(track: dict) -> str:
+    readings = " -> ".join(f"{step['peak_mpa']:.3g}" for step in track["steps"])
+    sizes = " / ".join(f"{step['local_mesh_mm']:g}" for step in track["steps"])
+    corner = track["corner"]
+    kind = "sharp inside corner" if corner["kind"] == "sharp" else f"{corner['radius_mm']:.2g} mm inside radius"
+    if len(track["steps"]) < 2:
+        state = "was not refined"
+    elif track["settled"]:
+        state = "settled"
+    elif track["climbing"]:
+        state = "keeps climbing"
+    else:
+        state = "has not settled"
+    return f"the {kind} at {_where(track['center_mm'])} reads {readings} MPa at {sizes} mm elements and {state}"
+
+
+def _convergence_warning(result: dict, strength: float) -> str:
+    tracks = result["corners"]
+    first = tracks[0]
+    unsettled = [track for track in tracks if not track.get("settled")]
+    highest = max((step for track in tracks for step in track["steps"]), key=lambda step: step["peak_mpa"])
+    factor = strength / highest["peak_mpa"] if highest["peak_mpa"] > 1e-9 else math.inf
+    kind = "a sharp inside corner" if first["corner"]["kind"] == "sharp" else "a small inside radius"
+    if unsettled:
+        text = (
+            f"The peak stress sits at {kind} at {_where(first['center_mm'])}, so it is not converged: "
+            "a finer mesh reads more there."
+        )
+    else:
+        text = f"The peak stress sits at {kind} at {_where(first['center_mm'])}."
+    if any(len(track["steps"]) > 1 for track in tracks):
+        text += " Refined locally, " + "; ".join(_track_line(track) for track in tracks) + "."
+        text += (
+            f" The highest reading is {highest['peak_mpa']:.3g} MPa at {_where(highest['at_mm'])}, "
+            f"a safety factor of {factor:.2f}."
+        )
+        if unsettled:
+            text += (
+                " A stress that keeps climbing as the mesh gets finer has no real value at that corner. "
+                "Add a fillet of 1 mm or more there and solve again."
+            )
+    else:
+        text += " Add a fillet of 1 mm or more there and solve again."
+    if result["stopped"]:
+        text += f" The refinement stopped: {result['stopped']}"
+    return text
+
+
+def _across_layers(
+    stress, points, up, material, safety, target: float, warnings: list[str], convergence: dict | None = None
+) -> dict:
+    """The stress that pulls the print layers apart, for a part printed with ``up`` as the build direction.
+
+    The largest pull is the highest of the first mesh and every refined solve at
+    a corner in ``convergence``. A corner that did not settle is said to leave
+    the across-layer reading unconverged too.
+    """
+    n = np.asarray(up, dtype=np.float64)
+    across = material.get("across_layer_strength_mpa")
+    block: dict = {
+        "print_up": [round(float(value), 6) for value in n],
+        "in_layer_strength_mpa": float(material["strength_mpa"]),
+        "across_layer_strength_mpa": None if across is None else float(across),
+        "safety_factor_in_layers": None if safety is None else round(float(safety), 3),
+    }
+    sxx, syy, szz, sxy, syz, szx = (stress[:, index] for index in range(6))
+    normal = _across_pull(stress, n)
+    top = int(np.argmax(normal))
+    pull = float(normal[top])
+    pull_at = [round(float(value), 3) for value in points[top]]
+    unsettled_pull = False
+    for track in (convergence or {}).get("corners") or []:
+        readings = [step for step in track["steps"] if step.get("across_layers_mpa") is not None]
+        for step in readings:
+            if step["across_layers_mpa"] > pull:
+                pull = float(step["across_layers_mpa"])
+                pull_at = step["across_layers_at_mm"]
+        if len(readings) > 1 and not track.get("settled") and readings[-1]["across_layers_mpa"] > 1e-9:
+            unsettled_pull = True
+    block["max_tension_across_layers_mpa"] = round(max(pull, 0.0), 4)
+    block["max_tension_across_layers_at_mm"] = pull_at
+    if unsettled_pull:
+        block["note"] = (
+            "The largest pull across the layers includes the refined corner readings. A corner whose stress "
+            "did not settle leaves the across-layer reading there not converged either: it keeps climbing with "
+            "the mesh until the corner has a radius."
+        )
+    tensors = np.empty((len(stress), 3, 3), dtype=np.float64)
+    tensors[:, 0, 0], tensors[:, 1, 1], tensors[:, 2, 2] = sxx, syy, szz
+    tensors[:, 0, 1] = tensors[:, 1, 0] = sxy
+    tensors[:, 1, 2] = tensors[:, 2, 1] = syz
+    tensors[:, 2, 0] = tensors[:, 0, 2] = szx
+    values, vectors = np.linalg.eigh(tensors)
+    largest = values[:, 2]
+    main = int(np.argmax(largest))
+    tension = float(largest[main])
+    angle = None
+    runs_across = False
+    if tension > 1e-9:
+        direction = vectors[main][:, 2]
+        cosine = min(1.0, abs(float(np.dot(direction, n))))
+        angle = math.degrees(math.acos(cosine))
+        runs_across = angle < 45.0
+    block["main_tension"] = {
+        "mpa": round(max(tension, 0.0), 4),
+        "at_mm": [round(float(value), 3) for value in points[main]],
+        "angle_from_build_direction_deg": None if angle is None else round(angle, 1),
+        "runs_across_layers": runs_across,
+    }
+    if across is None:
+        block["safety_factor_across_layers"] = None
+        block["note"] = f"{material['name']} has no across-layer strength here, so only the in-layer factor applies."
+        return block
+    factor = None if pull <= 1e-9 else float(across) / pull
+    block["safety_factor_across_layers"] = None if factor is None else round(factor, 3)
+    if factor is None and "note" not in block:
+        block["note"] = "No tension crosses the layers in this load case."
+    if runs_across:
+        warnings.append(
+            f"The main tension, {tension:.3g} MPa at {_where(points[main])}, runs {angle:.0f} degrees from the "
+            "build direction, so it pulls the print layers apart. Turn the part so this tension runs along the layers."
+        )
+    if factor is not None and factor < target:
+        warnings.append(
+            f"Across the print layers this part has a safety factor of {factor:.2f}: {pull:.3g} MPa pulls the "
+            f"layers apart at {_where(pull_at)} against {material['name']}'s {float(across):g} MPa across "
+            f"layers, below the target {target:g}. Turn the part so the load runs along the layers."
+        )
+    return block
+
+
 def _review(mesh, vm, strength: float, target: float, warnings: list[str], safety: float) -> dict:
     elements = mesh["elements"][:, :4]
     points = mesh["points"]
@@ -1955,7 +2419,7 @@ def _review(mesh, vm, strength: float, target: float, warnings: list[str], safet
     # A huge displacement is a floating body or a load outside the linear model.
     # A near-zero stress is a load that never entered the part. Neither one is a pass.
     untrustworthy = coarse or any(
-        "do not trust" in item.lower() or "essentially zero" in item.lower()
+        "do not trust" in item.lower() or "essentially zero" in item.lower() or "not converged" in item.lower()
         for item in warnings
     )
     if safety >= target and not untrustworthy:

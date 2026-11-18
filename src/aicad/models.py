@@ -686,6 +686,13 @@ class FeaReport:
     relative: list | None = None
     # A printed material with an across-layer strength: the safety factor against it.
     min_safety_factor_across_layers: float | None = None
+    # Sharp inside corners and inside radii under 1 mm with high stress near them.
+    stress_raisers: list | None = None
+    inside_corners_checked: int | None = None
+    # Local refinement around a peak at such a corner, and whether it settled.
+    convergence: dict | None = None
+    # The stress across the print layers for a stated print_up.
+    across_layers: dict | None = None
 
     def to_dict(self) -> dict[str, object]:
         def _point(value: Vec3 | None) -> dict[str, float] | None:
@@ -706,8 +713,11 @@ class FeaReport:
             )
         limits = [
             "No plasticity, contact, buckling, or fatigue.",
-            "The solve does not know the print direction. A printed material with an across-layer strength "
-            "gets a second safety factor against it; the others are in-plane numbers only.",
+            "Without setup.print_up the solve does not know the print direction. A printed material with an "
+            "across-layer strength then gets a second, worst-case safety factor against it; the others are "
+            "in-plane numbers only.",
+            "A stress at a sharp inside corner grows as the mesh gets finer. The solve refines the mesh around a "
+            "peak at such a corner and says whether it settles; the pictures are from the first mesh.",
             "A force is shared by the nodes on the selected faces. A bolt load is an axial force, not a thread.",
             "CalculiX runs as a separate program. It is not linked into aicad.",
         ]
@@ -744,6 +754,14 @@ class FeaReport:
                 "note": self.note,
                 **({} if self.probes is None else {"probes": list(self.probes)}),
                 **({} if self.relative is None else {"relative": list(self.relative)}),
+                **({} if self.stress_raisers is None else {"stress_raisers": list(self.stress_raisers)}),
+                **(
+                    {}
+                    if self.inside_corners_checked is None
+                    else {"inside_corners_checked": self.inside_corners_checked}
+                ),
+                **({} if self.convergence is None else {"convergence": self.convergence}),
+                **({} if self.across_layers is None else {"across_layers": self.across_layers}),
             },
             kind=ROUGH_ESTIMATE,
             name="Strength",

@@ -2102,7 +2102,7 @@ _add(Command(
 ))
 _add(Command(
     "solve_mechanics",
-    "Linear static solve. setup has material, fixes, loads, mesh_size_mm, target_safety_factor. A load type is force, pressure, bolt, torque, or remote (a force at a point off the part, carried with its lever arm). A select can be a viewport ref.",
+    "Linear static solve. setup has material, fixes, loads, mesh_size_mm, target_safety_factor, and optional print_up (the up direction on the print bed, for the across-layer check) and refine_peak (default true: refine the mesh at a peak on a sharp inside corner). A load type is force, pressure, bolt, torque, or remote (a force at a point off the part, carried with its lever arm). A select can be a viewport ref.",
     _obj({"name": _string("Part name."), "setup": {"type": "object"}}, ["name", "setup"]),
     _cmd_fea,
 ))
