@@ -22,6 +22,7 @@ _CHECKS = frozenset(
         "check_cables",
         "check_clearance",
         "check_fatigue",
+        "check_insertion",
         "check_gears",
         "check_packaging",
         "check_print",
