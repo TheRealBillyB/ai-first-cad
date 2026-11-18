@@ -168,3 +168,28 @@ def test_print_up_must_be_a_direction():
         solve_part(beam, _beam_load([1, 0]))
     with pytest.raises(GeometryError, match="non-zero"):
         solve_part(beam, _beam_load([0, 0, 0]))
+
+
+@needs_solver
+def test_a_refined_solve_that_hits_the_limit_says_so(monkeypatch):
+    from aicad import fea
+
+    real = fea._execute
+    calls = []
+
+    def limited(mesh, fixed_nodes, forces, material, order):
+        calls.append(mesh["node_count"])
+        if len(calls) == 1:
+            return real(mesh, fixed_nodes, forces, material, order)
+        return False, None, None, "CalculiX " + fea.helper_limit_stop(fea._CCX_TIMEOUT_S), order
+
+    monkeypatch.setattr(fea, "_execute", limited)
+    result = solve_part(_bracket(), _shelf_load()).to_dict()
+    convergence = result["convergence"]
+    assert len(calls) == 2
+    assert len(convergence["corners"][0]["steps"]) == 1
+    assert "did not finish" in convergence["stopped"]
+    assert "limit" in convergence["stopped"] or "memory" in convergence["stopped"]
+    warning = next(item for item in result["warnings"] if "not converged" in item)
+    assert "The refinement stopped" in warning
+    assert convergence["stopped"] in warning
