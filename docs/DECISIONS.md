@@ -6,6 +6,12 @@ Choices that later work should keep, unless a new entry overturns them.
 
 The log lists each date newest first. On a date, a file with no `order` key is listed by file name, ahead of files that set `order`. Leave `order` unset on a new file. Entries stay in the folder. The file format is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## 2026-11-17
+
+| Decision | Rationale |
+| --- | --- |
+| A peak at a sharp inside corner is refined, and its climb is reported | A sharp inside corner has no finite stress in a linear model, so the number at it depends on the mesh. A strength solve now finds sharp inside corners and inside radii under 1 mm from the CAD edges, and lists those pulled at least half as hard as anywhere in the part. When the peak sits at one, the mesh is refined in a ball at that corner (and the next two hottest) up to three times, halving the element size, and each reading is reported. A peak that does not settle is called not converged, the headline is the highest reading, and the review cannot pass. Each extra solve keeps the solver's own time limit, which is not raised; a refinement that stops says why. With `print_up`, the across-layer safety factor is against the stress that actually crosses the layers instead of the peak von Mises stress. |
+
 ## 2026-11-16
 
 | Decision | Rationale |
