@@ -1,6 +1,48 @@
 # Changelog
 
-Version 0.1.0 is the first public early release. It works for real designs, but expect rough edges, missing features, and performance gaps. Feedback is welcome. These notes describe the current tree, including its stability and safety fixes. A root `CHANGELOG.md` is not on the software-docs allowlist, so this file is the record.
+Version 0.2.0 is an early release, the second public one. It works for real designs, but expect rough edges, missing features, and performance gaps. Feedback is welcome. These notes describe the current tree, including its stability and safety fixes. A root `CHANGELOG.md` is not on the software-docs allowlist, so this file is the record.
+
+## 0.2.0 — early release
+
+Still an early release: it works for real designs, but expect rough edges, missing features, and performance gaps. Most of this release came from designing and printing a real part, a desk clamp vise, and fixing what got in the way.
+
+### New checks
+
+- `check_insertion` moves each part in a straight line from outside the assembly to its seated pose, in order, with the parts already in place held still, and reports the first collision: which parts, where, and how far from seated. An assembly can store the order and direction in `insertion`; without one, parts on prismatic joints slide along the joint axis.
+- A strength solve lists sharp inside corners and inside radii under 1 mm that are under tension (`stress_raisers`). When the peak sits at one, the mesh is refined there and `convergence` says whether the peak settles; a peak that keeps climbing is not converged and the review cannot pass. With `print_up`, `across_layers` gives the safety factor against the stress that crosses the print layers.
+- A print check flags material that starts printing in mid-air, takes a stated print pose, and can slice with Bambu Studio.
+- Clearance says where two parts overlap, and two instances can be checked in one pose.
+
+### Simulation and FEA
+
+- Large meshes use the iterative solver, a frequency solve that is too big says so, and a solver stopped at a memory or CPU limit says which.
+- CalculiX runs on up to eight threads.
+- Remote loads (a force at a point off the part) and the relative displacement between two faces.
+- Face selection by an `at` point picks the face the point lies on.
+- 7075 aluminum, titanium, magnesium, and Dyneema; PLA and PETG have an across-layer strength.
+
+### Modeling and assembly
+
+- Modeled threads (a lead screw and its nut, or a metric thread), and counterbore and countersink holes.
+- A size can be shared across part scripts, and parameter sliders stay inside each parameter's range.
+- An assembly can be deleted. A lead-screw joint relation, and the `rotation_deg` order is stated.
+- An eyelet guide in a cable check takes friction and a wrap radius.
+- An edited part is rebuilt from the step that changed. The wall-thickness check is about ten times faster.
+
+### App, export, and media
+
+- The page keeps answering during a long command, keeps the current page when the assistant runs a command, and keeps result panels across a reload.
+- A motion study plays in the 3D view. Turntable orbits, camera paths, and recording of the 3D view.
+- Animations at 1920 × 1080 and 1080 × 1920, an assemble animation (the exploded view backwards), and MP4 and WebM through ffmpeg on PATH or the optional `imageio-ffmpeg` build (`python install.py --with-ffmpeg`).
+- Long commands report progress, and every command result names the project folder.
+
+### Windows and install
+
+- Files exchanged with helper programs are opened in binary mode, which fixes MP4 and WebM output and slicer STL files on Windows.
+- A script gets 60 s of CPU per core, not 60 s in all, and a project folder that other accounts can read is explained.
+- A deleted part stays deleted when another open copy of the project saves, and saving `session.json` is locked across copies.
+- Undo and redo no longer bring back or replay steps after another open copy of the project has saved; those steps are dropped.
+- The sandbox's first start is faster.
 
 ## 0.1.0 — early release
 
